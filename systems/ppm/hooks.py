@@ -1,6 +1,26 @@
 """PPM system Python-based tools."""
 
 
+def update_programme_status_rag(ctx, programme_name, status):
+    """Update the programme RAG status."""
+    return {
+        "programme_name": programme_name,
+        "status": status,
+        "updated_at": ctx.as_of,
+        "message": f"Programme {programme_name} status set to {status}",
+    }
+
+
+def reassign_programme_task(ctx, project_id, new_owner_id):
+    """Change the owner of a project."""
+    return {
+        "project_id": project_id,
+        "new_owner_id": new_owner_id,
+        "updated_at": ctx.as_of,
+        "message": f"Project owner changed to {new_owner_id}",
+    }
+
+
 def get_programme_resource_plan(ctx, programme_name):
     """Get resource plan and availability by workstream."""
     # Get workstreams for the programme

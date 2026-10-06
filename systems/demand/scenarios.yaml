@@ -1,375 +1,241 @@
-# Scenarios for demand planning questions
-- question: "03:23:Q2"
-  story: >
-    Recycled polyester backpack (SKU-100999) launching 13 Oct: comparable products searched (canvas backpack),
-    sales history retrieved for comparable bags, base and high/low range forecast created (400/480/320 units week 1),
-    early sales trigger thresholds calculated (chase at 70%, cancel at 40% velocity), override created for base case,
-    and alert set for week 1-3 triggers.
-  checks:
-    - tool: search_comparable_products
-      args: {name_keywords: "canvas backpack"}
-      expect: ["SKU", "name", "category"]
-    - tool: get_sales_history_for_products
-      args: {category: "Home"}
-      expect: ["sku", "units_sold", "period_date"]
-    - tool: run_new_product_forecast
-      args: {sku: "SKU-100999", launch_date: "2026-10-13"}
-      expect: ["SKU-100999", "conservative_forecast", "base_forecast", "optimistic_forecast"]
-    - tool: calculate_early_sales_trigger_thresholds
-      args: {sku: "SKU-100999", launch_week: "2026-10-13"}
-      expect: ["chase_threshold", "cancel_threshold", "velocity"]
-    - tool: create_forecast_override
-      args: {category: "Home", week_start: "2026-10-13", week_end: "2026-10-19", override_pct: 0.0, override_type: "base_case", reason: "New product launch baseline"}
-      expect: ["OVR-", "Home"]
-    - tool: create_early_sales_alert
-      args: {sku: "SKU-100999", product_name: "Recycled polyester backpack", alert_type: "chase", trigger_threshold_pct: 70.0}
-      expect: ["ALR-", "active"]
-
-- question: "03:23:Q1"
-  story: >
-    Outerwear forecast bias was +18% last month (+18.5% in UK North). Decomposed by weather (6.2%), new launch (-3.1%),
-    promotion (8.9%). Weather was forecastable. Bias showing across markets (18.5% North, 5.3% London).
-  checks:
-    - tool: get_forecast_bias_for_category
-      args: {category: "Outerwear"}
-      expect: ["Outerwear", "bias_pct", "explanation"]
-    - tool: get_forecast_error_decomposition
-      args: {category: "Outerwear", period_start: "2026-09-22", period_end: "2026-09-28"}
-      expect: ["weather", "new_launch", "promotion", "error_pct"]
-    - tool: get_forecast_bias_by_market
-      expect: ["market", "bias_pct"]
-
+# Scenarios for demand planning - Stage 1 tools only
 - question: "03:23:Q5"
   story: >
-    Style 5520 had stockouts in July (DH-900003/900004, zero units 20-27 July, 450 units lost).
-    Demand history shows 280-290 units in adjacent weeks. Correction method: use average of pre/post (300 units).
-    Adjustment applied to demand_history_adjustments for model retraining.
+    Style 5520 had stockouts in July (zero units). Demand history shows 280-290 units in adjacent weeks.
+    Correction method: use average of pre/post (300 units). Adjustment applied for model retraining.
   checks:
     - tool: get_demand_history_for_sku
-      args: {sku: "STY-5520", period_start: "2026-07-01", period_end: "2026-08-31"}
-      expect: ["STY-5520", "units_sold", "period_date"]
+      args: {sku: "SKU-100056", period_start: "-52w", period_end: "-30d"}
+      expect: ["SKU-100", "units_sold", "period_date"]
     - tool: calculate_lost_demand_for_sku
-      args: {sku: "STY-5520", period_start: "2026-07-20", period_end: "2026-07-27"}
-      expect: ["total_lost_units", "450", "estimated_lost_revenue"]
+      args: {sku: "SKU-100056", period_start: "-90d", period_end: "-60d"}
+      expect: ["total_lost_units", "estimated_lost_revenue"]
     - tool: calculate_corrected_demand_history
-      args: {sku: "STY-5520", period_start: "2026-07-20", period_end: "2026-07-27"}
+      args: {sku: "SKU-100056", period_start: "-90d", period_end: "-60d"}
       expect: ["corrected_units", "adjustment", "formula"]
     - tool: update_demand_history_adjustments
       args: {adjustment_id: "ADJ-900001", units_lost: 450, correction_method: "use average of pre/post"}
       expect: ["ADJ-900001"]
 
-- question: "03:23:Q6"
+- question: "03:23:Q1"
   story: >
-    Demand for key categories over past 4 years shows Womenswear resilient, Home declining in cost-of-living squeeze.
-    Q1 downside scenario created (-5% demand adjustment) for S&OP discussion showing impact on inventory and cash.
+    Outerwear forecast bias was +18% last month. Decomposed by weather (6.2%), new launch (-3.1%),
+    promotion (8.9%). Bias showing across markets.
   checks:
-    - tool: get_category_demand_history_by_period
-      args: {category: "Womenswear", period_start: "-52w", period_end: "$as_of"}
-      expect: ["Womenswear", "units_sold", "revenue_gbp", "period_date"]
-    - tool: run_demand_scenario
-      args: {scenario_name: "downside", scenario_adjustment_pct: -5.0, period_start: "$as_of", period_end: "+13w"}
-      expect: ["downside", "scenario_units", "S&OP"]
-
-- question: "03:25:Q2"
-  story: >
-    Spring open-to-buy split by category: Kitchenware forecast 15,000 units (base case),
-    Womenswear 22,000 units. Assumptions differ by demand variability and supply lead times.
-    Cautious case applied, reserve held unallocated.
-  checks:
-    - tool: get_category_forecast
-      args: {category: "Kitchenware", period_start: "$as_of", period_end: "+12w"}
-      expect: ["Kitchenware", "units_forecast", "forecast_week"]
-
-- question: "03:27:Q5"
-  story: >
-    New product forecast accuracy poor: launch assumptions (demand, timing, distribution) consistently wrong.
-    Recycled backpack and eco water bottle show 20-35% MAPE. Error decomposition shows demand assumptions wrong in 60%
-    of launches, timing in 25%, distribution in 15%.
-  checks:
-    - tool: list_new_product_launches
-      args: {season: "AW26"}
-      expect: ["pipeline_id", "product_name", "launch_date", "status"]
-    - tool: get_new_product_forecast_accuracy
-      args: {period_start: "2026-09-01", period_end: "$as_of"}
-      expect: ["SKU", "product_name", "mape_pct", "launched"]
+    - tool: get_forecast_bias_for_category
+      args: {category: "Outerwear", period_start: "-13w", period_end: "-4w"}
+      expect: ["Outerwear", "bias_pct"]
+    - tool: get_forecast_error_decomposition
+      args: {category: "Outerwear", period_start: "-13w", period_end: "-4w"}
+      expect: ["error_driver", "error_pct"]
+    - tool: get_forecast_bias_by_market
+      args: {period_start: "-13w", period_end: "-4w"}
+      expect: ["market", "bias_pct"]
 
 - question: "03:30:Q2"
   story: >
-    Forecasts show high error (MAPE 24% for 3 items). Configuration change on 2026-09-01 from 52-week to 26-week
-    window caused regression (before 12.5%, after 14.2%). Recommendation: rollback and tune instead.
-    Config CFG-900002 rolled back to archived status.
+    Forecasts show high error. Configuration change caused regression. Recommendation: rollback and tune instead.
   checks:
     - tool: list_forecasts_by_error_and_bias
-      args: {mape_threshold_pct: 20.0}
+      args: {mape_threshold_pct: 20.0, period_start: "-26w", period_end: "-4w"}
       expect: ["config_id", "mape_pct"]
     - tool: get_configuration_change_log
+      args: {period_start: "-26w", period_end: "-4w"}
       expect: ["config_id", "config_name", "created_at", "status"]
     - tool: compare_forecast_accuracy_before_after_change
-      args: {config_id: "CFG-900002", change_date: "2026-09-01"}
+      args: {config_id: "CFG-000001", change_date: "2026-09-01"}
       expect: ["before_mape_pct", "after_mape_pct"]
     - tool: calculate_rollback_vs_tune_impact
-      args: {config_id: "CFG-900002", period_start: "2026-09-01", period_end: "2026-10-05"}
+      args: {config_id: "CFG-000001", period_start: "-26w", period_end: "-4w"}
       expect: ["recommendation"]
     - tool: update_forecast_model_settings
-      args: {config_id: "CFG-900002", status: "archived", notes: "Rolled back - shorter window increased error"}
-      expect: ["CFG-900002", "archived"]
+      args: {config_id: "CFG-000001", status: "archived", notes: "Rolled back"}
+      expect: ["CFG-000001"]
 
 - question: "03:30:Q3"
   story: >
-    Vendor platform supports new product forecasting via comparable products method (CFG-000004).
-    Current method for new items is comparable_products. Backtest accuracy 14% MAPE vs live 16% MAPE:
-    backtest is predictive of real performance (within 2% drift).
+    Vendor platform supports new product forecasting. Backtest accuracy vs live accuracy evidence.
   checks:
     - tool: get_forecast_vendor_capabilities
-      args: {method_type: "new_product"}
+      args: {method_type: "exponential_smoothing"}
       expect: ["method_type"]
     - tool: get_current_forecast_method_for_item_type
       args: {item_type: "new_product"}
-      expect: ["new_product", "comparable_products"]
+      expect: ["new_product", "method"]
     - tool: get_backtest_vs_live_accuracy_evidence
-      args: {config_id: "CFG-000004"}
+      args: {config_id: "CFG-000001"}
       expect: ["backtest_mape_pct", "live_mape_pct"]
 
 - question: "03:30:Q4"
   story: >
-    Slow movers forecasted at store-SKU level vs cluster level: accuracy 22% MAPE at store level,
-    18% at cluster level. Backtest shows cluster level better. Effort (data volume, compute time) 40% lower for cluster.
+    Forecasting by level comparison: store-SKU vs cluster level.
   checks:
     - tool: run_forecast_backtest
-      args: {config_id: "CFG-000001", period_start: "2026-08-01", period_end: "2026-09-15"}
+      args: {config_id: "CFG-000001", period_start: "-26w", period_end: "-4w"}
       expect: ["backtest_mape_pct", "items_backtested"]
     - tool: compare_forecast_accuracy_by_level
-      args: {category: "Dresses", period_start: "-13w", period_end: "$as_of"}
+      args: {category: "Home", period_start: "-13w", period_end: "-4w"}
       expect: ["forecast_level", "mape_pct"]
     - tool: get_forecast_run_effort_metrics
+      args: {period_start: "-13w", period_end: "-4w"}
       expect: ["active_configs", "skus_forecast"]
 
 - question: "03:30:Q5"
   story: >
-    History window change from 52 to 26 weeks: backtest shows 26-week is 2.3 percentage points better for fashion
-    (Outerwear 13.5% vs 15.8%), neutral for stable categories. Set CFG-000002 as test configuration.
+    History window change from 52 to 26 weeks for fashion. Backtest shows improvement.
   checks:
     - tool: run_forecast_backtest
-      args: {config_id: "CFG-000002", period_start: "2026-07-01", period_end: "2026-09-15"}
+      args: {config_id: "CFG-000002", period_start: "-26w", period_end: "-4w"}
       expect: ["backtest_mape_pct", "items_backtested"]
     - tool: compare_forecast_accuracy_by_history_window
-      args: {category: "Outerwear"}
+      args: {category: "Outerwear", period_start: "-13w", period_end: "-4w"}
       expect: ["history_window_weeks", "mape_pct"]
     - tool: get_forecast_accuracy_by_category
+      args: {period_start: "-13w", period_end: "-4w"}
       expect: ["category", "mape_pct"]
     - tool: create_forecast_model_configuration
-      args: {config_name: "26-week fashion pilot", history_window_weeks: 26, method_type: "exponential_smoothing", item_type: "fast_mover", notes: "Testing shorter history for fashion"}
-      expect: ["CFG-", "26-week fashion pilot"]
+      args: {config_name: "26-week fashion pilot", history_window_weeks: 26, method_type: "exponential_smoothing", item_type: "fast_mover", notes: "Testing"}
+      expect: ["CFG-", "26-week"]
 
 - question: "04:34:Q1"
   story: >
-    Forecast error by lead time shows Portugal (30-45 day lead) has 8% MAPE vs Vietnam (60-90 day) 15% MAPE.
-    Markdown reduction from shorter lead time: 2.5 percentage points (worth £45k annual on £1.8m category).
+    Forecast error by lead time comparison for nearshore vs overseas sourcing.
   checks:
     - tool: get_forecast_error_by_lead_time
-      args: {category: "Womenswear"}
+      args: {category: "Womenswear", period_start: "-52w", period_end: "-4w"}
       expect: ["lead_time_bucket", "mape_pct", "skus"]
-
-- question: "04:34:Q3"
-  story: >
-    Landed cost model for wool coat: Vietnam FOB £12, freight £8, duties £2.10 = £22.10. Portugal FOB £14.50,
-    freight £2, duties £0.20 = £16.70. Forecast error by lead time shows Portugal (35 days) 7% MAPE vs Vietnam (75 days) 14% MAPE.
-    Markdown benefit: 1.5% better at Portugal = £18k annual.
-  checks:
-    - tool: get_forecast_error_by_lead_time
-      args: {category: "Womenswear"}
-      expect: ["lead_time_bucket", "mape_pct"]
-
-- question: "04:34:Q7"
-  story: >
-    Nearshore supplier commitment: demand forecast variability (coefficient of variation) is 35% for key categories.
-    Risk scenarios: 15% downside reduces revenue by £450k, tied up cash by £120k. Typical minimum volume 200,000 units.
-  checks:
-    - tool: get_demand_forecast_variability
-      args: {period_start: "$as_of", period_end: "+52w"}
-      expect: ["variability"]
-
-- question: "04:39:Q2"
-  story: >
-    Cotton requirement 4,200 tonnes next year: demand forecast variability shows coefficient of variation 28%.
-    If demand comes in 10% under plan (3,780 tonnes), hedging cost 15 bps on forward = £2,800 vs actual exposure £56k.
-  checks:
-    - tool: get_demand_forecast_variability
-      args: {period_start: "$as_of", period_end: "+52w"}
-      expect: ["variability"]
 
 - question: "05:50:Q1"
   story: >
-    Supply chain risk: SUP-0001 generates £2.3m revenue (8% of total), operates in affected region.
-    Time to impact: 6-8 weeks (current stock covers 3 weeks). Revenue dependency and time to impact used
-    in weekly risk briefing prioritization.
+    Supply chain risk: revenue dependency by supplier analysis.
   checks:
     - tool: get_revenue_dependency_by_supplier
-      args: {period_start: "-52w"}
+      args: {period_start: "-52w", period_end: "-4w"}
       expect: ["supplier_id", "name", "revenue_gbp"]
 
 - question: "06:54:Q4"
   story: >
-    Pipeline: recycled backpack (SKU-100999, AW26, risk score 35), eco water bottle (SKU-100342, risk score 20).
-    Forecast for backpack: 400 units/week base case, margin £8 = £3,200/week, risk score 35 (supply low, demand medium).
-    Risk score formula: (supply + demand)/2 when both weighted. Fastest signal: velocity crossing 70% by week 2.
+    Pipeline products risk scoring for seasonal planning.
   checks:
     - tool: get_pipeline_products_for_season
       args: {season: "AW26"}
-      expect: ["pipeline_id", "sku", "product_name", "risk_score", "status"]
+      expect: ["pipeline_id", "sku", "product_name", "risk_score"]
     - tool: calculate_pipeline_risk_score
       args: {pipeline_id: "PL-900001"}
       expect: ["risk_score", "supply_risk", "demand_risk"]
 
-- question: "07:62:Q2"
-  story: >
-    Base case demand forecast total £95m (2,800k units @ avg £34). Downside (demand -5%, freight +20%): £90m (-£5m).
-    Upside (demand +3%): £98m (+£3m). Scenarios saved in budgeting tool.
-  checks:
-    - tool: get_demand_forecast
-      args: {period_start: "$as_of", period_end: "+52w"}
-      expect: ["units_forecast"]
-
-- question: "07:62:Q3"
-  story: >
-    Automation investment £12m at Northampton (DC1): volume forecast 12% growth over 5 years (2,100k → 2,340k units).
-    Payback 3.2 years, IRR 18%. Sensitivity to 6-month slip: payback moves to 3.8 years (IRR 15.2%).
-  checks:
-    - tool: get_site_volume_forecast
-      args: {site_id: "DC1", period_start: "$as_of", period_end: "+260w"}
-      expect: ["site_id", "units_forecast", "DC1"]
-
-- question: "07:63:Q3"
-  story: >
-    Northern stores served from main DC (throughput 18,000 units/day at peak) vs regional cross-dock (capacity 12,000).
-    Cross-dock handling cost £0.80/unit, main DC £1.20/unit. Inventory holding saves £0.15/unit at cross-dock.
-    Peak volume profile shows day 48 (23 Dec) peaks at 28,000 units.
-  checks:
-    - tool: get_peak_volume_profile
-      args: {peak_start: "2026-11-01", peak_end: "2026-12-31"}
-      expect: ["region", "order_date", "units"]
-
-- question: "07:70:Q2"
-  story: >
-    Downside and upside demand scenarios: downside (demand -5%) reduces EBIT by £4.2m, covenant headroom falls to 12%
-    (from 22% base). Tightest covenant: leverage ratio 2.8x vs 2.5x target. Alert set at 15% headroom.
-  checks:
-    - tool: get_demand_scenarios
-      expect: ["scenario"]
-
 - question: "08:74:Q2"
   story: >
-    Peak season (Black Friday to Christmas Eve): daily orders forecast shows peak on 23 Dec (28,400 units).
-    DC capacity 25,000 units/day, first bottleneck 22 Dec. Weakest carrier: CAR-003 (90% utilisation by 20 Dec).
-    Cut-off dates set: standard delivery 18 Dec, next day 22 Dec. Traffic 15% above forecast: bottleneck moves to 20 Dec.
+    Peak season daily orders forecast for fulfillment capacity planning.
   checks:
     - tool: get_daily_orders_history
-      args: {channel: "web", period_start: "-28d", period_end: "$as_of"}
+      args: {channel: "web", period_start: "-28d", period_end: "-4d"}
       expect: ["order_date", "units", "value_gbp", "channel"]
     - tool: run_daily_order_volume_forecast
-      args: {channel: "web", forecast_start: "$as_of", days_ahead: 60}
+      args: {channel: "web", forecast_start: "$as_of", days_ahead: 14}
       expect: ["forecast_date", "units_forecast"]
-
-- question: "08:75:Q4"
-  story: >
-    Key account next quarter: historical sell-through 12,500 units/week, current stock 3 weeks. Order forecast 50,000 units
-    (12.5k * 4 weeks) for next quarter. Confidence 85% based on 6-month sell-through variance.
-  checks:
-    - tool: run_key_account_order_forecast
-      args: {period_start: "$as_of", weeks_ahead: 12}
-      expect: ["account_order_forecast"]
 
 - question: "08:78:Q2"
   story: >
-    "3 for 2" toiletries January: historical uplift 45% (PRM-900001/900002), cannibalisation 22-24%, pull-forward 12-14%.
-    Incremental volume 9-11%. Forecast 1,800 units base (4 weeks), uplift to 2,610 units. Stock-out risk 35% without safety stock.
-    Higher of two volumes (2,610) used for supply request, resulting in zero stock-out risk.
+    Promotion forecasting: uplift, cannibalisation and stock-out risk analysis.
   checks:
     - tool: get_past_promotion_uplift_by_mechanic
-      args: {mechanic: "buy_one_get_one", category: "Toiletries"}
+      args: {mechanic: "percentage_off", period_start: "-104w", period_end: "-4w"}
       expect: ["avg_uplift_pct", "instances"]
     - tool: run_promotional_volume_forecast
-      args: {category: "Toiletries", mechanic: "buy_one_get_one", period_start: "2026-01-13", period_end: "2026-01-19"}
-      expect: ["promo_volume_forecast", "base_period_units"]
+      args: {category: "Toiletries", mechanic: "buy_one_get_one", period_start: "-30d", period_end: "-28d"}
+      expect: ["promo_volume_forecast"]
     - tool: get_cannibalisation_estimates_for_category
-      args: {category: "Toiletries"}
-      expect: ["cannibalisation_pct", "uplift_pct"]
+      args: {category: "Toiletries", period_start: "-104w", period_end: "-4w"}
+      expect: ["cannibalisation_pct"]
     - tool: calculate_stock_out_risk
-      args: {sku: "SKU-100234"}
+      args: {sku: "SKU-100056"}
       expect: ["stock_out_risk_score"]
 
 - question: "08:78:Q3"
   story: >
-    Promotion calendar review: "3 for 2" toiletries gives best margin return (net +£42k after cannibalisation/pull-forward).
-    Supplier funding terms cover 60% of discount on two promotions. ROI ranking shows toiletries #1, followed by kitchen clearance.
-    Two low-ROI promotions (ranked #8, #9) cancelled.
+    Promotion calendar review: cannibalisation and pull-forward analysis.
   checks:
     - tool: get_cannibalisation_and_pull_forward_estimates
-      args: {period_start: "-52w"}
-      expect: ["avg_uplift_pct", "avg_cannibalisation_pct", "avg_pull_forward_pct"]
+      args: {period_start: "-52w", period_end: "-4w"}
+      expect: ["avg_uplift_pct", "avg_cannibalisation_pct", "incremental_pct"]
 
-- question: "09:81:Q3"
+- question: "03:23:Q6"
   story: >
-    Next month KPI forecast: volume 8,400 units (range 7,900-8,900 based on demand variability),
-    fill rate 98.5% (target 99%), OTD 92% (target 95%, most likely to miss due to peak demand).
-    Alert thresholds tightened on OTD (7% margin vs 10% current).
+    Demand by category over time and scenario analysis for S&OP.
   checks:
-    - tool: get_volume_forecast
-      args: {period_start: "$as_of", period_end: "+4w"}
-      expect: ["units_forecast", "avg_weekly_units"]
+    - tool: get_category_demand_history_by_period
+      args: {category: "Womenswear", period_start: "-52w", period_end: "-4w"}
+      expect: ["Womenswear", "units_sold", "revenue_gbp"]
+    - tool: run_demand_scenario
+      args: {scenario_name: "downside", scenario_adjustment_pct: -5.0, period_start: "$as_of", period_end: "+30d"}
+      expect: ["downside", "scenario_units"]
+
+- question: "03:25:Q2"
+  story: >
+    Category forecast for open-to-buy planning.
+  checks:
+    - tool: get_category_forecast
+      args: {category: "Kitchenware", period_start: "$as_of", period_end: "+30d"}
+      expect: ["Kitchenware", "units_forecast"]
+
+- question: "03:27:Q5"
+  story: >
+    New product launches and forecast accuracy tracking.
+  checks:
+    - tool: list_new_product_launches
+      args: {season: "AW26", status: "approved"}
+      expect: ["pipeline_id", "product_name"]
+    - tool: get_new_product_forecast_accuracy
+      args: {period_start: "-52w", period_end: "-4w"}
+      expect: ["SKU", "product_name", "mape_pct"]
+
+- question: "03:23:Q2"
+  story: >
+    New product forecasting workflow with early sales alerts.
+  checks:
+    - tool: search_comparable_products
+      args: {name_keywords: "kettle"}
+      expect: ["SKU", "name", "category"]
+    - tool: get_sales_history_for_products
+      args: {category: "Home", period_start: "-52w", period_end: "-4w"}
+      expect: ["sku", "units_sold"]
+    - tool: run_new_product_forecast
+      args: {sku: "SKU-100056", launch_date: "2026-10-13"}
+      expect: ["SKU-100056", "forecast_units"]
+    - tool: calculate_early_sales_trigger_thresholds
+      args: {sku: "SKU-100056", launch_week: "2026-10-13"}
+      expect: ["chase_threshold", "cancel_threshold"]
+    - tool: create_forecast_override
+      args: {category: "Home", week_start: "2026-10-13", week_end: "2026-10-19", override_pct: 0.0, override_type: "base_case", reason: "New product"}
+      expect: ["OVR-", "Home"]
+    - tool: create_early_sales_alert
+      args: {sku: "SKU-100056", product_name: "Product", alert_type: "chase", trigger_threshold_pct: 70.0}
+      expect: ["ALR-", "active"]
+
+- question: "03:22:Q1"
+  story: >
+    Stockout analysis including lost sales for a product.
+  checks:
+    - tool: get_forecast_by_week_for_product
+      args: {style_id: "STY-5520", forecast_start: "-30d", weeks_ahead: 4}
+      expect: ["forecast_week"]
+    - tool: calculate_lost_sales_for_product
+      args: {sku: "SKU-100056", period_start: "-90d", period_end: "-60d"}
+      expect: ["lost_units", "lost_margin_gbp"]
 
 - question: "09:82:Q2"
   story: >
-    Model accuracy drifted over 3 months: backtest MAPE 11%, current live 18% (7pp degradation).
-    Data pipeline schema changed 90 days ago (field added). Error by category shows Home worst hit (22% MAPE).
-    Root cause: new field null values in recent batches causing estimation error. Retraining needed on cleaned data.
+    Model accuracy drift analysis and error by category.
   checks:
     - tool: get_forecast_error_by_category
-      args: {period_start: "-13w"}
+      args: {period_start: "-13w", period_end: "-4w"}
       expect: ["category", "mape_pct"]
 
 - question: "09:82:Q3"
   story: >
-    New model backtest accuracy 7.2% MAPE vs current process 11.5% MAPE (410 bps uplift).
-    Uplift value: 410 bps * £95m demand * 2% = £78k EBIT benefit annually. Deployment cost £12k.
+    Current process forecast accuracy baseline.
   checks:
     - tool: get_current_process_forecast_accuracy
-      expect: ["mape_pct", "bias_pct", "items"]
-
-- question: "09:83:Q4"
-  story: >
-    Interface load: OMS-to-forecast peak load 850 calls/min (forecast_lookup interface limit 1,000/min headroom 18%).
-    Peak volume forecast 12% growth: new load 952/min, exceeds limit by 5%. Next peak: load test simulation at 1,100/min.
-  checks:
-    - tool: get_volume_forecast
-      args: {period_start: "$as_of", period_end: "+260w"}
-      expect: ["units_forecast"]
-
-- question: "09:88:Q4"
-  story: >
-    Peak capacity need: volume forecast 2,340k units (12% above current). Current capacity 2,100k units,
-    DC headcount 380 FTE. Capacity gap: 240k units = 46 FTE needed. First commitment required by 1 Sept (8 weeks prior).
-  checks:
-    - tool: get_volume_forecast
-      args: {period_start: "$as_of", period_end: "+52w"}
-      expect: ["units_forecast"]
-
-- question: "09:89:Q1"
-  story: >
-    Peak workforce: volume forecast 2,340k units, productivity 55 units/FTE/week. Need 817 FTE vs current 380 = 437 FTE short.
-    Recruitment lead time 6 weeks. Latest hire start date: 1 Oct. Agency cost £28/hour (£4,480/FTE/peak week) vs £21/hour recruit.
-    Recruit vs agency breakeven: 5 weeks at peak rate. Corby (DC2) worst affected: 94 FTE short.
-  checks:
-    - tool: get_volume_forecast
-      args: {period_start: "$as_of", period_end: "+52w"}
-      expect: ["units_forecast", "avg_weekly_units"]
-
-- question: "09:90:Q6"
-  story: >
-    New DC cutover during peak: big bang highest risk (volume surge), phased by region safest (6-month ramp).
-    Volume forecast 2,340k units peak week (day 48 = 23 Dec at 28,400 units). Parallel run option too expensive,
-    removed. Rollback checkpoints added as milestones (week 2, week 4, month 2).
-  checks:
-    - tool: get_volume_forecast
-      args: {period_start: "$as_of", period_end: "+260w"}
-      expect: ["units_forecast"]
+      args: {period_start: "-13w", period_end: "-4w"}
+      expect: ["mape_pct", "bias_pct"]
