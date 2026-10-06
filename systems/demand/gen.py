@@ -162,7 +162,11 @@ def generate(g):
     # Early sales data - new products tracking
     new_products = [p for p in products if p["status"] == "new"][:30]
     for prod in new_products:
-        launch_date = prod.get("launch_date", g.as_of - timedelta(days=r.randint(0, 60)))
+        launch_str = prod.get("launch_date")
+        if isinstance(launch_str, str):
+            launch_date = datetime.fromisoformat(launch_str).date()
+        else:
+            launch_date = g.as_of - timedelta(days=r.randint(0, 60))
 
         for week_offset in range(1, 6):
             week_date = launch_date + timedelta(weeks=week_offset - 1)

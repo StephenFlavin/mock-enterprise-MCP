@@ -11,6 +11,14 @@ def generate(g):
     products = g.master("products")
     po_lines = g.master("po_lines")
     purchase_orders = g.master("purchase_orders")
+    shipments = g.master("shipments")
+
+    # Build map of PO ID -> Shipment ID for quick lookup
+    po_to_shipment = {}
+    for ship in shipments:
+        po_id = ship.get("po_id")
+        if po_id:
+            po_to_shipment[po_id] = ship.get("shipment_id")
 
     supplier_variances = []
     supplier_claims = []
@@ -28,10 +36,12 @@ def generate(g):
         if r.random() < 0.3:  # 30% have variances
             variance_units = r.randint(-50, 50)
             if variance_units != 0:
+                po_id = po_line["po_id"]
+                shipment_id = po_to_shipment.get(po_id)  # Look up actual shipment
                 variance = {
                     "variance_id": f"VAR-{variance_id:06d}",
-                    "po_id": po_line["po_id"],
-                    "shipment_id": f"ASN-{po_line['po_id'].split('-')[1]}",
+                    "po_id": po_id,
+                    "shipment_id": shipment_id or "",  # Empty string if no shipment found
                     "supplier_id": po_line.get("supplier_id", r.choice([s["supplier_id"] for s in suppliers[:50]])),
                     "sku": po_line.get("sku", ""),
                     "asn_quantity": po_line.get("quantity", 1000),

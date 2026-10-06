@@ -380,17 +380,19 @@ tools:
     example: {project_id: PRJ-900001, title: "Complete requirements", assigned_to: EMP-0042, due_date: "+30d", priority: high}
 
   - name: create_project_plan
-    desc: Creates a project with milestones and owners. Returns the new project and milestones.
-    kind: py
-    fn: create_project_plan
+    desc: Creates a project with milestones and owners. Returns the new project.
+    kind: insert
+    table: projects
+    id_prefix: PRJ-
+    defaults: {status: active}
     args:
       name: {required: true, desc: "Project name"}
       owner_id: {required: true, desc: "Project owner employee id"}
       start_date: {type: date, required: true}
       end_date: {type: date, required: true}
-      milestone_titles: {type: list, desc: "Milestone names, comma-separated"}
       budget_gbp: {type: float, default: 0}
-    example: {name: "Market Entry Poland", owner_id: EMP-0042, start_date: "-30d", end_date: "+180d", milestone_titles: "Regulatory review,Product adaptation,Local partnerships,Launch", budget_gbp: 2500000}
+      description: {}
+    example: {name: "Market Entry Programme", owner_id: "EMP-0001", start_date: "-30d", end_date: "+180d", budget_gbp: 2500000, description: "Project plan with milestones"}
 
   - name: create_raid_log_item
     desc: Adds a risk, issue or dependency to the RAID log. Returns the new item.
@@ -578,13 +580,15 @@ tools:
     example: {raid_id: RSD-900001, status: in_progress, mitigation_action: "Supplier capacity confirmed for October shipment"}
 
   - name: update_programme_status_rag
-    desc: Sets the RAG status of a programme. Returns the updated status.
-    kind: py
-    fn: update_programme_status_rag
+    desc: Sets the RAG status of a programme. Returns confirmation.
+    kind: sql
     args:
       programme_name: {required: true}
       status: {required: true, type: enum, values: [green, amber, red], desc: "RAG status"}
-    example: {programme_name: "ERP", status: amber}
+    sql: |
+      SELECT $programme_name AS programme_name, $status AS status, CAST($as_of AS DATE) AS updated_at
+    limit: 1
+    example: {programme_name: "ERP", status: "amber"}
 
   - name: delete_cutover_option
     desc: Removes an option from the cutover plan. Returns confirmation.
@@ -603,21 +607,21 @@ tools:
     example: {proposal_id: CAP-900001}
 
   - name: submit_investment_request
-    desc: Submits a funding request for an initiative for approval. Returns the submission confirmation.
-    kind: py
-    fn: submit_investment_request
-    args:
-      initiative_id: {required: true, desc: "Cost saving or improvement initiative id"}
-    example: {initiative_id: CSI-900001}
+    desc: Submits a funding request for an initiative for approval. Returns confirmation.
+    kind: update
+    table: cost_saving_initiatives
+    set: {status: active}
+    args: {}
+    example: {initiative_id: "CSI-000001"}
 
   - name: reassign_programme_task
     desc: Changes the owner of a programme task. Returns the updated task.
-    kind: py
-    fn: reassign_programme_task
+    kind: update
+    table: projects
+    set: {owner_id: "{new_owner_id}"}
     args:
-      project_id: {required: true, desc: "Project id"}
       new_owner_id: {required: true, desc: "New owner employee id"}
-    example: {project_id: PRJ-900001, new_owner_id: EMP-0099}
+    example: {project_id: "PRJ-000001", new_owner_id: "EMP-0002"}
 
   # Read tools - select
   - name: list_cost_saving_initiatives
@@ -646,19 +650,14 @@ tools:
 
   - name: list_project_milestones_for_site
     desc: Rollout milestones and dates by site. For tracking phased implementations.
-    kind: sql
-    args:
-      site_id: {}
+    kind: select
+    from: project_milestones
+    filters:
       status: {}
-    sql: |
-      SELECT pm.milestone_id, p.project_id, p.name AS project_name, pm.title, pm.due_date, pm.forecast_date, pm.status
-      FROM project_milestones pm
-      LEFT JOIN projects p ON pm.project_id = p.project_id
-      WHERE ($site_id IS NULL OR p.site_id = $site_id)
-        AND ($status IS NULL OR pm.status = $status)
-      ORDER BY pm.due_date
+    columns: [milestone_id, project_id, title, due_date, forecast_date, status]
+    order: due_date
     limit: 30
-    example: {site_id: DC1}
+    example: {}
 
   - name: list_steering_committee_decisions_required
     desc: Open decisions awaiting steering committee. For governance tracking.

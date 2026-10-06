@@ -246,17 +246,21 @@ def generate(g):
 
     # Promotion calendar: current and upcoming
     sites = [f"ST{i:03d}" for i in range(1, 50)]
+    seen_keys = set()
     for promo in promotions[:15]:
         if promo["start_date"] <= g.as_of + timedelta(days=90):
             for site in r.sample(sites, r.randint(5, 20)):
-                promotion_calendar.append({
-                    "promotion_id": promo["promotion_id"],
-                    "site_id": site,
-                    "start_date": promo["start_date"],
-                    "end_date": promo["end_date"],
-                    "category": promo["category"],
-                    "promotion_type": promo["promotion_type"],
-                })
+                key = (site, str(promo["start_date"]))
+                if key not in seen_keys:
+                    promotion_calendar.append({
+                        "promotion_id": promo["promotion_id"],
+                        "site_id": site,
+                        "start_date": promo["start_date"],
+                        "end_date": promo["end_date"],
+                        "category": promo["category"],
+                        "promotion_type": promo["promotion_type"],
+                    })
+                    seen_keys.add(key)
 
     return {
         "promotions": promotions,
