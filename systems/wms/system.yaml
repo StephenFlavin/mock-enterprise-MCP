@@ -119,15 +119,30 @@ tables:
       category: {type: enum, values: [counting_error, damage, theft, processing_error, system_error, expiry, supplier_short, carrier_damage, other], desc: "Cause category"}
       intended_use: {type: text, desc: "When and why this code should be used"}
 
+  location_blocks:
+    key: block_id
+    cols:
+      block_id: {type: str, desc: "Block record id, e.g. LB-000123"}
+      location_id: {type: str, desc: "DC bin location"}
+      site_id: {type: str, desc: "DC"}
+      reason: {type: str, desc: "Reason for blocking"}
+      blocked_at: {type: timestamp, desc: "When the location was blocked"}
+      blocked_by: {type: str, desc: "Employee who blocked it"}
+      unblocked_at: {type: timestamp, desc: "When unblocked (if released)"}
+      status: {type: enum, values: [active, blocked], desc: "Current status"}
+
 tools:
   - name: block_location
-    desc: Place a hold on a bin location so no picks or putaways are directed to it. Returns the location status change.
-    kind: update
-    table: master.locations
-    set: {status: blocked}
+    desc: Place a hold on a bin location so no picks or putaways are directed to it. Returns the block record.
+    kind: insert
+    table: location_blocks
+    id_prefix: LB-
+    defaults: {status: blocked, blocked_by: "EMP-00001", blocked_at: "$as_of"}
     args:
+      location_id: {required: true, desc: "DC bin location"}
+      site_id: {required: true, desc: "DC site"}
       reason: {required: true, desc: "Reason for blocking, e.g. Damaged racking, awaiting recount"}
-    example: {location_id: DC1-C-14-02, reason: Damaged racking}
+    example: {location_id: DC1-C-14-02, site_id: DC1, reason: Damaged racking}
 
   - name: calculate_count_priority_score
     desc: Rank locations for counting by value, accuracy history and recency. Returns locations with priority scores, highest first.
@@ -198,7 +213,7 @@ tools:
       date_from: {type: date, default: "-56d", desc: "Receipts from or after this date"}
       date_to: {type: date, default: "$as_of", desc: "Receipts up to this date"}
     sql: |
-      SELECT gr.receipt_id, gr.po_id, po.supplier_id, s.name AS supplier_name,
+      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name,
              gr.sku, pr.style_id, pr.name AS product_name,
              gr.qty_received, pol.qty_ordered AS asn_qty,
              (gr.qty_received - pol.qty_ordered) AS variance_qty,
@@ -206,12 +221,12 @@ tools:
              CASE WHEN gr.qty_received < pol.qty_ordered THEN 'short' ELSE 'over' END AS variance_type,
              gr.received_at, c.name AS carrier_name
       FROM goods_receipts gr
-      JOIN master.purchase_orders po ON gr.po_id = po.po_id
+      JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
       JOIN master.po_lines pol ON gr.po_id = pol.po_id AND gr.sku = pol.sku
       JOIN master.products pr ON gr.sku = pr.sku
-      JOIN master.suppliers s ON po.supplier_id = s.supplier_id
+      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
       LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
-      WHERE ($supplier_id IS NULL OR po.supplier_id = $supplier_id)
+      WHERE ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
         AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
         AND CAST(gr.received_at AS DATE) <= CAST($date_to AS DATE)
       ORDER BY variance_value_gbp DESC
@@ -271,7 +286,6 @@ tools:
         GROUP BY m.location_id, m.sku, p.name, p.category, m.batch_number
     template: |
       CYCLE COUNT SHEET
-      Generated {{ now.strftime('%Y-%m-%d %H:%M') }}
 
       {% for loc in locations %}
       ========================================
@@ -296,21 +310,21 @@ tools:
       date_from: {type: date, default: "-90d", desc: "Receipts from or after"}
       date_to: {type: date, default: "$as_of", desc: "Receipts up to"}
     sql: |
-      SELECT po.supplier_id, s.name AS supplier_name,
-             COUNT(DISTINCT po.po_id) AS po_count,
+      SELECT pur.supplier_id, s.name AS supplier_name,
+             COUNT(DISTINCT pur.po_id) AS po_count,
              COUNT(DISTINCT gr.receipt_id) AS receipt_count,
-             ROUND(AVG(DATEDIFF('day', po.ship_date, CAST(gr.received_at AS DATE))), 1) AS avg_lead_time_days,
+             ROUND(AVG(DATEDIFF('day', pur.ship_date, CAST(gr.received_at AS DATE))), 1) AS avg_lead_time_days,
              ROUND(AVG(ABS(gr.qty_received - pol.qty_ordered) / NULLIF(pol.qty_ordered, 0) * 100), 2) AS avg_variance_pct,
              ROUND(SUM(CASE WHEN gr.qty_received = pol.qty_ordered THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT gr.receipt_id), 1) AS accuracy_pct,
              'accuracy_pct = (exact_matches / total_receipts) * 100' AS formula
-      FROM master.purchase_orders po
-      LEFT JOIN master.po_lines pol ON po.po_id = pol.po_id
-      LEFT JOIN goods_receipts gr ON po.po_id = gr.po_id AND gr.sku = pol.sku
-      JOIN master.suppliers s ON po.supplier_id = s.supplier_id
-      WHERE ($supplier_id IS NULL OR po.supplier_id = $supplier_id)
-        AND CAST(COALESCE(gr.received_at, po.due_date) AS DATE) >= CAST($date_from AS DATE)
-        AND CAST(COALESCE(gr.received_at, po.due_date) AS DATE) <= CAST($date_to AS DATE)
-      GROUP BY po.supplier_id, s.name
+      FROM master.purchase_orders pur
+      LEFT JOIN master.po_lines pol ON pur.po_id = pol.po_id
+      LEFT JOIN goods_receipts gr ON pur.po_id = gr.po_id AND gr.sku = pol.sku
+      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
+      WHERE ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+        AND CAST(COALESCE(gr.received_at, pur.due_date) AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(COALESCE(gr.received_at, pur.due_date) AS DATE) <= CAST($date_to AS DATE)
+      GROUP BY pur.supplier_id, s.name
       ORDER BY po_count DESC
     limit: 30
     example: {}
@@ -384,19 +398,19 @@ tools:
       days_late_threshold: {type: int, default: 3, desc: "Only receipts this many days late or more"}
       date_from: {type: date, default: "-90d", desc: "Receipts from or after"}
     sql: |
-      SELECT gr.receipt_id, gr.po_id, po.supplier_id, s.name AS supplier_name,
+      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name,
              gr.sku, p.name AS product_name,
-             DATEDIFF('day', po.due_date, CAST(gr.received_at AS DATE)) AS days_late,
+             DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late,
              gr.qty_received, gr.received_at,
              c.name AS carrier_name,
              'days_late = receipt_date - po_due_date' AS formula
       FROM goods_receipts gr
-      JOIN master.purchase_orders po ON gr.po_id = po.po_id
+      JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
       JOIN master.products p ON gr.sku = p.sku
-      JOIN master.suppliers s ON po.supplier_id = s.supplier_id
+      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
       LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
       WHERE gr.site_id = $site_id
-        AND DATEDIFF('day', po.due_date, CAST(gr.received_at AS DATE)) >= $days_late_threshold
+        AND DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) >= $days_late_threshold
         AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
       ORDER BY days_late DESC
     limit: 50
@@ -421,7 +435,7 @@ tools:
       FROM stock_movements m
       LEFT JOIN master.products p ON m.sku = p.sku
       WHERE m.site_id = $site_id
-        AND CAST(m.moved_at AS DATE) >= CAST($as_of AS DATE) - INTERVAL $period_days DAY
+        AND CAST(m.moved_at AS DATE) >= CAST($as_of AS DATE) - CAST($period_days AS INT) * INTERVAL 1 DAY
       GROUP BY m.site_id
     limit: 1
     example: {site_id: DC1}
@@ -508,17 +522,17 @@ tools:
       site_id: {desc: "Filter by receiving DC"}
       date_from: {type: date, default: "-90d", desc: "Receipts from or after"}
     sql: |
-      SELECT gr.receipt_id, gr.po_id, po.supplier_id, s.name AS supplier_name,
+      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name,
              gr.site_id, gr.sku, p.name AS product_name,
              gr.qty_ordered, gr.qty_received, gr.qty_accepted,
              gr.damage_qty, gr.short_qty,
              gr.received_at, gr.carrier_id,
-             DATEDIFF('day', po.due_date, CAST(gr.received_at AS DATE)) AS days_late,
+             DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late,
              p.unit_cost_gbp,
              ROUND(gr.qty_received * p.unit_cost_gbp, 2) AS receipt_value_gbp
       FROM goods_receipts gr
-      JOIN master.purchase_orders po ON gr.po_id = po.po_id
-      JOIN master.suppliers s ON po.supplier_id = s.supplier_id
+      JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
+      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
       JOIN master.products p ON gr.sku = p.sku
       WHERE gr.sku = $sku
         AND ($site_id IS NULL OR gr.site_id = $site_id)
@@ -547,7 +561,7 @@ tools:
       JOIN master.locations l ON cr.location_id = l.location_id
       WHERE l.site_id = $site_id
         AND ($zone IS NULL OR l.zone = $zone)
-        AND cr.counted_at >= CAST($as_of AS DATE) - INTERVAL $days DAY
+        AND cr.counted_at >= CAST($as_of AS DATE) - CAST($days AS INT) * INTERVAL 1 DAY
       GROUP BY cr.location_id, l.zone
       ORDER BY accuracy_issue_pct DESC, avg_variance_pct DESC
     limit: 50

@@ -1,5 +1,5 @@
 """PPM system data generation."""
-from collections import defaultdict
+from datetime import timedelta
 
 
 def generate(g):
@@ -44,8 +44,8 @@ def generate(g):
         project_id = f"PRJ-{i:06d}"
         project_ids.append(project_id)
 
-        start_date = g.date_between("-60d", "-30d")
-        end_date = g.date_between("+60d", "+150d")
+        start_date = g.as_of - timedelta(days=g.rng.randint(30, 60))
+        end_date = g.as_of + timedelta(days=g.rng.randint(60, 150))
 
         result["projects"].append({
             "project_id": project_id,
@@ -57,8 +57,8 @@ def generate(g):
             "budget_gbp": round(g.rng.uniform(250000, 5000000), 0),
             "actual_cost_gbp": round(g.rng.uniform(50000, 1000000), 0),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-7d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
         # Create 3-5 tasks per project
@@ -70,28 +70,29 @@ def generate(g):
                 "title": g.fake.sentence(),
                 "assigned_to": pick_employee(),
                 "status": g.pick(["open", "in_progress", "completed"]),
-                "due_date": g.date_between("+14d", "+90d"),
+                "due_date": (g.as_of + timedelta(days=g.rng.randint(14, 90))),
                 "priority": g.pick(["low", "medium", "high", "urgent"]),
                 "description": g.fake.sentence(),
-                "created_at": g.date_between("-60d", "-30d"),
-                "updated_at": g.date_between("-14d", "today"),
+                "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+                "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
 
         # Create 2-4 milestones per project
         for j in range(1, g.rng.randint(2, 5)):
             milestone_id = f"MIL-{len(result['project_milestones']) + 1:06d}"
-            due_date = g.date_between("+14d", "+150d")
+            due_date = g.as_of + timedelta(days=g.rng.randint(14, 150))
+            forecast_date = due_date + timedelta(days=g.rng.randint(0, 56)) if g.rng.random() > 0.7 else due_date
             result["project_milestones"].append({
                 "milestone_id": milestone_id,
                 "project_id": project_id,
                 "programme_milestone_id": None,
                 "title": g.fake.sentence(),
                 "due_date": due_date,
-                "forecast_date": g.date_between(due_date, "+200d") if g.rng.random() > 0.7 else due_date,
+                "forecast_date": forecast_date,
                 "status": g.pick(["on_track", "at_risk"]),
                 "description": g.fake.sentence(),
-                "created_at": g.date_between("-60d", "-30d"),
-                "updated_at": g.date_between("-14d", "today"),
+                "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+                "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
 
     # Generate RAID log items (15-20)
@@ -107,11 +108,11 @@ def generate(g):
             "impact": g.pick(["low", "medium", "high", "critical"]),
             "probability": g.pick(["low", "medium", "high"]),
             "mitigation_action": g.fake.sentence(),
-            "target_resolution_date": g.date_between("+14d", "+90d"),
+            "target_resolution_date": (g.as_of + timedelta(days=g.rng.randint(14, 90))),
             "resolved_date": None,
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate cost saving initiatives (8-12)
@@ -127,11 +128,11 @@ def generate(g):
             "confidence_pct": g.rng.randint(30, 95),
             "category": g.pick(["procurement", "labour", "freight", "shrink", "markdown"]),
             "depends_on": None,
-            "start_date": g.date_between("-30d", "today"),
-            "target_date": g.date_between("+30d", "+180d"),
+            "start_date": g.as_of,
+            "target_date": (g.as_of + timedelta(days=g.rng.randint(30, 180))),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate improvement initiatives (6-8)
@@ -150,11 +151,11 @@ def generate(g):
             "target_value": round(g.rng.uniform(95, 110), 1),
             "unit": g.pick(["units/hour", "%", "incidents", "days"]),
             "team_members": None,
-            "start_date": g.date_between("-30d", "today"),
-            "target_date": g.date_between("+60d", "+180d"),
+            "start_date": g.as_of,
+            "target_date": (g.as_of + timedelta(days=g.rng.randint(60, 180))),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate capex proposals (6-8)
@@ -174,11 +175,11 @@ def generate(g):
             "business_case": g.fake.sentence(),
             "key_assumptions": g.fake.sentence(),
             "sensitivity_10pct": f"NPV reduces to £{round(g.rng.uniform(200000, 2000000), 0)}k",
-            "submission_date": g.date_between("-30d", "today") if g.rng.random() > 0.5 else None,
+            "submission_date": (g.as_of - timedelta(days=g.rng.randint(0, 30))) if g.rng.random() > 0.5 else None,
             "decision_date": None,
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate capex projects (4-6)
@@ -186,8 +187,8 @@ def generate(g):
     for i in range(1, 5):
         cxp_id = f"CXP-{i:06d}"
         capex_project_ids.append(cxp_id)
-        start_date = g.date_between("-60d", "-30d")
-        end_date = g.date_between("+90d", "+270d")
+        start_date = g.as_of - timedelta(days=g.rng.randint(30, 60))
+        end_date = g.as_of + timedelta(days=g.rng.randint(90, 270))
         result["capex_projects"].append({
             "project_id": cxp_id,
             "title": g.fake.sentence(),
@@ -197,22 +198,22 @@ def generate(g):
             "actual_spend_gbp": round(g.rng.uniform(100000, 2000000), 0),
             "planned_start": start_date,
             "planned_end": end_date,
-            "forecast_end": g.date_between(end_date, "+300d") if g.rng.random() > 0.7 else end_date,
+            "forecast_end": (end_date + timedelta(days=g.rng.randint(0, 210))) if g.rng.random() > 0.7 else end_date,
             "payback_years": round(g.rng.uniform(2, 5), 1),
             "irr_pct": round(g.rng.uniform(10, 22), 1),
             "business_case": g.fake.sentence(),
             "phasing": None,
             "site_id": g.pick(dc_sites)["site_id"],
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-120d", "-60d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(60, 120)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate pilot projects (3-5)
     for i in range(1, 4):
         pil_id = f"PIL-{i:06d}"
-        start_date = g.date_between("-30d", "today")
-        end_date = g.date_between("+30d", "+120d")
+        start_date = g.as_of - timedelta(days=g.rng.randint(0, 30))
+        end_date = g.as_of + timedelta(days=g.rng.randint(30, 120))
         result["pilot_projects"].append({
             "pilot_id": pil_id,
             "title": g.fake.sentence(),
@@ -228,8 +229,8 @@ def generate(g):
             "pass_criteria": "Tensile strength >= 50MPa, Cost <= 15pence/unit, Recyclable",
             "result": g.pick(["pass", "fail", "inconclusive", "pending"]),
             "outcome": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate market entry projects (2-3)
@@ -238,16 +239,16 @@ def generate(g):
         result["market_entry_projects"].append({
             "project_id": mep_id,
             "title": g.fake.sentence(),
-            "countries": g.pick(["PL,CZ", "DE,AT", "FR,BE", "ES,PT"]),
+            "countries": g.pick(["PL;CZ", "DE;AT", "FR;BE", "ES;PT"]),
             "owner_id": pick_employee(),
             "status": g.pick(["planning", "approved"]),
             "scope": g.pick(["Home range", "Fashion", "Gifts"]),
-            "planned_launch": g.date_between("+120d", "+360d"),
+            "planned_launch": (g.as_of + timedelta(days=g.rng.randint(120, 360))),
             "budget_gbp": round(g.rng.uniform(1000000, 8000000), 0),
             "workstreams": "Regulatory compliance,Supply chain,Local partnerships",
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate action items (15-20)
@@ -259,12 +260,12 @@ def generate(g):
             "owner_id": pick_employee(),
             "status": g.pick(["open", "in_progress", "completed"]),
             "priority": g.pick(["low", "medium", "high", "urgent"]),
-            "due_date": g.date_between("+7d", "+60d"),
+            "due_date": (g.as_of + timedelta(days=g.rng.randint(7, 60))),
             "source": g.pick(["04:36:Q1", "04:37:Q3", "04:40:Q5", "RAID-item"]),
             "category": g.pick(["budget", "compliance", "performance", "risk"]),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate artwork tasks (3-5)
@@ -276,13 +277,13 @@ def generate(g):
             "owner_id": pick_employee(),
             "status": g.pick(["draft", "assigned", "in_progress"]),
             "agency": g.fake.company(),
-            "due_date": g.date_between("+30d", "+90d"),
+            "due_date": (g.as_of + timedelta(days=g.rng.randint(30, 90))),
             "checklist": "Legal marks\nRecycling labels\nLanguage requirements\nWarnings\nNutrition format",
             "deliverables": "3 layout options",
             "requirements": "EU compliance, local language, sustainability",
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate programme milestones (15-20)
@@ -293,13 +294,13 @@ def generate(g):
             "programme_name": g.pick(["ERP", "Automation", "DC3", "Digital"]),
             "title": g.fake.sentence(),
             "sequence": i,
-            "due_date": g.date_between("+30d", "+300d"),
-            "forecast_date": g.date_between("+30d", "+300d"),
+            "due_date": (g.as_of + timedelta(days=g.rng.randint(30, 300))),
+            "forecast_date": (g.as_of + timedelta(days=g.rng.randint(30, 300))),
             "status": g.pick(["planned", "on_track", "at_risk"]),
             "dependencies": None,
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-90d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate cutover options (4-6)
@@ -317,8 +318,8 @@ def generate(g):
                 "estimated_duration_days": g.rng.randint(7, 60),
                 "requires_parallel_run": opt == "Parallel run",
                 "rollback_feasible": opt != "Big bang" or g.rng.random() > 0.5,
-                "created_at": g.date_between("-90d", "-30d"),
-                "updated_at": g.date_between("-14d", "today"),
+                "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
+                "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
 
     # Generate automation options for each DC
@@ -334,8 +335,8 @@ def generate(g):
                 "lead_time_weeks": g.rng.randint(12, 52),
                 "payback_years": round(g.rng.uniform(2, 5), 1),
                 "annual_saving_gbp": round(g.rng.uniform(100000, 1500000), 0),
-                "created_at": g.date_between("-60d", "-30d"),
-                "updated_at": g.date_between("-14d", "today"),
+                "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+                "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
 
     # Generate steering decisions (6-8)
@@ -346,15 +347,15 @@ def generate(g):
             "programme_name": g.pick(["ERP", "Automation"]),
             "title": g.fake.sentence(),
             "status": g.pick(["pending", "approved", "deferred"]),
-            "due_date": g.date_between("+7d", "+30d"),
+            "due_date": (g.as_of + timedelta(days=g.rng.randint(7, 30))),
             "options": "Option A, Option B, Option C",
             "recommendation": "Option B recommended",
             "decision": None,
             "rationale": None,
             "owner_id": pick_employee(),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate benefits tracking (10-15)
@@ -367,13 +368,13 @@ def generate(g):
             "benefit_type": g.pick(["financial", "operational", "strategic"]),
             "planned_gbp": round(g.rng.uniform(100000, 3000000), 0),
             "realized_gbp": round(g.rng.uniform(10000, 500000), 0),
-            "realization_date": g.date_between("+60d", "+180d"),
-            "forecast_date": g.date_between("+60d", "+180d"),
+            "realization_date": (g.as_of + timedelta(days=g.rng.randint(60, 180))),
+            "forecast_date": (g.as_of + timedelta(days=g.rng.randint(60, 180))),
             "status": g.pick(["on_track", "at_risk"]),
             "owner_id": pick_employee(),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate migration workstreams (12-15)
@@ -386,21 +387,21 @@ def generate(g):
             "object_type": g.pick(["Customer master", "Supplier master", "Purchase orders", "Sales orders", "Inventory"]),
             "status": g.pick(["planning", "extracting", "transforming", "validating", "loading"]),
             "cycle": g.rng.randint(1, 3),
-            "planned_date": g.date_between("+30d", "+150d"),
+            "planned_date": (g.as_of + timedelta(days=g.rng.randint(30, 150))),
             "actual_date": None,
             "records_total": g.rng.randint(10000, 500000),
             "records_completed": g.rng.randint(1000, 300000),
             "data_quality_pct": g.rng.randint(70, 98),
             "issues_count": g.rng.randint(0, 15),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate test cycles (8-10)
     for i in range(1, 8):
         tyc_id = f"TYC-{i:06d}"
-        start_date = g.date_between("-30d", "+60d")
-        end_date = g.date_between(start_date, "+120d")
+        start_date = g.as_of - timedelta(days=g.rng.randint(0, 30))
+        end_date = g.as_of + timedelta(days=g.rng.randint(30, 120))
         result["test_cycles"].append({
             "cycle_id": tyc_id,
             "programme_name": g.pick(["ERP", "Automation"]),
@@ -416,8 +417,8 @@ def generate(g):
             "tests_blocked": g.rng.randint(0, 20),
             "pass_rate_pct": round(g.rng.uniform(70, 98), 1),
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     # Generate implementation projects (5-8)
@@ -435,8 +436,8 @@ def generate(g):
             "risks": "Vendor delays, Resource availability",
             "resource_plan": "5 FTE required",
             "description": g.fake.sentence(),
-            "created_at": g.date_between("-60d", "-30d"),
-            "updated_at": g.date_between("-14d", "today"),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
     return result

@@ -218,7 +218,7 @@ tools:
     sql: |
       SELECT s.shipment_id, s.lane, s.carrier_id, c.name AS carrier,
              s.planned_departure, s.actual_departure,
-             CAST((CAST(s.actual_departure AS TIMESTAMP) - CAST(s.planned_departure AS TIMESTAMP)) / 86400 AS INT) AS days_late,
+             DATEDIFF('day', CAST(s.planned_departure AS DATE), CAST(s.actual_departure AS DATE)) AS days_late,
              s.planned_arrival, s.units
       FROM shipments s
       LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
@@ -547,7 +547,7 @@ tools:
       FROM carriers_lanes cl
       LEFT JOIN shipments s ON s.lane = cl.lane
         AND s.planned_departure >= CAST($period_start AS DATE)
-        AND s.planned_departure < CAST($period_start AS DATE) + INTERVAL CAST($weeks_ahead AS INT) WEEK
+        AND s.planned_departure < CAST($period_start AS DATE) + (INTERVAL ($weeks_ahead) WEEK)
       WHERE cl.status = 'active'
       GROUP BY cl.lane
       ORDER BY gap_pallets DESC NULLS LAST
@@ -564,7 +564,7 @@ tools:
       SELECT DISTINCT cl.lane,
              cl.carrier_id,
              CASE WHEN cl.cutoff_day_offset = 0 THEN CAST($delivery_target_date AS DATE) - INTERVAL 1 DAY
-                  ELSE CAST($delivery_target_date AS DATE) - INTERVAL (cl.cutoff_day_offset + 1) DAY
+                  ELSE CAST($delivery_target_date AS DATE) - (INTERVAL (cl.cutoff_day_offset + 1) DAY)
               END AS order_cutoff_date,
              CONCAT(CAST(cl.cutoff_hour AS VARCHAR), ':00') AS cutoff_time,
              'Orders must be placed by cutoff to deliver on target date' AS note
@@ -696,7 +696,7 @@ tools:
              ROUND(100.0 * COUNT(DISTINCT CASE WHEN s.is_split THEN s.order_id END) /
                    NULLIF(COUNT(DISTINCT s.order_id), 0), 1) AS split_rate_pct
       FROM shipments s
-      WHERE s.actual_departure >= CAST($as_of AS DATE) - INTERVAL CAST($weeks_back AS INT) WEEK
+      WHERE s.actual_departure >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK)
       GROUP BY DATE_TRUNC('week', CAST(s.actual_departure AS TIMESTAMP))
       ORDER BY week_start
     limit: 52
@@ -873,15 +873,15 @@ tools:
       period_start: {type: date, default: "-90d"}
     sql: |
       SELECT 'depot' AS node_type, s.origin_site_id AS node,
-             ROUND(AVG(DATEDIFF('hour', CAST(s.actual_departure AS TIMESTAMP),
-                         CAST(s.actual_arrival AS TIMESTAMP))), 1) AS avg_dwell_hours,
+             ROUND(AVG(DATEDIFF('hour', CAST(s.actual_arrival AS TIMESTAMP),
+                         CAST(s.actual_departure AS TIMESTAMP))), 1) AS avg_dwell_hours,
              COUNT(*) AS shipments
       FROM shipments s
       WHERE s.actual_departure >= CAST($period_start AS DATE)
-        AND s.actual_departure IS NOT NULL
+        AND s.actual_arrival IS NOT NULL
       GROUP BY s.origin_site_id
       UNION ALL
-      SELECT 'destination', s.dest_site_id, 0, COUNT(*) FROM shipments s
+      SELECT 'destination', s.dest_site_id, 0.0, COUNT(*) FROM shipments s
       WHERE s.actual_departure >= CAST($period_start AS DATE)
       GROUP BY s.dest_site_id
       ORDER BY avg_dwell_hours DESC NULLS LAST

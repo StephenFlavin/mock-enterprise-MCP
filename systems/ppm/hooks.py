@@ -4,7 +4,11 @@
 def create_project_plan(ctx, name, owner_id, start_date, end_date, milestone_titles, budget_gbp=0):
     """Create a project with milestones and owners."""
     # Parse milestone titles
-    milestones = [m.strip() for m in milestone_titles.split(",") if m.strip()]
+    from datetime import timedelta
+    if isinstance(milestone_titles, list):
+        milestones = milestone_titles
+    else:
+        milestones = [m.strip() for m in str(milestone_titles).split(",") if m.strip()]
 
     # Insert the project
     project = ctx.insert("projects", {
