@@ -21,7 +21,7 @@ def _sqls(t) -> list[str]:
     return [t.sql] if t.sql else []
 
 
-def lint(sid: str) -> list[str]:
+def lint(sid: str, partial: bool = False) -> list[str]:
     p: list[str] = []
     try:
         s = load_system(sid)
@@ -34,7 +34,8 @@ def lint(sid: str) -> list[str]:
     cat = {r["tool"]: r for r in catalog.tools_for(sid)}
     names = Counter(t.name for t in s.tools)
     p += [f"duplicate tool {n}" for n, c in names.items() if c > 1]
-    p += [f"missing catalogue tool {n}" for n in cat if n not in names]
+    if not partial:
+        p += [f"missing catalogue tool {n}" for n in cat if n not in names]
     p += [f"tool {n} is not in the catalogue for {sid}" for n in names if n not in cat]
     if len(s.instructions) > 400:
         p.append("instructions longer than 400 characters")
@@ -129,7 +130,7 @@ def data_problems(s) -> list[str]:
     return p
 
 
-def run_examples(sid: str) -> list[str]:
+def run_examples(sid: str, partial: bool = False) -> list[str]:
     """Call every tool with its example, in a throwaway state dir. Writes are also retried once.
     Runs as if today were 13 weeks and 2 days after the data date, so hard-coded dates fail."""
     from datetime import date, timedelta
@@ -137,12 +138,12 @@ def run_examples(sid: str) -> list[str]:
     real_today = spec.WORLD["as_of"]
     spec.set_today(date.fromisoformat(spec.WORLD["data_as_of"]) + timedelta(days=93))
     try:
-        return _run_examples(sid, Engine)
+        return _run_examples(sid, Engine, partial)
     finally:
         spec.set_today(date.fromisoformat(real_today))
 
 
-def _run_examples(sid, Engine) -> list[str]:
+def _run_examples(sid, Engine, partial=False) -> list[str]:
     p = []
     with tempfile.TemporaryDirectory() as tmp:
         old, db.STATE = db.STATE, Path(tmp)
@@ -163,13 +164,13 @@ def _run_examples(sid, Engine) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:  # scenarios get a clean state of their own
         old, db.STATE = db.STATE, Path(tmp)
         try:
-            p += run_scenarios(Engine([sid]), sid)
+            p += run_scenarios(Engine([sid]), sid, partial)
         finally:
             db.STATE = old
     return p
 
 
-def run_scenarios(eng, sid: str) -> list[str]:
+def run_scenarios(eng, sid: str, partial: bool = False) -> list[str]:
     f = SYSTEMS / sid / "scenarios.yaml"
     needed = {q for r in catalog.tools_for(sid) for q in r["used_by"].split(";") if q}
     if not f.exists():
@@ -192,12 +193,14 @@ def run_scenarios(eng, sid: str) -> list[str]:
             for e in c.get("expect") or []:
                 if str(e).lower() not in text.lower():
                     p.append(f"scenario {q}: {c['tool']} output lacks '{e}'")
-    p += [f"scenarios.yaml has no entry for question {q}" for q in sorted(needed - seen)]
+    if not partial:
+        p += [f"scenarios.yaml has no entry for question {q}" for q in sorted(needed - seen)]
     return p
 
 
-def check(sid: str) -> list[str]:
-    p = lint(sid)
+def check(sid: str, partial: bool = False) -> list[str]:
+    """partial=True (multi-builder systems): don't require every catalogue tool / question yet."""
+    p = lint(sid, partial)
     if not any(x.startswith("system.yaml invalid") for x in p):
-        p += run_examples(sid)
+        p += run_examples(sid, partial)
     return p

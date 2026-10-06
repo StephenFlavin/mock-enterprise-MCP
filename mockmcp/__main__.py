@@ -13,7 +13,9 @@ def main():
     s.add_argument("--port", type=int, default=8800)
     s.add_argument("--only", nargs="*", help="system ids to host (default: all)")
     sub.add_parser("stdio", help="serve one system over stdio").add_argument("id")
-    sub.add_parser("check", help="lint + run examples + scenarios").add_argument("ids", nargs="*")
+    c = sub.add_parser("check", help="lint + run examples + scenarios")
+    c.add_argument("ids", nargs="*")
+    c.add_argument("--partial", action="store_true", help="allow missing catalogue tools/questions (staged builds)")
     sub.add_parser("gen", help="regenerate data/*.csv").add_argument("ids", nargs="+")
     sub.add_parser("reset", help="delete write overlay (state/)").add_argument("ids", nargs="*")
     sub.add_parser("catalog", help="rebuild catalog/tools.csv from the persona docs")
@@ -41,7 +43,7 @@ def main():
         from .spec import system_ids
         bad = 0
         for sid in a.ids or system_ids():
-            probs = check(sid)
+            probs = check(sid, a.partial)
             bad += bool(probs)
             print(f"{'FAIL' if probs else 'ok  '} {sid}" + "".join(f"\n  - {x}" for x in probs))
         sys.exit(1 if bad else 0)
