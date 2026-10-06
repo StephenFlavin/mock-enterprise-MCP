@@ -38,6 +38,11 @@ def generate(g):
     r, as_of = g.rng, g.as_of
     out = {}
 
+    def section(n):
+        """Independent random stream per section, so adding data in one section never reshuffles another."""
+        r.seed(g.world["seed"] * 1000 + n)
+        g.fake.seed_instance(g.world["seed"] * 1000 + n)
+
     # calendar FY26..FY28 (Feb 2025 - Jan 2028)
     cal, d = [], date(2025, 2, 1)
     while d <= date(2028, 1, 31):
@@ -58,6 +63,7 @@ def generate(g):
         {"entity_id": "LE-US", "name": "Harbour & Vale Inc", "country": "US", "currency": "USD"},
         {"entity_id": "LE-HK", "name": "Harbour & Vale Sourcing (HK) Ltd", "country": "HK", "currency": "HKD"}]
 
+    section(1)
     # sites
     sites = [
         {"site_id": "DC1", "name": "Northampton DC", "type": "dc", "format": "national_dc", "country": "GB", "region": "UK Midlands", "city": "Northampton", "entity_id": "LE-UK", "sqft": 850000},
@@ -89,6 +95,7 @@ def generate(g):
     out["sites"] = sites
     stores = [s for s in sites if s["type"] == "store"]
 
+    section(2)
     # DC bin locations (aisle-bay-level)
     locs = []
     for dc, aisles, bays in (("DC1", "ABCDEFGHJKLM", 30), ("DC2", "ABCDEFGHJK", 24), ("DC3", "ABCDEFGH", 20),
@@ -107,6 +114,38 @@ def generate(g):
                                  "max_height_cm": 180 if lv == 1 else 150, "status": r.choices(["active", "blocked", "damaged", "inactive"], [96, 2, 1, 1])[0]})
     out["locations"] = locs
 
+    section(3)
+    # DC equipment: automation in DC1/DC2, MHE everywhere
+    assets = []
+
+    def asset(aid, name, site, cls, parent="", loc="", mfr="", model="", sw="", cost=0.0, crit="medium"):
+        assets.append({"asset_id": aid, "name": name, "site_id": site, "asset_class": cls, "parent_asset_id": parent,
+                       "location": loc, "manufacturer": mfr, "model": model, "install_date": g.date_between(3600, 300),
+                       "software_version": sw, "replacement_cost_gbp": round(cost * r.uniform(0.85, 1.15), -1),
+                       "criticality": crit, "status": r.choices(["in_service", "degraded"], [92, 8])[0]})
+    asset("AST-DC2-SHT", "Daventry shuttle system", "DC2", "shuttle", mfr="Knapp", model="OSR Shuttle", sw="4.2.1", cost=4200000, crit="high")
+    for i in range(1, 17):
+        asset(f"AST-DC2-SHT-{i:02d}", f"Shuttle aisle {i}", "DC2", "shuttle", "AST-DC2-SHT", f"shuttle aisle {i}", "Knapp", "OSR-S2",
+              r.choice(["4.2.1", "4.2.1", "4.3.0"]), 95000, "high")
+    for dc, ncv in (("DC1", 12), ("DC2", 18), ("DC3", 6)):
+        asset(f"AST-{dc}-CNV", f"{dc} conveyor network", dc, "conveyor", mfr="Interroll", model="RollerDrive", cost=1800000, crit="high")
+        asset(f"AST-{dc}-SRT", f"{dc} tilt-tray sorter", dc, "sorter", mfr="Vanderlande", model="POSISORTER", sw="7.1", cost=2500000, crit="high")
+        for i in range(1, ncv + 1):
+            asset(f"AST-{dc}-CNV-M{i:02d}", f"Conveyor drive motor {i}", dc, "motor", f"AST-{dc}-CNV", f"conveyor section {i}", "SEW", "DRN90", cost=2400)
+            asset(f"AST-{dc}-CNV-G{i:02d}", f"Conveyor gearbox {i}", dc, "gearbox", f"AST-{dc}-CNV", f"conveyor section {i}", "SEW", "R57", cost=3100)
+            asset(f"AST-{dc}-CNV-S{i:02d}", f"Photo-eye sensor {i}", dc, "sensor", f"AST-{dc}-CNV", f"conveyor section {i}", "Sick", "WL12", cost=180, crit="low")
+    for dc, n in (("DC1", 24), ("DC2", 14), ("DC3", 12), ("DC4", 10), ("DC5", 6)):
+        for i in range(1, n + 1):
+            cls = "reach_truck" if i % 3 == 0 else "forklift"
+            asset(f"AST-{dc}-MHE-{i:02d}", f"{cls.replace('_', ' ').title()} {i}", dc, cls, loc="MHE fleet",
+                  mfr=r.choice(["Linde", "Jungheinrich", "Toyota"]), model="R16" if cls == "reach_truck" else "E30", cost=38000)
+        for i in range(1, 9):
+            asset(f"AST-{dc}-DKL-{i:02d}", f"Dock leveller door {i}", dc, "dock_leveller", loc=f"door D{i:02d}", mfr="Hormann", cost=9000, crit="low")
+        asset(f"AST-{dc}-SPR", f"{dc} sprinkler system", dc, "sprinkler", mfr="Tyco", cost=600000, crit="high")
+        asset(f"AST-{dc}-CMP", f"{dc} air compressor", dc, "compressor", mfr="Atlas Copco", cost=45000)
+    out["assets"] = assets
+
+    section(4)
     # suppliers + factories
     suppliers, factories = [], []
     dept_list = list(DEPTS)
@@ -134,6 +173,7 @@ def generate(g):
     for f in factories:
         fac_by_sup.setdefault(f["supplier_id"], []).append(f)
 
+    section(5)
     # products: ~300 styles, 3 SKUs each
     products, style_no = [], 4000
     special = {5520: ("Womenswear", "Dresses"), 7731: ("Womenswear", "Outerwear"), 4410: ("Womenswear", "Trousers")}
@@ -180,6 +220,7 @@ def generate(g):
         products.append(p | {"sku": sku, "style_id": f"STY-{sku}", "name": name, "category": cat, "subcategory": cat, "size": "ONE", "abc_class": "A", "status": "active", "hazmat": "li_ion_battery" if sku == "PF-220" else "none", "launch_date": g.days_ago(400)})
     out["products"] = products
 
+    section(6)
     out["carriers"] = [{"carrier_id": f"CAR-{i:03d}", "name": n, "mode": m, "scope": s, "country": c,
                         "contract_end": g.date_between(-30, -700)} for i, (n, m, s, c) in enumerate([
         ("Northline Haulage", "road", "UK domestic", "GB"), ("Midshires Transport", "road", "UK domestic", "GB"),
@@ -193,6 +234,7 @@ def generate(g):
         ("Harbour Shuttle", "road", "UK port drayage", "GB"), ("AeroFast Couriers", "air", "global", "US")], 1)]
     out["ports"] = [{"port_code": c, "name": n, "country": k, "region": rg} for c, n, k, rg in PORTS]
 
+    section(7)
     # employees
     emps, n = [], 0
 
@@ -233,6 +275,7 @@ def generate(g):
     for s in suppliers:
         s["account_manager_id"] = r.choice(sm_by)
 
+    section(8)
     ccs = []
     for i, (nm, fn, site) in enumerate([(f"{s['name']} Operations", "Logistics", s["site_id"]) for s in sites if s["type"] == "dc"]
                                        + [(f"{reg} Stores", "Stores", "") for reg in ("UK South", "UK Midlands", "UK North", "Scotland", "Ireland", "EU Central", "US")]
@@ -242,6 +285,7 @@ def generate(g):
                     "owner_id": r.choice(emps[:9])["employee_id"]})
     out["cost_centres"] = ccs
 
+    section(9)
     out["partners"] = [{"partner_id": f"PTN-{i:03d}", "name": n, "type": t, "country": c, "since": g.date_between(3000, 100),
                         "status": r.choices(["active", "on_hold", "ended"], [85, 10, 5])[0]} for i, (n, t, c) in enumerate(
         [(f"{g.fake.company()} Department Stores", "wholesale", r.choice(["GB", "IE", "DE", "FR", "NL"])) for _ in range(10)]
@@ -249,6 +293,7 @@ def generate(g):
         + [("Amazon UK", "marketplace", "GB"), ("Zalando", "marketplace", "DE"), ("ASOS Marketplace", "marketplace", "GB"),
            ("eBay UK", "marketplace", "GB"), ("OnBuy", "marketplace", "GB")], 1)]
 
+    section(10)
     customers = []
     for i in range(1, 3001):
         c = r.choices(["GB", "IE", "DE", "NL", "FR", "US"], [80, 6, 5, 3, 3, 3])[0]
@@ -257,6 +302,7 @@ def generate(g):
                           "joined_date": g.date_between(3000, 0), "loyalty_tier": r.choices(["none", "silver", "gold", "platinum"], [50, 30, 15, 5])[0]})
     out["customers"] = customers
 
+    section(11)
     orders = []
     for day in range(120, 0, -1):
         dt = as_of - timedelta(day)
@@ -273,6 +319,7 @@ def generate(g):
                            "status": status})
     out["orders"] = orders
 
+    section(12)
     # purchase orders, lines, shipments (last ~18 months plus forward orders)
     pos, lines, ships = [], [], []
     by_sup = {}
@@ -329,6 +376,7 @@ def generate(g):
                           "teu": round(tu / 4500, 1) if mode == "sea" else 0.0, "etd": etd, "atd": atd, "eta": eta, "ata": ata, "status": sst})
     out["purchase_orders"], out["po_lines"], out["shipments"] = pos, lines, ships
 
+    section(13)
     # weekly sales, last 52 weeks
     sales = []
     for p in products:
@@ -345,6 +393,7 @@ def generate(g):
                           "revenue_gbp": round(u * asp / 1.2, 2), "avg_price_gbp": round(asp, 2), "markdown_gbp": round(md * u, 2)})
     out["sales_weekly"] = sales
 
+    section(14)
     stock = []
     for p in products:
         for dc in r.sample(["DC1", "DC2", "DC3", "DC4", "DC5"], r.randint(1, 4)):

@@ -42,10 +42,10 @@ systems/<id>/
   In SQL use the `$as_of` parameter (always available), e.g. `CAST($as_of AS DATE) - INTERVAL 90 DAY`.
 - **Shared master data** lives in `systems/_master/data/*.csv` and is readable in SQL as `master.<table>`.
   See `systems/_master/system.yaml` for every column. Tables:
-  `calendar, legal_entities, sites, locations, products, suppliers, factories, carriers, ports, employees,
+  `calendar, legal_entities, sites, locations, assets (DC equipment), products, suppliers, factories, carriers, ports, employees,
   cost_centres, partners, customers, orders, purchase_orders, po_lines, shipments, sales_weekly, dc_stock`.
 - **Always use master ids** (`SKU-…`, `STY-…`, `SUP-…`, `FAC-…`, `DC1`…`DC5`, `ST001`…`ST255`, `CAR-…`, `PO-…`,
-  `SHP-…`, `ORD-…`, `EMP-…`, `CC-…`, `LE-…`, `PTN-…`, `CUS-…`, bins like `DC1-C-14-02`). Never invent a new
+  `SHP-…`, `ORD-…`, `EMP-…`, `AST-…`, `CC-…`, `LE-…`, `PTN-…`, `CUS-…`, bins like `DC1-C-14-02`). Never invent a new
   supplier, SKU, site or PO: pick an existing one from the master CSVs (use `grep` or a tiny python snippet).
   This keeps systems consistent with each other.
 - Entities the questions name already exist in master: Northampton DC = `DC1`, Daventry = `DC2`, Leeds = `DC3`,
