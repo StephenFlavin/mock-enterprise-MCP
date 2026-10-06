@@ -1,0 +1,1207 @@
+id: demand
+name: Demand Planning System
+instructions: >
+  Forecasts, demand history, accuracy metrics, and planning tools for retail demand.
+  Forecast ids look like FC-000001. Use for weekly demand by SKU/category,
+  forecast accuracy, override management, and new-product demand.
+
+tables:
+  demand_history:
+    key: history_id
+    cols:
+      history_id: {type: str, desc: "Demand history record, e.g. DH-000123"}
+      sku: {type: str, desc: SKU}
+      category: {type: str, desc: Product category}
+      period_date: {type: date, desc: Period end date (weekly)}
+      units_sold: {type: int, desc: Units sold in period}
+      revenue_gbp: {type: float, desc: Revenue in GBP}
+      demand_type: {type: enum, values: [actual, corrected], desc: Whether demand is actual or corrected for stockout}
+      correction_reason: {type: str, desc: If corrected, why it was adjusted}
+      updated_at: {type: timestamp, desc: Last update}
+
+  forecasts:
+    key: forecast_id
+    cols:
+      forecast_id: {type: str, desc: "Forecast record, e.g. FC-000123"}
+      config_id: {type: str, desc: Forecast configuration used}
+      sku: {type: str, desc: SKU}
+      category: {type: str, desc: Product category}
+      forecast_week: {type: date, desc: Week starting Monday}
+      units_forecast: {type: int, desc: Units forecast for the week}
+      forecast_type: {type: enum, values: [base, upside, downside], desc: Scenario type}
+      created_at: {type: timestamp, desc: When forecast was generated}
+
+  forecast_configs:
+    key: config_id
+    cols:
+      config_id: {type: str, desc: "Forecast configuration, e.g. CFG-000123"}
+      config_name: {type: str, desc: "Configuration name, e.g. 52-week history"}
+      history_window_weeks: {type: int, desc: Historical weeks used in calculation}
+      method_type: {type: str, desc: "Method, e.g. exponential_smoothing"}
+      item_type: {type: enum, values: [fast_mover, slow_mover, new_product], desc: Item classification}
+      status: {type: enum, values: [active, test, archived], desc: Configuration status}
+      created_at: {type: timestamp, desc: Created date}
+      notes: {type: text, desc: Configuration notes}
+
+  forecast_accuracy:
+    key: accuracy_id
+    cols:
+      accuracy_id: {type: str, desc: "Accuracy record, e.g. ACC-000123"}
+      config_id: {type: str, desc: Forecast configuration}
+      period_start: {type: date, desc: Period start}
+      period_end: {type: date, desc: Period end}
+      sku: {type: str, desc: SKU, null for category-level}
+      category: {type: str, desc: Category, null for SKU-level}
+      forecast_level: {type: enum, values: [sku, category, regional, national], desc: Aggregation level}
+      mape_pct: {type: float, desc: "Mean absolute percentage error (%)"}
+      bias_pct: {type: float, desc: "Bias as % (positive=overforecast)"}
+      rmse: {type: int, desc: Root mean square error in units}
+
+  forecast_errors:
+    key: error_id
+    cols:
+      error_id: {type: str, desc: "Error record, e.g. ERR-000123"}
+      sku: {type: str, desc: SKU}
+      category: {type: str, desc: Category}
+      period_start: {type: date, desc: Period start}
+      period_end: {type: date, desc: Period end}
+      error_driver: {type: str, desc: "Driver: weather, promotion, pricing, new_launch, store_cluster"}
+      error_units: {type: int, desc: Units of error attributed}
+      error_pct: {type: float, desc: "Percentage of total error"}
+      explanation: {type: text, desc: Details about the error}
+
+  forecast_bias:
+    key: bias_id
+    cols:
+      bias_id: {type: str, desc: "Bias record, e.g. BI-000123"}
+      sku: {type: str, desc: SKU, null for category}
+      category: {type: str, desc: Category}
+      market: {type: str, desc: "Market/region, e.g. UK North"}
+      period_start: {type: date, desc: Period start}
+      period_end: {type: date, desc: Period end}
+      bias_pct: {type: float, desc: "Forecast bias (%)"}
+      primary_driver: {type: str, desc: "Main driver of bias"}
+
+  early_sales_data:
+    key: sales_id
+    cols:
+      sales_id: {type: str, desc: "Early sales record, e.g. ES-000123"}
+      sku: {type: str, desc: SKU}
+      product_name: {type: str, desc: Product name}
+      launch_date: {type: date, desc: Launch date}
+      week_in_launch: {type: int, desc: Week since launch (1-based)}
+      units_sold: {type: int, desc: Units sold in week}
+      units_forecast: {type: int, desc: Forecast for week}
+      velocity_index: {type: float, desc: "Actual vs forecast ratio"}
+
+  early_sales_alerts:
+    key: alert_id
+    cols:
+      alert_id: {type: str, desc: "Alert, e.g. ALR-000123"}
+      sku: {type: str, desc: SKU}
+      product_name: {type: str, desc: Product name}
+      alert_type: {type: enum, values: [chase, cancel], desc: Alert trigger type}
+      trigger_threshold_pct: {type: float, desc: "Velocity threshold (%)"}
+      status: {type: enum, values: [active, triggered, inactive], desc: Alert status}
+      created_at: {type: timestamp, desc: Created date}
+
+  pipeline_products:
+    key: pipeline_id
+    cols:
+      pipeline_id: {type: str, desc: "Pipeline item, e.g. PL-000123"}
+      sku: {type: str, desc: SKU}
+      product_name: {type: str, desc: Product name}
+      launch_date: {type: date, desc: Planned launch date}
+      season: {type: str, desc: "Season code, e.g. AW26"}
+      category: {type: str, desc: Category}
+      supply_risk: {type: enum, values: [low, medium, high], desc: Supply-chain risk}
+      demand_risk: {type: enum, values: [low, medium, high], desc: Demand/sales risk}
+      risk_score: {type: float, desc: "Overall risk score 0-100"}
+      status: {type: enum, values: [draft, approved, in_production, launched], desc: Status}
+
+  promotion_effects:
+    key: promo_id
+    cols:
+      promo_id: {type: str, desc: "Promotion effect record, e.g. PRM-000123"}
+      sku: {type: str, desc: SKU, null for category}
+      category: {type: str, desc: Category}
+      promo_mechanic: {type: str, desc: "Mechanic type, e.g. percentage_off"}
+      period_start: {type: date, desc: Promotion start}
+      period_end: {type: date, desc: Promotion end}
+      uplift_pct: {type: float, desc: "Sales uplift during promotion (%)"}
+      cannibalisation_pct: {type: float, desc: "Units from other items (%)"}
+      pull_forward_pct: {type: float, desc: "Units from future weeks (%)"}
+
+  daily_orders:
+    key: order_date
+    cols:
+      order_date: {type: date, desc: Order date}
+      channel: {type: enum, values: [web, app, click_collect, marketplace], desc: Sales channel}
+      region: {type: str, desc: "Region, e.g. UK North"}
+      units: {type: int, desc: Units ordered}
+      value_gbp: {type: float, desc: Order value in GBP}
+
+  forecast_overrides:
+    key: override_id
+    cols:
+      override_id: {type: str, desc: "Override, e.g. OVR-000123"}
+      sku: {type: str, desc: SKU, null for category}
+      category: {type: str, desc: Category, null for SKU}
+      week_start: {type: date, desc: Week starting Monday}
+      week_end: {type: date, desc: Week ending Sunday}
+      override_pct: {type: float, desc: "Uplift/downside percentage"}
+      override_type: {type: enum, values: [uplift, base_case, downside], desc: Type of override}
+      reason: {type: text, desc: Why override was created}
+      created_at: {type: timestamp, desc: Created date}
+
+  demand_history_adjustments:
+    key: adjustment_id
+    cols:
+      adjustment_id: {type: str, desc: "Adjustment, e.g. ADJ-000123"}
+      sku: {type: str, desc: SKU}
+      period_start: {type: date, desc: Period start}
+      period_end: {type: date, desc: Period end}
+      stockout_cause: {type: str, desc: "Why stock ran out"}
+      units_lost: {type: int, desc: Estimated lost units}
+      correction_method: {type: str, desc: "How to correct history"}
+
+tools:
+  - name: calculate_corrected_demand_history
+    desc: Correct demand history for stockout-distorted periods. Returns corrected units and the adjustment method.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      period_start: {type: date, required: true, desc: Start of period to correct}
+      period_end: {type: date, required: true, desc: End of period}
+    sql: |
+      SELECT h.history_id, h.sku, h.period_date, h.units_sold AS original_units,
+             CASE WHEN adj.units_lost IS NOT NULL THEN h.units_sold + adj.units_lost ELSE h.units_sold END AS corrected_units,
+             COALESCE(adj.units_lost, 0) AS adjustment,
+             COALESCE(adj.correction_method, 'none') AS method,
+             'Corrected demand = original + lost units' AS formula
+      FROM demand_history h
+      LEFT JOIN demand_history_adjustments adj ON h.sku = adj.sku
+        AND h.period_date >= adj.period_start AND h.period_date <= adj.period_end
+      WHERE h.sku = $sku AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.period_date
+    limit: 26
+    example: {sku: "SKU-100001", period_start: "-90d", period_end: "$as_of"}
+
+  - name: calculate_early_sales_trigger_thresholds
+    desc: Calculate velocity thresholds for early sales alerts (chase/cancel). Returns thresholds for chase and cancel by forecast confidence.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      launch_week: {type: date, required: true, desc: Launch week start (Monday)}
+    sql: |
+      SELECT e.sku, e.product_name, e.launch_date,
+             ROUND(AVG(e.units_forecast) * 0.7, 0) AS chase_threshold_units,
+             ROUND(AVG(e.units_forecast) * 0.4, 0) AS cancel_threshold_units,
+             ROUND(AVG(e.velocity_index) * 100, 1) AS avg_velocity_pct,
+             'chase_threshold = forecast * 70%; cancel_threshold = forecast * 40%' AS formula
+      FROM early_sales_data e
+      WHERE e.sku = $sku AND e.launch_date = CAST($launch_week AS DATE)
+      GROUP BY e.sku, e.product_name, e.launch_date
+    example: {sku: "SKU-100342", launch_week: "2026-10-13"}
+
+  - name: calculate_lost_demand_for_sku
+    desc: Calculate lost demand from stockouts. Takes correction period and returns estimated lost units and impact.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      period_start: {type: date, required: true, desc: Period start}
+      period_end: {type: date, required: true, desc: Period end}
+    sql: |
+      SELECT a.sku, COALESCE(SUM(a.units_lost), 0) AS total_lost_units,
+             ROUND(COALESCE(SUM(a.units_lost), 0) *
+               (SELECT COALESCE(AVG(h.revenue_gbp / NULLIF(h.units_sold, 0)), 0)
+                FROM demand_history h WHERE h.sku = a.sku), 0) AS estimated_lost_revenue_gbp,
+             'lost_units * avg_unit_price' AS formula
+      FROM demand_history_adjustments a
+      WHERE a.sku = $sku AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+    example: {sku: "STY-5520", period_start: "2026-07-01", period_end: "2026-09-30"}
+
+  - name: calculate_lost_sales_for_product
+    desc: Calculate lost sales from stockouts or demand mismatches. Returns lost units and estimated revenue impact.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      period_start: {type: date, required: true, desc: Period start}
+      period_end: {type: date, required: true, desc: Period end}
+    sql: |
+      SELECT a.sku,
+             COALESCE(SUM(a.units_lost), 0) AS lost_units,
+             ROUND(COALESCE(SUM(a.units_lost), 0) *
+               (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 50) FROM master.products p WHERE p.sku = a.sku), 0) AS lost_margin_gbp,
+             'lost_units * product_margin' AS formula
+      FROM demand_history_adjustments a
+      WHERE a.sku = $sku AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY a.sku
+    example: {sku: "STY-5520", period_start: "2026-08-01", period_end: "2026-08-31"}
+
+  - name: calculate_pipeline_risk_score
+    key: pipeline_id
+    desc: Calculate risk score for pipeline products combining supply, demand and execution risk. Returns 0-100 score and key risk drivers.
+    kind: sql
+    args:
+      pipeline_id: {required: true, desc: Pipeline product id}
+    sql: |
+      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
+             ROUND((CASE p.supply_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END +
+                    CASE p.demand_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END) / 2, 0) AS risk_score,
+             p.supply_risk, p.demand_risk,
+             'risk_score = (supply_risk + demand_risk) / 2' AS formula
+      FROM pipeline_products p
+      WHERE p.pipeline_id = $pipeline_id
+    example: {pipeline_id: "PL-900001"}
+
+  - name: calculate_rollback_vs_tune_impact
+    desc: Compare impact of rolling back versus tuning a forecast model configuration. Returns accuracy, effort and recommendation.
+    kind: sql
+    args:
+      config_id: {required: true, desc: Configuration to evaluate}
+      period_start: {type: date, required: true, desc: Test period start}
+      period_end: {type: date, required: true, desc: Test period end}
+    sql: |
+      SELECT c.config_id, c.config_name,
+             ROUND(AVG(a.mape_pct), 1) AS current_mape_pct,
+             CASE WHEN AVG(a.mape_pct) < 15 THEN 'tune' ELSE 'rollback' END AS recommendation,
+             CASE WHEN AVG(a.mape_pct) > 20 THEN 'High' ELSE 'Medium' END AS effort_required,
+             'If MAPE > 20%, rollback is lower effort than tuning' AS formula
+      FROM forecast_configs c
+      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      WHERE c.config_id = $config_id
+      GROUP BY c.config_id, c.config_name
+    example: {config_id: "CFG-900001", period_start: "2026-09-01", period_end: "2026-10-05"}
+
+  - name: calculate_stock_out_risk
+    desc: Calculate probability of stock-out based on forecast, lead time and variability. Returns risk score 0-100 and recommended safety stock.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      forecast_weeks: {type: int, desc: "Forecast horizon in weeks", default: 4}
+    sql: |
+      SELECT f.sku,
+             ROUND(COALESCE(SUM(CASE WHEN f.units_forecast > 0 THEN f.units_forecast ELSE 0 END) / NULLIF(COUNT(*), 0), 0), 0) AS avg_weekly_demand,
+             ROUND(COALESCE(STDDEV_POP(f.units_forecast), 0), 0) AS demand_std_dev,
+             ROUND(MIN(CASE WHEN f.units_forecast > 0 THEN (STDDEV_POP(f.units_forecast) OVER ()) / NULLIF(AVG(f.units_forecast) OVER (), 0) * 100 ELSE 0 END), 1) AS cv_pct,
+             ROUND(LEAST((STDDEV_POP(f.units_forecast) OVER () * 1.645), 100), 0) AS stock_out_risk_score,
+             'risk_score = min(cv * forecast * 1.645, 100)' AS formula
+      FROM forecasts f
+      WHERE f.sku = $sku AND f.forecast_type = 'base'
+      LIMIT $forecast_weeks
+    example: {sku: "SKU-100234"}
+
+  - name: compare_forecast_accuracy_before_after_change
+    desc: Compare forecast accuracy before and after a configuration change. Returns MAPE, bias and statistical significance.
+    kind: sql
+    args:
+      config_id: {required: true, desc: Changed configuration}
+      change_date: {type: date, required: true, desc: Date change was applied}
+    sql: |
+      SELECT c.config_id, c.config_name, c.created_at AS change_date,
+             ROUND(AVG(CASE WHEN a.period_end < CAST($change_date AS DATE) THEN a.mape_pct END), 1) AS before_mape_pct,
+             ROUND(AVG(CASE WHEN a.period_end >= CAST($change_date AS DATE) THEN a.mape_pct END), 1) AS after_mape_pct,
+             ROUND(AVG(CASE WHEN a.period_end >= CAST($change_date AS DATE) THEN a.mape_pct END) -
+                   AVG(CASE WHEN a.period_end < CAST($change_date AS DATE) THEN a.mape_pct END), 1) AS change_pct,
+             'improvement = (after - before) / before * 100%' AS formula
+      FROM forecast_configs c
+      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
+      WHERE c.config_id = $config_id
+      GROUP BY c.config_id, c.config_name, c.created_at
+    example: {config_id: "CFG-900001", change_date: "2026-09-01"}
+
+  - name: compare_forecast_accuracy_by_history_window
+    desc: Compare forecast accuracy for different history windows (26-week vs 52-week). Returns MAPE by window for the same items.
+    kind: sql
+    args:
+      category: {desc: "Product category"}
+      period_start: {type: date, desc: Evaluation period start, default: "-52w"}
+      period_end: {type: date, desc: Evaluation period end, default: "$as_of"}
+    sql: |
+      SELECT
+             c.history_window_weeks,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             COUNT(DISTINCT a.sku) AS skus_evaluated,
+             'Lower history window better for fashion, higher for stable categories' AS insight
+      FROM forecast_configs c
+      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      WHERE ($category IS NULL OR a.category = $category)
+      GROUP BY c.history_window_weeks
+      ORDER BY c.history_window_weeks
+    example: {category: "Outerwear"}
+
+  - name: compare_forecast_accuracy_by_level
+    desc: Compare forecast accuracy at different aggregation levels (SKU, category, regional). Returns MAPE by level.
+    kind: sql
+    args:
+      category: {desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT a.forecast_level,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             COUNT(DISTINCT COALESCE(a.sku, a.category)) AS items_evaluated,
+             'Category level usually has lower error than SKU level due to aggregation' AS insight
+      FROM forecast_accuracy a
+      WHERE ($category IS NULL OR a.category = $category)
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY a.forecast_level
+      ORDER BY a.mape_pct
+    example: {category: "Dresses"}
+
+  - name: create_early_sales_alert
+    desc: Create monitoring alert for new product early sales. Fires when sales cross chase or cancel thresholds. Returns alert id.
+    kind: insert
+    table: early_sales_alerts
+    id_prefix: ALR-
+    args:
+      sku: {required: true, desc: SKU}
+      product_name: {required: true}
+      alert_type: {required: true, desc: "chase or cancel"}
+      trigger_threshold_pct: {required: true, type: float, desc: "Velocity threshold %"}
+    defaults: {status: active}
+    example: {sku: "SKU-100999", product_name: "Recycled backpack", alert_type: chase, trigger_threshold_pct: 70.0}
+
+  - name: create_forecast_model_configuration
+    desc: Create a test forecast configuration with different parameters (e.g. different history window). Returns config id and parameters.
+    kind: insert
+    table: forecast_configs
+    id_prefix: CFG-
+    args:
+      config_name: {required: true, desc: "Name, e.g. '26-week history'"}
+      history_window_weeks: {required: true, type: int, desc: "Historical weeks to use, e.g. 26 or 52"}
+      method_type: {required: true, desc: "Method like exponential_smoothing"}
+      item_type: {required: true, desc: "fast_mover, slow_mover or new_product"}
+      notes: {desc: Configuration notes}
+    defaults: {status: test}
+    example: {config_name: "26-week fashion test", history_window_weeks: 26, method_type: exponential_smoothing, item_type: fast_mover, notes: "Testing shorter window for fashion"}
+
+  - name: create_forecast_override
+    desc: Add manual override to forecast (uplift, downside or base case). Returns override id and effective forecast.
+    kind: insert
+    table: forecast_overrides
+    id_prefix: OVR-
+    args:
+      sku: {desc: SKU}
+      category: {desc: Category}
+      week_start: {required: true, type: date, desc: "Week starting Monday"}
+      week_end: {required: true, type: date, desc: "Week ending Sunday"}
+      override_pct: {required: true, type: float, desc: "Percentage uplift/downside, e.g. 25.0"}
+      override_type: {required: true, desc: "uplift, base_case or downside"}
+      reason: {required: true, desc: "Why override is needed"}
+    example: {category: "Kitchenware", week_start: "2026-11-18", week_end: "2026-11-24", override_pct: 25.0, override_type: uplift, reason: "25% off promotion"}
+
+  - name: get_backtest_vs_live_accuracy_evidence
+    desc: Compare backtest accuracy to live forecast accuracy. Shows whether backtests are predictive of real performance.
+    kind: sql
+    args:
+      config_id: {required: true, desc: Forecast configuration}
+      method_type: {desc: "Forecast method, e.g. new_product_forecast"}
+    sql: |
+      SELECT c.config_id, c.config_name, c.method_type,
+             ROUND(AVG(CASE WHEN a.period_end < CAST($as_of - INTERVAL 90 DAY AS DATE) THEN a.mape_pct END), 1) AS backtest_mape_pct,
+             ROUND(AVG(CASE WHEN a.period_end >= CAST($as_of - INTERVAL 90 DAY AS DATE) THEN a.mape_pct END), 1) AS live_mape_pct,
+             COUNT(DISTINCT a.sku) AS items_tested,
+             'Backtest = historical validation; Live = current performance' AS definition
+      FROM forecast_configs c
+      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
+      WHERE c.config_id = $config_id AND ($method_type IS NULL OR c.method_type = $method_type)
+      GROUP BY c.config_id, c.config_name, c.method_type
+    example: {config_id: "CFG-900001"}
+
+  - name: get_cannibalisation_and_pull_forward_estimates
+    desc: Get cannibalisation and pull-forward effects for promotions. Shows incremental versus displaced sales.
+    kind: sql
+    args:
+      promo_mechanic: {desc: "Promotion mechanic, e.g. percentage_off"}
+      period_start: {type: date, desc: Period to analyze, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT p.promo_mechanic,
+             ROUND(AVG(p.uplift_pct), 1) AS avg_uplift_pct,
+             ROUND(AVG(p.cannibalisation_pct), 1) AS avg_cannibalisation_pct,
+             ROUND(AVG(p.pull_forward_pct), 1) AS avg_pull_forward_pct,
+             ROUND(AVG(p.uplift_pct) - AVG(p.cannibalisation_pct) - AVG(p.pull_forward_pct), 1) AS incremental_pct,
+             'incremental = uplift - cannibalisation - pull_forward' AS formula
+      FROM promotion_effects p
+      WHERE ($promo_mechanic IS NULL OR p.promo_mechanic = $promo_mechanic)
+        AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
+      GROUP BY p.promo_mechanic
+    example: {promo_mechanic: "percentage_off"}
+
+  - name: get_cannibalisation_estimates_for_category
+    desc: Get cannibalisation effect for promotions by category. Shows what % of uplift comes from other items.
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT p.category, p.promo_mechanic,
+             ROUND(AVG(p.uplift_pct), 1) AS uplift_pct,
+             ROUND(AVG(p.cannibalisation_pct), 1) AS cannibalisation_pct,
+             ROUND(COALESCE(AVG(p.cannibalisation_pct), 0) / NULLIF(AVG(p.uplift_pct), 0) * 100, 1) AS cannib_of_uplift_pct,
+             COUNT(*) AS promo_instances
+      FROM promotion_effects p
+      WHERE p.category = $category AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
+      GROUP BY p.category, p.promo_mechanic
+    example: {category: "Toiletries"}
+
+  - name: get_category_demand_history_by_period
+    desc: Retrieve demand history by category and period. Returns total units and revenue by week.
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-26w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT h.category, h.period_date,
+             SUM(h.units_sold) AS units_sold,
+             ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(SUM(h.revenue_gbp) / NULLIF(SUM(h.units_sold), 0), 2) AS avg_price_gbp
+      FROM demand_history h
+      WHERE h.category = $category AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      GROUP BY h.category, h.period_date
+      ORDER BY h.period_date DESC
+    limit: 30
+    example: {category: "Dresses"}
+
+  - name: get_category_forecast
+    desc: Retrieve category demand forecast by week. Returns base case and scenarios.
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      period_start: {type: date, desc: Forecast period start, default: "$as_of"}
+      period_end: {type: date, desc: Forecast period end, default: "+12w"}
+    sql: |
+      SELECT f.category, f.forecast_week,
+             f.forecast_type,
+             SUM(f.units_forecast) AS units_forecast
+      FROM forecasts f
+      WHERE f.category = $category AND f.forecast_week >= CAST($period_start AS DATE) AND f.forecast_week <= CAST($period_end AS DATE)
+      GROUP BY f.category, f.forecast_week, f.forecast_type
+      ORDER BY f.forecast_week, f.forecast_type
+    limit: 52
+    example: {category: "Kitchenware"}
+
+  - name: get_configuration_change_log
+    desc: Retrieve log of forecast configuration changes. Shows when settings changed and what changed.
+    kind: sql
+    args:
+      config_id: {desc: Specific configuration, null for all}
+      period_start: {type: date, desc: Changes since, default: "-26w"}
+      period_end: {type: date, desc: Changes until, default: "$as_of"}
+    sql: |
+      SELECT c.config_id, c.config_name, c.created_at, c.history_window_weeks,
+             c.method_type, c.item_type, c.status, c.notes
+      FROM forecast_configs c
+      WHERE ($config_id IS NULL OR c.config_id = $config_id)
+        AND c.created_at >= CAST($period_start AS DATE) AND c.created_at <= CAST($period_end AS DATE)
+      ORDER BY c.created_at DESC
+    limit: 30
+    example: {}
+
+  - name: get_current_forecast_method_for_item_type
+    desc: Retrieve the current active forecast method for a given item type (fast/slow/new product).
+    kind: sql
+    args:
+      item_type: {required: true, desc: "fast_mover, slow_mover or new_product"}
+    sql: |
+      SELECT c.item_type, c.config_id, c.config_name, c.method_type, c.history_window_weeks,
+             COUNT(DISTINCT f.sku) AS items_using_method,
+             'Active configuration for this item type' AS status
+      FROM forecast_configs c
+      LEFT JOIN forecasts f ON c.config_id = f.config_id
+      WHERE c.item_type = $item_type AND c.status = 'active'
+      GROUP BY c.item_type, c.config_id, c.config_name, c.method_type, c.history_window_weeks
+    example: {item_type: "new_product"}
+
+  - name: get_current_process_forecast_accuracy
+    desc: Accuracy of the existing active forecasting process. Returns current MAPE by category.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT a.forecast_level,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             ROUND(AVG(a.bias_pct), 1) AS bias_pct,
+             COUNT(DISTINCT COALESCE(a.sku, a.category)) AS items,
+             'Current live forecast accuracy' AS measure
+      FROM forecast_accuracy a
+      WHERE a.config_id IN (SELECT config_id FROM forecast_configs WHERE status = 'active')
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY a.forecast_level
+    example: {}
+
+  - name: get_daily_orders_history
+    desc: Retrieve daily orders history by channel and region. For capacity and fulfillment planning.
+    kind: sql
+    args:
+      channel: {desc: "Sales channel: web, app, click_collect, marketplace"}
+      region: {desc: "Region, e.g. UK North"}
+      period_start: {type: date, desc: Period start, default: "-28d"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT o.order_date, o.channel, o.region,
+             SUM(o.units) AS units,
+             ROUND(SUM(o.value_gbp), 0) AS value_gbp,
+             ROUND(SUM(o.value_gbp) / NULLIF(SUM(o.units), 0), 2) AS avg_order_value_gbp
+      FROM daily_orders o
+      WHERE ($channel IS NULL OR o.channel = $channel)
+        AND ($region IS NULL OR o.region = $region)
+        AND o.order_date >= CAST($period_start AS DATE) AND o.order_date <= CAST($period_end AS DATE)
+      GROUP BY o.order_date, o.channel, o.region
+      ORDER BY o.order_date DESC
+    limit: 60
+    example: {channel: web}
+
+  - name: get_demand_history_for_sku
+    desc: Retrieve demand history for a SKU by week. Returns actual and corrected demand with stockout flags.
+    kind: sql
+    args:
+      sku: {required: true, desc: SKU}
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT h.history_id, h.sku, h.period_date,
+             h.units_sold, h.revenue_gbp,
+             CASE WHEN h.demand_type = 'corrected' THEN 'Yes' ELSE 'No' END AS corrected,
+             h.correction_reason
+      FROM demand_history h
+      WHERE h.sku = $sku AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.period_date DESC
+    limit: 52
+    example: {sku: "STY-5520"}
+
+  - name: get_forecast_accuracy_by_category
+    desc: Current forecast accuracy by category. Shows MAPE, bias and error distribution.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT a.category,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             ROUND(AVG(a.bias_pct), 1) AS bias_pct,
+             COUNT(DISTINCT a.sku) AS skus,
+             'Lower MAPE = better accuracy' AS note
+      FROM forecast_accuracy a
+      WHERE a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY a.category
+      ORDER BY a.mape_pct DESC
+    limit: 30
+    example: {}
+
+  - name: get_forecast_bias_by_market
+    desc: Forecast bias by market/region. Shows whether forecasts tend to over or underestimate.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT b.market,
+             ROUND(AVG(b.bias_pct), 1) AS bias_pct,
+             COUNT(*) AS observations,
+             CASE WHEN AVG(b.bias_pct) > 10 THEN 'Overforecasting' WHEN AVG(b.bias_pct) < -10 THEN 'Underforecasting' ELSE 'Balanced' END AS bias_direction
+      FROM forecast_bias b
+      WHERE b.period_start >= CAST($period_start AS DATE) AND b.period_end <= CAST($period_end AS DATE)
+      GROUP BY b.market
+      ORDER BY ABS(AVG(b.bias_pct)) DESC
+    limit: 20
+    example: {}
+
+  - name: get_forecast_bias_for_category
+    desc: Forecast bias for a category. Decomposed by drivers (weather, promotion, pricing, new launches).
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT COALESCE(b.category, e.category) AS category,
+             b.bias_pct,
+             e.error_driver,
+             e.error_pct,
+             e.explanation
+      FROM forecast_bias b
+      LEFT JOIN forecast_errors e ON b.category = e.category
+        AND b.period_start = e.period_start AND b.period_end = e.period_end
+      WHERE (b.category = $category OR e.category = $category)
+        AND ((b.period_start >= CAST($period_start AS DATE) AND b.period_end <= CAST($period_end AS DATE))
+          OR (e.period_start >= CAST($period_start AS DATE) AND e.period_end <= CAST($period_end AS DATE)))
+      ORDER BY b.bias_pct DESC
+    limit: 20
+    example: {category: "Outerwear"}
+
+  - name: get_forecast_error_by_category
+    desc: Forecast error and bias by category and period. Shows MAPE trends over time.
+    kind: sql
+    args:
+      category: {desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-26w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT a.category, a.period_end,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             ROUND(AVG(a.bias_pct), 1) AS bias_pct,
+             COUNT(DISTINCT a.sku) AS skus
+      FROM forecast_accuracy a
+      WHERE ($category IS NULL OR a.category = $category)
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY a.category, a.period_end
+      ORDER BY a.period_end DESC
+    limit: 26
+    example: {category: "Dresses"}
+
+  - name: get_forecast_error_by_lead_time
+    desc: Forecast error by supplier lead time. Shows whether shorter lead times improve accuracy.
+    kind: sql
+    args:
+      category: {desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT
+             CASE WHEN CAST(p.lead_time_days AS INT) < 30 THEN 'Short (< 30d)'
+                  WHEN CAST(p.lead_time_days AS INT) < 60 THEN 'Medium (30-60d)'
+                  ELSE 'Long (> 60d)' END AS lead_time_bucket,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             COUNT(DISTINCT a.sku) AS skus,
+             'Shorter lead times typically = better forecast accuracy' AS insight
+      FROM forecast_accuracy a
+      JOIN master.products p ON a.sku = p.sku
+      WHERE ($category IS NULL OR a.category = $category)
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      GROUP BY lead_time_bucket
+      ORDER BY CAST(p.lead_time_days AS INT)
+    example: {category: "Home"}
+
+  - name: get_forecast_error_decomposition
+    desc: Decompose forecast error by drivers (weather, promotion, pricing, new launches, store cluster).
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT e.category, e.error_driver,
+             ROUND(AVG(e.error_pct), 1) AS error_pct,
+             COALESCE(SUM(e.error_units), 0) AS total_error_units,
+             e.explanation,
+             'Sum of error_pct across drivers should ~= total forecast error' AS note
+      FROM forecast_errors e
+      WHERE e.category = $category AND e.period_start >= CAST($period_start AS DATE) AND e.period_end <= CAST($period_end AS DATE)
+      GROUP BY e.category, e.error_driver, e.explanation
+      ORDER BY error_pct DESC
+    example: {category: "Outerwear"}
+
+  - name: get_forecast_model_settings
+    desc: Retrieve current forecast model settings by item type and category.
+    kind: sql
+    args:
+      item_type: {desc: "Item type: fast_mover, slow_mover, new_product"}
+      category: {desc: Product category}
+    sql: |
+      SELECT c.config_id, c.config_name, c.item_type, c.method_type,
+             c.history_window_weeks, c.status,
+             COUNT(DISTINCT f.sku) AS items_using_config
+      FROM forecast_configs c
+      LEFT JOIN forecasts f ON c.config_id = f.config_id
+      WHERE ($item_type IS NULL OR c.item_type = $item_type)
+        AND c.status = 'active'
+      GROUP BY c.config_id, c.config_name, c.item_type, c.method_type, c.history_window_weeks, c.status
+    example: {item_type: "fast_mover"}
+
+  - name: get_forecast_run_effort_metrics
+    desc: Forecast run effort metrics (time, cost, data volume). Shows operational efficiency of forecasting.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT COUNT(DISTINCT c.config_id) AS active_configs,
+             COUNT(DISTINCT f.sku) AS skus_forecast,
+             COUNT(DISTINCT f.forecast_id) AS total_forecasts,
+             'Effort proxy: more configs and SKUs = more complexity' AS note
+      FROM forecast_configs c
+      LEFT JOIN forecasts f ON c.config_id = f.config_id AND f.created_at >= CAST($period_start AS DATE) AND f.created_at <= CAST($period_end AS DATE)
+      WHERE c.status IN ('active', 'test')
+    example: {}
+
+  - name: get_forecast_vendor_capabilities
+    desc: Retrieve forecast platform vendor capabilities (new product, intermittent item, external regressor support).
+    kind: select
+    from: forecast_configs
+    filters:
+      method_type: {op: like}
+      item_type: {}
+      status: {default: active}
+    columns: [config_id, config_name, method_type, item_type, history_window_weeks]
+    limit: 10
+    example: {method_type: "new_product"}
+
+  - name: get_historic_driver_impact_on_category
+    desc: Retrieve historic impact of external drivers (weather, confidence, holidays) on a category demand.
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      driver: {desc: "Driver: weather, confidence, holidays, competitor_action"}
+      period_start: {type: date, desc: Period start, default: "-104w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT e.category, e.error_driver,
+             ROUND(AVG(e.error_pct), 1) AS avg_impact_pct,
+             ROUND(MAX(ABS(e.error_pct)), 1) AS max_impact_pct,
+             COUNT(*) AS observations
+      FROM forecast_errors e
+      WHERE e.category = $category
+        AND ($driver IS NULL OR e.error_driver LIKE '%' || $driver || '%')
+        AND e.period_start >= CAST($period_start AS DATE) AND e.period_end <= CAST($period_end AS DATE)
+      GROUP BY e.category, e.error_driver
+    example: {category: "Womenswear"}
+
+  - name: get_new_product_forecast_accuracy
+    desc: Forecast accuracy for new product launches. Returns accuracy and whether assumptions (demand/timing/distribution) were met.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT p.sku, p.product_name, p.launch_date,
+             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
+             p.status,
+             'New product MAPE typically higher than established items' AS note
+      FROM pipeline_products p
+      LEFT JOIN forecast_accuracy a ON p.sku = a.sku
+      WHERE p.status IN ('launched', 'in_production')
+        AND p.launch_date >= CAST($period_start AS DATE) AND p.launch_date <= CAST($period_end AS DATE)
+      GROUP BY p.sku, p.product_name, p.launch_date, p.status
+      ORDER BY p.launch_date DESC
+    example: {}
+
+  - name: get_past_promotion_uplift_by_mechanic
+    desc: Retrieve past promotion uplift by mechanic type. Shows typical uplift for different promotion types.
+    kind: sql
+    args:
+      mechanic: {desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one"}
+      category: {desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-104w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT p.promo_mechanic, p.category,
+             ROUND(AVG(p.uplift_pct), 1) AS avg_uplift_pct,
+             ROUND(MAX(p.uplift_pct), 1) AS max_uplift_pct,
+             ROUND(MIN(p.uplift_pct), 1) AS min_uplift_pct,
+             COUNT(*) AS instances
+      FROM promotion_effects p
+      WHERE ($mechanic IS NULL OR p.promo_mechanic = $mechanic)
+        AND ($category IS NULL OR p.category = $category)
+        AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
+      GROUP BY p.promo_mechanic, p.category
+      ORDER BY avg_uplift_pct DESC
+    example: {mechanic: "percentage_off"}
+
+  - name: get_peak_inbound_forecast
+    desc: Forecast inbound and outbound volumes for the peak period (Black Friday to end of December).
+    kind: sql
+    args:
+      region: {desc: "Region, e.g. UK North"}
+      peak_start: {type: date, desc: "Peak start, typically late November", default: "2026-11-01"}
+      peak_end: {type: date, desc: "Peak end, typically end of December", default: "2026-12-31"}
+    sql: |
+      SELECT SUM(o.units) AS peak_inbound_units,
+             ROUND(SUM(o.value_gbp), 0) AS peak_inbound_value_gbp,
+             ROUND(SUM(o.units) / ((CAST($peak_end AS DATE) - CAST($peak_start AS DATE)) / 7), 0) AS avg_weekly_units
+      FROM daily_orders o
+      WHERE ($region IS NULL OR o.region = $region)
+        AND o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
+    example: {}
+
+  - name: get_peak_order_volume_forecast_by_region
+    desc: Peak order volume forecast by region. Shows regional distribution of peak demand.
+    kind: sql
+    args:
+      peak_start: {type: date, desc: "Peak start", default: "2026-11-01"}
+      peak_end: {type: date, desc: "Peak end", default: "2026-12-31"}
+    sql: |
+      SELECT o.region,
+             SUM(o.units) AS units_forecast,
+             ROUND(SUM(o.value_gbp), 0) AS value_gbp,
+             ROUND(SUM(o.units) * 100.0 / SUM(SUM(o.units)) OVER (), 1) AS region_pct
+      FROM daily_orders o
+      WHERE o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
+      GROUP BY o.region
+      ORDER BY units_forecast DESC
+    limit: 15
+    example: {}
+
+  - name: get_peak_volume_profile
+    desc: Peak period volume profile by region. Shows weekly demand curve during peak season.
+    kind: sql
+    args:
+      peak_start: {type: date, desc: "Peak start", default: "2026-11-01"}
+      peak_end: {type: date, desc: "Peak end", default: "2026-12-31"}
+    sql: |
+      SELECT o.region, o.order_date,
+             SUM(o.units) AS units,
+             ROUND(SUM(o.value_gbp), 0) AS value_gbp
+      FROM daily_orders o
+      WHERE o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
+      GROUP BY o.region, o.order_date
+      ORDER BY o.region, o.order_date
+    limit: 100
+    example: {}
+
+  - name: get_pipeline_products_for_season
+    desc: Return pipeline products launching in a season. Shows product mix, risk and forecast.
+    kind: sql
+    args:
+      season: {required: true, desc: "Season code, e.g. AW26"}
+      status: {desc: "Status: draft, approved, in_production, launched"}
+    sql: |
+      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
+             p.category, p.supply_risk, p.demand_risk, p.risk_score, p.status,
+             COUNT(*) OVER () AS total_pipeline_items
+      FROM pipeline_products p
+      WHERE p.season = $season AND ($status IS NULL OR p.status = $status)
+      ORDER BY p.risk_score DESC
+    limit: 50
+    example: {season: "AW26"}
+
+  - name: get_return_forecast_by_week
+    desc: Weekly returns forecast. Shows expected return volumes by week for capacity planning.
+    kind: sql
+    args:
+      week_start: {type: date, desc: "Week starting Monday", default: "$as_of"}
+      weeks_ahead: {type: int, desc: "Number of weeks to forecast", default: 4}
+    sql: |
+      SELECT CAST(week_start.day AS DATE) AS week_start,
+             CAST(week_start.day + INTERVAL 6 DAY AS DATE) AS week_end,
+             ROUND(COALESCE(SUM(f.units_forecast) * 0.05, 0), 0) AS estimated_returns_units,
+             ROUND(COALESCE(SUM(f.units_forecast) * 0.05 *
+               (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 40) FROM master.products p LIMIT 1), 0), 0) AS estimated_returns_value_gbp
+      FROM (
+        SELECT CAST(DATE_TRUNC('week', CAST($week_start AS DATE) + INTERVAL (row_number() - 1) DAY) AS DATE) AS day
+        FROM (SELECT ROW_NUMBER() OVER () FROM range(0, $weeks_ahead * 7))
+      ) week_start
+      LEFT JOIN forecasts f ON CAST(f.forecast_week AS DATE) = CAST(week_start.day AS DATE)
+      GROUP BY CAST(week_start.day AS DATE)
+      ORDER BY CAST(week_start.day AS DATE)
+    example: {}
+
+  - name: get_revenue_dependency_by_supplier
+    desc: Revenue dependent on each supplier. Shows revenue at risk if supplier fails.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT s.supplier_id, s.name,
+             ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(SUM(h.revenue_gbp) * 100.0 / SUM(SUM(h.revenue_gbp)) OVER (), 1) AS revenue_pct
+      FROM demand_history h
+      JOIN master.products p ON h.sku = p.sku
+      JOIN master.suppliers s ON p.supplier_id = s.supplier_id
+      WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      GROUP BY s.supplier_id, s.name
+      ORDER BY revenue_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_sales_forecast_for_style
+    desc: Sales forecast for a style by week. Shows weekly demand, range and confidence.
+    kind: sql
+    args:
+      style_id: {required: true, desc: Style id}
+      forecast_start: {type: date, desc: "Forecast start", default: "$as_of"}
+      weeks_ahead: {type: int, desc: "Number of weeks to forecast", default: 12}
+    sql: |
+      SELECT f.forecast_week,
+             f.forecast_type,
+             SUM(f.units_forecast) AS units_forecast
+      FROM forecasts f
+      WHERE f.category IN (SELECT category FROM master.products WHERE style_id = $style_id)
+        AND f.forecast_week >= CAST($forecast_start AS DATE)
+        AND f.forecast_week < CAST($forecast_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      GROUP BY f.forecast_week, f.forecast_type
+      ORDER BY f.forecast_week, f.forecast_type
+    limit: 52
+    example: {style_id: "STY-7731"}
+
+  - name: get_sales_history_for_products
+    desc: Sales history for a list of products. Returns weekly sales by SKU.
+    kind: sql
+    args:
+      category: {desc: Product category}
+      period_start: {type: date, desc: Period start, default: "-26w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT h.sku, h.period_date,
+             h.units_sold,
+             ROUND(h.revenue_gbp, 0) AS revenue_gbp,
+             ROUND(h.revenue_gbp / NULLIF(h.units_sold, 0), 2) AS price_gbp
+      FROM demand_history h
+      WHERE ($category IS NULL OR h.category = $category)
+        AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.sku, h.period_date DESC
+    limit: 200
+    example: {category: "Dresses"}
+
+  - name: get_site_volume_forecast
+    desc: Throughput volume forecast for a DC or store. For capacity and resource planning.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Site: DC1-DC5 or store"}
+      period_start: {type: date, desc: "Period start", default: "$as_of"}
+      period_end: {type: date, desc: "Period end", default: "+12w"}
+    sql: |
+      SELECT CAST($period_start AS DATE) AS period_start, CAST($period_end AS DATE) AS period_end,
+             COALESCE(SUM(o.units), 0) AS units_forecast,
+             ROUND(COALESCE(SUM(o.value_gbp), 0), 0) AS value_gbp,
+             'Volume used for DC/store capacity planning' AS use_case
+      FROM daily_orders o
+      WHERE o.order_date >= CAST($period_start AS DATE) AND o.order_date <= CAST($period_end AS DATE)
+    example: {site_id: "DC1"}
+
+  - name: get_volume_forecast
+    desc: Long-range volume forecast by scenario (base, upside, downside). For strategic planning.
+    kind: sql
+    args:
+      scenario: {desc: "Scenario: base, upside, downside"}
+      period_start: {type: date, desc: "Forecast period start", default: "$as_of"}
+      period_end: {type: date, desc: "Forecast period end", default: "+52w"}
+    sql: |
+      SELECT COALESCE(f.forecast_type, 'base') AS scenario,
+             ROUND(SUM(f.units_forecast), 0) AS units_forecast,
+             ROUND(SUM(f.units_forecast) / ((CAST($period_end AS DATE) - CAST($period_start AS DATE)) / 7), 0) AS avg_weekly_units
+      FROM forecasts f
+      WHERE ($scenario IS NULL OR f.forecast_type = $scenario)
+        AND f.forecast_week >= CAST($period_start AS DATE) AND f.forecast_week <= CAST($period_end AS DATE)
+      GROUP BY f.forecast_type
+    example: {}
+
+  - name: list_forecast_model_external_regressors
+    desc: List forecast model external regressors (weather, holidays, social trends, etc.). Shows what external data feeds the model.
+    kind: select
+    from: forecast_errors
+    filters:
+      error_driver: {op: like, desc: "Regressor type: weather, holidays, trends"}
+    columns: [error_id, error_driver, explanation]
+    order: error_driver
+    limit: 20
+    example: {error_driver: "weather"}
+
+  - name: list_forecasts_by_error_and_bias
+    desc: List forecasts by error and bias. Identifies worst-performing forecasts for investigation.
+    kind: sql
+    args:
+      mape_threshold_pct: {type: float, desc: "Flag forecasts with MAPE above this %", default: 20.0}
+      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT a.config_id, a.sku, a.category, a.forecast_level,
+             ROUND(a.mape_pct, 1) AS mape_pct,
+             ROUND(a.bias_pct, 1) AS bias_pct,
+             a.period_end
+      FROM forecast_accuracy a
+      WHERE a.mape_pct > $mape_threshold_pct
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      ORDER BY a.mape_pct DESC
+    limit: 50
+    example: {}
+
+  - name: list_new_product_launches
+    desc: List new product launches by season. Shows launch dates, category and risk.
+    kind: sql
+    args:
+      season: {required: true, desc: "Season code, e.g. AW26"}
+      status: {desc: Status, default: "in_production"}
+    sql: |
+      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
+             p.category, p.risk_score, p.status
+      FROM pipeline_products p
+      WHERE p.season = $season AND ($status IS NULL OR p.status = $status)
+      ORDER BY p.launch_date
+    limit: 100
+    example: {season: "AW26"}
+
+  - name: list_top_selling_skus
+    desc: List top selling SKUs by units or revenue. For inventory optimization.
+    kind: sql
+    args:
+      metric: {type: enum, values: [units, revenue], desc: "Rank by units or revenue", default: revenue}
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+      limit_rows: {type: int, desc: Number to return, default: 200}
+    sql: |
+      SELECT h.sku, SUM(h.units_sold) AS units_sold, ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(SUM(h.revenue_gbp) / NULLIF(SUM(h.units_sold), 0), 2) AS avg_price_gbp
+      FROM demand_history h
+      WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      GROUP BY h.sku
+      ORDER BY CASE WHEN $metric = 'units' THEN units_sold ELSE CAST(SUM(h.revenue_gbp) AS INT) END DESC
+    limit: 200
+    example: {}
+
+  - name: run_daily_order_volume_forecast
+    desc: Runs daily order volume forecast for e-commerce. Used for daily fulfillment capacity by day.
+    kind: sql
+    args:
+      channel: {desc: "Sales channel"}
+      region: {desc: "Region"}
+      forecast_start: {type: date, desc: "Forecast start", default: "$as_of"}
+      days_ahead: {type: int, desc: "Days to forecast", default: 7}
+    sql: |
+      SELECT o.order_date AS forecast_date,
+             COALESCE(SUM(o.units), 0) AS units_forecast,
+             ROUND(COALESCE(SUM(o.value_gbp), 0), 0) AS value_gbp,
+             'Daily forecast for fulfillment capacity planning' AS use_case
+      FROM daily_orders o
+      WHERE ($channel IS NULL OR o.channel = $channel)
+        AND ($region IS NULL OR o.region = $region)
+        AND o.order_date >= CAST($forecast_start AS DATE)
+        AND o.order_date < CAST($forecast_start AS DATE) + INTERVAL ($days_ahead) DAY
+      GROUP BY o.order_date
+      ORDER BY o.order_date
+    example: {channel: "web"}
+
+  - name: run_demand_scenario
+    desc: Run modelled demand scenario (downside, upside, base). Creates forecast under different assumptions.
+    kind: sql
+    args:
+      scenario_name: {required: true, desc: "Scenario: base, upside, downside"}
+      scenario_adjustment_pct: {type: float, desc: "Adjustment %", default: 0.0}
+      period_start: {type: date, desc: "Period start", default: "$as_of"}
+      period_end: {type: date, desc: "Period end", default: "+12w"}
+    sql: |
+      SELECT CAST($period_start AS DATE) AS period_start, CAST($period_end AS DATE) AS period_end,
+             $scenario_name AS scenario,
+             ROUND(SUM(f.units_forecast) * (1 + $scenario_adjustment_pct / 100.0), 0) AS scenario_units,
+             'Scenario analysis for S&OP planning' AS use_case
+      FROM forecasts f
+      WHERE f.forecast_type = 'base'
+        AND f.forecast_week >= CAST($period_start AS DATE) AND f.forecast_week <= CAST($period_end AS DATE)
+    example: {scenario_name: "downside", scenario_adjustment_pct: -5.0}
+
+  - name: run_forecast_backtest
+    desc: Run backtest of forecast configuration on historical data. Shows how well model would have performed.
+    kind: sql
+    args:
+      config_id: {required: true, desc: Configuration to backtest}
+      period_start: {type: date, desc: "Backtest period start", default: "-52w"}
+      period_end: {type: date, desc: "Backtest period end", default: "-4w"}
+    sql: |
+      SELECT c.config_id, c.config_name, c.method_type,
+             ROUND(AVG(a.mape_pct), 1) AS backtest_mape_pct,
+             COUNT(DISTINCT a.sku) AS items_backtested,
+             'Backtest accuracy on historical holdout set' AS measure
+      FROM forecast_configs c
+      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
+        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
+      WHERE c.config_id = $config_id
+      GROUP BY c.config_id, c.config_name, c.method_type
+    example: {config_id: "CFG-900001"}
+
+  - name: run_key_account_order_forecast
+    desc: Runs key account order forecast based on sell-through and current stock.
+    kind: sql
+    args:
+      account_id: {desc: "Account/customer id"}
+      period_start: {type: date, desc: "Period start", default: "$as_of"}
+      weeks_ahead: {type: int, desc: "Weeks to forecast", default: 12}
+    sql: |
+      SELECT CAST($period_start AS DATE) AS period_start,
+             CAST($period_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY AS period_end,
+             COALESCE(SUM(f.units_forecast), 0) AS account_order_forecast_units,
+             'Account forecast based on historical sell-through patterns' AS basis
+      FROM forecasts f
+      WHERE f.forecast_week >= CAST($period_start AS DATE)
+        AND f.forecast_week < CAST($period_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+    example: {}
+
+  - name: run_new_product_forecast
+    desc: Run demand forecast for new product launch. Uses comparable products and external signals.
+    kind: sql
+    args:
+      sku: {required: true, desc: "New product SKU"}
+      launch_date: {required: true, type: date, desc: "Launch date"}
+      weeks_to_forecast: {type: int, desc: "Weeks to forecast", default: 12}
+    sql: |
+      SELECT p.sku, p.product_name, p.launch_date,
+             ROUND(COALESCE(SUM(f.units_forecast) * 0.8, 0), 0) AS conservative_forecast_units,
+             ROUND(COALESCE(SUM(f.units_forecast), 0), 0) AS base_forecast_units,
+             ROUND(COALESCE(SUM(f.units_forecast) * 1.2, 0), 0) AS optimistic_forecast_units,
+             'New product forecast based on comparable products' AS method
+      FROM pipeline_products p
+      LEFT JOIN forecasts f ON p.category = f.category
+        AND f.forecast_week >= p.launch_date
+        AND f.forecast_week < p.launch_date + INTERVAL ($weeks_to_forecast * 7) DAY
+      WHERE p.sku = $sku
+      GROUP BY p.sku, p.product_name, p.launch_date
+    example: {sku: "SKU-100999", launch_date: "2026-10-13"}
+
+  - name: run_promotional_volume_forecast
+    desc: Runs promotional volume forecast. Estimates units and revenue during promotion.
+    kind: sql
+    args:
+      category: {required: true, desc: Product category}
+      mechanic: {required: true, desc: "Promotion mechanic, e.g. percentage_off"}
+      period_start: {type: date, required: true, desc: "Promo start"}
+      period_end: {type: date, required: true, desc: "Promo end"}
+    sql: |
+      SELECT $category AS category, $mechanic AS mechanic,
+             CAST($period_start AS DATE) AS promo_start,
+             CAST($period_end AS DATE) AS promo_end,
+             COALESCE(SUM(h.units_sold), 0) AS base_period_units,
+             ROUND(COALESCE(SUM(h.units_sold) *
+               (SELECT COALESCE(AVG(p.uplift_pct), 1.3) FROM promotion_effects p WHERE p.category = $category AND p.promo_mechanic = $mechanic), 0), 0) AS promo_volume_forecast
+      FROM demand_history h
+      WHERE h.category = $category
+        AND h.period_date >= CAST($period_start AS DATE) - INTERVAL 4 WEEK
+        AND h.period_date < CAST($period_start AS DATE)
+    example: {category: "Kitchenware", mechanic: "percentage_off", period_start: "2026-11-18", period_end: "2026-11-24"}
+
+  - name: search_comparable_products
+    desc: Search for comparable products to use for new product forecasting. Returns SKU, category and sales history.
+    kind: sql
+    args:
+      name_keywords: {required: true, desc: "Keywords to search product names, e.g. 'backpack canvas'"}
+      category: {desc: Product category}
+    sql: |
+      SELECT DISTINCT p.sku, p.style_id, p.name, p.category,
+             COALESCE(SUM(h.units_sold), 0) AS units_sold_52w,
+             'Use sales history of comparable products to forecast new product' AS use_case
+      FROM master.products p
+      LEFT JOIN demand_history h ON p.sku = h.sku AND h.period_date >= $as_of - INTERVAL 52 WEEK
+      WHERE (p.name ILIKE '%' || $name_keywords || '%' OR p.category ILIKE '%' || $name_keywords || '%')
+        AND ($category IS NULL OR p.category = $category)
+      GROUP BY p.sku, p.style_id, p.name, p.category
+      ORDER BY units_sold_52w DESC
+    limit: 20
+    example: {name_keywords: "canvas backpack"}
+
+  - name: update_demand_history_adjustments
+    desc: Update demand history adjustments for stockout-distorted periods. Stores corrected values for model retraining.
+    kind: update
+    table: demand_history_adjustments
+    set: {units_lost: "{units_lost}", correction_method: "{correction_method}"}
+    args:
+      adjustment_id: {required: true}
+      units_lost: {type: int, desc: "Estimated lost units"}
+      correction_method: {required: true, desc: "Correction method, e.g. 'use average of pre/post'"}
+    example: {adjustment_id: "ADJ-900001", units_lost: 450, correction_method: "use average of pre/post"}
+
+  - name: update_forecast_model_settings
+    desc: Update forecast model settings, including rolling back a configuration change. Returns old and new settings.
+    kind: update
+    table: forecast_configs
+    set: {status: "{status}", notes: "{notes}"}
+    args:
+      config_id: {required: true}
+      status: {desc: "Status: active, archived, test"}
+      notes: {desc: "Update notes"}
+    example: {config_id: "CFG-900001", status: archived, notes: "Rolled back due to poor accuracy"}

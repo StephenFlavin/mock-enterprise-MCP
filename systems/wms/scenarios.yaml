@@ -1,0 +1,378 @@
+# Scenarios for WMS tools - stage 1
+
+- question: "01:4:Q1"
+  story: >
+    Bay C-14 at Northampton DC (location DC1-C-14-02) shows a system count of 150 units of PF-220 but physical
+    count last week found only 85 units. The count accuracy issue flag is set. The bay is blocked pending recount.
+    Multiple cycle count results show variances of -65 units on this location.
+  checks:
+    - tool: get_location_inventory_balance
+      args: {location_id: DC1-C-14-02}
+      expect: ["PF-220", "85", "150"]
+    - tool: list_cycle_count_results_for_location
+      args: {location_id: DC1-C-14-02}
+      expect: ["CCR-", "variance", "PF-220"]
+    - tool: get_stock_movements_for_location
+      args: {location_id: DC1-C-14-02, days: 90}
+      expect: ["MOV-", "receipt", "pick"]
+    - tool: block_location
+      args: {location_id: DC1-C-14-02, reason: "Awaiting recount - variance of 65 units"}
+      expect: ["blocked"]
+    - tool: create_cycle_count_task
+      args: {location_id: DC1-C-14-02, priority: 95}
+      expect: ["CCT-", "planned", "DC1-C-14-02"]
+
+- question: "01:4:Q3"
+  story: >
+    Cycle count planner has 3 days of counting capacity. Using list_locations_by_last_count_date and
+    calculate_count_priority_score, the highest priority locations are identified. Bay C-14 (DC1-C-14-02)
+    and C-15 have historical accuracy issues and low counts. Zone D locations are skipped.
+    The count sheet is drafted and tasks released.
+  checks:
+    - tool: list_locations_by_last_count_date
+      args: {site_id: DC1}
+      expect: ["DC1", "location_id"]
+    - tool: get_historical_count_accuracy_by_location
+      args: {site_id: DC1, exclude_counted_within_days: 30}
+      expect: ["accuracy_issue_pct", "DC1"]
+    - tool: calculate_count_priority_score
+      args: {site_id: DC1, exclude_counted_within_days: 30}
+      expect: ["priority_score", "days_since_count"]
+    - tool: draft_cycle_count_sheet
+      args: {location_ids: "DC1-C-14-02"}
+      expect: ["CYCLE COUNT SHEET", "DC1-C-14-02", "Zone"]
+    - tool: release_cycle_count_tasks
+      args: {task_ids: "CCT-900001,CCT-900002"}
+      expect: ["released"]
+    - tool: cancel_cycle_count_task
+      args: {task_id: CCT-900001, cancel_reason: "Zone D excluded per manager request"}
+      expect: ["cancelled"]
+    - tool: reassign_cycle_count_task
+      args: {task_id: CCT-900002, assigned_to: "EMP-02456"}
+      expect: ["reassigned", "EMP-02456"]
+
+- question: "01:4:Q4"
+  story: >
+    Comparing goods receipts to ASN for 8 weeks shows variance with SUP-0042 responsible for most short shipments.
+    GR-900001 received 950 units but ASN (PO qty) was 1000, so -50 unit variance valued at £1,500 cost basis.
+    Two other receipts from SUP-0042 also short.
+  checks:
+    - tool: list_goods_receipts
+      args: {site_id: DC1, days: 56}
+      expect: ["GR-", "qty_received", "qty_ordered"]
+    - tool: compare_receipts_to_asns
+      args: {supplier_id: "SUP-0042", date_from: "-56d"}
+      expect: ["variance", "short", "SUP-0042"]
+    - tool: get_asn_timeliness_history
+      args: {supplier_id: "SUP-0042", date_from: "-90d"}
+      expect: ["lead_time", "accuracy", "SUP-0042"]
+
+- question: "01:6:Q1"
+  story: >
+    Cost per unit shipped was 9% higher in September. September handled more single-unit orders (60% vs 50%)
+    and shipped 5000 units total vs 4800 in August. Average order size dropped from 2.5 to 1.8 units.
+  checks:
+    - tool: get_units_shipped_by_period
+      args: {period: "month", date_from: "-60d"}
+      expect: ["units", "orders", "period"]
+    - tool: get_order_line_profile
+      args: {site_id: DC1, period: "month"}
+      expect: ["units_per_order", "single_unit"]
+
+- question: "01:6:Q2"
+  story: >
+    DC1 storage is filling up. Pallet positions by zone show: pick 68% full, reserve 82% full, bulk 91% full.
+    Total building utilisation 78%. Apparel and home goods are driving the space. Forecast shows peak
+    inbound arriving next week.
+  checks:
+    - tool: get_storage_capacity_by_zone
+      args: {site_id: DC1}
+      expect: ["utilisation_pct", "pick", "reserve", "bulk"]
+    - tool: get_pallet_positions_by_category
+      args: {site_id: DC1}
+      expect: ["category", "occupied", "pallet"]
+
+- question: "03:22:Q1"
+  story: >
+    Style 5520 stocked out in 40 stores for 9 days last month. DC receipts show 2000 units arrived on Oct-8,
+    then 1500 units shipped out over 3 days. Forecast data and allocations need to be checked.
+  checks:
+    - tool: get_goods_receipts_for_product
+      args: {sku: "STY-5520", date_from: "-90d"}
+      expect: ["receipt_id", "qty_received", "STY-5520"]
+    - tool: get_dc_stock_history_for_product
+      args: {sku: "STY-5520", date_from: "-90d"}
+      expect: ["date", "units", "STY-5520"]
+
+- question: "03:22:Q4"
+  story: >
+    14,000 units of seasonal throw (SKU K-1700) sit at DC1 in reserve storage. Northern stores selling out,
+    southern stores overstocked. Rebalance transfer created from DC1 to DC3 for 1000 units.
+  checks:
+    - tool: get_dc_stock_for_product
+      args: {sku: "K-1700", site_id: DC1}
+      expect: ["on_hand", "reserve", "K-1700"]
+    - tool: create_stock_transfer
+      args: {from_site_id: DC1, to_site_id: DC3, sku: "K-1700", qty_requested: 1000, reason: rebalance}
+      expect: ["STR-", "draft", "rebalance"]
+
+- question: "03:31:Q4"
+  story: >
+    DC1 utilisation is 78% overall. By zone: pick 68%, reserve 82%, bulk 91%. Pick zone has 250 vacant positions,
+    reserve has 180 vacant. Bulk is at capacity during peak.
+  checks:
+    - tool: get_dc_utilisation
+      args: {site_id: DC1}
+      expect: ["utilisation_pct", "DC1", "zone"]
+
+- question: "07:67:Q4"
+  story: >
+    Bonded warehouse could defer duty on 5000 units of imports (SKU PF-220) valued at £45,000. Stock is
+    in DC2 reserve zone, eligible for bonded storage.
+  checks:
+    - tool: get_bonded_warehouse_volumes
+      args: {site_id: DC2}
+      expect: ["bonded", "units", "value"]
+
+- question: "07:69:Q5"
+  story: >
+    WMS stock value differs from GL by £1.2m. Mapping between WMS and ERP inventory statuses shows
+    available vs reserved discrepancies. 45 SKUs have stock differences over £10k each.
+  checks:
+    - tool: get_inventory_status_mapping
+      args: {}
+      expect: ["status", "wms", "erp"]
+    - tool: get_wms_stock_valuation
+      args: {site_id: DC1}
+      expect: ["valuation", "quantity", "value"]
+
+- question: "08:74:Q2"
+  story: >
+    Black Friday peak forecast shows 8000 units daily capacity at DC1. Marketing forecast predicts
+    8500 orders daily from Nov 24 to Dec 15. Constraint is at cutoff times, carrier capacity is marginal.
+  checks:
+    - tool: get_dc_daily_capacity
+      args: {site_id: DC1, date_from: "-7d", date_to: "+7d"}
+      expect: ["units_picked", "date", "site_id"]
+
+- question: "08:74:Q5"
+  story: >
+    Split orders up 15% (now 8% of orders). Stock location for splits shows 120 SKUs with only
+    5 DC locations holding them, forcing splits. Allocation rule change recommended.
+  checks:
+    - tool: get_stock_location_for_split_orders
+      args: {limit: 50}
+      expect: ["sku", "locations", "split"]
+
+- question: "08:75:Q1"
+  story: >
+    Wholesale customer order ORD-2026-900001 arrived short 50 units of PF-220. Pick and pack record
+    shows correct quantity picked but loading dock records show only 950 shipped vs 1000 picked.
+  checks:
+    - tool: get_pick_and_pack_record_for_order
+      args: {order_id: "ORD-2026-900001"}
+      expect: ["pick", "pack", "sku", "quantity"]
+
+- question: "09:81:Q4"
+  story: >
+    Data model for cost per order joins WMS picking cost (units, time), TMS freight cost (shipment weight,
+    distance), and ERP order charges. Three-way join model needed on order_id and shipment_id.
+  checks:
+    - tool: get_wms_labour_and_handling_cost_by_order
+      args: {order_id: "ORD-2026-900001"}
+      expect: ["cost", "labour", "order_id"]
+
+- question: "09:82:Q6"
+  story: >
+    Predicting supplier delay risk uses ASN timeliness data. Suppliers ranked by lead time and
+    on-time percentage. 12-week history shows SUP-0042 has 87% OTIF with 45-day average lead time.
+  checks:
+    - tool: get_asn_timeliness_history
+      args: {date_from: "-84d", date_to: "$as_of"}
+      expect: ["lead_time", "accuracy", "supplier"]
+
+- question: "09:83:Q2"
+  story: >
+    New ASN spec v2 adds pallet-level packing data. WMS inbound field schema shows 18 current fields
+    (PO, SKU, qty, batch, lot, expiry, carrier, dock). New spec needs 6 additional pallet fields.
+  checks:
+    - tool: get_wms_inbound_field_schema
+      args: {}
+      expect: ["field", "wms", "inbound", "sku"]
+
+- question: "09:87:Q5"
+  story: >
+    Northampton DC (DC1) cost per unit is 18% above network average. Product mix shows 40% apparel vs
+    network average 35%. Volume in September was 45,000 units (20% below DC3). Mix and volume both
+    contributing to cost disadvantage.
+  checks:
+    - tool: get_dc_product_mix_and_volume
+      args: {site_id: DC1, period_days: 30}
+      expect: ["volume", "category", "sku_count"]
+
+- question: "04:40:Q1"
+  story: >
+    Small-appliance packaging comparison: PF-220 portable fan. Current: polybag, 4 units per pack, 100 packs
+    per pallet = 400 units per pallet, 160cm height. New option: moulded pulp, same density. Calculate
+    pallet fill for each.
+  checks:
+    - tool: calculate_pallet_fill_by_pack_spec
+      args: {sku: "PF-220", pack_type: "polybag"}
+      expect: ["units_per_pallet", "400", "PF-220"]
+
+- question: "02:14:Q7"
+  story: >
+    Re-export volumes to Ireland and EU total 3500 units this quarter (SKUs eligible for inward processing
+    relief). Stock movements for re-export goods show: receipts 3500, customs hold 2000, cleared 1500,
+    shipped 1200. Duty deferral value estimated at £18,500.
+  checks:
+    - tool: get_reexport_volumes_by_destination
+      args: {destination: "Ireland"}
+      expect: ["units", "destination", "value"]
+    - tool: get_stock_movements_for_reexport_goods
+      args: {date_from: "-90d"}
+      expect: ["movement", "reexport", "units"]
+
+- question: "07:69:Q3"
+  story: >
+    Year-end shrink and write-off forecast. Nine months in, actual shrink £45k, write-offs £12k.
+    Last year's pattern: Oct-Dec added £15k shrink and £8k write-offs. High-risk categories are perishables
+    (17% shrink rate) and small electronics (5% theft rate).
+  checks:
+    - tool: create_cycle_count_task
+      args: {location_id: DC1-C-14-02}
+      expect: ["CCT-", "planned"]
+
+- question: "08:75:Q4"
+  story: >
+    Wholesale customer damage claims: 3 of 4 recent orders had short shipments. ORD-2026-900001 picked
+    1000 but shipped 950 (dock record). ORD-2026-900002 similar pattern. Carrier CAR-001 on both shipments.
+  checks:
+    - tool: get_pick_and_pack_record_for_order
+      args: {order_id: "ORD-2026-900001"}
+      expect: ["pick", "pack", "1000"]
+
+- question: "09:88:Q4"
+  story: >
+    Capacity planning for peak and next year. DC1 current capacity: 500 picks/hour, 200 packs/hour,
+    45 shipments/day. Forecast growth 15% but peak adds 50% load. Site capacity by process shows current
+    vs rated utilisation and bottlenecks.
+  checks:
+    - tool: get_site_capacity_by_process
+      args: {site_id: DC1}
+      expect: ["capacity", "process", "site_id"]
+
+- question: "09:90:Q6"
+  story: >
+    DC cutover planning needs rollback requirements. System can roll back during peak with data recovery,
+    process restart and 4-hour parallel run cutover window. Safety stock and allocation rules are
+    rollback-critical.
+  checks:
+    - tool: get_rollback_requirements
+      args: {}
+      expect: ["rollback", "data", "process"]
+
+- question: "01:8:Q2"
+  story: >
+    ERP and WMS stock mismatch (£1.2m). Pick affinity analysis: SKUs PF-220 and K-1700 picked together
+    100 times last month, should sit side-by-side in pick zone. Current slot: PF-220 at C-14,
+    K-1700 at E-06 (opposite end).
+  checks:
+    - tool: get_pick_affinity_pairs
+      args: {}
+      expect: ["sku", "frequency", "affinity"]
+
+- question: "01:8:Q3"
+  story: >
+    WMS version 9.2 has known bug in release notes: duplicate task creation after replenishment.
+    Patch 9.2.5 includes fix with requirement to run 3 test cycles. Version deployed 2 weeks ago.
+  checks:
+    - tool: get_wms_version_and_patches
+      args: {}
+      expect: ["version", "9.2", "patch"]
+    - tool: list_replenishment_task_duplicates
+      args: {}
+      expect: ["task", "duplicate", "created"]
+
+- question: "03:22:Q5"
+  story: >
+    Out-of-stock rate up from 4% to 6.5% in a month. DC inbound delays account for 0.8pp (late receipts
+    from 3 suppliers). Lost sales on 5 SKUs accounted for 1.2pp. Supply chain disruption and allocation
+    logic both contributing.
+  checks:
+    - tool: get_dc_inbound_delays
+      args: {site_id: DC1, days_late_threshold: 3, date_from: "-90d"}
+      expect: ["delay", "days_late", "supplier"]
+
+- question: "01:4:Q3_locations"
+  story: >
+    Locations need to be queryable by last count date to prioritize cycle counting. Table shows all DC1
+    locations with most recent count date.
+  checks:
+    - tool: list_locations_by_last_count_date
+      args: {site_id: DC1}
+      expect: ["location_id", "DC1", "date"]
+
+- question: "01:4:Q1_movements"
+  story: >
+    Movement history for bay C-14 over 90 days shows receipt on Oct-1, then 3 picks, then adjustment.
+    Movements trace the 65-unit discrepancy.
+  checks:
+    - tool: get_stock_movements_for_location
+      args: {location_id: DC1-C-14-02, days: 90}
+      expect: ["movement", "MOV-", "qty"]
+
+- question: "01:4:Q1_balance"
+  story: >
+    Current inventory balance for DC1-C-14-02 shows 85 units of PF-220 on hand (from movements),
+    system said 150, variance of -65.
+  checks:
+    - tool: get_location_inventory_balance
+      args: {location_id: DC1-C-14-02}
+      expect: ["on_hand", "system", "variance"]
+
+- question: "01:4:Q1_results"
+  story: >
+    Recent cycle count for bay C-14 (last Tuesday) found 85 units of PF-220, system had 150.
+    Accuracy issue flag set. Multiple count result records for this location show the variance.
+  checks:
+    - tool: list_cycle_count_results_for_location
+      args: {location_id: DC1-C-14-02}
+      expect: ["count", "variance", "CCR-"]
+
+- question: "01:8:Q1_orders"
+  story: >
+    140 orders stuck in "allocation failed" since morning (ARD IDs starting with ARSD-, ORD-2026-900xxx).
+    Common SKU profile: all apparel, style codes starting with STY-5, majority size L-XL. Configuration
+    change 2 hours before failure affects size allocation rules.
+  checks:
+    - tool: list_orders_by_status
+      args: {status: "allocation_failed", site_id: DC1}
+      expect: ["order", "allocation_failed"]
+
+- question: "01:8:Q1_reasons"
+  story: >
+    Allocation failure reasons show: configuration change (98 orders), missing supplier confirmation (32 orders),
+    interface error (10 orders). Size allocation rule change was the main cause.
+  checks:
+    - tool: list_allocation_failure_reasons
+      args: {}
+      expect: ["reason", "count"]
+
+- question: "08:75:Q4_causes"
+  story: >
+    Cause code definitions needed for investigating short shipments. CC-003 (supplier short), CC-004 (carrier damage),
+    CC-005 (system error). Each has different remediation path.
+  checks:
+    - tool: get_cause_code_definitions
+      args: {category: "supplier_short"}
+      expect: ["CC-003", "supplier", "short"]
+
+- question: "01:6:Q2_wave"
+  story: >
+    Wave configuration at DC1: release cut-off 14:00, wave size 100-500 orders, batch frequency every 2 hours.
+    Configuration is 3 waves per day, 3000 unit daily limit per wave due to conveyor capacity.
+  checks:
+    - tool: get_wave_configuration
+      args: {site_id: DC1}
+      expect: ["wave", "configuration", "cut", "batch"]

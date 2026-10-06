@@ -1,0 +1,146 @@
+# Stage 1 scenarios for contracts system
+# One entry per tool being tested or question that depends on stage 1 tools
+
+- question: "02:20:Q1"
+  story: >
+    CAR-002 (Midshires Transport) contract CTR-900001 has rate card RTC-900001 with base rate £3.50/unit
+    and surcharges for fuel and distance. When comparing Feb-Aug 2026 carrier invoices against contracted rates,
+    we spot £450 overcharge in surcharges (DSP-900001 dispute raised Aug 2026).
+  checks:
+    - tool: get_carrier_contract_rates
+      args: {carrier_id: CAR-002, contract_id: CTR-900001}
+      expect: ["RTC-900001", "3.5", "CTR-900001"]
+    - tool: get_contract_claim_time_limits
+      args: {contract_id: CTR-900001}
+      expect: ["claim_window", "CTR-900001"]
+
+- question: "02:20:Q5"
+  story: >
+    CAR-002 damage claims doubled in Q3 2026. Carrier liability is capped at £50k with £1k deductible under
+    CTR-900001 clause liability_1. We need to calculate recoverable value on a £5000 damage claim from July 2026 (BRH-900003).
+  checks:
+    - tool: get_carrier_liability_terms
+      args: {carrier_id: CAR-002, contract_id: CTR-900001}
+      expect: ["liability", "50000"]
+    - tool: calculate_recoverable_claim_value
+      args: {contract_id: CTR-900001, damage_value_gbp: 5000}
+      expect: ["5000", "recoverable", "liability_limit"]
+
+- question: "02:20:Q4"
+  story: >
+    We need to track rate increases coming from carriers. CTR-900002 with CAR-007 has rate_review_1 clause
+    that defines review frequency and notice periods (60 days). This lets us forecast budget impact.
+  checks:
+    - tool: get_carrier_contract_rate_review_clauses
+      args: {carrier_id: CAR-007, contract_id: CTR-900002}
+      expect: ["price_review", "CTR-900002"]
+
+- question: "04:34:Q7"
+  story: >
+    We want to commit 50k units annually to nearshore supplier SUP-0042 (CTR-900005) with standard terms
+    and liability clauses. Under pessimistic demand scenario (70% of base volume), we want to calculate
+    downside risk. We then draft framework agreement DRF-900001 with selected clauses.
+  checks:
+    - tool: calculate_commitment_risk_scenarios
+      args: {contract_id: CTR-900005, base_volume_units: 50000, unit_cost_gbp: 5}
+      expect: ["50000", "downside_risk", "pessimistic"]
+    - tool: create_contract_draft
+      args: {draft_type: new_supplier, template_id: TMT-001, selected_clauses: '["payment_terms_1"]', counterparty_id: SUP-0042}
+      expect: ["DRF-", "draft"]
+
+- question: "04:36:Q1"
+  story: >
+    Preferred-supplier share of category spend dropped from 82% to 74%. We check contract coverage by category
+    to identify contract gaps. CTR-900003 (SUP-0001), CTR-900005 (SUP-0042) cover different categories.
+  checks:
+    - tool: get_contract_coverage_by_category
+      args: {category: "textiles"}
+      expect: ["contract_id", "coverage"]
+
+- question: "04:38:Q1"
+  story: >
+    Reviewing supplier agreement against standard terms. We compare CTR-900003 contract clauses against
+    standard (payment_terms, price_review) and calculate liability exposure on a £100k order (limit is £25k).
+  checks:
+    - tool: compare_contract_to_standard_terms
+      args: {contract_id: CTR-900003}
+      expect: ["CTR-900003", "clause"]
+    - tool: calculate_liability_exposure
+      args: {contract_id: CTR-900005, volume_units: 100, unit_value_gbp: 1000}
+      expect: ["100000", "exposure", "25000"]
+
+- question: "04:38:Q3"
+  story: >
+    Supplier wants to cap liability at £25k per order. We review CTR-900005 liability clause (currently £25k),
+    record our counter position as POS-900001 (5% reduction + volume commitment), and update negotiation state.
+  checks:
+    - tool: create_contract_breach_record
+      args: {contract_id: CTR-900001, breach_date: "-10d", description: "Late delivery by 2 days", impact: "Store impact"}
+      expect: ["BRH-", "logged"]
+
+- question: "04:38:Q6"
+  story: >
+    Supplier missed critical delivery. We log breach BRH-900001 against CTR-900001 (late 2 days, store stockout).
+    Then review contract remedies clauses to understand what action we can take.
+  checks:
+    - tool: create_contract_breach_record
+      args: {contract_id: CTR-900001, breach_date: "-5d", description: "Late delivery by 2 days", impact: "Store stockout"}
+      expect: ["logged", "CTR-900001"]
+
+- question: "04:38:Q7"
+  story: >
+    Contract renewals coming up. CTR-900002 expires 2026-10-04 (60 days notice = alert by Sept 2) with auto-renewal.
+    We set renewal alert ALR-900001 for 2026-10-02 and may archive expired CTR-900005 after review.
+  checks:
+    - tool: create_contract_renewal_alert
+      args: {contract_id: CTR-900002, alert_date: "+30d"}
+      expect: ["ALR-", "scheduled"]
+    - tool: archive_contract_record
+      args: {contract_id: CTR-900005}
+      expect: ["archived"]
+
+- question: "04:38:Q4"
+  story: >
+    Review top 30 supplier contracts for risk clauses (liability, force majeure, termination).
+    CTR-900001 and CTR-900002 have liability and rate_review clauses. CTR-900003 has short_shipment clause.
+    We rank by risk and note notice periods.
+  checks:
+    - tool: calculate_contract_risk_ranking
+      args: {}
+      expect: ["contract_id", "risk_rank"]
+
+- question: "02:11:Q2"
+  story: >
+    Transport planner drafting negotiation brief for pallet network trial. We draft brief for CAR-007 (CTR-900002)
+    using current rates RTC-900002 and recent breaches. NGT-900002 negotiation case opened Sept 2026.
+  checks:
+    - tool: draft_negotiation_brief
+      args: {contract_id: CTR-900002, carrier_id: CAR-007}
+      expect: ["NEGOTIATION BRIEF", "CAR-007", "active"]
+
+- question: "04:32:Q7"
+  story: >
+    Preparing negotiation brief for annual supplier review with carrier. We get their contract terms from
+    CTR-900002 and draft brief using current rates and breach history. NGT-900002 case opened Sept 2026.
+  checks:
+    - tool: draft_negotiation_brief
+      args: {contract_id: CTR-900002, carrier_id: CAR-007}
+      expect: ["NEGOTIATION BRIEF"]
+
+- question: "04:38:Q3"
+  story: >
+    Record our negotiation position as POS-900001 on CTR-900001 case NGT-900001. Position type is "offer"
+    with 5% rate reduction + volume commitment terms recorded.
+  checks:
+    - tool: update_contract_negotiation_position
+      args: {contract_id: CTR-900001, case_id: NGT-900001, position_type: offer, terms: "5% reduction", notes: "Initial offer"}
+      expect: ["POS-", "offer"]
+
+- question: "01:4:Q4"
+  story: >
+    Inventory cycle counter comparing goods receipts to ASNs. Finds SUP-0001 short-shipped on 8 occasions
+    (CTR-900003 has short_shipment clause with £2.50/unit penalty). Need claimable value within 60-day window.
+  checks:
+    - tool: calculate_short_shipment_penalties
+      args: {contract_id: CTR-900003, expected_units: 1000, received_units: 950}
+      expect: ["short_units", "penalty", "125"]

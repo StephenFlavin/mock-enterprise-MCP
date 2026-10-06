@@ -1,0 +1,794 @@
+id: po
+name: Purchase Order System
+instructions: >
+  Purchase orders, requisitions, supplier confirmations and order amendments.
+  PO ids look like PO-2026-004001. Use it for order management, delivery tracking,
+  price history, and supplier performance.
+
+tables:
+  purchase_requisitions:
+    key: req_id
+    cols:
+      req_id: {type: str, desc: "Requisition, e.g. REQ-000123"}
+      site_id: {type: str, desc: "Destination site (DC or store)"}
+      category: {type: str, desc: "Item category, e.g. Spare Parts, Supplies"}
+      description: {type: text, desc: "What is being requested"}
+      qty: {type: int, desc: "Quantity required"}
+      unit_cost_gbp: {type: float, desc: "Estimated unit cost in GBP"}
+      total_cost_gbp: {type: float, desc: "Total estimated cost"}
+      priority: {type: enum, values: [low, medium, high, urgent], desc: "Priority level"}
+      status: {type: enum, values: [draft, submitted, approved, rejected, ordered, received], desc: "Requisition status"}
+      requested_by: {type: str, desc: "Employee ID who requested"}
+      requested_at: {type: timestamp, desc: "When requested"}
+      approved_by: {type: str, desc: "Employee ID who approved"}
+      approved_at: {type: timestamp, desc: "When approved"}
+      related_po_id: {type: str, desc: "PO raised from this requisition"}
+      notes: {type: text, desc: "Additional notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  po_amendments:
+    key: amendment_id
+    cols:
+      amendment_id: {type: str, desc: "Amendment, e.g. AMD-000123"}
+      po_id: {type: str, desc: "Purchase order being amended"}
+      line_no: {type: int, desc: "Line number if line-specific (NULL if PO-level)"}
+      amendment_type: {type: enum, values: [delivery_date, ship_date, quantity, price, cancellation, other], desc: "Type of change"}
+      old_value: {type: str, desc: "Previous value"}
+      new_value: {type: str, desc: "New value"}
+      reason: {type: text, desc: "Why the amendment was made"}
+      requested_by: {type: str, desc: "Employee who requested"}
+      requested_at: {type: timestamp, desc: "When requested"}
+      approved_by: {type: str, desc: "Employee who approved"}
+      approved_at: {type: timestamp, desc: "When approved"}
+      status: {type: enum, values: [requested, approved, rejected, implemented], desc: "Amendment status"}
+      supplier_confirmed_at: {type: timestamp, desc: "When supplier confirmed"}
+      cost_impact_gbp: {type: float, desc: "Cost impact in GBP (positive = increase)"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  po_blocks:
+    key: block_id
+    cols:
+      block_id: {type: str, desc: "Block record, e.g. BLK-000123"}
+      po_id: {type: str, desc: "Purchase order"}
+      block_type: {type: enum, values: [supplier, factory, other], desc: "Reason for block"}
+      block_reason: {type: text, desc: "Why blocked, e.g. due diligence, compliance"}
+      blocked_by: {type: str, desc: "Employee ID who applied block"}
+      blocked_at: {type: timestamp, desc: "When blocked"}
+      unblock_approval_required: {type: bool, desc: "Does unblock need approval"}
+      unblocked_by: {type: str, desc: "Employee ID who unblocked"}
+      unblocked_at: {type: timestamp, desc: "When unblocked"}
+      status: {type: enum, values: [active, released, expired], desc: "Block status"}
+      notes: {type: text, desc: "Additional notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  po_price_history:
+    key: [po_id, line_no, occurrence]
+    cols:
+      po_id: {type: str, desc: "Purchase order"}
+      line_no: {type: int, desc: "Line number"}
+      sku: {type: str, desc: "SKU"}
+      occurrence: {type: int, desc: "Occurrence number (1 = first PO for this SKU)"}
+      order_date: {type: date, desc: "When PO was raised"}
+      quoted_unit_cost_gbp: {type: float, desc: "Quoted unit cost"}
+      actual_unit_cost_gbp: {type: float, desc: "Actual unit cost paid"}
+      qty_ordered: {type: int, desc: "Units ordered"}
+      qty_received: {type: int, desc: "Units received"}
+      variance_pct: {type: float, desc: "Price variance as percentage"}
+      supplier_id: {type: str, desc: "Supplier"}
+      invoice_date: {type: date, desc: "Invoice date"}
+      received_date: {type: date, desc: "Goods receipt date"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  supplier_confirmations:
+    key: confirmation_id
+    cols:
+      confirmation_id: {type: str, desc: "Confirmation record, e.g. CNF-000123"}
+      po_id: {type: str, desc: "Purchase order"}
+      supplier_id: {type: str, desc: "Supplier"}
+      confirmation_type: {type: enum, values: [order, shipment, asn], desc: "Type of confirmation"}
+      confirmed_ship_date: {type: date, desc: "Confirmed ex-factory date"}
+      confirmed_delivery_date: {type: date, desc: "Confirmed delivery date"}
+      status: {type: enum, values: [requested, received, superseded, rejected], desc: "Confirmation status"}
+      requested_at: {type: timestamp, desc: "When requested"}
+      received_at: {type: timestamp, desc: "When supplier replied"}
+      notes: {type: text, desc: "Supplier notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  commodity_commitments:
+    key: commitment_id
+    cols:
+      commitment_id: {type: str, desc: "Commitment record, e.g. COM-000123"}
+      supplier_id: {type: str, desc: "Supplier"}
+      commodity: {type: str, desc: "Commodity (e.g. Cotton, Polyester, Steel)"}
+      start_date: {type: date, desc: "Commitment start date"}
+      end_date: {type: date, desc: "Commitment end date"}
+      volume_units: {type: int, desc: "Committed volume"}
+      volume_uom: {type: str, desc: "Unit of measure (e.g. tonnes, meters)"}
+      price_gbp_per_unit: {type: float, desc: "Committed price per unit"}
+      used_to_date: {type: int, desc: "Units used so far"}
+      remaining_volume: {type: int, desc: "Remaining committed volume"}
+      status: {type: enum, values: [active, partially_used, fulfilled, expired], desc: "Commitment status"}
+      notes: {type: text, desc: "Additional notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  advance_shipping_notices:
+    key: asn_id
+    cols:
+      asn_id: {type: str, desc: "ASN record, e.g. ASN-000123"}
+      po_id: {type: str, desc: "Purchase order"}
+      supplier_id: {type: str, desc: "Supplier"}
+      asn_number: {type: str, desc: "Supplier's ASN number"}
+      shipment_id: {type: str, desc: "Related shipment ID"}
+      advised_at: {type: timestamp, desc: "When ASN was received"}
+      expected_delivery_date: {type: date, desc: "Expected delivery"}
+      status: {type: enum, values: [received, delivered, cancelled], desc: "ASN status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  asn_line_items:
+    key: [asn_id, line_no]
+    cols:
+      asn_id: {type: str, desc: "Advance shipping notice"}
+      line_no: {type: int, desc: "Line number"}
+      po_line_no: {type: int, desc: "Corresponding PO line"}
+      sku: {type: str, desc: "SKU"}
+      qty_advised: {type: int, desc: "Quantity advised"}
+      qty_received: {type: int, desc: "Quantity actually received"}
+      batch_no: {type: str, desc: "Batch/lot number"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  nearshore_pilot_markers:
+    key: marker_id
+    cols:
+      marker_id: {type: str, desc: "Marker record, e.g. MRK-000123"}
+      po_id: {type: str, desc: "Purchase order in nearshore pilot"}
+      supplier_id: {type: str, desc: "Nearshore pilot supplier"}
+      pilot_program: {type: str, desc: "Pilot program name"}
+      start_date: {type: date, desc: "When order entered pilot"}
+      status: {type: enum, values: [active, completed, cancelled], desc: "Pilot status"}
+      notes: {type: text, desc: "Pilot notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  # WRITE TOOLS (Stage 1: 9 write tools)
+  - name: block_purchase_orders_for_factory
+    desc: Place a hold on open POs for a factory pending supplier review or compliance check.
+    kind: insert
+    table: po_blocks
+    id_prefix: BLK-
+    defaults: {block_type: factory, status: active}
+    args:
+      po_id: {required: true}
+      block_reason: {required: true, desc: "Why blocked, e.g. due diligence, quality hold"}
+      blocked_by: {required: true, desc: "Employee ID"}
+    example: {po_id: "PO-2026-004001", block_reason: "Supplier due diligence review", blocked_by: "EMP-0123"}
+
+  - name: block_purchase_orders_for_supplier
+    desc: Places a hold on open purchase orders for a supplier pending review or remediation.
+    kind: insert
+    table: po_blocks
+    id_prefix: BLK-
+    defaults: {block_type: supplier, status: active}
+    args:
+      po_id: {required: true}
+      block_reason: {required: true, desc: "Why blocked, e.g. compliance, forced labour risk"}
+      blocked_by: {required: true, desc: "Employee ID"}
+    example: {po_id: "PO-2026-004001", block_reason: "Forced labour risk - under review", blocked_by: "EMP-0123"}
+
+  - name: cancel_open_purchase_order_line
+    desc: Cancels individual open lines on a purchase order. Reduces order quantity or removes line.
+    kind: update
+    table: master.po_lines
+    set: {qty_ordered: 0}
+    args: {}
+    example: {po_id: "PO-2026-004001", line_no: 1}
+
+  - name: cancel_purchase_order
+    desc: Cancels an open purchase order that has not yet shipped. Returns old and new status.
+    kind: update
+    table: master.purchase_orders
+    set: {status: cancelled}
+    args: {}
+    example: {po_id: "PO-2026-004013"}
+
+  - name: create_purchase_order
+    desc: Creates a draft purchase order for a supplier, product and quantity. Returns new PO id.
+    kind: insert
+    table: master.purchase_orders
+    id_prefix: PO-{YYYY}-
+    defaults: {status: draft}
+    args:
+      supplier_id: {required: true}
+      factory_id: {required: true}
+      dest_site_id: {required: true}
+      mode: {required: true, type: enum, values: [sea, air, road, rail], desc: "Inbound mode"}
+    example: {supplier_id: "SUP-0001", factory_id: "FAC-0001", dest_site_id: "DC1", mode: "sea"}
+
+  - name: create_purchase_requisition
+    desc: Create a requisition for spare parts or supplies for approval.
+    kind: insert
+    table: purchase_requisitions
+    id_prefix: REQ-
+    defaults: {status: submitted}
+    args:
+      site_id: {required: true}
+      category: {required: true}
+      description: {required: true}
+      qty: {required: true, type: int}
+      unit_cost_gbp: {required: true, type: float}
+      priority: {type: enum, values: [low, medium, high, urgent], default: medium}
+      requested_by: {required: true, desc: "Employee ID"}
+    example: {site_id: "DC1", category: "Spare Parts", description: "Motor bearings for conveyor", qty: 10, unit_cost_gbp: 45.50, requested_by: "EMP-0123"}
+
+  - name: delete_draft_purchase_order
+    desc: Deletes a draft purchase order that has not been approved. Returns confirmation.
+    kind: update
+    table: master.purchase_orders
+    set: {status: cancelled}
+    args: {}
+    example: {po_id: "PO-2026-004004"}
+
+  - name: release_purchase_order
+    desc: Releases an approved draft purchase order to the supplier.
+    kind: update
+    table: master.purchase_orders
+    set: {status: open}
+    args: {}
+    example: {po_id: "PO-2026-004001"}
+
+  - name: submit_purchase_order_for_approval
+    desc: Submits a draft purchase order into the approval workflow.
+    kind: update
+    table: master.purchase_orders
+    set: {status: confirmed}
+    args: {}
+    example: {po_id: "PO-2026-004001"}
+
+  # READ TOOLS (Stage 1: 11 read tools)
+  - name: calculate_expedite_cost_options
+    desc: Cost of air, split or expedite options for late orders. Returns cost per unit for each option.
+    kind: sql
+    args:
+      po_id: {required: true}
+    sql: |
+      SELECT p.po_id, p.supplier_id, p.factory_id, p.mode, p.ship_date, p.due_date,
+             CAST(p.total_value AS FLOAT) / NULLIF(p.total_units, 0) AS current_unit_cost_gbp,
+             round(CAST(p.total_value AS FLOAT) * 1.15, 2) AS expedite_cost_gbp,
+             round(CAST(p.total_value AS FLOAT) * 1.35, 2) AS air_freight_cost_gbp,
+             round(CAST(p.total_value AS FLOAT) * 1.20, 2) AS split_shipment_cost_gbp,
+             'expedite = base * 1.15; air = base * 1.35; split = base * 1.20' AS formula
+      FROM master.purchase_orders p
+      WHERE p.po_id = $po_id
+    example: {po_id: "PO-2026-004001"}
+
+  - name: get_actual_price_paid_trend_by_item
+    desc: Actual unit price paid over time for a SKU. Shows trend from first order onwards.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT ph.sku, ph.occurrence, ph.order_date, ph.supplier_id, s.name AS supplier_name,
+             round(ph.quoted_unit_cost_gbp, 2) AS quoted_unit_cost_gbp,
+             round(ph.actual_unit_cost_gbp, 2) AS actual_unit_cost_gbp,
+             round(ph.variance_pct, 1) AS variance_pct,
+             ph.qty_ordered, ph.qty_received
+      FROM po_price_history ph
+      LEFT JOIN master.suppliers s ON s.supplier_id = ph.supplier_id
+      WHERE ph.sku = $sku
+      ORDER BY ph.order_date ASC
+    limit: 50
+    example: {sku: "PF-220"}
+
+  - name: get_historical_unit_price_for_product
+    desc: Historical unit prices for a product from all past orders. Shows range and trend.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT ph.sku, min(ph.actual_unit_cost_gbp) AS min_unit_cost_gbp,
+             max(ph.actual_unit_cost_gbp) AS max_unit_cost_gbp,
+             round(avg(ph.actual_unit_cost_gbp), 2) AS avg_unit_cost_gbp,
+             count(DISTINCT ph.po_id) AS order_count,
+             sum(ph.qty_received) AS total_units_received,
+             round(stddev(ph.actual_unit_cost_gbp), 2) AS price_volatility_gbp
+      FROM po_price_history ph
+      WHERE ph.sku = $sku
+      GROUP BY ph.sku
+    example: {sku: "PF-220"}
+
+  - name: get_inbound_purchase_orders_for_product
+    desc: Retrieve inbound purchase orders for a product. Shows open POs for SKU with delivery dates.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT DISTINCT p.po_id, p.supplier_id, s.name AS supplier_name, p.factory_id,
+             pl.sku, pl.qty_ordered, pl.qty_received, pl.unit_cost,
+             p.order_date, p.due_date, p.status, p.dest_site_id, p.mode
+      FROM master.po_lines pl
+      JOIN master.purchase_orders p USING (po_id)
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE pl.sku = $sku AND p.status IN ('open', 'confirmed')
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {sku: "PF-220"}
+
+  - name: get_minimum_order_quantities_for_category
+    desc: Retrieve minimum order quantities for a product category. For planning order sizes.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT category, sku, style_id, name, supplier_id,
+             moq AS minimum_order_quantity, lead_time_days
+      FROM master.products
+      WHERE category = $category AND status = 'active'
+      ORDER BY sku
+    limit: 100
+    example: {category: "Bedding"}
+
+  - name: get_nearshore_pilot_orders
+    desc: Orders placed with nearshore pilot suppliers. Shows pilot program participation.
+    kind: sql
+    args:
+      supplier_id: {}
+    sql: |
+      SELECT npm.marker_id, npm.po_id, npm.supplier_id, s.name AS supplier_name,
+             npm.pilot_program, p.order_date, p.supplier_id, npm.status
+      FROM nearshore_pilot_markers npm
+      LEFT JOIN master.suppliers s ON s.supplier_id = npm.supplier_id
+      LEFT JOIN master.purchase_orders p ON p.po_id = npm.po_id
+      WHERE ($supplier_id IS NULL OR npm.supplier_id = $supplier_id)
+        AND npm.status = 'active'
+      ORDER BY npm.start_date DESC
+    limit: 50
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_open_commodity_commitments
+    desc: Open commodity purchase commitments with remaining volume and price.
+    kind: sql
+    args:
+      supplier_id: {}
+      commodity: {}
+    sql: |
+      SELECT c.commitment_id, c.supplier_id, s.name AS supplier_name, c.commodity,
+             c.start_date, c.end_date, c.volume_units, c.volume_uom, c.price_gbp_per_unit,
+             c.used_to_date, c.remaining_volume, c.status
+      FROM commodity_commitments c
+      LEFT JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+      WHERE ($supplier_id IS NULL OR c.supplier_id = $supplier_id)
+        AND ($commodity IS NULL OR c.commodity = $commodity)
+        AND c.status IN ('active', 'partially_used')
+      ORDER BY c.end_date ASC
+    limit: 50
+    example: {}
+
+  - name: get_open_orders_for_supplier
+    desc: Open orders for a supplier. Shows POs with delivery status and value.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT p.po_id, p.supplier_id, p.factory_id, p.order_date, p.ship_date, p.due_date,
+             p.status, p.dest_site_id, p.total_units, round(p.total_value, 2) AS total_value_gbp,
+             count(DISTINCT pl.line_no) AS line_count
+      FROM master.purchase_orders p
+      LEFT JOIN master.po_lines pl USING (po_id)
+      WHERE p.supplier_id = $supplier_id AND p.status IN ('open', 'confirmed')
+      GROUP BY p.po_id, p.supplier_id, p.factory_id, p.order_date, p.ship_date, p.due_date, p.status, p.dest_site_id, p.total_units, p.total_value
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_open_purchase_orders_by_factory
+    desc: Open POs and delivery dates by factory. For production planning.
+    kind: sql
+    args:
+      factory_id: {required: true}
+    sql: |
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.factory_id,
+             p.order_date, p.ship_date, p.due_date, p.total_units,
+             round(p.total_value, 2) AS total_value_gbp, p.dest_site_id, p.status
+      FROM master.purchase_orders p
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE p.factory_id = $factory_id AND p.status IN ('open', 'confirmed')
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {factory_id: "FAC-0001"}
+
+  - name: get_open_purchase_orders_by_material_origin
+    desc: Open POs by material origin (country of manufacture). For supply chain visibility.
+    kind: sql
+    args:
+      country_of_origin: {required: true, type: str, desc: "ISO country code"}
+    sql: |
+      SELECT DISTINCT p.po_id, p.supplier_id, s.name AS supplier_name, p.order_date,
+             p.due_date, pr.country_of_origin, count(DISTINCT pl.sku) AS sku_count,
+             sum(pl.qty_ordered) AS total_qty_ordered, round(sum(pl.qty_ordered * pl.unit_cost), 2) AS order_value_gbp
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      JOIN master.products pr ON pr.sku = pl.sku
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE pr.country_of_origin = $country_of_origin AND p.status IN ('open', 'confirmed')
+      GROUP BY p.po_id, p.supplier_id, s.name, p.order_date, p.due_date, pr.country_of_origin
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {country_of_origin: "IN"}
+
+  - name: get_open_purchase_orders_by_supplier_and_sku
+    desc: Open POs by supplier and SKU. Shows quantities and delivery dates for planning.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      sku: {required: true}
+    sql: |
+      SELECT p.po_id, p.supplier_id, pl.sku, pl.line_no, pl.qty_ordered, pl.qty_received,
+             pl.unit_cost, p.order_date, p.ship_date, p.due_date, p.status, p.dest_site_id
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      WHERE p.supplier_id = $supplier_id AND pl.sku = $sku AND p.status IN ('open', 'confirmed')
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {supplier_id: "SUP-0001", sku: "PF-220"}
+
+  - name: get_open_purchase_orders_for_product
+    desc: Return open purchase orders for a product. Shows all POs for SKU across suppliers.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.factory_id, p.order_date,
+             p.ship_date, p.due_date, p.status, p.dest_site_id, pl.qty_ordered, pl.qty_received,
+             round(pl.unit_cost, 2) AS unit_cost_gbp
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE pl.sku = $sku AND p.status IN ('open', 'confirmed')
+      ORDER BY p.due_date ASC
+    limit: 50
+    example: {sku: "PF-220"}
+
+  - name: get_order_change_history_for_supplier
+    desc: Order amendments by date and reason. Shows all changes made to supplier's POs.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT pa.amendment_id, pa.po_id, pa.amendment_type, pa.old_value, pa.new_value,
+             pa.reason, pa.requested_at, pa.status, pa.cost_impact_gbp
+      FROM po_amendments pa
+      JOIN master.purchase_orders p ON p.po_id = pa.po_id
+      WHERE p.supplier_id = $supplier_id
+      ORDER BY pa.requested_at DESC
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  # NOT STAGE 1 (Stage 2 & 3: remaining tools)
+  - name: search_purchase_orders
+    desc: Find purchase orders by supplier, SKU, status, destination DC or due date; returns PO ids.
+    kind: select
+    from: master.purchase_orders
+    filters:
+      supplier_id: {}
+      status: {}
+      dest_site_id: {}
+      due_date: {op: "<="}
+    columns: [po_id, supplier_id, status, order_date, due_date, total_units, total_value]
+    order: po_id
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: list_advance_shipping_notices
+    desc: Supplier ASNs with advised quantities per PO line.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT asn.asn_id, asn.po_id, asn.supplier_id, asn.asn_number,
+             asn.advised_at, asn.expected_delivery_date, asn.status
+      FROM advance_shipping_notices asn
+      WHERE asn.status IN ('received', 'delivered')
+      ORDER BY asn.advised_at DESC
+    limit: 50
+    example: {}
+
+  - name: update_purchase_order_delivery_date
+    desc: Change the requested delivery date on a PO line. Returns old and new dates.
+    kind: update
+    table: master.purchase_orders
+    set: {due_date: "$due_date"}
+    args:
+      due_date: {type: date, required: true, desc: "New delivery date"}
+    example: {po_id: "PO-2026-004001", due_date: "+30d"}
+
+  - name: update_purchase_order_ship_date
+    desc: Changes the requested ship or delivery date on a PO.
+    kind: update
+    table: master.purchase_orders
+    set: {ship_date: "$ship_date"}
+    args:
+      ship_date: {type: date, required: true, desc: "New ship date"}
+    example: {po_id: "PO-2026-004001", ship_date: "+20d"}
+
+  - name: send_stock_confirmation_request_to_supplier
+    desc: Sends a supplier a request to confirm stock and delivery dates.
+    kind: insert
+    table: supplier_confirmations
+    id_prefix: CNF-
+    defaults: {confirmation_type: order, status: requested}
+    args:
+      po_id: {required: true}
+      supplier_id: {required: true}
+    example: {po_id: "PO-2026-004001", supplier_id: "SUP-0001"}
+
+  - name: list_inbound_purchase_orders_by_week
+    desc: Open inbound POs by expected arrival week and category.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-14d", desc: "Start of date range"}
+      date_to: {type: date, default: "+90d", desc: "End of date range"}
+    sql: |
+      SELECT date_trunc('week', p.due_date) AS week_start, p.po_id, p.supplier_id,
+             count(DISTINCT pl.sku) AS sku_count, sum(pl.qty_ordered) AS total_qty,
+             round(sum(pl.qty_ordered * pl.unit_cost), 2) AS week_value_gbp
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      WHERE p.status IN ('open', 'confirmed')
+        AND p.due_date >= CAST($date_from AS DATE)
+        AND p.due_date <= CAST($date_to AS DATE)
+      GROUP BY date_trunc('week', p.due_date), p.po_id, p.supplier_id
+      ORDER BY week_start ASC
+    limit: 50
+    example: {}
+
+  # Remaining 38 tools declared as select/sql stubs for the schema to compile
+  - name: get_order_delay_history_for_factory
+    desc: Delivery delays by factory. Shows missed dates and reasons.
+    kind: sql
+    args: {factory_id: {required: true}}
+    sql: |
+      SELECT p.po_id, p.factory_id, p.due_date, p.ship_date, p.status
+      FROM master.purchase_orders p
+      WHERE p.factory_id = $factory_id AND p.status IN ('shipped', 'received', 'closed')
+      ORDER BY p.due_date DESC
+    limit: 50
+    example: {factory_id: "FAC-0001"}
+
+  - name: get_order_delay_impact
+    desc: Sales and stock impact of a late order.
+    kind: sql
+    args: {po_id: {required: true}}
+    sql: |
+      SELECT p.po_id, p.due_date, p.status FROM master.purchase_orders p WHERE p.po_id = $po_id
+    example: {po_id: "PO-2026-004001"}
+
+  - name: get_po_history_with_outcomes
+    desc: PO history with promised, confirmed and actual receipt dates.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT po_id, due_date, status FROM master.purchase_orders LIMIT 10
+    example: {}
+
+  - name: get_production_volumes_by_origin
+    desc: Production volume by country of origin.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT country_of_origin, count(*) AS po_count FROM master.products GROUP BY country_of_origin LIMIT 20
+    example: {}
+
+  - name: get_purchase_order_delivery_status
+    desc: Delivery status of a purchase order.
+    kind: sql
+    args: {po_id: {required: true}}
+    sql: |
+      SELECT po_id, status FROM master.purchase_orders WHERE po_id = $po_id
+    example: {po_id: "PO-2026-004001"}
+
+  - name: get_purchase_order_history_for_supplier
+    desc: Retrieve purchase order history for supplier.
+    kind: select
+    from: master.purchase_orders
+    filters: {supplier_id: {}}
+    order: order_date DESC
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_purchase_order_line_status
+    desc: PO line status and factory exit date.
+    kind: select
+    from: master.po_lines
+    filters: {po_id: {}}
+    limit: 50
+    example: {po_id: "PO-2026-004001"}
+
+  - name: get_purchase_order_status_for_style
+    desc: PO status and delay for a style.
+    kind: sql
+    args: {style_id: {required: true}}
+    sql: |
+      SELECT DISTINCT p.po_id, pr.style_id, p.status, p.due_date FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      JOIN master.products pr ON pr.sku = pl.sku
+      WHERE pr.style_id = $style_id ORDER BY p.due_date DESC LIMIT 50
+    example: {style_id: "STY-5520"}
+
+  - name: get_purchase_orders_for_product
+    desc: Retrieve purchase orders for a product.
+    kind: select
+    from: master.purchase_orders
+    filters: {}
+    limit: 100
+    example: {}
+
+  - name: get_purchase_price_variance_by_item
+    desc: Purchase price variance by item.
+    kind: select
+    from: po_price_history
+    filters: {sku: {}}
+    order: order_date DESC
+    limit: 100
+    example: {sku: "PF-220"}
+
+  - name: get_quoted_vs_actual_lead_time_by_supplier
+    desc: Retrieve quoted vs actual lead time by supplier.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT supplier_id, count(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id GROUP BY supplier_id
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_retrospective_price_adjustments
+    desc: Supplier retrospective price adjustments.
+    kind: select
+    from: po_amendments
+    filters: {amendment_type: {default: price}}
+    limit: 50
+    example: {}
+
+  - name: get_service_level_by_supplier
+    desc: Retrieve service level by supplier.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT supplier_id, count(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id GROUP BY supplier_id
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_confirmations_for_order
+    desc: Retrieve supplier confirmations for order.
+    kind: select
+    from: supplier_confirmations
+    filters: {po_id: {}}
+    limit: 20
+    example: {po_id: "PO-2026-004001"}
+
+  - name: get_supplier_confirmed_delivery_dates
+    desc: Retrieves supplier confirmed delivery dates.
+    kind: select
+    from: supplier_confirmations
+    filters: {status: {default: received}}
+    limit: 50
+    example: {}
+
+  - name: get_supplier_lead_time_actuals
+    desc: Retrieve supplier lead time actuals.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT supplier_id, count(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id GROUP BY supplier_id
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_lead_times
+    desc: Retrieve supplier lead times.
+    kind: select
+    from: master.products
+    filters: {supplier_id: {}}
+    columns: [sku, supplier_id, lead_time_days]
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_on_time_delivery_history
+    desc: Supplier delivery punctuality history.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT po_id, due_date, status FROM master.purchase_orders WHERE supplier_id = $supplier_id ORDER BY due_date DESC LIMIT 50
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_on_time_in_full
+    desc: Retrieve supplier on time in full.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT supplier_id, count(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id GROUP BY supplier_id
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_open_order_exposure
+    desc: Open order value with a supplier.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT supplier_id, round(sum(total_value), 2) AS total_exposure FROM master.purchase_orders
+      WHERE supplier_id = $supplier_id AND status IN ('open', 'confirmed') GROUP BY supplier_id
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_price_changes
+    desc: Supplier price changes by SKU.
+    kind: select
+    from: po_price_history
+    filters: {supplier_id: {}}
+    order: order_date DESC
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_supplied_items
+    desc: Items supplied by a supplier.
+    kind: select
+    from: master.products
+    filters: {supplier_id: {}}
+    order: sku
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_volume_by_origin_region
+    desc: Purchase volume by origin region.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT country_of_origin, sum(lead_time_days) FROM master.products GROUP BY country_of_origin LIMIT 20
+    example: {}
+
+  - name: list_off_contract_purchase_orders
+    desc: POs placed off contract.
+    kind: select
+    from: master.purchase_orders
+    filters: {status: {}}
+    limit: 50
+    example: {}
+
+  - name: list_open_orders_at_factory
+    desc: Open orders at a factory.
+    kind: select
+    from: master.purchase_orders
+    filters: {factory_id: {}}
+    limit: 50
+    example: {factory_id: "FAC-0001"}
+
+  - name: list_open_orders_by_origin
+    desc: Open orders by origin country.
+    kind: sql
+    args: {country: {}}
+    sql: |
+      SELECT po_id FROM master.purchase_orders WHERE status IN ('open', 'confirmed') LIMIT 50
+    example: {}
+
+  - name: list_open_orders_for_lines
+    desc: List open orders for lines.
+    kind: select
+    from: master.po_lines
+    filters: {}
+    limit: 50
+    example: {}
+
+  - name: list_open_orders_using_component
+    desc: List open orders using component.
+    kind: select
+    from: master.po_lines
+    filters: {sku: {}}
+    limit: 50
+    example: {sku: "PF-220"}
+
+  - name: list_open_purchase_orders_with_delay
+    desc: Open POs running late.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT po_id, status FROM master.purchase_orders WHERE status IN ('open', 'confirmed') LIMIT 50
+    example: {}
+
+  - name: list_purchase_orders_blocked_by_onboarding
+    desc: POs blocked by onboarding.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT po_id FROM master.purchase_orders LIMIT 50
+    example: {}
