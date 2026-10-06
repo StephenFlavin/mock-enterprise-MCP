@@ -1,6 +1,31 @@
 # Mock Enterprise MCP: Implementation Plan
 
-**Status:** plan only, nothing is built yet.
+**Status:** Phase 0 built (engine, catalogue, master data, `yms` reference). The per-system build contract is
+`docs/BUILDING_A_SYSTEM.md`. The changes below, made during implementation, supersede the sections they mention.
+
+## 0. Changes made during implementation
+
+- **Duplicate tools are kept, not resolved (supersedes §11 table 1).** A tool catalogued under two systems is built in
+  both, as real enterprise estates overlap. `catalog/tools.csv` therefore has 2,017 rows: 2,008 unique tools plus
+  9 duplicates. Only the 10 uncatalogued `draft_*` tools are assigned, in `catalog/overrides.csv`.
+- **Larger master "spine" (extends §5.2).** Master holds the ids that several systems must agree on: sites, DC bin
+  locations, DC equipment assets, products, suppliers, factories, carriers, ports, employees, cost centres, legal
+  entities, partners, customers, customer orders, purchase orders and lines, inbound shipments, 52 weeks of sales
+  and DC stock. Builders must reuse these ids and never edit master. Each master section has its own random seed,
+  so adding data never reshuffles existing ids.
+- **Scenarios live inside each system (replaces §7.3 scenario cards).** Each system has `systems/<id>/scenarios.yaml`
+  with one entry per question that uses its tools, each holding the planted story and checks
+  (tool + args + expected substrings). Builders work in parallel, so there are no shared scenario files. Cross-system
+  consistency comes from master ids.
+- **Catalogue tooling lives in the package.** `mockmcp/catalog.py` replaces `scripts/catalog.py`. CLI:
+  `python -m mockmcp {serve, stdio, check, gen, run, brief, profile, catalog, reset}`. `brief <id>` gives a builder the
+  system's tools plus the full text of every question that uses them.
+- **Write-capable master.** Write tools can target `master.<table>` (for example, PO delivery date changes), so a
+  change made in one system is seen by all of them.
+- **Measured memory:** about 110 MB RSS for 96 systems × 20 tools once loaded, rising to about 200 MB after a round
+  of queries. The 300 MB budget is kept.
+- **Builds are done by Haiku subagents**, one per system, following `docs/BUILDING_A_SYSTEM.md`. Acceptance is
+  `python -m mockmcp check <id>` plus a whole-catalogue smoke test, not code review.
 **Source of truth:** `docs/assets/personas/` (personas, questions, tool catalogues).
 
 ## 1. Goal and scope
