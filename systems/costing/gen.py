@@ -29,9 +29,13 @@ def generate(g):
     commodity_exposures = []
     supplier_cost_history = []
 
-    # 1. Generate product costings (one active per style + some scenario versions)
+    # 1. Generate product costings (one per unique style, not per product SKU)
     costing_id = 1
+    seen_styles = set()
     for product in products_with_suppliers[:80]:
+        if product.get("style_id") in seen_styles:
+            continue
+        seen_styles.add(product.get("style_id"))
         style_id = product.get("style_id", f"STY-{product.get('sku', '').replace('SKU-', '')}")
         sku = product.get("sku")
 
@@ -317,14 +321,20 @@ def generate(g):
                 })
                 exposure_id_ctr += 1
 
-    # 10. Generate supplier cost history
+    # 10. Generate supplier cost history (limit to avoid duplicates)
     period_start = g.as_of - timedelta(days=180)
-    for i in range(12):
-        period_date = period_start + timedelta(days=i * 14)
+    seen_histories = set()
+    for i in range(8):  # Reduced from 12 to avoid excess data
+        period_date = period_start + timedelta(days=i * 21)
         period_str = period_date.strftime("%Y-%m")
 
-        for supplier in suppliers[:10]:
-            for product in products_with_suppliers[:15]:
+        for supplier in suppliers[:5]:  # Reduced from 10
+            for product in products_with_suppliers[:20]:  # Reduced from 15
+                key = (supplier["supplier_id"], product.get("sku"), period_str)
+                if key in seen_histories:
+                    continue
+                seen_histories.add(key)
+
                 market_idx = 100 + r.gauss(0, 5)
                 supplier_idx = market_idx * r.uniform(0.95, 1.05)
 
