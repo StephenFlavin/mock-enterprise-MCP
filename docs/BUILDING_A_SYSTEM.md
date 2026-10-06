@@ -112,6 +112,24 @@ Every tool has `name`, `desc`, `kind`, `example` (args that return real rows). C
   example: {site_id: DC1}
 ```
 
+Lookup tools (`search_products`, `search_suppliers`, `search_sites`, …) are `select` tools over a `master.*` table
+with `{op: like}` filters on the name and a few equality filters. `like` matches every word in any order:
+
+```yaml
+- name: search_products
+  desc: Find SKUs by name, style, category or supplier. Returns ids to use with other tools.
+  kind: select
+  from: master.products
+  filters:
+    name: {op: like, desc: "Words in the product name, e.g. glass kettle"}
+    style_id: {op: like, desc: "Style id or part of it, e.g. 5520"}
+    category: {}
+    supplier_id: {}
+  columns: [sku, style_id, name, category, colour, size, supplier_id, status]
+  order: sku
+  example: {name: kettle}
+```
+
 **2. `sql`** — anything needing joins, aggregation or calculation (most `get_…_by_…`, `calculate_…`, `compare_…`, `rank_…`).
 Declare `args`; optional args use the `($x IS NULL OR col = $x)` idiom; every `$name` must be an arg or `$as_of`.
 

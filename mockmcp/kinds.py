@@ -32,9 +32,12 @@ def run_select(eng, system, tool, args, vals):
         col = a.col or n
         coltype = t.cols[col].type if col in t.cols else a.type
         params[n] = v
-        if a.op == "like":
-            params[n] = f"%{v}%"
-            where.append(f"CAST({_q(col)} AS VARCHAR) ILIKE ${n}")
+        if a.op == "like":  # every word must appear, in any order
+            words = re.findall(r"\w[\w.-]*", str(v)) or [str(v)]
+            del params[n]
+            for i, w in enumerate(words):
+                params[f"{n}_{i}"] = f"%{w}%"
+                where.append(f"CAST({_q(col)} AS VARCHAR) ILIKE ${n}_{i}")
         elif a.op == "in" or a.type == "list":
             where.append(f"list_contains(${n}, CAST({_q(col)} AS VARCHAR))")
         elif a.type in ("date", "timestamp"):
