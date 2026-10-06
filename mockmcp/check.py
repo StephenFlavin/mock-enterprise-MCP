@@ -11,6 +11,7 @@ from . import catalog, db, spec
 from .spec import SYSTEMS, load_system
 
 MAX_DESC_WORDS, MIN_DESC_WORDS, MAX_ARGS = 30, 4, 8
+DATE_LIT = re.compile(r"\b20\d\d-[01]\d(?:-[0-3]\d)?\b")
 ALL_IDS = set(catalog.systems())
 
 
@@ -65,6 +66,10 @@ def lint(sid: str) -> list[str]:
                 p.append(f"{t.name}: read_csv/read_parquet not allowed; declare a table")
             if "read_text" in q and "{files}" not in q:
                 p.append(f"{t.name}: read_text must use the {{files}} placeholder")
+        literal = DATE_LIT.findall(" ".join(_sqls(t) + [str(t.example), str(t.defaults), str(t.set), str(t.template or "")]
+                                            + [str(x.default) for x in {**t.args, **t.filters}.values() if x]))
+        if literal:
+            p.append(f"{t.name}: hard-coded date {literal[0]} — use $as_of or relative values like -30d/+14d (data moves to today at runtime)")
         if t.writes:
             tsys = master if t.table.startswith("master.") else s
             tbl = tsys.tables.get(t.table.split(".")[-1])
@@ -82,8 +87,23 @@ def lint(sid: str) -> list[str]:
     return p
 
 
+def _keysets(s) -> dict[str, tuple[str, set]]:
+    """column name -> (table, set of key values) for every single-key table in master and this system."""
+    out = {}
+    for sys_ in (load_system("master"), s):
+        for name, t in sys_.tables.items():
+            if len(t.keys) == 1:
+                f = sys_.dir / "data" / f"{name}.csv"
+                if f.exists():
+                    with open(f, newline="") as fh:
+                        out[t.keys[0]] = (f"{'master.' if sys_.id == 'master' else ''}{name}",
+                                          {r[t.keys[0]] for r in csv.DictReader(fh)})
+    return out
+
+
 def data_problems(s) -> list[str]:
     p = []
+    keysets = _keysets(s)
     for name, t in s.tables.items():
         f = s.dir / "data" / f"{name}.csv"
         if not f.exists():
@@ -96,6 +116,12 @@ def data_problems(s) -> list[str]:
             continue
         if len(rows) < 2:
             p.append(f"data/{name}.csv has no rows")
+        for ci, col in enumerate(rows[0]):
+            if col in keysets and [col] != t.keys:
+                ref, valid = keysets[col]
+                bad = sorted({r[ci] for r in rows[1:] if r[ci] and r[ci] not in valid})
+                if bad:
+                    p.append(f"data/{name}.csv: {len(bad)} {col} values not in {ref}, e.g. {bad[:3]} (use existing ids)")
         idx = [rows[0].index(k) for k in t.keys]
         dupes = [k for k, c in Counter(tuple(r[i] for i in idx) for r in rows[1:]).items() if c > 1]
         if dupes:
@@ -155,6 +181,10 @@ def run_scenarios(eng, sid: str) -> list[str]:
         if not sc.get("checks"):
             p.append(f"scenario {q}: no checks")
         for c in sc.get("checks") or []:
+            if not c.get("expect"):
+                p.append(f"scenario {q}: {c['tool']} check has no expect values (expect seeded ids/values, not column names)")
+            if lit := DATE_LIT.findall(str(c.get("args")) + str(c.get("expect"))):
+                p.append(f"scenario {q}: hard-coded date {lit[0]} in check — use relative dates like -30d")
             text, err = eng.call(sid, c["tool"], c.get("args") or {})
             if err:
                 p.append(f"scenario {q}: {c['tool']} errored: {text[:200]}")

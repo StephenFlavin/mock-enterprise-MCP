@@ -260,6 +260,20 @@ def generate(g):
 - Derive from master (e.g. one row per relevant PO/site/sku) so ids line up across systems.
 - Deterministic: only `g.rng` / `g.fake` randomness, no `datetime.now()`.
 
+### Data quality rules (reviewers found these mistakes in earlier builds)
+
+- **Consistency with master:** any attribute that also exists in master must match it: an asset's site,
+  software version or class, a SKU's supplier or category, a PO's supplier or DC. Read the master row and copy it.
+  `check` rejects id values (columns named like a master key, e.g. `supplier_id`, `sku`, `asset_id`) that do not exist.
+- **Plausible numbers:** check orders of magnitude (a 75-minute conveyor stoppage costs hundreds or low thousands of
+  pounds, not £120k). Totals in your story must equal what the tools return. Run your tools and read the numbers.
+- **Scenario checks must prove the story:** `expect` the seeded ids and the key values (counts, totals, names) a
+  correct answer depends on, not column names. Every check needs at least one expect.
+- **Arg descriptions:** for args named like a master/own column, omit `desc` and let it inherit (it has the right
+  id format). If you do write one, copy real ids from the data as examples, never made-up formats.
+- **No absolute dates anywhere in YAML** (examples, defaults, SQL, scenarios): use `-30d`, `+14d`, `last month`, `Q3`,
+  `$as_of`. Seed CSVs do use absolute dates; they are moved to today at runtime automatically.
+
 ### seed/<table>.csv (hand-written stories)
 
 - Header = some or all of the table's columns (any order). Seed rows replace generated rows with the same key and add new ones.
