@@ -1,0 +1,64 @@
+id: yms
+name: Yard Management System (YMS)
+instructions: >
+  Dock appointments and trailer arrivals at our DCs (DC1-DC5). Appointment ids look like APT-000123.
+  Use it for inbound booking slots, late trailers and yard dwell time.
+
+tables:
+  dock_appointments:
+    key: appointment_id
+    cols:
+      appointment_id: {type: str, desc: "Dock appointment, e.g. APT-000123"}
+      site_id: {type: str, desc: "DC, e.g. DC1"}
+      po_id: {type: str, desc: "Purchase order being delivered, e.g. PO-2026-004512"}
+      carrier_id: {type: str, desc: Haulier delivering}
+      door: {type: str, desc: "Dock door, e.g. D07"}
+      slot_start: {type: timestamp, desc: Booked slot start}
+      slot_end: {type: timestamp, desc: Booked slot end}
+      direction: {type: enum, values: [inbound, outbound], desc: Inbound or outbound}
+      status: {type: enum, values: [booked, arrived, completed, no_show, cancelled], desc: Appointment status}
+      cancel_reason: {type: str, desc: Why the appointment was cancelled}
+      updated_at: {type: timestamp, desc: Last change}
+  trailer_arrivals:
+    key: arrival_id
+    cols:
+      arrival_id: {type: str, desc: "Trailer arrival, e.g. ARR-000123"}
+      appointment_id: {type: str, desc: Dock appointment}
+      site_id: {type: str, desc: DC}
+      trailer_no: {type: str, desc: Trailer registration}
+      arrived_at: {type: timestamp, desc: Gate-in time}
+      docked_at: {type: timestamp, desc: Time on the dock door}
+      departed_at: {type: timestamp, desc: Gate-out time}
+      minutes_late: {type: int, desc: Gate-in minus slot start in minutes (negative = early)}
+      dwell_minutes: {type: int, desc: Gate-in to gate-out in minutes}
+
+tools:
+  - name: list_late_inbound_trailers
+    desc: Inbound trailers that arrived after their booked slot, latest first, with minutes late and yard dwell time.
+    kind: sql
+    args:
+      site_id: {desc: "DC, e.g. DC1 (default all)"}
+      date_from: {type: date, desc: "Arrivals on or after", default: "-21d"}
+      min_minutes_late: {type: int, desc: "Only trailers at least this many minutes late", default: 30}
+    sql: |
+      SELECT t.arrival_id, a.appointment_id, a.site_id, a.po_id, c.name AS carrier, a.slot_start,
+             t.arrived_at, t.minutes_late, t.dwell_minutes
+      FROM trailer_arrivals t
+      JOIN dock_appointments a USING (appointment_id)
+      LEFT JOIN master.carriers c ON c.carrier_id = a.carrier_id
+      WHERE a.direction = 'inbound'
+        AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND t.arrived_at >= CAST($date_from AS DATE)
+        AND t.minutes_late >= $min_minutes_late
+      ORDER BY t.arrived_at DESC
+    limit: 30
+    example: {site_id: DC1}
+
+  - name: cancel_inbound_appointment
+    desc: Cancel a booked inbound dock appointment so the slot is freed. Returns the old and new status.
+    kind: update
+    table: dock_appointments
+    set: {status: cancelled}
+    args:
+      cancel_reason: {required: true, desc: "Why it is cancelled, e.g. PO pushed back a week"}
+    example: {appointment_id: APT-900002, cancel_reason: PO pushed back a week}

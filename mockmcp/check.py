@@ -1,0 +1,162 @@
+"""`mockmcp check <id>`: everything a system must satisfy before it counts as built."""
+import csv
+import re
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+import yaml
+
+from . import catalog, db
+from .spec import SYSTEMS, load_system
+
+MAX_DESC_WORDS, MIN_DESC_WORDS, MAX_ARGS = 30, 4, 8
+ALL_IDS = set(catalog.systems())
+
+
+def _sqls(t) -> list[str]:
+    if isinstance(t.sql, dict):
+        return list(t.sql.values())
+    return [t.sql] if t.sql else []
+
+
+def lint(sid: str) -> list[str]:
+    p: list[str] = []
+    try:
+        s = load_system(sid)
+    except Exception as e:
+        return [f"system.yaml invalid: {e}"]
+    if s.id != sid:
+        p.append(f"id is '{s.id}', expected '{sid}'")
+    from .server import Engine
+    master = load_system("master")
+    cat = {r["tool"]: r for r in catalog.tools_for(sid)}
+    names = Counter(t.name for t in s.tools)
+    p += [f"duplicate tool {n}" for n, c in names.items() if c > 1]
+    p += [f"missing catalogue tool {n}" for n in cat if n not in names]
+    p += [f"tool {n} is not in the catalogue for {sid}" for n in names if n not in cat]
+    if len(s.instructions) > 400:
+        p.append("instructions longer than 400 characters")
+    from .args import effective_args
+    for t in s.tools:
+        if t.name in cat and (cat[t.name]["rw"] == "W") != t.writes:
+            p.append(f"{t.name}: catalogue says {cat[t.name]['rw']} but kind is {t.kind}")
+        words = len(t.desc.split())
+        if not MIN_DESC_WORDS <= words <= MAX_DESC_WORDS:
+            p.append(f"{t.name}: description has {words} words (want {MIN_DESC_WORDS}-{MAX_DESC_WORDS})")
+        try:
+            args = effective_args(t, s, master)
+        except Exception as e:
+            p.append(f"{t.name}: bad args/table reference: {e}")
+            continue
+        real = {n: a for n, a in args.items() if n != "limit"}
+        if len(real) > MAX_ARGS:
+            p.append(f"{t.name}: {len(real)} args (max {MAX_ARGS})")
+        p += [f"{t.name}: arg '{n}' has no description (add desc, or a desc on the column it names)"
+              for n, a in real.items() if not (a.desc or "").strip()]
+        missing = [n for n, a in real.items() if a.required and n not in t.example]
+        if missing:
+            p.append(f"{t.name}: example lacks required args {missing}")
+        p += [f"{t.name}: example arg '{n}' is not an argument" for n in t.example if n not in args]
+        for q in _sqls(t) + [x for x in (t.from_, t.table) if x]:
+            for other in set(re.findall(r'"?\b([a-z_]+)"?\s*\.\s*"?[a-z_]+', q)) & ALL_IDS - {sid, "master"}:
+                p.append(f"{t.name}: reads another system's schema '{other}' (only own tables and master.*; also never use a system id such as 'po' as a table alias)")
+            if re.search(r"read_(csv|parquet|json)", q):
+                p.append(f"{t.name}: read_csv/read_parquet not allowed; declare a table")
+            if "read_text" in q and "{files}" not in q:
+                p.append(f"{t.name}: read_text must use the {{files}} placeholder")
+        if t.writes:
+            tsys = master if t.table.startswith("master.") else s
+            tbl = tsys.tables.get(t.table.split(".")[-1])
+            if tbl is None:
+                p.append(f"{t.name}: table {t.table} not declared")
+                continue
+            p += [f"{t.name}: arg '{n}' is not a column of {t.table} (writes store every arg)"
+                  for n in t.args if n not in tbl.cols]
+            p += [f"{t.name}: '{c}' is not a column of {t.table}" for c in [*t.set, *t.defaults] if c not in tbl.cols]
+        if t.kind == "select" and t.from_.split(".")[-1] not in (master if t.from_.startswith("master.") else s).tables:
+            p.append(f"{t.name}: from {t.from_} not declared")
+        if t.kind == "py" and not (s.dir / "hooks.py").exists():
+            p.append(f"{t.name}: kind py but no hooks.py")
+    p += data_problems(s)
+    return p
+
+
+def data_problems(s) -> list[str]:
+    p = []
+    for name, t in s.tables.items():
+        f = s.dir / "data" / f"{name}.csv"
+        if not f.exists():
+            p.append(f"data/{name}.csv missing (run: python -m mockmcp gen {s.id})")
+            continue
+        with open(f, newline="") as fh:
+            rows = list(csv.reader(fh))
+        if not rows or rows[0] != list(t.cols):
+            p.append(f"data/{name}.csv header does not match system.yaml cols (re-run gen)")
+            continue
+        if len(rows) < 2:
+            p.append(f"data/{name}.csv has no rows")
+        idx = [rows[0].index(k) for k in t.keys]
+        dupes = [k for k, c in Counter(tuple(r[i] for i in idx) for r in rows[1:]).items() if c > 1]
+        if dupes:
+            p.append(f"data/{name}.csv: {len(dupes)} duplicate keys, e.g. {dupes[0]}")
+    return p
+
+
+def run_examples(sid: str) -> list[str]:
+    """Call every tool with its example, in a throwaway state dir. Writes are also retried once."""
+    from .server import Engine
+    p = []
+    with tempfile.TemporaryDirectory() as tmp:
+        old, db.STATE = db.STATE, Path(tmp)
+        try:
+            eng = Engine([sid])
+            for t in eng.systems[sid].tools:
+                text, err = eng.call(sid, t.name, t.example)
+                if err:
+                    p.append(f"{t.name} example failed: {text[:300]}")
+                elif text.startswith("No matching rows") or "\nNo matching rows" in text:
+                    p.append(f"{t.name} example returned no rows (seed data so it does)")
+                elif t.kind == "insert":
+                    again, _ = eng.call(sid, t.name, t.example)
+                    if "already created" not in again:
+                        p.append(f"{t.name}: repeating the same insert was not idempotent")
+        finally:
+            db.STATE = old
+    with tempfile.TemporaryDirectory() as tmp:  # scenarios get a clean state of their own
+        old, db.STATE = db.STATE, Path(tmp)
+        try:
+            p += run_scenarios(Engine([sid]), sid)
+        finally:
+            db.STATE = old
+    return p
+
+
+def run_scenarios(eng, sid: str) -> list[str]:
+    f = SYSTEMS / sid / "scenarios.yaml"
+    needed = {q for r in catalog.tools_for(sid) for q in r["used_by"].split(";") if q}
+    if not f.exists():
+        return [f"scenarios.yaml missing (needs one entry per question: {sorted(needed)[:5]}…)"]
+    p, seen = [], set()
+    for sc in yaml.safe_load(f.read_text()) or []:
+        q = str(sc.get("question", ""))
+        seen.add(q)
+        if not sc.get("checks"):
+            p.append(f"scenario {q}: no checks")
+        for c in sc.get("checks") or []:
+            text, err = eng.call(sid, c["tool"], c.get("args") or {})
+            if err:
+                p.append(f"scenario {q}: {c['tool']} errored: {text[:200]}")
+                continue
+            for e in c.get("expect") or []:
+                if str(e).lower() not in text.lower():
+                    p.append(f"scenario {q}: {c['tool']} output lacks '{e}'")
+    p += [f"scenarios.yaml has no entry for question {q}" for q in sorted(needed - seen)]
+    return p
+
+
+def check(sid: str) -> list[str]:
+    p = lint(sid)
+    if not any(x.startswith("system.yaml invalid") for x in p):
+        p += run_examples(sid)
+    return p
