@@ -1,0 +1,247 @@
+id: cmms
+name: Computerised Maintenance Management System (CMMS)
+instructions: >
+  Maintenance work orders, asset run hours, failures and spare parts for DC equipment.
+  Work order ids look like WO-000123. Use it for asset maintenance history, planned work,
+  unplanned failures, spare parts stock, and shutdown planning.
+
+tables:
+  work_orders:
+    key: wo_id
+    cols:
+      wo_id: {type: str, desc: "Work order, e.g. WO-000123"}
+      asset_id: {type: str, desc: "Equipment asset, e.g. AST-0042"}
+      wo_type: {type: enum, values: [planned, breakdown], desc: "Planned or unplanned failure"}
+      status: {type: enum, values: [open, scheduled, in_progress, completed, cancelled], desc: Work order status}
+      priority: {type: enum, values: [low, medium, high, urgent], desc: Priority level}
+      raised_at: {type: timestamp, desc: When the work order was raised}
+      planned_date: {type: date, desc: Planned work date}
+      started_at: {type: timestamp, desc: When work started}
+      completed_at: {type: timestamp, desc: When work finished}
+      description: {type: str, desc: Work description}
+      cancel_reason: {type: str, desc: Why cancelled}
+      downtime_hours: {type: float, desc: Hours of downtime caused}
+      cost_gbp: {type: float, desc: Labour and parts cost}
+      assigned_to: {type: str, desc: Employee id of assigned technician}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  unplanned_stoppages:
+    key: stoppage_id
+    cols:
+      stoppage_id: {type: str, desc: "Stoppage, e.g. STP-000123"}
+      asset_id: {type: str, desc: Asset that stopped}
+      occurred_at: {type: timestamp, desc: When the stoppage occurred}
+      duration_minutes: {type: int, desc: How long the asset was stopped}
+      root_cause: {type: str, desc: Root cause analysis}
+      component_failed: {type: str, desc: Part that failed}
+      asset_software_version: {type: str, desc: Software version at time of failure}
+      work_order_id: {type: str, desc: Related work order if created}
+      predictable_from_sensor: {type: bool, desc: Could have been predicted from sensor data}
+      unplanned_cost_gbp: {type: float, desc: Cost if fixed as breakdown vs planned}
+
+  asset_run_hours:
+    key: [asset_id, measured_at]
+    cols:
+      asset_id: {type: str, desc: Asset}
+      measured_at: {type: date, desc: Date of reading}
+      run_hours: {type: float, desc: Cumulative run hours}
+      condition_rating: {type: enum, values: [good, fair, poor, critical], desc: Condition from inspection}
+      vibration_level_mm_s: {type: float, desc: "Vibration in mm/s (ISO 10816)"}
+      temperature_c: {type: float, desc: "Operating temperature in Celsius"}
+      oil_analysis_status: {type: enum, values: [good, degrading, bad], desc: Oil sample analysis result}
+
+  spare_parts:
+    key: part_id
+    cols:
+      part_id: {type: str, desc: "Spare part, e.g. SPR-000123"}
+      name: {type: str, desc: Part name}
+      asset_class: {type: enum, values: [shuttle, conveyor, sorter, motor, gearbox, sensor, forklift, reach_truck, dock_leveller, sprinkler, racking, charger, compressor], desc: Applicable to asset class}
+      sku: {type: str, desc: "SKU if it's a stocked product"}
+      supplier_id: {type: str, desc: Supplier of the part}
+      on_hand: {type: int, desc: Units in stock}
+      reorder_level: {type: int, desc: Reorder point}
+      reorder_qty: {type: int, desc: Order quantity}
+      lead_time_days: {type: int, desc: Days from order to receipt}
+      unit_cost_gbp: {type: float, desc: Cost per unit}
+      stock_value_gbp: {type: float, desc: On-hand value at cost}
+      last_usage_date: {type: date, desc: Date of last issue from stock}
+
+  shutdown_plan:
+    key: shutdown_id
+    cols:
+      shutdown_id: {type: str, desc: "Shutdown, e.g. SHD-000123"}
+      shutdown_date: {type: date, desc: Planned shutdown date}
+      description: {type: str, desc: Shutdown purpose and scope}
+      duration_hours: {type: float, desc: Expected duration in hours}
+      asset_id: {type: str, desc: Primary asset being serviced}
+      related_assets: {type: str, desc: "Comma-separated related asset ids"}
+      work_orders_included: {type: int, desc: Number of work orders planned}
+      estimated_cost_gbp: {type: float, desc: Estimated total cost}
+      status: {type: enum, values: [planned, approved, in_progress, completed, cancelled], desc: Status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: list_unplanned_stoppages
+    desc: Unplanned asset stoppages with duration, root cause and impact ranked by lost throughput. For one asset or date range.
+    kind: sql
+    args:
+      asset_id: {desc: "Equipment asset, e.g. AST-0042 (default all)"}
+      site_id: {desc: "DC, e.g. DC1 (default all)"}
+      date_from: {type: date, default: "-30d", desc: "Stoppages on or after"}
+    sql: |
+      SELECT s.stoppage_id, s.asset_id, a.name AS asset_name, s.occurred_at,
+             s.duration_minutes, s.root_cause, s.component_failed, s.asset_software_version,
+             s.unplanned_cost_gbp, s.predictable_from_sensor
+      FROM unplanned_stoppages s
+      JOIN master.assets a USING (asset_id)
+      WHERE ($asset_id IS NULL OR s.asset_id = $asset_id)
+        AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND s.occurred_at >= CAST($date_from AS DATE)
+      ORDER BY s.unplanned_cost_gbp DESC, s.duration_minutes DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: list_work_orders_for_asset
+    desc: Work orders and repair history for an asset, oldest first. Use to see maintenance backlog and past repairs.
+    kind: sql
+    args:
+      asset_id: {required: true, desc: Asset id}
+      status: {type: enum, values: [open, scheduled, in_progress, completed, cancelled], desc: "Filter by status (default all)"}
+      raised_from: {col: raised_at, op: ">=", type: date, default: "-180d", desc: Work orders raised on or after}
+    sql: |
+      SELECT wo_id, asset_id, wo_type, status, priority, raised_at, planned_date,
+             started_at, completed_at, description, downtime_hours, cost_gbp,
+             assigned_to, updated_at
+      FROM work_orders
+      WHERE asset_id = $asset_id
+        AND ($status IS NULL OR status = $status)
+        AND raised_at >= CAST($raised_from AS DATE)
+      ORDER BY raised_at ASC
+    limit: 40
+    example: {asset_id: AST-DC1-SRT}
+
+  - name: get_spare_parts_stock
+    desc: Spare parts on hand with reorder levels. Filter by asset class or supplier to see stock adequacy.
+    kind: select
+    from: spare_parts
+    filters:
+      asset_class: {}
+      supplier_id: {}
+    columns: [part_id, name, asset_class, on_hand, reorder_level, lead_time_days, unit_cost_gbp, stock_value_gbp, last_usage_date]
+    order: on_hand
+    limit: 50
+    example: {asset_class: motor}
+
+  - name: get_unplanned_failure_cost
+    desc: "Historic cost and downtime of unplanned failures. Returns unplanned failure cost vs planned maintenance cost saved."
+    kind: sql
+    args:
+      asset_id: {required: true, desc: Asset id}
+      days: {type: int, default: 365, desc: "Look back this many days"}
+    sql: |
+      SELECT asset_id,
+             count(*) AS failure_count,
+             round(sum(duration_minutes) / 60.0, 1) AS total_downtime_hours,
+             round(avg(duration_minutes), 0) AS avg_downtime_minutes,
+             round(sum(unplanned_cost_gbp), 2) AS total_unplanned_cost_gbp,
+             round(avg(unplanned_cost_gbp), 2) AS avg_unplanned_cost_gbp,
+             round(sum(unplanned_cost_gbp) / (sum(duration_minutes) / 60.0), 2) AS cost_per_hour_gbp,
+             'cost_per_hour = total_cost / total_hours' AS formula
+      FROM unplanned_stoppages
+      WHERE asset_id = $asset_id
+        AND occurred_at >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      GROUP BY asset_id
+    limit: 1
+    example: {asset_id: AST-DC1-SRT}
+
+  - name: get_asset_maintenance_cost_history
+    desc: Total maintenance cost by asset over past 7 years, planned vs unplanned. Use to assess wear-out trends.
+    kind: sql
+    args:
+      asset_id: {required: true, desc: Asset id}
+    sql: |
+      SELECT asset_id,
+             count(*) FILTER (WHERE wo_type = 'planned') AS planned_wos,
+             count(*) FILTER (WHERE wo_type = 'breakdown') AS unplanned_wos,
+             round(sum(cost_gbp) FILTER (WHERE wo_type = 'planned'), 2) AS planned_cost_gbp,
+             round(sum(cost_gbp) FILTER (WHERE wo_type = 'breakdown'), 2) AS unplanned_cost_gbp,
+             round(sum(cost_gbp), 2) AS total_cost_gbp,
+             round(sum(downtime_hours), 1) AS total_downtime_hours,
+             'total_cost = planned_cost + unplanned_cost' AS formula
+      FROM work_orders
+      WHERE asset_id = $asset_id AND completed_at IS NOT NULL
+      GROUP BY asset_id
+    limit: 1
+    example: {asset_id: AST-DC1-SRT}
+
+  - name: list_asset_run_hours
+    desc: Run hours and condition readings by asset, latest first. Use to assess remaining life and plan maintenance.
+    kind: sql
+    args:
+      asset_id: {desc: "Equipment asset, e.g. AST-0042 (default all)"}
+      site_id: {desc: "DC, e.g. DC1 (default all)"}
+      condition_rating: {type: enum, values: [good, fair, poor, critical], desc: "Filter by condition (default all)"}
+    sql: |
+      SELECT r.asset_id, a.name AS asset_name, a.site_id, r.measured_at, r.run_hours,
+             r.condition_rating, r.vibration_level_mm_s, r.temperature_c, r.oil_analysis_status
+      FROM asset_run_hours r
+      JOIN master.assets a USING (asset_id)
+      WHERE ($asset_id IS NULL OR r.asset_id = $asset_id)
+        AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($condition_rating IS NULL OR r.condition_rating = $condition_rating)
+      ORDER BY r.measured_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_shutdown_plan
+    desc: Planned shutdown scope, dates and capacity. Use to check if a planned repair fits in the maintenance window.
+    kind: sql
+    args:
+      shutdown_date: {type: date, desc: "Planned shutdown date (default this month's planned shutdowns)"}
+      asset_id: {desc: "Filter to shutdowns for this asset (default all)"}
+    sql: |
+      SELECT shutdown_id, shutdown_date, description, duration_hours, asset_id,
+             related_assets, work_orders_included, estimated_cost_gbp, status, updated_at
+      FROM shutdown_plan
+      WHERE ($shutdown_date IS NULL OR shutdown_date = $shutdown_date)
+        AND ($asset_id IS NULL OR asset_id = $asset_id OR related_assets LIKE '%' || $asset_id || '%')
+        AND status IN ('planned', 'approved', 'in_progress')
+      ORDER BY shutdown_date ASC
+    limit: 20
+    example: {}
+
+  - name: create_work_order
+    desc: Create a maintenance work order for an asset with planned date. Raises a new order in open status.
+    kind: insert
+    table: work_orders
+    id_prefix: WO-
+    defaults: {status: open, wo_type: planned}
+    args:
+      asset_id: {required: true}
+      priority: {required: true, desc: "Priority: low, medium, high, urgent"}
+      description: {required: true}
+      planned_date: {type: date, desc: "When to do the work"}
+      assigned_to: {type: str, desc: "Employee id to assign to"}
+    example: {asset_id: AST-DC1-SRT, priority: high, description: "Replace gearbox bearing assembly", planned_date: "2026-10-19"}
+
+  - name: search_assets
+    desc: Find DC equipment assets by name, class or site; returns asset ids.
+    kind: select
+    from: master.assets
+    filters:
+      name: {op: like}
+      asset_class: {}
+      site_id: {}
+    columns: [asset_id, name, asset_class, site_id, criticality, status]
+    order: site_id
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: cancel_work_order
+    desc: Cancel a planned or open maintenance work order. Returns the old and new status.
+    kind: update
+    table: work_orders
+    set: {status: cancelled}
+    args:
+      cancel_reason: {required: true, desc: "Reason for cancellation"}
+    example: {wo_id: WO-900010, cancel_reason: "Pushed to next shutdown cycle"}
