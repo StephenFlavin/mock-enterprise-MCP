@@ -313,9 +313,9 @@ tools:
       SELECT pur.supplier_id, s.name AS supplier_name,
              COUNT(DISTINCT pur.po_id) AS po_count,
              COUNT(DISTINCT gr.receipt_id) AS receipt_count,
-             ROUND(AVG(DATEDIFF('day', pur.ship_date, CAST(gr.received_at AS DATE))), 1) AS avg_lead_time_days,
-             ROUND(AVG(ABS(gr.qty_received - pol.qty_ordered) / NULLIF(pol.qty_ordered, 0) * 100), 2) AS avg_variance_pct,
-             ROUND(SUM(CASE WHEN gr.qty_received = pol.qty_ordered THEN 1 ELSE 0 END) * 100.0 / COUNT(DISTINCT gr.receipt_id), 1) AS accuracy_pct,
+             COALESCE(ROUND(AVG(DATEDIFF('day', pur.ship_date, CAST(gr.received_at AS DATE))), 1), 0) AS avg_lead_time_days,
+             COALESCE(ROUND(AVG(ABS(gr.qty_received - pol.qty_ordered) / NULLIF(pol.qty_ordered, 0) * 100), 2), 0) AS avg_variance_pct,
+             COALESCE(ROUND(SUM(CASE WHEN gr.qty_received = pol.qty_ordered THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(DISTINCT gr.receipt_id), 0), 1), 0) AS accuracy_pct,
              'accuracy_pct = (exact_matches / total_receipts) * 100' AS formula
       FROM master.purchase_orders pur
       LEFT JOIN master.po_lines pol ON pur.po_id = pol.po_id
@@ -336,7 +336,7 @@ tools:
       site_id: {desc: "Filter by DC"}
       date_as_of: {type: date, desc: "Stock balance as at this date (default today)"}
     sql: |
-      SELECT m.location_id, m.site_id, m.sku, p.name AS product_name,
+      SELECT m.location_id, m.site_id, sm.sku, p.name AS product_name,
              p.country_of_origin, p.hs_code,
              SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) AS on_hand_units,
              COALESCE(ps.units_per_pallet, 1) AS units_per_pallet,
@@ -345,11 +345,11 @@ tools:
       FROM master.locations m
       LEFT JOIN stock_movements sm ON m.location_id = sm.location_id AND CAST(sm.moved_at AS DATE) <= COALESCE(CAST($date_as_of AS DATE), CAST($as_of AS DATE))
       LEFT JOIN master.products p ON sm.sku = p.sku
-      LEFT JOIN pack_specifications ps ON p.sku = ps.sku
-      WHERE (ps.bonded_suitable = true OR (ps.bonded_suitable IS NULL AND p.hazmat = 'none'))
+      LEFT JOIN pack_specifications ps ON sm.sku = ps.sku
+      WHERE ps.bonded_suitable = true
         AND ($site_id IS NULL OR m.site_id = $site_id)
         AND m.status = 'active'
-      GROUP BY m.location_id, m.site_id, m.sku, p.name, p.country_of_origin, p.hs_code, ps.units_per_pallet
+      GROUP BY m.location_id, m.site_id, sm.sku, p.name, p.country_of_origin, p.hs_code, ps.units_per_pallet
       HAVING SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) > 0
       ORDER BY stock_value_gbp DESC
     limit: 100
