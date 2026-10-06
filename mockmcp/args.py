@@ -94,7 +94,7 @@ def parse_date(v, end: bool = False) -> str:
         return rng(date(y, mo, 1), date(y, mo, calendar.monthrange(y, mo)[1]))
     if re.fullmatch(r"\d{4}", s):
         return rng(date(int(s), 1, 1), date(int(s), 12, 31))
-    if s in ("today", "now"):
+    if s in ("today", "now", "$as_of", "as_of"):
         return t.isoformat()
     if s == "yesterday":
         return (t - timedelta(1)).isoformat()

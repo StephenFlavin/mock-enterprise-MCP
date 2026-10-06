@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, time
 
 def generate(g):
     r = g.rng
-
+    
     # Master data lookups
     sites = g.master("sites")
     carriers = g.master("carriers")
     orders = g.master("orders")
     purchase_orders = g.master("purchase_orders")
-
+    
     # Extract DCs and stores
     dcs = [s for s in sites if s["type"] == "dc"]
     stores = [s for s in sites if s["type"] == "store"]
@@ -18,16 +18,13 @@ def generate(g):
     parcel_carriers = [c for c in carriers if c["mode"] == "parcel"]
     ocean_carriers = [c for c in carriers if c["mode"] == "ocean"]
     air_carriers = [c for c in carriers if c["mode"] == "air"]
-
-    # Define lanes: DC to store and store to store
+    
+    # Define lanes: DC to store
     lanes = []
-    for dc in dcs[:3]:  # Use first 3 DCs
-        for store in stores[:50]:  # Sample 50 stores per DC
+    for dc in dcs[:3]:
+        for store in stores[:50]:
             lanes.append(f"{dc['site_id']}-{store['site_id']}")
-
-    # Lanes for ocean freight
-    ocean_lanes = ["GBFXT-FAC-CN", "GBFXT-FAC-VN", "GBFXT-FAC-BD"]
-
+    
     shipments = []
     carriers_lanes = []
     carrier_performance = []
@@ -40,8 +37,8 @@ def generate(g):
     transfer_scenarios = []
     postcodes = []
     reverse_logistics = []
-
-    # Generate carriers_lanes allocations
+    
+    # Generate carriers_lanes
     for lane in lanes:
         for carrier in r.sample(road_carriers, min(3, len(road_carriers))):
             carriers_lanes.append({
@@ -59,58 +56,35 @@ def generate(g):
                 "pct_allocation": float(r.randint(20, 80)),
                 "updated_at": g.fake.date_time_this_year()
             })
-
-    # Add ocean lanes
-    for lane in ocean_lanes:
-        for carrier in r.sample(ocean_carriers, min(2, len(ocean_carriers))):
-            carriers_lanes.append({
-                "carrier_id": carrier["carrier_id"],
-                "lane": lane,
-                "mode": "ocean",
-                "status": "active",
-                "weekly_capacity_trips": r.randint(1, 4),
-                "weekly_capacity_pallets": r.randint(200, 1000),
-                "rate_per_trip_gbp": float(r.randint(3000, 8000)),
-                "rate_per_pallet_gbp": float(r.randint(50, 150)),
-                "min_pieces": 20,
-                "cutoff_hour": 17,
-                "cutoff_day_offset": 14,
-                "pct_allocation": float(r.randint(30, 70)),
-                "updated_at": g.fake.date_time_this_year()
-            })
-
-    # Generate shipments (last 90 days + future 14 days)
-    for i in range(2500):  # Realistic volume of ~25 per day
+    
+    # Generate shipments
+    for i in range(2500):
         lane = r.choice(lanes)
         origin, dest = lane.split("-")
         carrier = r.choice(road_carriers)
-
-        planned_dep = g.date_between(90, -14)  # 90 days ago to 14 days future
+        
+        planned_dep = g.date_between(90, -14)
         planned_arr = planned_dep + timedelta(days=r.randint(1, 5))
-
-        # Some shipments already happened
         is_past = planned_dep < g.as_of
-
+        
         if is_past:
-            # Actual dates for past shipments
-            delay = int(r.gauss(0, 1.5))  # Some early, some late
+            delay = int(r.gauss(0, 1.5))
             actual_dep = planned_dep + timedelta(days=max(0, delay))
             actual_arr = planned_arr + timedelta(days=delay)
         else:
             actual_dep = None
             actual_arr = None
-
-        is_split = r.random() < 0.12  # 12% split rate
+        
+        is_split = r.random() < 0.12
         units = r.randint(100, 2000)
         pallets = max(1, units // 50)
         fill_rate = float(r.randint(60, 98))
-
         cost = float(r.randint(180, 800))
-
+        
         shipments.append({
             "shipment_id": f"SHP-{len(shipments) + 1:06d}",
             "order_id": r.choice(orders)["order_id"] if r.random() < 0.7 else None,
-            "po_id": r.choice(purchase_orders)["po_id"] if r.random() < 0.3 else None,
+            "po_id": None,
             "origin_site_id": origin,
             "dest_site_id": dest,
             "carrier_id": carrier["carrier_id"],
@@ -134,18 +108,18 @@ def generate(g):
             "created_at": g.fake.date_time_this_year(),
             "updated_at": g.fake.date_time_this_year()
         })
-
-    # Generate carrier_performance (weekly summaries)
-    for lane in lanes[:100]:  # Sample lanes for perf data
+    
+    # Generate carrier_performance
+    for lane in lanes[:100]:
         for carrier in r.sample(road_carriers, min(2, len(road_carriers))):
             for week_offset in range(-12, 2):
                 week_start = g.as_of + timedelta(weeks=week_offset)
-                week_start = week_start - timedelta(days=week_start.weekday())  # Monday
+                week_start = week_start - timedelta(days=week_start.weekday())
                 week_end = week_start + timedelta(days=6)
-
+                
                 shipments_count = r.randint(5, 20)
                 on_time_count = int(shipments_count * r.gauss(0.92, 0.05))
-
+                
                 carrier_performance.append({
                     "carrier_id": carrier["carrier_id"],
                     "lane": lane,
@@ -160,15 +134,15 @@ def generate(g):
                     "cost_per_shipment_gbp": float(r.randint(250, 450)),
                     "updated_at": g.fake.date_time_this_year()
                 })
-
-    # Generate carrier incidents (claims, delays, etc.)
+    
+    # Generate carrier incidents
     for i in range(150):
         carrier = r.choice(road_carriers)
         incident_date = g.date_between(90, 1)
-
+        
         incident_type = r.choice(["damage_claim", "loss_claim", "delay", "service_failure", "other"])
         claim_value = float(r.randint(50, 5000)) if incident_type in ["damage_claim", "loss_claim"] else 0.0
-
+        
         carrier_incidents.append({
             "incident_id": f"INC-{i + 1:06d}",
             "carrier_id": carrier["carrier_id"],
@@ -183,7 +157,7 @@ def generate(g):
             "extra_cost_gbp": float(r.randint(0, 2000)),
             "updated_at": g.fake.date_time_this_year()
         })
-
+    
     # Generate air_freight
     for i in range(80):
         origin = r.choice(dcs)["site_id"]
@@ -191,7 +165,7 @@ def generate(g):
         created_date = g.date_between(90, 1)
         planned_date = created_date + timedelta(days=1)
         actual_date = planned_date + timedelta(days=r.randint(0, 2))
-
+        
         air_freight.append({
             "air_shipment_id": f"AIR-{i + 1:06d}",
             "shipment_id": r.choice(shipments)["shipment_id"] if r.random() < 0.5 else None,
@@ -209,12 +183,12 @@ def generate(g):
             "avoided_by": r.choice(["earlier booking", "better forecast", "split consolidation"]) if r.random() < 0.6 else None,
             "created_at": datetime.combine(created_date, time(hour=r.randint(6, 18)))
         })
-
+    
     # Generate route_plans
     for i in range(200):
         route_date = g.date_between(30, -14)
         lane = r.choice(lanes)
-
+        
         route_plans.append({
             "route_id": f"RTE-{i + 1:06d}",
             "date": route_date,
@@ -227,11 +201,10 @@ def generate(g):
             "status": r.choice(["planned", "completed"]) if route_date < g.as_of else "planned",
             "created_at": g.fake.date_time_this_year()
         })
-
+    
     # Generate route_hours_breaches
     for i in range(40):
         route = r.choice(route_plans)
-
         route_hours_breaches.append({
             "breach_id": f"BRC-{i + 1:06d}",
             "route_id": route["route_id"],
@@ -242,20 +215,22 @@ def generate(g):
             "remediation": g.fake.sentence() if r.random() < 0.7 else None,
             "created_at": g.fake.date_time_this_year()
         })
-
-    # Generate planned_stops
-    for lane in lanes[:100]:
+    
+    # Generate planned_stops with unique composite keys
+    stop_id = 0
+    for lane in lanes:
         origin, dest = lane.split("-")
-        for _ in range(r.randint(1, 3)):
-            planned_stops.append({
-                "lane": lane,
-                "customer_or_store": dest,
-                "stop_time_minutes": r.randint(15, 60),
-                "frequency_per_week": float(r.randint(1, 5)),
-                "source": "route planning history",
-                "updated_at": g.fake.date_time_this_year()
-            })
-
+        planned_stops.append({
+            "stop_id": f"STP-{stop_id:06d}",
+            "lane": lane,
+            "customer_or_store": dest,
+            "stop_time_minutes": r.randint(15, 60),
+            "frequency_per_week": float(r.randint(1, 5)),
+            "source": "route planning history",
+            "updated_at": g.fake.date_time_this_year()
+        })
+        stop_id += 1
+    
     # Generate allocation_scenarios
     for i in range(25):
         allocation_scenarios.append({
@@ -272,12 +247,12 @@ def generate(g):
             "status": r.choice(["draft", "approved"]),
             "created_at": g.fake.date_time_this_year()
         })
-
+    
     # Generate transfer_scenarios
     for i in range(20):
         from_dc = r.choice(dcs)["site_id"]
         to_dc = r.choice([dc for dc in dcs if dc["site_id"] != from_dc])
-
+        
         transfer_scenarios.append({
             "transfer_id": f"TRN-{i + 1:06d}",
             "from_site_id": from_dc,
@@ -290,16 +265,16 @@ def generate(g):
             "status": r.choice(["planned", "completed"]),
             "created_at": g.fake.date_time_this_year()
         })
-
-    # Generate postcodes
-    uk_regions = ["North West", "North East", "Yorkshire", "Midlands", "East Anglia", "London", "South East", "South West"]
+    
+    # Generate postcodes with unique keys
     postcodes_data = ["M1", "L1", "S1", "B1", "E1", "SW1", "OX1", "EX1"]
-
-    for postcode in postcodes_data * 5:
+    postcode_id = 0
+    for postcode in postcodes_data:
         carrier = r.choice(parcel_carriers + road_carriers)
         postcodes.append({
+            "postcode_id": f"PC-{postcode_id:06d}",
             "postcode": postcode,
-            "region": r.choice(uk_regions),
+            "region": r.choice(["North West", "North East", "Yorkshire", "Midlands", "East Anglia", "London", "South East", "South West"]),
             "carrier_id": carrier["carrier_id"],
             "next_day_available": r.choice([True, True, False]),
             "next_day_cost_gbp": float(r.randint(3, 15)) if r.random() < 0.7 else 0.0,
@@ -307,7 +282,8 @@ def generate(g):
             "coverage_from": (g.as_of - timedelta(days=r.randint(30, 365))).date() if isinstance(g.as_of, datetime) else g.as_of - timedelta(days=r.randint(30, 365)),
             "updated_at": g.fake.date_time_this_year()
         })
-
+        postcode_id += 1
+    
     # Generate reverse_logistics
     categories = ["Womenswear", "Menswear", "Home", "Accessories", "Clearance"]
     for category in categories:
@@ -315,7 +291,7 @@ def generate(g):
             period_start = g.as_of + timedelta(weeks=week)
             period_start = period_start - timedelta(days=period_start.weekday()) if isinstance(period_start, datetime) else period_start - timedelta(days=period_start.weekday())
             period_end = period_start + timedelta(days=6)
-
+            
             reverse_logistics.append({
                 "category": category,
                 "period_start": period_start.date() if isinstance(period_start, datetime) else period_start,
@@ -327,7 +303,7 @@ def generate(g):
                 "resale_value_gbp": float(r.randint(1000, 8000)),
                 "updated_at": g.fake.date_time_this_year()
             })
-
+    
     return {
         "shipments": shipments,
         "carriers_lanes": carriers_lanes,

@@ -442,3 +442,301 @@ tools:
       start_date: {type: date, required: true}
       end_date: {type: date, required: true}
     example: {sku: "PF-220", test_price_gbp: 32.0, control_price_gbp: 28.0, test_store_count: 10, control_store_count: 10, start_date: "+7d", end_date: "+49d"}
+
+  - name: create_scheduled_price_change
+    desc: Schedule an approved price change to take effect on a date. Moves from approved status to scheduled.
+    kind: update
+    table: price_changes
+    set: {status: scheduled, effective_date: "{proposed_date}"}
+    args:
+      proposed_date: {type: date, required: true}
+    example: {pc_id: PC-900001, proposed_date: "+7d"}
+
+  - name: delete_draft_markdown_event
+    desc: Delete a draft markdown event that has not gone live yet.
+    kind: update
+    table: markdown_events
+    set: {status: cancelled, updated_at: "$as_of"}
+    args:
+      review_reason: {desc: "Reason for deletion"}
+    example: {markdown_id: MDE-900001, review_reason: "Forecast revised, markdown no longer needed"}
+
+  - name: delete_draft_price_for_product
+    desc: Delete an unapproved draft price change for a product.
+    kind: update
+    table: price_changes
+    set: {status: cancelled, cancel_reason: "Deleted by user", updated_at: "$as_of"}
+    args: {}
+    example: {pc_id: PC-900001}
+
+  - name: delete_draft_promotion
+    desc: Delete a promotion that is still in draft status.
+    kind: update
+    table: promotions
+    set: {status: cancelled, cancel_reason: "Deleted by user", updated_at: "$as_of"}
+    args: {}
+    example: {promotion_id: PROMO-900001}
+
+  - name: get_cannibalisation_estimate
+    desc: Estimate sales cannibalisation (lost full-price sales) from a planned promotion or markdown.
+    kind: sql
+    args:
+      category: {required: true}
+      promotion_depth_pct: {type: float, default: 25, desc: "Discount or markdown depth %"}
+    sql: |
+      SELECT $category AS category,
+             round($promotion_depth_pct, 1) AS discount_depth_pct,
+             'Cannibalisation rate typically 30-50% of incremental volume for similar products' AS cannibalisation_assumption,
+             round($promotion_depth_pct * 0.4, 1) AS estimated_cannibalisation_pct_of_incremental,
+             'Avoid heavy promotional overlap in related SKUs to minimise cannibalisation' AS recommendation
+    example: {category: kitchenware, promotion_depth_pct: 25}
+
+  - name: get_discounting_depth_for_category
+    desc: Get average markdown depth and frequency trends by category. Use for understanding category markdown policies.
+    kind: sql
+    args:
+      category: {required: true}
+      lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
+    sql: |
+      SELECT $category AS category,
+             round(AVG(markdown_depth_pct), 1) AS avg_markdown_depth_pct,
+             round(MAX(markdown_depth_pct), 1) AS max_markdown_depth_pct,
+             round(MIN(markdown_depth_pct), 1) AS min_markdown_depth_pct,
+             count(*) AS markdown_events_in_period
+      FROM markdown_events
+      WHERE category = $category
+        AND end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks AS INT) WEEK)
+    example: {category: apparel, lookback_weeks: 26}
+
+  - name: get_elasticity_confidence_for_category
+    desc: Retrieve 95% confidence interval width for price elasticity estimate for a category.
+    kind: sql
+    args:
+      category: {required: true}
+      measure_date: {type: date, desc: "Date of measurement", default: "-30d"}
+    sql: |
+      SELECT category,
+             round(elasticity_to_price, 2) AS elasticity_to_price,
+             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             data_points,
+             'Narrow CI = high confidence in elasticity; wide CI = estimate with caution' AS interpretation
+      FROM elasticity_data
+      WHERE category = $category
+        AND measure_date <= CAST($measure_date AS DATE)
+      ORDER BY measure_date DESC
+      LIMIT 1
+    example: {category: apparel}
+
+  - name: get_elasticity_confidence_intervals
+    desc: Get elasticity estimates with confidence intervals for all categories. Use for identifying high/low confidence estimates.
+    kind: sql
+    args:
+      min_confidence_pct: {type: float, default: 50, desc: "Minimum data points as % of best estimate"}
+    sql: |
+      SELECT category,
+             round(elasticity_to_price, 2) AS elasticity_to_price,
+             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             data_points,
+             round(elasticity_to_price - elasticity_confidence_interval, 2) AS lower_bound,
+             round(elasticity_to_price + elasticity_confidence_interval, 2) AS upper_bound
+      FROM elasticity_data
+      WHERE measure_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+      ORDER BY ABS(elasticity_confidence_interval) ASC
+    example: {}
+
+  - name: get_full_price_cannibalisation_estimate
+    desc: Estimate total sales lost from full-price SKUs when related items are marked down.
+    kind: sql
+    args:
+      category: {required: true}
+      markdown_depth_pct: {type: float, required: true, desc: "Planned markdown depth %"}
+    sql: |
+      SELECT $category AS category,
+             round($markdown_depth_pct, 1) AS markdown_depth_pct,
+             'Cannibalisation estimated at 35-50% of incremental volume for most categories' AS model_basis,
+             round($markdown_depth_pct * 0.45, 1) AS full_price_sales_loss_pct_of_incremental,
+             'Higher depth = higher cannibalisation; test on similar SKUs first' AS recommendation
+    example: {category: home, markdown_depth_pct: 40}
+
+  - name: get_markdown_performance_for_product
+    desc: Get actual performance (sell-through, margin achieved, duration) for a product's recent markdown events.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT md.markdown_id, md.sku, md.category,
+             round(md.markdown_depth_pct, 1) AS markdown_depth_pct,
+             md.start_date, md.end_date, md.status,
+             md.stock_at_start, md.units_sold,
+             CASE WHEN md.stock_at_start > 0 THEN round(md.units_sold * 100 / md.stock_at_start, 1) ELSE 0 END AS sell_through_pct,
+             round(md.margin_gbp, 2) AS total_margin_gbp,
+             round(CAST(md.units_sold AS FLOAT) / NULLIF((md.end_date - md.start_date), 0), 1) AS units_per_day
+      FROM markdown_events md
+      WHERE md.sku = $sku
+      ORDER BY md.end_date DESC
+      LIMIT 10
+    example: {sku: "SKU-101904"}
+
+  - name: get_markdown_rate_by_category
+    desc: Get current markdown rate (% of sales from marked-down products) by category.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT md.category,
+             count(DISTINCT md.markdown_id) AS active_markdown_events,
+             round(AVG(md.markdown_depth_pct), 1) AS avg_depth_pct,
+             round(SUM(md.units_sold), 0) AS total_units_cleared,
+             round(SUM(md.margin_gbp), 2) AS total_margin_gbp,
+             'Markdown rate = % of category sales from promotional markdowns' AS metric_definition
+      FROM markdown_events md
+      WHERE md.category = $category
+        AND md.status IN ('active', 'completed')
+        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      GROUP BY md.category
+    example: {category: apparel}
+
+  - name: get_markdown_spend_by_category
+    desc: Total margin impact from markdown events (margin foregone) by category over a period.
+    kind: sql
+    args:
+      category: {required: true}
+      lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
+    sql: |
+      SELECT md.category,
+             count(*) AS markdown_events,
+             round(SUM(md.stock_at_start * md.original_price_gbp), 2) AS value_of_markdown_stock_gbp,
+             round(SUM((md.original_price_gbp - md.markdown_price_gbp) * md.units_sold), 2) AS markdown_discount_cost_gbp,
+             round(SUM(md.margin_gbp), 2) AS realized_margin_gbp,
+             'Markdown cost = (full price - markdown price) * units sold' AS calculation
+      FROM markdown_events md
+      WHERE md.category = $category
+        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks AS INT) WEEK)
+      GROUP BY md.category
+    example: {category: apparel, lookback_weeks: 26}
+
+  - name: get_our_black_friday_results_last_year
+    desc: Retrieve results of our last Black Friday promotion for benchmarking and planning next year.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT p.promotion_id, p.category,
+             p.discount_depth_pct, p.start_date, p.end_date,
+             round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
+             round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
+             round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
+             round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
+             'Black Friday 2025 results' AS event
+      FROM promotions p
+      WHERE (p.start_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+        AND p.start_date <= CAST($as_of AS DATE))
+        AND (p.promotion_type = 'percentage_discount' OR EXTRACT(MONTH FROM p.start_date) = 11)
+      ORDER BY p.start_date DESC
+      LIMIT 5
+    example: {}
+
+  - name: get_our_markdown_depth_and_timing
+    desc: Compare our current markdown depth and timing to historical patterns by category.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT md.category,
+             'Current' AS period,
+             round(AVG(md.markdown_depth_pct), 1) AS avg_markdown_depth_pct,
+             'weeks' AS timing_unit,
+             round(AVG(CAST((md.end_date - md.start_date) AS NUMERIC) / 7), 1) AS avg_duration_weeks,
+             count(*) AS number_of_events
+      FROM markdown_events md
+      WHERE md.category = $category
+        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+        AND md.status IN ('active', 'completed')
+      GROUP BY md.category
+    example: {category: apparel}
+
+  - name: get_own_product_prices_and_quality_scores
+    desc: Get our current prices, costs and quality positioning for products in a category for competitive analysis.
+    kind: sql
+    args:
+      category: {required: true, desc: "Category, e.g. kitchenware"}
+    sql: |
+      SELECT p.sku, p.style_id, p.name,
+             round(CASE WHEN pc.new_price_gbp IS NOT NULL THEN pc.new_price_gbp ELSE pc.old_price_gbp END, 2) AS current_price_gbp,
+             'Quality score: 4/5' AS quality_position,
+             'Target position: mid-market' AS strategic_position,
+             pc.created_at AS price_set_date
+      FROM master.products p
+      LEFT JOIN price_changes pc ON pc.sku = p.sku AND pc.status = 'active'
+      WHERE p.category = $category
+      ORDER BY p.sku
+      LIMIT 50
+    example: {category: kitchenware}
+
+  - name: get_post_promotion_dip_for_category
+    desc: Estimate post-promotion sales dip (customer wait behaviour) after a promotion ends.
+    kind: sql
+    args:
+      category: {required: true}
+      promotion_depth_pct: {type: float, default: 25, desc: "Promotion discount %"}
+    sql: |
+      SELECT $category AS category,
+             round($promotion_depth_pct, 1) AS promotion_depth_pct,
+             'Post-promo dip typically 15-30% below baseline for 2-3 weeks after end' AS historical_pattern,
+             round($promotion_depth_pct * 0.5, 1) AS estimated_post_promo_dip_pct,
+             'Higher dips for regular promoters; run longer gaps between events' AS recommendation
+    example: {category: kitchenware, promotion_depth_pct: 25}
+
+  - name: get_price_change_history_for_sku
+    desc: Return all price changes (draft, approved, active, rolled back) for a specific SKU with reasons.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT pc.pc_id, pc.sku, pc.category,
+             round(pc.old_price_gbp, 2) AS old_price_gbp,
+             round(pc.new_price_gbp, 2) AS new_price_gbp,
+             round(pc.price_change_pct, 1) AS price_change_pct,
+             pc.change_reason, pc.status,
+             pc.proposed_date, pc.effective_date, pc.created_at
+      FROM price_changes pc
+      WHERE pc.sku = $sku
+      ORDER BY pc.created_at DESC
+      LIMIT 20
+    example: {sku: "K-1700"}
+
+  - name: get_price_changes_for_category
+    desc: Get all price changes (past and pending) for a category, with effective dates and reasons.
+    kind: sql
+    args:
+      category: {required: true}
+      lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
+    sql: |
+      SELECT pc.pc_id, pc.sku, pc.category,
+             round(pc.old_price_gbp, 2) AS old_price_gbp,
+             round(pc.new_price_gbp, 2) AS new_price_gbp,
+             round(pc.price_change_pct, 1) AS price_change_pct,
+             pc.change_reason, pc.status, pc.effective_date
+      FROM price_changes pc
+      WHERE pc.category = $category
+        AND pc.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks AS INT) WEEK)
+      ORDER BY pc.effective_date DESC, pc.created_at DESC
+      LIMIT 30
+    example: {category: apparel}
+
+  - name: get_price_elasticity_for_category
+    desc: Get price elasticity of demand for a category. Use to model volume impact of price changes.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT category,
+             round(elasticity_to_price, 2) AS elasticity_to_price,
+             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             data_points,
+             'Elasticity < -1 = elastic (% price up > % volume down); > -1 = inelastic' AS interpretation,
+             'Last updated: ' || last_updated AS data_freshness
+      FROM elasticity_data
+      WHERE category = $category
+      ORDER BY measure_date DESC
+      LIMIT 1
+    example: {category: kitchenware}
