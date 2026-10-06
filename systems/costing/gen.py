@@ -49,7 +49,7 @@ def generate(g):
         retail_price = total_cost / (1 - r.uniform(0.45, 0.65))  # 45-65% margin
         gross_margin = retail_price - total_cost
 
-        cid = f"CST-{style_id}-26S1"
+        cid = f"CST-{costing_id:06d}"
         product_costings.append({
             "costing_id": cid,
             "style_id": style_id,
