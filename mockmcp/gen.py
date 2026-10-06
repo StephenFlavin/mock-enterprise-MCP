@@ -22,7 +22,7 @@ class Gen:
         self.fake = Faker("en_GB")
         self.fake.seed_instance(seed)
         self.world = WORLD
-        self.as_of = date.fromisoformat(str(WORLD["as_of"]))
+        self.as_of = date.fromisoformat(WORLD["data_as_of"])
 
     def days_ago(self, n: int) -> date:
         return self.as_of - timedelta(days=n)

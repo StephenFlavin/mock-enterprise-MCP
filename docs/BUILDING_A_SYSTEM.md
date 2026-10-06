@@ -38,8 +38,14 @@ systems/<id>/
 ## The world
 
 - Company: Harbour & Vale Retail Group, a UK retailer with a global supply chain. Money is GBP.
-- **Today is 2026-10-05 (a Monday).** All data must be relative to that date: history in the past, plans in the future.
-  In SQL use the `$as_of` parameter (always available), e.g. `CAST($as_of AS DATE) - INTERVAL 90 DAY`.
+- **Data is generated around 2026-10-05 (a Monday)** (`g.as_of` in gen.py): history in the past, plans in the future.
+- **At runtime every date and timestamp column is moved forward (in whole weeks) so the data ends at the real
+  current date.** "Last 6 months" always has data. Therefore:
+  - **Never hard-code a date in SQL, defaults or `scenarios.yaml` expects.** In SQL use the `$as_of` parameter
+    (= today at runtime), e.g. `CAST($as_of AS DATE) - INTERVAL 90 DAY`; in defaults use `-90d`, `last month`, `Q3` etc.
+  - In seed text (descriptions, notes, documents) prefer relative wording ("three weeks ago") over absolute dates.
+  - `check` runs everything as if today were 13 weeks later, so hard-coded dates fail.
+  - Ids that contain a year (e.g. `PO-2026-004512`) are not changed; that is fine.
 - **Shared master data** lives in `systems/_master/data/*.csv` and is readable in SQL as `master.<table>`.
   See `systems/_master/system.yaml` for every column. Tables:
   `calendar, legal_entities, sites, locations, assets (DC equipment), products, suppliers, factories, carriers, ports, employees,

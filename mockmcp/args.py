@@ -6,7 +6,9 @@ from datetime import date, datetime, timedelta
 
 from .spec import WORLD, Arg, System, ToolSpec
 
-AS_OF = date.fromisoformat(str(WORLD["as_of"]))
+
+def today() -> date:
+    return date.fromisoformat(WORLD["as_of"])
 JSON_TYPES = {"str": "string", "text": "string", "enum": "string", "date": "string", "timestamp": "string",
               "int": "integer", "float": "number", "bool": "boolean", "list": "array"}
 END_SUFFIX = ("_to", "_end", "_until", "_before", "end_date", "to_date")
@@ -80,7 +82,7 @@ def json_schema(args: dict[str, Arg]) -> dict:
 
 def parse_date(v, end: bool = False) -> str:
     s = str(v).strip().lower()
-    t = AS_OF
+    t = today()
 
     def rng(a: date, b: date) -> str:
         return (b if end else a).isoformat()
@@ -208,6 +210,9 @@ def resolve(db, system_id: str, name: str, value: str, ref) -> tuple[str, str | 
         if n and str(n).lower() == v:
             return k, f'matched "{n}" ({k})'
     hits = sorted((k, n) for k, n in rows if v in str(k).lower() or (n and v in str(n).lower()))
+    if not hits:  # every word of the query appears in the name, in any order
+        words = re.findall(r"\w+", v)
+        hits = sorted((k, n) for k, n in rows if n and words and all(w in str(n).lower() for w in words))
     if len(hits) == 1:
         k, n = hits[0]
         return k, f'matched "{n or k}" ({k})'

@@ -1,4 +1,6 @@
 """system.yaml models and loader. A system is tables (CSV-backed) plus tools (declarative)."""
+import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -8,6 +10,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 ROOT = Path(__file__).resolve().parent.parent
 SYSTEMS = ROOT / "systems"
 WORLD = yaml.safe_load((ROOT / "world.yaml").read_text())
+WORLD["data_as_of"] = str(WORLD["as_of"])     # the date generated data is anchored to
+SHIFT_DAYS = 0                                # set by set_today(); applied to every date column at view time
+
+
+def set_today(today: date | None = None):
+    """Re-anchor the mock world to `today` (default: real today, or MOCKMCP_TODAY=YYYY-MM-DD).
+    Data moves by whole weeks so weekdays (e.g. Monday week starts) are preserved."""
+    global SHIFT_DAYS
+    env = os.environ.get("MOCKMCP_TODAY")
+    data = date.fromisoformat(WORLD["data_as_of"])
+    today = today or (data if env == "data" else date.fromisoformat(env) if env else date.today())
+    SHIFT_DAYS = (today - data).days // 7 * 7
+    WORLD["as_of"] = today.isoformat()
+
+
+set_today()
 
 ColType = Literal["str", "text", "int", "float", "bool", "date", "timestamp", "enum", "list"]
 Kind = Literal["select", "sql", "insert", "update", "draft", "py"]
@@ -26,6 +44,7 @@ class Col(Strict):
 class Table(Strict):
     key: str | list[str]
     desc: str = ""
+    shift: bool = True              # false = dates are fixed facts (e.g. the calendar), not moved to today
     cols: dict[str, Col]
 
     @property

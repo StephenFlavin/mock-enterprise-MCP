@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from . import catalog, db
+from . import catalog, db, spec
 from .spec import SYSTEMS, load_system
 
 MAX_DESC_WORDS, MIN_DESC_WORDS, MAX_ARGS = 30, 4, 8
@@ -104,8 +104,19 @@ def data_problems(s) -> list[str]:
 
 
 def run_examples(sid: str) -> list[str]:
-    """Call every tool with its example, in a throwaway state dir. Writes are also retried once."""
+    """Call every tool with its example, in a throwaway state dir. Writes are also retried once.
+    Runs as if today were 13 weeks and 2 days after the data date, so hard-coded dates fail."""
+    from datetime import date, timedelta
     from .server import Engine
+    real_today = spec.WORLD["as_of"]
+    spec.set_today(date.fromisoformat(spec.WORLD["data_as_of"]) + timedelta(days=93))
+    try:
+        return _run_examples(sid, Engine)
+    finally:
+        spec.set_today(date.fromisoformat(real_today))
+
+
+def _run_examples(sid, Engine) -> list[str]:
     p = []
     with tempfile.TemporaryDirectory() as tmp:
         old, db.STATE = db.STATE, Path(tmp)

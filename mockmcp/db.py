@@ -8,6 +8,7 @@ from pathlib import Path
 
 import duckdb
 
+from . import spec
 from .spec import ROOT, WORLD, System, Table
 
 STATE = Path(os.environ.get("MOCKMCP_STATE", ROOT / "state"))
@@ -19,6 +20,10 @@ PARAM = re.compile(r"\$([A-Za-z_]\w*)")
 def _cols_sql(t: Table, extra: dict | None = None) -> str:
     cols = {c: DUCK_TYPES[v.type] for c, v in t.cols.items()} | (extra or {})
     return "{" + ", ".join(f"'{c}': '{ty}'" for c, ty in cols.items()) + "}"
+
+
+def _q2(c: str) -> str:
+    return f'"{c}"'
 
 
 def _q(p: Path) -> str:
@@ -44,11 +49,14 @@ class DB:
                     with open(path, "w", newline="") as fh:
                         csv.writer(fh).writerow(list(t.cols) + extra)
             keys = ", ".join(f'"{k}"' for k in t.keys)
+            moved = [c for c, v in t.cols.items() if v.type in ("date", "timestamp")] if t.shift else []
+            shift = (f"REPLACE ({', '.join(f'{_q2(c)} + INTERVAL {spec.SHIFT_DAYS} DAY AS {_q2(c)}' if t.cols[c].type == 'timestamp' else f'CAST({_q2(c)} + INTERVAL {spec.SHIFT_DAYS} DAY AS DATE) AS {_q2(c)}' for c in moved)})"
+                     if moved and spec.SHIFT_DAYS else "")
             opts = "header=true, delim=',', quote='\"', escape='\"', nullstr='', auto_detect=false"
             self.con.execute(f"""
                 CREATE OR REPLACE VIEW "{s.id}"."{name}" AS
                 SELECT * EXCLUDE (_seq, _op) FROM (
-                  SELECT *, 0::BIGINT AS _seq, 'base' AS _op
+                  SELECT * {shift}, 0::BIGINT AS _seq, 'base' AS _op
                     FROM read_csv('{_q(base)}', {opts}, columns={_cols_sql(t)})
                   UNION ALL BY NAME
                   SELECT * FROM read_csv('{_q(over)}', {opts},
