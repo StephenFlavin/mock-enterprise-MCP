@@ -527,11 +527,11 @@ tools:
         SELECT s.origin_site_id AS origin, SUM(s.freight_cost_gbp) / SUM(s.units) AS cpu
         FROM shipments s JOIN master.sites st ON st.site_id = s.dest_site_id
         WHERE st.region IN ('UK North', 'Scotland') AND s.origin_site_id IN ('DC1', 'DC3') AND s.actual_arrival IS NOT NULL
-          AND s.mode = 'road' AND s.actual_departure >= CAST($as_of AS DATE) - INTERVAL 91 DAY
+          AND s.mode = 'road' AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 91 DAY
         GROUP BY 1),
       modes AS (
         SELECT s.mode, SUM(s.freight_cost_gbp) / SUM(s.units) AS cpu FROM shipments s
-        WHERE s.po_id IS NOT NULL AND s.mode IN ('air', 'ocean') AND s.actual_departure >= CAST($as_of AS DATE) - INTERVAL 365 DAY GROUP BY 1)
+        WHERE s.po_id IS NOT NULL AND s.mode IN ('air', 'ocean') AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 364 DAY GROUP BY 1)
       SELECT $scenario_description AS scenario, $mode_change AS mode_change, $base_volume_units AS base_volume_units,
              ROUND(CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
                                      WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
@@ -545,7 +545,7 @@ tools:
              ROUND($base_volume_units * CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
                                      WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
                                      ELSE (SELECT cpu FROM modes WHERE mode = 'ocean') END, 0) AS scenario_cost_gbp,
-             'cost = units x observed cost per unit (north and Scotland store lanes, last 91 days; air and ocean, last year)' AS formula
+             'cost = units x observed cost per unit (north and Scotland store lanes, last 13 weeks; air and ocean, last 52 weeks)' AS formula
     limit: 1
     example: {scenario_description: "Centralise northern volume to DC1", base_volume_units: 50000, mode_change: centralise}
 
@@ -661,9 +661,9 @@ tools:
       SELECT o.origin AS origin, $destination_site_id AS destination, $scenario AS scenario, COUNT(*) AS deliveries_observed,
              ROUND(AVG(DATEDIFF('day', CAST(s.actual_departure AS DATE), CAST(s.actual_arrival AS DATE))), 2) AS avg_transit_days,
              ROUND(100.0 * COUNT(*) FILTER (WHERE s.delay_minutes IS NULL OR s.delay_minutes <= 0) / COUNT(*), 1) AS on_time_pct,
-             'observed departures to arrivals, last 91 days' AS basis
+             'observed departures to arrivals, last 13 weeks' AS basis
       FROM o JOIN shipments s ON s.origin_site_id = o.origin AND s.dest_site_id = $destination_site_id
-      WHERE s.actual_arrival IS NOT NULL AND s.actual_departure >= CAST($as_of AS DATE) - INTERVAL 91 DAY
+      WHERE s.actual_arrival IS NOT NULL AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 91 DAY
       GROUP BY o.origin
     limit: 1
     example: {origin_site_id: "DC1", destination_site_id: "ST150", scenario: current}

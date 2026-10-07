@@ -39,9 +39,10 @@ COMMODITY = {  # category -> (commodity code, component_type that carries it, el
     "Smart Home": ("COPPER", "metal", 0.8), "Audio": ("COPPER", "metal", 0.8), "Personal Care": ("COPPER", "metal", 0.8),
     "Lighting": ("ALUMINIUM", "metal", 0.8), "Storage": ("ALUMINIUM", "metal", 0.8),
     "Knitwear": ("WOOL", "fabric", 0.9), "Scarves": ("WOOL", "fabric", 0.9), "Outerwear": ("POLYESTER", "fabric", 0.9),
-    "Bags": ("POLYESTER", "fabric", 0.9), "Footwear": ("LEATHER", "fabric", 0.85),
+    "Bags": ("NYLON", "fabric", 0.9), "Footwear": ("LEATHER", "fabric", 0.85),
+    "Schoolwear": ("POLYESTER", "fabric", 0.9), "Nightwear": ("POLYESTER", "fabric", 0.9),
 }
-for c in ["Trousers", "Shirts", "Tops", "T-Shirts", "Blouses", "Dresses", "Nightwear", "Babywear", "Schoolwear", "Towels", "Bedding"]:
+for c in ["Trousers", "Shirts", "Tops", "T-Shirts", "Blouses", "Dresses", "Babywear", "Towels", "Bedding"]:
     COMMODITY[c] = ("COTTON", "fabric", 0.9)
 LOST_PCT = {"Womenswear": 70, "Menswear": 65, "Kids": 60, "Accessories": 55, "Home": 40, "Electricals": 45, "Beauty": 30}
 TARGET_MARGIN = {"Womenswear": 62, "Menswear": 60, "Kids": 58, "Accessories": 60, "Home": 58, "Electricals": 55, "Beauty": 65}
@@ -75,6 +76,40 @@ BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 7.10), 
                 ("packing", "Gift box", 0.85), ("inbound_freight", "Inbound freight", 2.35), ("tooling", "Tooling amortisation", 1.95),
                 ("overhead", "Overhead allocation", 1.97)]
 STORY_MD_OFFSET = {"SKU-101897": 1.0}
+# STORY: cotton fabric per metre up 9% (average) over six months while the cotton index rose 4%.
+# (supplier, a SKU it supplies, price per metre six months ago, price rise %)
+COTTON_STORY = [("SUP-0064", "SKU-100007", 6.20, 16.0), ("SUP-0001", "SKU-100070", 6.50, 13.0), ("SUP-0065", "SKU-100574", 6.40, 9.0),
+                ("SUP-0043", "SKU-101624", 6.60, 4.0), ("SUP-0036", "SKU-100637", 6.30, 3.0)]
+COTTON_INDEX_RISE = 4.0
+# STORY: PFAS-free waterproofing alternatives live in seed/material_costs.csv
+HOLD_PROFILE = {"Womenswear": (9.0, 5.0, 1.0, 7.0), "Menswear": (9.0, 5.0, 1.0, 6.0), "Kids": (9.0, 5.0, 1.0, 7.5),
+                "Accessories": (9.0, 4.0, 1.2, 5.0), "Home": (9.0, 7.0, 1.0, 4.0), "Electricals": (9.0, 4.0, 1.5, 6.5), "Beauty": (9.0, 4.0, 1.0, 5.5)}
+REPAIR = [  # category, repair cost, days, success %, work
+    ("Small Appliances", 15.0, 5, 85.0, "Functional test, element or motor swap, minor parts"), ("Audio", 12.5, 3, 88.0, "Driver or battery replacement, testing"),
+    ("Smart Home", 14.0, 4, 82.0, "Firmware reset, board swap, testing"), ("Personal Care", 9.5, 3, 90.0, "Battery and blade replacement, testing"),
+    ("Lighting", 8.0, 3, 92.0, "Driver and lamp holder replacement"), ("Storage", 6.0, 4, 95.0, "Hinge and fitting replacement"),
+    ("Cookware", 5.5, 4, 94.0, "Handle re-fix and re-polish"), ("Drinkware", 4.5, 4, 93.0, "Lid seal replacement, leak test"),
+    ("Footwear", 11.0, 6, 80.0, "Resole and re-stitch"), ("Outerwear", 9.0, 7, 85.0, "Zip, seam seal and re-proofing"),
+    ("Bags", 7.5, 6, 88.0, "Strap and zip repair"), ("Knitwear", 6.0, 7, 78.0, "Darning and re-shaping"),
+]
+PACKAGING = {  # category -> {material: (spec, cost, damage %, recyclability %, recycled content %)}; corrugated is the current pack
+    "Small Appliances": {"Corrugated": ("Standard corrugated box with card inserts", 0.85, 2.0, 95.0, 70.0),
+                         "Moulded pulp": ("Moulded pulp tray with card sleeve", 0.92, 1.5, 98.0, 95.0),
+                         "Recycled plastic": ("Recycled PET clamshell", 0.78, 3.0, 85.0, 80.0)},
+    "Cookware": {"Corrugated": ("Corrugated carton with dividers", 0.62, 2.5, 95.0, 65.0),
+                 "Moulded pulp": ("Moulded pulp cradle with sleeve", 0.71, 1.9, 98.0, 92.0),
+                 "Recycled plastic": ("Recycled PET blister", 0.58, 3.4, 85.0, 78.0)},
+    "Lighting": {"Corrugated": ("Corrugated carton with foam-free inserts", 0.74, 3.1, 95.0, 68.0),
+                 "Moulded pulp": ("Moulded pulp end caps with sleeve", 0.83, 2.2, 98.0, 94.0),
+                 "Recycled plastic": ("Recycled PET tray and sleeve", 0.69, 4.0, 85.0, 75.0)},
+}
+RECYCLED = [  # material_type, commodity, recycled, virgin, unit, recycled cost, virgin cost, note
+    ("fabric", "POLYESTER", "Recycled polyester (rPET) fabric", "Virgin polyester fabric", "metre", 5.50, 5.00, "GRS certification and bottle-flake supply drive the premium"),
+    ("fabric", "COTTON", "Recycled cotton blend fabric", "Virgin cotton fabric", "metre", 7.80, 6.50, "Limited post-industrial cotton supply"),
+    ("fabric", "NYLON", "Recycled nylon (regenerated) fabric", "Virgin nylon fabric", "metre", 8.90, 7.40, "Regenerated fishing-net yarn, certified"),
+    ("packaging", "", "Recycled content corrugated board", "Virgin corrugated board", "unit", 0.92, 0.80, "Certified recycled content and sourcing cost"),
+    ("plastic", "", "Recycled polypropylene components", "Virgin polypropylene components", "kg", 1.15, 1.00, "Food-grade and colour-matching processing"),
+]
 
 
 def generate(g):
@@ -369,39 +404,117 @@ def generate(g):
                          "created_at": g.as_of - timedelta(days=r.randint(0, 30))})
             sid += 1
 
-    # ---- material costs (weekly, 12 weeks)
-    materials = [("MAT-COTTON-10OZ", "10oz cotton fabric", "fabric", "metre", 6.5), ("MAT-POLYESTER-100", "100% polyester", "fabric", "metre", 5.2),
-                 ("MAT-WOOL-MERINO", "Merino wool", "fabric", "metre", 12.3), ("MAT-NYLON-SPANDEX", "Nylon spandex blend", "fabric", "metre", 7.4),
+    # ---- material costs (every 4 weeks, 7 points = six months)
+    materials = [("MAT-POLYESTER-100", "100% polyester", "fabric", "metre", 5.2), ("MAT-WOOL-MERINO", "Merino wool", "fabric", "metre", 12.3),
+                 ("MAT-NYLON-SPANDEX", "Nylon spandex blend", "fabric", "metre", 7.4),
                  ("MAT-PACKAGING-BOX", "Corrugated box", "packaging", "unit", 0.42), ("MAT-PACKAGING-PULP", "Moulded pulp", "packaging", "unit", 0.31),
                  ("MAT-DYES-CHEM", "Dyes and chemicals", "dyes_chemicals", "kg", 4.8)]
     sup_ids = [s["supplier_id"] for s in g.master("suppliers")[:10]]
     mats = []
     for mid_, nm, ty, unit, base in materials:
         sup = r.choice(sup_ids)
-        for w in range(12):
+        for i in range(7):
             cost = base * (1 + r.gauss(0, 0.03))
             mats.append({"material_id": mid_, "material_name": nm, "material_type": ty, "supplier_id": sup, "unit": unit,
                          "cost_per_unit_gbp": round(cost, 3), "index_price_gbp": round(cost * r.uniform(0.97, 1.03), 3),
-                         "currency_conversion": 1.0, "recorded_at": g.days_ago(w * 7), "notes": ""})
+                         "currency_conversion": 1.0, "recorded_at": g.days_ago(28 * (6 - i)), "notes": ""})
+    for sup, _sku, start, pct in COTTON_STORY:
+        for i in range(7):
+            mats.append({"material_id": "MAT-COTTON-10OZ", "material_name": "10oz cotton fabric", "material_type": "fabric", "supplier_id": sup,
+                         "unit": "metre", "cost_per_unit_gbp": round(start * (1 + pct / 100 * i / 6), 3),
+                         "index_price_gbp": round(4.80 * (1 + COTTON_INDEX_RISE / 100 * i / 6), 3), "currency_conversion": 1.0,
+                         "recorded_at": g.days_ago(28 * (6 - i)), "notes": "Contract price per metre; index is the cotton price per metre equivalent"})
 
-    # ---- supplier cost history: each SKU's own supplier, monthly, cost drifting with the market
-    hist = []
-    sample_skus = [c for c in costings if c["status"] == "active"][:40] + [cost_by_sku[s] for s in ("K-1700", "PF-220")]
+    # ---- supplier cost history: each SKU's own supplier, monthly, cost drifting with the market (one market path per commodity)
+    paths = {"COTTON": [100 + COTTON_INDEX_RISE * i / 5 for i in range(6)]}
+
+    def market_path(code):
+        if code not in paths:
+            m, p = 100.0, []
+            for _ in range(6):
+                m *= 1 + r.gauss(0.004, 0.01)
+                p.append(round(m, 1))
+            paths[code] = p
+        return paths[code]
+
+    story_sup = {s[0]: s for s in COTTON_STORY}
+    hist, seen = [], set()
+    story_skus = [cost_by_sku[s[1]] for s in COTTON_STORY]
+    sample_skus = story_skus + [c for c in costings if c["status"] == "active"][:40] + [cost_by_sku[s] for s in ("K-1700", "PF-220")]
     for c in sample_skus:
-        market = 100.0
+        if c["sku"] in seen:
+            continue
+        seen.add(c["sku"])
+        code = COMMODITY.get(c["category"], ("", "", 0))[0]
+        mk = market_path(code) if code else None
+        u = r.uniform(0.5, 0.95)
+        own_walk, m = [], 100.0
+        for _ in range(6):
+            m *= 1 + r.gauss(0.004, 0.01)
+            own_walk.append(round(m, 1))
         for i in range(6):
-            market *= 1 + r.gauss(0.004, 0.01)
-            sup_idx = market * (1.03 if c["sku"] == "PF-220" and i >= 4 else r.uniform(0.98, 1.02))
-            q = c["total_cost_gbp"] * market / 100
+            market = mk[i] if mk else own_walk[i]
+            if code == "COTTON" and c["supplier_id"] in story_sup:
+                sup_idx = 100 + story_sup[c["supplier_id"]][3] * i / 5
+            elif code == "COTTON":
+                sup_idx = 100 + (market - 100) * u
+            else:
+                sup_idx = market * r.uniform(0.98, 1.02)
+            if c["sku"] == "PF-220" and i >= 4:
+                sup_idx = market * 1.03
+            sup_idx = round(sup_idx, 1)
+            q = c["total_cost_gbp"] * sup_idx / 100
             period = (g.as_of - timedelta(days=30 * (5 - i))).strftime("%Y-%m")
+            pt = round((sup_idx - 100) / (market - 100) * 100, 1) if abs(market - 100) >= 0.5 else None
             hist.append({"supplier_id": c["supplier_id"], "sku": c["sku"], "period": period, "quoted_cost_gbp": round(q, 2),
-                         "actual_cost_gbp": round(q * r.uniform(0.99, 1.02), 2), "index_price_gbp": round(market, 1),
-                         "market_price_index": round(market, 1), "supplier_price_index": round(sup_idx, 1),
-                         "pass_through_pct": round(sup_idx / market * 100, 1), "notes": ""})
+                         "actual_cost_gbp": round(q * r.uniform(0.99, 1.02), 2), "index_price_gbp": market,
+                         "market_price_index": market, "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": code})
+
+    # ---- cost bridges (last six months, by commodity)
+    bridges = []
+    mat_of = {"COTTON": "MAT-COTTON-10OZ", "WOOL": "MAT-WOOL-MERINO", "POLYESTER": "MAT-POLYESTER-100", "NYLON": "MAT-NYLON-SPANDEX"}
+    codes = sorted({v[0] for v in COMMODITY.values()})
+    for n, code in enumerate(codes, 1):
+        if code == "COTTON":
+            tot, mk, prem, mill, frt, lag = 9.0, 4.0, 1.6, 1.4, 1.2, 0.8
+            note = "Fabric cost per metre up 9% while the cotton index rose 4%: the rest is supplier premium, mill margin, freight and contract price lag."
+        else:
+            tot = round(r.uniform(2.0, 7.0), 1)
+            mk, prem, mill, frt = round(tot * .55, 1), round(tot * .15, 1), round(tot * .1, 1), round(tot * .1, 1)
+            lag = round(tot - mk - prem - mill - frt, 1)
+            note = "Routine movement: mostly the market, small premium and freight effects."
+        bridges.append({"bridge_id": f"BRG-{n:04d}", "commodity": code, "material_id": mat_of.get(code, ""), "period_start": g.days_ago(168),
+                        "period_end": g.as_of, "total_change_pct": tot, "market_pct": mk, "premium_pct": prem, "mill_margin_pct": mill,
+                        "freight_pct": frt, "lag_pct": lag, "notes": note})
+
+    # ---- holding cost rates, repair costs, packaging options, recycled premiums
+    holds, dept_of = [], {}
+    for p in products:
+        dept_of.setdefault(p["category"], p["department"])
+    for cat, dept in sorted(dept_of.items()):
+        cap, sto, ins, obs = HOLD_PROFILE.get(dept, (9.0, 5.0, 1.0, 6.0))
+        if cat == "Outerwear":
+            cap, sto, ins, obs = 9.0, 6.5, 1.2, 8.3
+        else:
+            sto, obs = round(sto + r.uniform(-0.5, 0.5), 1), round(obs + r.uniform(-0.8, 0.8), 1)
+        holds.append({"rate_id": f"HLD-{len(holds) + 1:03d}", "category": cat, "capital_cost_pct": cap, "storage_handling_pct": sto, "insurance_pct": ins, "obsolescence_pct": obs,
+                      "total_annual_pct": round(cap + sto + ins + obs, 1), "notes": "Annual cost of holding stock as % of inventory value"})
+    repairs = [{"repair_id": f"RPR-{i:03d}", "category": c, "repair_cost_gbp": rc, "avg_repair_days": d, "success_rate_pct": sr, "typical_repair_work": w, "notes": ""}
+               for i, (c, rc, d, sr, w) in enumerate(REPAIR, 1)]
+    pack, pn = [], 1
+    for cat, opts in PACKAGING.items():
+        for mat, (spec, cost, dmg, rec, rc) in opts.items():
+            pack.append({"packaging_id": f"PKG-{pn:04d}", "category": cat, "material": mat, "spec": spec, "unit_cost_gbp": cost,
+                         "damage_rate_pct": dmg, "recyclability_pct": rec, "recycled_content_pct": rc, "is_current": mat == "Corrugated",
+                         "notes": "Current pack" if mat == "Corrugated" else ""})
+            pn += 1
+    recs = [{"premium_id": f"RCP-{i:03d}", "material_type": t, "commodity": cm, "recycled_material": rm, "virgin_material": vm, "unit": u,
+             "recycled_cost_gbp": rcost, "virgin_cost_gbp": vcost, "notes": n} for i, (t, cm, rm, vm, u, rcost, vcost, n) in enumerate(RECYCLED, 1)]
 
     return {
         "product_costings": costings, "material_costs": mats, "margin_analyses": margins, "cost_variance_drivers": drivers,
         "recovery_routes": [dict(zip(["route_id", "route_name", "description", "category_focus", "min_age_days", "max_age_days", "status"], x)) for x in routes],
         "recovery_rates": rates, "scenario_analyses": scen, "cost_sheet_details": sheets, "commodity_exposures": exposures,
         "supplier_cost_history": hist, "fob_price_history": fob, "origin_cost_quotes": quotes,
+        "cost_bridges": bridges, "holding_cost_rates": holds, "repair_costs": repairs, "packaging_options": pack, "recycled_premiums": recs,
     }

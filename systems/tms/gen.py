@@ -624,13 +624,14 @@ def generate(g):
             break
 
     # Inland legs (02:19:Q4): Asia-UK ocean cargo is trucked from the UK port to the PO's DC the day after it is released. These legs run to
-    # plan (about a quarter of a day late on average), so they are not what makes ocean ETAs poor. Added after invoices so story figures hold.
+    # plan (about a quarter of a day late on average), so they are not what makes ocean ETAs poor. Cost is blank: haulage is included in the ocean rate.
+    # Added after invoices so story figures hold.
     ir = random.Random(2194)
     DC_CARRIER = {"DC1": "CAR-001", "DC2": "CAR-002", "DC3": "CAR-003"}
     for sh in sorted([x_ for x_ in shipments if x_["mode"] == "ocean" and x_.get("po_id") and x_["status"] == "delivered"
                       and x_["origin_site_id"] in ASIA and x_["dest_site_id"] in ("GBFXT", "GBSOU", "GBLGP")], key=lambda x_: x_["shipment_id"]):
         ata = sh["actual_arrival"]
-        if not (d0 - timedelta(days=80) <= ata <= d0 - timedelta(days=8)):
+        if not (d0 - timedelta(days=80) <= ata <= d0 - timedelta(days=38)):
             continue
         dc = pos[sh["po_id"]]["dest_site_id"]
         if dc not in DC_CARRIER:
@@ -644,7 +645,7 @@ def generate(g):
             "planned_arrival": dep + timedelta(days=1), "actual_arrival": dep + timedelta(days=1 + var),
             "lines_count": sh["lines_count"], "volume_cbm": sh["volume_cbm"], "weight_kg": sh["weight_kg"],
             "pallets": sh["pallets"], "cases": sh["cases"], "units": sh["units"], "fill_rate_pct": float(ir.randint(78, 95)),
-            "freight_cost_gbp": float(ir.randint(380, 560)), "delay_minutes": var * 1440 or None, "is_split": False, "reason": None,
+            "freight_cost_gbp": None, "delay_minutes": var * 1440 or None, "is_split": False, "reason": None,
             "created_at": g.as_of, "updated_at": g.as_of})
 
     # lane_distances: approximate road distance of each road lane (km), used to spot long hauls.

@@ -1,368 +1,359 @@
-"""Freight rates: spot rates, contract rates, benchmarks, forecasts and surcharges."""
-from datetime import datetime, timedelta
+"""Freight rates: spot and contract rates, rate cards, benchmarks, forecasts and surcharges.
+
+Everything is deterministic and hand-designed around the persona questions; only small background noise
+uses g.rng. All port codes are master ports (VNSGN, GBFXT, NLRTM ...), except USLAX and the Mediterranean
+transhipment ports (ESVLC, GRPIR), which master data does not list.
+"""
+import math
+from datetime import timedelta
 
 
 def generate(g):
     r = g.rng
+    A = g.as_of
 
-    # Common ports and airports
-    sea_lanes = [
-        ("VNHCM", "GBFXT"), ("VNHCM", "NLRTM"), ("VNHCM", "USLAX"),
-        ("CNSHA", "GBFXT"), ("CNSHA", "NLRTM"), ("CNSHA", "USLAX"),
-        ("BDDAC", "GBFXT"), ("BDDAC", "USLAX"), ("SGSIN", "GBFXT"),
-    ]
+    def wk(n):          # n weeks before as_of
+        return A - timedelta(weeks=n)
 
-    air_lanes = [
-        ("DAC", "LHR"), ("DAC", "CDG"), ("DAC", "AMS"),
-        ("VNHCM", "LHR"), ("VNHCM", "CDG"), ("BKK", "LHR"),
-        ("CNSHA", "LHR"), ("DXB", "LHR"),
-    ]
+    def pct(a, b):      # % change from b to a
+        return round((a / b - 1) * 100, 1) if b else None
 
-    road_lanes = [
-        ("DC1", "ST214"), ("DC2", "ST101"), ("DC3", "ST255"),
-        ("DC1", "ST050"), ("DC2", "ST200"),
-    ]
+    # ------------------------------------------------------------------ sea spot rates and history
+    # 12 weekly points, oldest first (week 11 back ... this week), GBP per 40ft container
+    sea_series = {
+        "VNSGN-GBFXT": [1900, 1910, 1925, 1950, 1985, 2040, 2100, 2170, 2250, 2330, 2400, 2460],
+        "VNSGN-NLRTM": [2000, 2010, 2030, 2050, 2090, 2140, 2200, 2260, 2330, 2400, 2450, 2500],
+        "VNSGN-USLAX": [3250, 3240, 3200, 3180, 3150, 3120, 3100, 3080, 3040, 3010, 2980, 2950],
+    }
+    for lane, now, start in [("CNSHA-GBFXT", 2280, 2190), ("CNSHA-NLRTM", 2330, 2240),
+                             ("BDCGP-GBFXT", 2520, 2450), ("CNSHA-USLAX", 3120, 3290)]:
+        sea_series[lane] = [round(start + (now - start) * i / 11) for i in range(12)]
+    sea_transit = {"VNSGN-GBFXT": 26, "VNSGN-NLRTM": 27, "VNSGN-USLAX": 34, "CNSHA-GBFXT": 31,
+                   "CNSHA-NLRTM": 32, "BDCGP-GBFXT": 33, "CNSHA-USLAX": 18}
+    best_contract = {"VNSGN-GBFXT": 1750, "VNSGN-NLRTM": 1820, "VNSGN-USLAX": 3050, "CNSHA-GBFXT": 1650,
+                     "CNSHA-NLRTM": 1700, "BDCGP-GBFXT": 2350, "CNSHA-USLAX": 2980}
 
-    parcel_postcodes = [
-        ("DC1", "SW1A"), ("DC1", "E1C"), ("DC1", "N1C"),
-        ("DC2", "B1A"), ("DC2", "C5A"), ("DC3", "LS1"),
-    ]
+    spot_rates, rate_history = [], []
 
-    carriers_sea = [c["carrier_id"] for c in g.master("carriers") if c["mode"] == "ocean"]
-    carriers_air = [c["carrier_id"] for c in g.master("carriers") if c["mode"] == "air"]
+    def add_spot(**kw):
+        row = {"rate_id": f"RAT-{len(spot_rates) + 1:06d}", "min_weight_kg": None, "max_weight_kg": None,
+               "period_label": "standard"}
+        row.update(kw)
+        spot_rates.append(row)
 
-    # Generate spot rates
-    spot_rates = []
-    rate_history = []
-
-    for origin, dest in sea_lanes:
-        lane_id = f"{origin}-{dest}"
-        base_rate = r.uniform(1200, 3000)
-
-        # Generate weekly spot rates for 12 weeks + 4 weeks forward
-        for weeks_back in range(-4, 16):
-            rate_date = g.as_of + timedelta(weeks=weeks_back)
-            # Add realistic noise
-            noise = r.gauss(0, base_rate * 0.05)
-            rate = max(base_rate * r.uniform(0.8, 1.2) + noise, 800)
-            spot_rates.append({
-                "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
-                "lane_id": lane_id,
-                "mode": "sea",
-                "rate_date": rate_date,
-                "rate_gbp": round(rate, 2),
-                "unit": "per 40ft container",
-                "origin": origin,
-                "destination": dest,
-                "min_weight_kg": None,
-                "max_weight_kg": None,
-                "transit_days": r.randint(25, 35),
-                "source": "market data"
-            })
-
-    # Generate air rates
-    for origin, dest in air_lanes:
-        # Multiple quotes per lane
-        for quote_num in range(r.randint(3, 5)):
-            carrier = r.choice(carriers_air)
-            rate_per_kg = r.uniform(1.5, 5.0)
-            spot_rates.append({
-                "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
-                "lane_id": f"{origin}-{dest}",
-                "mode": "air",
-                "rate_date": g.as_of,
-                "rate_gbp": round(rate_per_kg, 2),
-                "unit": "per kg",
-                "origin": origin,
-                "destination": dest,
-                "min_weight_kg": 100,
-                "max_weight_kg": 100000,
-                "transit_days": r.randint(3, 7),
-                "source": "carrier quote"
-            })
-
-    # Generate road rates
-    for origin, dest in road_lanes:
-        lane_id = f"{origin}-{dest}"
-        for weeks_back in range(-1, 5):
-            rate_date = g.as_of + timedelta(weeks=weeks_back)
-            rate = r.uniform(150, 500)
-            spot_rates.append({
-                "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
-                "lane_id": lane_id,
-                "mode": "road",
-                "rate_date": rate_date,
-                "rate_gbp": round(rate, 2),
-                "unit": "per drop",
-                "origin": origin,
-                "destination": dest,
-                "min_weight_kg": None,
-                "max_weight_kg": None,
-                "transit_days": 1,
-                "source": "carrier quote"
-            })
-
-    # Generate parcel rates
-    for origin, postcode in parcel_postcodes:
-        lane_id = f"{origin}-{postcode}"
-        for service in ["standard", "express", "next-day"]:
-            for weight_band in [(0, 1), (1, 5), (5, 20)]:
-                rate_date = g.as_of
-                if service == "standard":
-                    rate = r.uniform(5, 15)
-                    transit_days = 3
-                elif service == "express":
-                    rate = r.uniform(12, 25)
-                    transit_days = 2
-                else:  # next-day
-                    rate = r.uniform(20, 40)
-                    transit_days = 1
-                spot_rates.append({
-                    "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
-                    "lane_id": lane_id,
-                    "mode": "parcel",
-                    "rate_date": rate_date,
-                    "rate_gbp": round(rate, 2),
-                    "unit": f"{service}",
-                    "origin": origin,
-                    "destination": postcode,
-                    "min_weight_kg": weight_band[0],
-                    "max_weight_kg": weight_band[1],
-                    "transit_days": transit_days,
-                    "source": "carrier quote"
-                })
-
-    # Generate contract rates
-    contract_rates = []
-    for origin, dest in sea_lanes[:3]:  # Only top lanes
-        lane_id = f"{origin}-{dest}"
-        carrier = r.choice(carriers_sea)
-        base_rate = r.uniform(1000, 2500)
-        contract_rates.append({
-            "contract_rate_id": f"CTR-{len(contract_rates) + 1:06d}",
-            "carrier_id": carrier,
-            "lane_id": lane_id,
-            "mode": "sea",
-            "rate_from": (g.as_of - timedelta(days=r.randint(30, 180))),
-            "rate_to": (g.as_of + timedelta(days=r.randint(180, 365))),
-            "rate_gbp": round(base_rate, 2),
-            "unit": "per 40ft container",
-            "min_volume_units": r.choice([500, 1000, 2000, 5000]),
-            "max_volume_units": r.choice([2000, 5000, 10000, 20000]),
-            "volume_period": "monthly",
-            "volume_band": r.choice(["small", "medium", "large"]),
-            "status": "active"
-        })
-
-    # Generate air freight quotes
-    air_freight_quotes = []
-    for origin, dest in air_lanes:
-        for carrier in r.sample(carriers_air, min(3, len(carriers_air))):
-            rate_per_kg = r.uniform(1.5, 5.0)
-            weight = r.choice([1000, 2000, 5000, 10000])
-            air_freight_quotes.append({
-                "quote_id": f"QTE-{len(air_freight_quotes) + 1:06d}",
-                "origin_airport": origin,
-                "destination_airport": dest,
-                "weight_kg": weight,
-                "rate_gbp_per_kg": round(rate_per_kg, 2),
-                "total_gbp": round(rate_per_kg * weight, 2),
-                "transit_days": r.randint(3, 7),
-                "carrier_id": carrier,
-                "quote_date": g.as_of,
-                "valid_until": (g.as_of + timedelta(days=r.randint(7, 30))),
-                "status": r.choice(["quoted", "accepted"]),
-                "notes": ""
-            })
-
-    # Generate rate history
-    for origin, dest in sea_lanes[:4]:
-        lane_id = f"{origin}-{dest}"
-        for weeks_back in range(52, 0, -1):
-            rate_date = g.as_of - timedelta(weeks=weeks_back)
-            spot_rate = r.uniform(1000, 3000)
-            contract_rate = spot_rate * r.uniform(0.85, 0.95)
-
-            # Previous week for comparison
-            prev_spot = r.uniform(1000, 3000)
+    # long history: older weeks follow a seasonal wave around the oldest story level
+    full_hist = {}
+    for lane, pts in sea_series.items():
+        phase = (sum(map(ord, lane)) % 7) / 7 * 2 * math.pi
+        series = {w: pts[11 - w] for w in range(12)}            # week back -> rate
+        for w in range(12, 64):
+            wave = 0.10 * math.sin(2 * math.pi * w / 52 + phase)
+            series[w] = round(pts[0] * (0.93 + wave) * (1 + r.uniform(-0.012, 0.012)))
+        full_hist[lane] = series
+        for w in range(12):
+            origin, dest = lane.split("-")
+            add_spot(lane_id=lane, mode="sea", rate_date=wk(w), rate_gbp=float(series[w]),
+                     unit="per 40ft container", origin=origin, destination=dest,
+                     transit_days=sea_transit[lane], source="market data")
+        for w in range(63, -1, -1):
+            sp = series[w]
+            ct = best_contract[lane]
             rate_history.append({
-                "lane_id": lane_id,
-                "rate_date": rate_date,
-                "mode": "sea",
-                "spot_rate_gbp": round(spot_rate, 2),
-                "contract_rate_gbp": round(contract_rate, 2),
-                "contract_rate_pct": round((contract_rate / spot_rate) * 100, 1),
-                "rate_change_week": round(((spot_rate - prev_spot) / prev_spot) * 100, 1),
-                "rate_change_month": round(r.uniform(-5, 10), 1),
-                "rate_change_year": round(r.uniform(-15, 20), 1)
+                "lane_id": lane, "rate_date": wk(w), "mode": "sea",
+                "spot_rate_gbp": float(sp), "contract_rate_gbp": float(ct),
+                "contract_rate_pct": round(ct / sp * 100, 1),
+                "rate_change_week": pct(sp, series[w + 1]) if w + 1 in series else None,
+                "rate_change_month": pct(sp, series[w + 4]) if w + 4 in series else None,
+                "rate_change_year": pct(sp, series[w + 52]) if w + 52 in series else None,
             })
 
-    # Generate market benchmarks
+    # ------------------------------------------------------------------ road spot rates (peak by lane)
+    # lane: (standard, black friday week, christmas week); per load, single drop
+    road = {
+        "DC3-ST148": (285, 355, 390), "DC3-ST150": (140, 175, 195), "DC3-ST151": (175, 220, 245),
+        "DC3-ST200": (150, 190, 210), "DC1-ST101": (190, 235, 255), "DC1-ST050": (260, 310, 340),
+        "DC1-ST214": (520, 640, 700), "DC1-ST215": (560, 690, 760),
+    }
+    road_days = {"DC3-ST148": 1, "DC3-ST150": 1, "DC3-ST151": 1, "DC3-ST200": 1, "DC1-ST101": 1,
+                 "DC1-ST050": 1, "DC1-ST214": 2, "DC1-ST215": 2}
+    for lane, (std, bf, xm) in road.items():
+        o, d = lane.split("-")
+        for lab, rate, when in (("standard", std, A), ("Black Friday week", bf, A + timedelta(weeks=7)),
+                                ("Christmas week", xm, A + timedelta(weeks=11))):
+            add_spot(lane_id=lane, mode="road", rate_date=when, rate_gbp=float(rate), unit="per load (single drop)",
+                     origin=o, destination=d, transit_days=road_days[lane], period_label=lab,
+                     source="carrier quote" if lab == "standard" else "forward spot quote")
+
+    # ------------------------------------------------------------------ air rate cards
+    bands = [(100, 999), (1000, 2999), (3000, 4999), (5000, 100000)]
+    # (origin, dest, carrier): ([rate per band], peak premium per kg, transit days)
+    air_cards = [
+        ("DAC", "LHR", "CAR-008", [3.60, 3.20, 2.95, 2.75], 0.45, 4),
+        ("DAC", "LHR", "CAR-018", [4.05, 3.65, 3.40, 3.20], 0.45, 3),
+        ("SGN", "LHR", "CAR-008", [3.95, 3.55, 3.30, 3.10], 0.50, 5),
+        ("SGN", "LHR", "CAR-018", [4.40, 4.00, 3.75, 3.55], 0.50, 3),
+        ("PVG", "LHR", "CAR-008", [3.20, 2.90, 2.70, 2.60], 0.40, 3),
+        ("IST", "LHR", "CAR-008", [2.30, 2.05, 1.90, 1.80], 0.30, 2),
+        ("IST", "LHR", "CAR-018", [2.65, 2.40, 2.25, 2.10], 0.30, 1),
+        ("DXB", "LHR", "CAR-008", [2.20, 1.95, 1.80, 1.70], 0.25, 2),
+        ("DAC", "CDG", "CAR-008", [3.55, 3.15, 2.90, 2.70], 0.45, 4),
+    ]
+    air_quotes = []
+    for o, d, car, rates, prem, days in air_cards:
+        for (lo, hi), rt in zip(bands, rates):
+            air_quotes.append({
+                "quote_id": f"QTE-{len(air_quotes) + 1:06d}", "origin_airport": o, "destination_airport": d,
+                "carrier_id": car, "min_weight_kg": lo, "max_weight_kg": hi, "rate_gbp_per_kg": rt,
+                "peak_rate_gbp_per_kg": round(rt + prem, 2), "transit_days": days,
+                "quote_date": A, "valid_until": A + timedelta(days=21), "status": "quoted",
+                "notes": "Express courier service" if car == "CAR-018" else "Scheduled freighter / belly space",
+            })
+    lane_air = {}
+    for o, d, car, rates, prem, days in air_cards:
+        lane_air.setdefault((o, d), []).append(rates[1])
+    for (o, d), rs in lane_air.items():
+        add_spot(lane_id=f"{o}-{d}", mode="air", rate_date=A, rate_gbp=min(rs), unit="per kg", origin=o,
+                 destination=d, min_weight_kg=1000, max_weight_kg=2999, transit_days=4, source="carrier quote")
+
+    # sea-air through-rates (sea to the hub, then air)
+    sea_air = [
+        ("DAC", "LHR", "DXB", "CAR-009", 1.65, 100, 9, 2, 2, "Economy sea-air via Dubai; weekly feeder from Chittagong, cut-off 5 days before sailing"),
+        ("DAC", "LHR", "DXB", "CAR-010", 2.10, 100, 6, 1, 3, "Express sea-air via Dubai; twice-weekly feeder, cut-off 3 days before sailing"),
+        ("SGN", "LHR", "DXB", "CAR-009", 1.85, 100, 12, 2, 2, "Economy sea-air via Dubai; weekly sailing, cut-off 5 days before sailing"),
+        ("SGN", "LHR", "DXB", "CAR-010", 2.35, 100, 9, 1, 3, "Express sea-air via Dubai; cut-off 4 days before sailing"),
+    ]
+    sea_air_routes = [{
+        "route_id": f"SAR-{i + 1:06d}", "origin_airport": o, "destination_airport": d, "via_hub": hub,
+        "carrier_id": car, "rate_gbp_per_kg": rt, "min_weight_kg": mn, "sea_days": sd, "hub_transfer_days": td,
+        "air_days": ad, "total_transit_days": sd + td + ad, "valid_until": A + timedelta(days=21), "notes": note,
+    } for i, (o, d, hub, car, rt, mn, sd, td, ad, note) in enumerate(sea_air)]
+
+    # ------------------------------------------------------------------ air rate history (4-weekly, 72 weeks)
+    # lowest 1,000-2,999 kg rate, now and 52 weeks ago
+    air_hist_targets = {("DAC", "LHR"): (3.20, 2.94), ("SGN", "LHR"): (3.55, 3.93),
+                        ("PVG", "LHR"): (2.90, 3.10), ("IST", "LHR"): (2.05, 1.98)}
+    air_rate_history = []
+    for (o, d), (now, ago) in air_hist_targets.items():
+        slope = (now - ago) / 52
+        for k in range(0, 19):
+            w = 4 * k
+            wave = 0.06 * math.sin(math.pi * (w % 52) / 52)
+            air_rate_history.append({
+                "origin_airport": o, "destination_airport": d, "rate_date": wk(w),
+                "rate_gbp_per_kg": round(now - slope * w + wave * (1 if w else 0), 2),
+            })
+
+    # ------------------------------------------------------------------ contract rates
+    contract_rates = []
+
+    def add_contract(carrier, lane, mode, rf, rt, rate, unit, mn, mx, per, band, level=None, wmin=None, wmax=None, terms=""):
+        contract_rates.append({
+            "contract_rate_id": f"CRR-{900001 + len(contract_rates)}", "carrier_id": carrier, "lane_id": lane,
+            "mode": mode, "rate_from": rf, "rate_to": rt, "rate_gbp": rate, "unit": unit,
+            "min_volume_units": mn, "max_volume_units": mx, "volume_period": per, "volume_band": band,
+            "service_level": level, "min_weight_kg": wmin, "max_weight_kg": wmax, "terms": terms, "status": "active",
+        })
+
+    d_ = lambda s: __import__("datetime").date.fromisoformat(s)
+    sea_terms = "Rate per 40ft container, all-in of base freight; BAF and peak season surcharges billed as per carrier notice"
+    for car, lane, rate, band, mn, mx in [
+        ("CAR-007", "VNSGN-GBFXT", 1750, "large", 500, 5000), ("CAR-005", "VNSGN-GBFXT", 1820, "medium", 300, 2000),
+        ("CAR-006", "VNSGN-GBFXT", 1880, "small", 100, 1000),
+        ("CAR-007", "VNSGN-NLRTM", 1820, "large", 400, 4000), ("CAR-005", "VNSGN-NLRTM", 1890, "medium", 250, 1500),
+        ("CAR-006", "VNSGN-USLAX", 3050, "large", 300, 3000), ("CAR-005", "VNSGN-USLAX", 3150, "medium", 150, 1500),
+        ("CAR-007", "CNSHA-GBFXT", 1650, "large", 500, 5000), ("CAR-007", "CNSHA-NLRTM", 1700, "large", 400, 4000),
+        ("CAR-005", "BDCGP-GBFXT", 2350, "medium", 100, 800),
+    ]:
+        add_contract(car, lane, "sea", wk(36), A + timedelta(weeks=26), float(rate), "per 40ft container",
+                     mn, mx, "monthly", band, "FCL 40ft", terms=sea_terms)
+    # road contracts (CAR-002 matches the contracts system rate card)
+    road_terms = ("Fuel surcharge capped at 12% of base rate; tail lift 18 GBP per drop; waiting time 42 GBP per hour after "
+                  "60 free minutes; redelivery 55 GBP; minimum charge 35 GBP; rate covers up to 750kg per pallet, "
+                  "above that 1.25 x rate")
+    load_terms = ("Fuel surcharge capped at 12% of base rate; waiting time 60 GBP per hour after 120 free minutes; "
+                  "redelivery 120 GBP")
+    add_contract("CAR-002", "DC1-NORTH", "road", d_("2025-02-04"), d_("2028-02-04"), 17.20, "per pallet",
+                 None, None, None, None, "pallet", terms=road_terms)
+    add_contract("CAR-002", "DC1-NORTH", "road", d_("2025-02-04"), d_("2028-02-04"), 645.0, "per load",
+                 None, None, None, None, "full load", terms=load_terms)
+    add_contract("CAR-001", "DC3-NORTH", "road", d_("2025-06-05"), d_("2028-06-05"), 16.40, "per pallet",
+                 None, None, None, None, "pallet", terms="Fuel surcharge capped at 10% of base rate; tail lift 15 GBP per drop; waiting time 40 GBP per hour after 60 free minutes")
+    # parcel contracts (service x weight band)
+    parcel = {
+        "standard": ("CAR-013", [(0, 1, 2.90), (1, 5, 4.05), (5, 20, 7.50)]),
+        "express": ("CAR-012", [(0, 1, 5.10), (1, 5, 6.95), (5, 20, 11.05)]),
+        "next-day": ("CAR-011", [(0, 1, 7.35), (1, 5, 9.55), (5, 20, 15.70)]),
+    }
+    bench_parcel = {
+        "standard": [2.95, 4.10, 7.60], "express": [4.70, 6.40, 10.20], "next-day": [6.30, 8.20, 13.50],
+    }
+    for svc, (car, rows) in parcel.items():
+        for lo, hi, rate in rows:
+            add_contract(car, f"UK-{svc}", "parcel", wk(30), A + timedelta(weeks=40), rate, "per parcel",
+                         None, None, None, None, svc, lo, hi,
+                         "Fuel surcharge capped at 8% of base rate; peak surcharge applies 1 Nov to 24 Dec")
+
+    # ------------------------------------------------------------------ market benchmarks
     market_benchmarks = []
-    for origin, dest in sea_lanes:
-        lane_id = f"{origin}-{dest}"
-        base_rate = r.uniform(1200, 3000)
-        for volume_band in ["small", "medium", "large"]:
-            benchmark = base_rate * r.uniform(0.95, 1.05)
+    sea_bench = {
+        "VNSGN-GBFXT": (1900, 1840, 1760), "VNSGN-NLRTM": (1980, 1880, 1830), "VNSGN-USLAX": (3200, 3050, 2980),
+        "CNSHA-GBFXT": (1760, 1700, 1640), "CNSHA-NLRTM": (1820, 1760, 1700), "BDCGP-GBFXT": (2480, 2330, 2250),
+    }
+    for lane, vals in sea_bench.items():
+        for band, p50 in zip(("small", "medium", "large"), vals):
             market_benchmarks.append({
-                "benchmark_id": f"BEN-{len(market_benchmarks) + 1:06d}",
-                "lane_id": lane_id,
-                "mode": "sea",
-                "volume_band": volume_band,
-                "benchmark_rate_gbp": round(benchmark, 2),
-                "data_points": r.randint(5, 20),
-                "benchmark_date": g.as_of,
-                "percentile_25_gbp": round(benchmark * 0.9, 2),
-                "percentile_50_gbp": round(benchmark, 2),
-                "percentile_75_gbp": round(benchmark * 1.1, 2)
+                "benchmark_id": f"BEN-{len(market_benchmarks) + 1:06d}", "lane_id": lane, "mode": "sea",
+                "volume_band": band, "benchmark_rate_gbp": float(p50), "data_points": 12 + r.randint(0, 9),
+                "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.93, 2), "percentile_50_gbp": float(p50),
+                "percentile_75_gbp": round(p50 * 1.07, 2), "min_weight_kg": None, "max_weight_kg": None,
+            })
+    for svc, vals in bench_parcel.items():
+        for (lo, hi), p50 in zip([(0, 1), (1, 5), (5, 20)], vals):
+            market_benchmarks.append({
+                "benchmark_id": f"BEN-{len(market_benchmarks) + 1:06d}", "lane_id": f"UK-{svc}", "mode": "parcel",
+                "volume_band": "medium", "benchmark_rate_gbp": p50, "data_points": 25 + r.randint(0, 20),
+                "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.92, 2), "percentile_50_gbp": p50,
+                "percentile_75_gbp": round(p50 * 1.08, 2), "min_weight_kg": lo, "max_weight_kg": hi,
             })
 
-    # Generate surcharges
-    surcharges = []
-    surcharge_types = ["fuel", "congestion", "security", "equipment", "port", "war risk"]
-    for carrier in r.sample(carriers_sea, min(3, len(carriers_sea))):
-        for _ in range(r.randint(1, 3)):
-            surcharges.append({
-                "surcharge_id": f"SUR-{len(surcharges) + 1:06d}",
-                "carrier_id": carrier,
-                "surcharge_type": r.choice(surcharge_types),
-                "start_date": g.as_of - timedelta(days=r.randint(0, 60)),
-                "end_date": g.as_of + timedelta(days=r.randint(30, 120)),
-                "amount_gbp": round(r.uniform(50, 500), 2),
-                "applies_to_mode": "sea",
-                "applies_to_lane": r.choice([None, r.choice([f"{o}-{d}" for o, d in sea_lanes[:3]])]),
-                "status": "effective"
-            })
+    # ------------------------------------------------------------------ surcharges
+    sur = [
+        ("CAR-007", "fuel", -5, 87, 125, None, "effective"),
+        ("CAR-007", "congestion", 2, 11, 250, "VNSGN-NLRTM", "announced"),
+        ("CAR-005", "peak season", 3, 10, 300, "VNSGN-GBFXT", "announced"),
+        ("CAR-005", "peak season", 3, 10, 300, "VNSGN-NLRTM", "announced"),
+        ("CAR-006", "war risk", -1, 25, 175, None, "effective"),
+        ("CAR-006", "equipment", 4, 17, 80, "VNSGN-USLAX", "announced"),
+    ]
+    surcharges = [{
+        "surcharge_id": f"SUR-{i + 1:06d}", "carrier_id": c, "surcharge_type": t,
+        "start_date": A + timedelta(weeks=s), "end_date": A + timedelta(weeks=e), "amount_gbp": float(a),
+        "applies_to_mode": "sea", "applies_to_lane": lane, "status": st,
+    } for i, (c, t, s, e, a, lane, st) in enumerate(sur)]
 
-    # Generate alternate port options
-    alternate_ports = []
-    for i, (origin, dest) in enumerate(sea_lanes[:3]):
-        alternate_ports.append({
-            "route_id": f"ALT-{len(alternate_ports) + 1:06d}",
-            "primary_lane_id": f"{origin}-{dest}",
-            "origin_port": origin,
-            "primary_dest_port": dest,
-            "alternate_dest_port": "NLRTM" if dest == "GBFXT" else "GBFXT",
-            "transit_days_primary": r.randint(25, 35),
-            "transit_days_alternate": r.randint(25, 35),
-            "rate_gbp_sea": round(r.uniform(1200, 2800), 2),
-            "rate_gbp_rail": round(r.uniform(300, 600), 2),
-            "total_transit_days": r.randint(30, 40),
-            "cost_gbp": round(r.uniform(1500, 3400), 2),
-            "status": "active"
+    # ------------------------------------------------------------------ ocean + rail through-rates
+    alt = []
+
+    def add_alt(primary, via, sea_days, sea_rate, rail_days, rail_rate, haul, direct_days):
+        o, d = primary.split("-")
+        alt.append({
+            "route_id": f"ALT-{len(alt) + 1:06d}", "primary_lane_id": primary, "origin_port": o,
+            "primary_dest_port": d, "alternate_dest_port": via, "transit_days_primary": direct_days,
+            "transit_days_alternate": sea_days, "rate_gbp_sea": float(sea_rate), "rate_gbp_rail": float(rail_rate),
+            "total_transit_days": sea_days + rail_days, "cost_gbp": float(sea_rate + rail_rate), "status": "active",
+            "rail_days": rail_days, "rail_carrier_id": "CAR-016", "final_destination": "DC1",
+            "direct_haulage_to_dc_gbp": float(haul),
         })
 
-    # Generate rate forecasts
+    add_alt("VNSGN-GBFXT", "ESVLC", 28, 2380, 5, 640, 290, 26)
+    add_alt("VNSGN-GBFXT", "GRPIR", 24, 2290, 8, 720, 290, 26)
+    add_alt("VNSGN-NLRTM", "ESVLC", 28, 2380, 5, 640, 410, 27)
+    add_alt("VNSGN-NLRTM", "GRPIR", 24, 2290, 8, 720, 410, 27)
+
+    # ------------------------------------------------------------------ forecasts
     rate_forecast = []
-    for origin, dest in sea_lanes[:4]:
-        lane_id = f"{origin}-{dest}"
-        base_rate = r.uniform(1200, 3000)
-        trend = r.choice(["rising", "stable", "falling"])
-
-        for weeks_forward in range(1, 13):
-            if trend == "rising":
-                forecast = base_rate * (1 + 0.02 * weeks_forward)
-            elif trend == "falling":
-                forecast = base_rate * (1 - 0.02 * weeks_forward)
-            else:
-                forecast = base_rate * r.uniform(0.98, 1.02)
-
+    trends = {"VNSGN-GBFXT": ("rising", 0.015), "VNSGN-NLRTM": ("rising", 0.012),
+              "VNSGN-USLAX": ("falling", -0.008), "CNSHA-GBFXT": ("stable", 0.0)}
+    notes = {"rising": "Peak season demand, blank sailings", "falling": "Capacity returning", "stable": "Balanced market"}
+    for lane, (tr, slope) in trends.items():
+        base = sea_series[lane][-1]
+        for k in range(1, 13):
             rate_forecast.append({
-                "forecast_id": f"FRC-{len(rate_forecast) + 1:06d}",
-                "lane_id": lane_id,
-                "mode": "sea",
-                "forecast_date": g.as_of + timedelta(weeks=weeks_forward),
-                "forecast_gbp": round(forecast, 2),
-                "confidence_pct": r.randint(60, 85),
-                "trend": trend,
-                "notes": r.choice(["Strong demand", "Supply constraints", "Seasonal peak", "Low capacity"])
+                "forecast_id": f"FRC-{len(rate_forecast) + 1:06d}", "lane_id": lane, "mode": "sea",
+                "forecast_date": A + timedelta(weeks=k), "forecast_gbp": round(base * (1 + slope * k), 2),
+                "confidence_pct": max(55, 85 - 2 * k), "trend": tr, "notes": notes[tr],
             })
 
-    # Generate transit times
+    # ------------------------------------------------------------------ transit times
     transit_times = []
-    for origin, dest in sea_lanes:
-        lane_id = f"{origin}-{dest}"
-        transit_times.append({
-            "transit_id": f"TRN-{len(transit_times) + 1:06d}",
-            "lane_id": lane_id,
-            "mode": "sea",
-            "origin": origin,
-            "destination": dest,
-            "transit_days_scheduled": r.randint(25, 35),
-            "transit_days_actual_avg": round(r.uniform(25, 38), 1),
-            "reliability_pct": round(r.uniform(75, 95), 1),
-            "data_period": "last 12 weeks"
-        })
+    for lane, sched, act, rel in [("VNSGN-GBFXT", 26, 27.5, 82.5), ("VNSGN-NLRTM", 27, 28.2, 80.0),
+                                  ("VNSGN-USLAX", 34, 36.1, 75.0), ("CNSHA-GBFXT", 31, 33.0, 78.5),
+                                  ("CNSHA-NLRTM", 32, 33.5, 77.0), ("BDCGP-GBFXT", 33, 35.2, 74.0)]:
+        o, d = lane.split("-")
+        transit_times.append({"transit_id": f"TRN-{len(transit_times) + 1:06d}", "lane_id": lane, "mode": "sea",
+                              "origin": o, "destination": d, "transit_days_scheduled": sched,
+                              "transit_days_actual_avg": act, "reliability_pct": rel, "data_period": "last 12 weeks"})
+    for lane, sched, act, rel in [("DAC-LHR", 4, 4.3, 90.0), ("SGN-LHR", 5, 5.2, 85.0), ("IST-LHR", 2, 2.1, 94.0)]:
+        o, d = lane.split("-")
+        transit_times.append({"transit_id": f"TRN-{len(transit_times) + 1:06d}", "lane_id": lane, "mode": "air",
+                              "origin": o, "destination": d, "transit_days_scheduled": sched,
+                              "transit_days_actual_avg": act, "reliability_pct": rel, "data_period": "last 12 weeks"})
 
-    # Generate rate indices
+    # ------------------------------------------------------------------ rate indices with Lunar New Year run-ups
+    lny_weeks = {}       # weeks back (from as_of) of the Monday of Lunar New Year week
+    for lny in ("2024-02-10", "2025-01-29", "2026-02-17"):
+        lny_weeks[(A - d_(lny)).days // 7] = lny
+    peak = {}           # run-up size by LNY week
+    for (wb, lny), p in zip(sorted(lny_weeks.items(), reverse=True), (0.22, 0.17, 0.26)):
+        peak[wb] = p
     rate_indices = []
-    index_names = ["SCFI", "WCI", "TAC Index"]
-    for index in index_names:
-        base_value = r.choice([800, 1000, 1200])
-        for weeks_back in range(52, -1, -1):
-            index_date = g.as_of - timedelta(weeks=weeks_back)
-            noise = r.gauss(0, base_value * 0.05)
-            value = max(base_value * r.uniform(0.8, 1.2) + noise, 500)
+    for name, base, drift in (("SCFI", 1000, 0.0015), ("WCI", 1900, 0.0015)):
+        vals = {}
+        for w in range(159, -1, -1):
+            seasonal = 1 + 0.04 * math.sin(2 * math.pi * w / 52)
+            v = base * (1 + drift * (159 - w)) * seasonal
+            for wb, p in peak.items():
+                k = w - wb                     # negative = after LNY week; k in 1..8 = run-up weeks before
+                if 0 < k <= 8:
+                    v *= 1 + p * (8 - k + 1) / 8
+                elif k == 0:
+                    v *= 1 + p
+                elif -6 <= k < 0:
+                    v *= 1 + p * (1 + k / 7)
+            vals[w] = v * (1 + r.uniform(-0.008, 0.008))
+        for w in range(159, -1, -1):
+            ev = None
+            for wb in peak:
+                k = w - wb
+                if k == 0:
+                    ev = "Lunar New Year week"
+                elif 0 < k <= 6:
+                    ev = "Pre-Lunar New Year run-up"
             rate_indices.append({
-                "index_name": index,
-                "index_date": index_date,
-                "index_value": round(value, 1),
-                "week_change_pct": round(r.uniform(-5, 5), 1),
-                "year_change_pct": round(r.uniform(-20, 30), 1),
-                "mode": "sea"
+                "index_name": name, "index_date": wk(w), "index_value": round(vals[w], 1),
+                "week_change_pct": pct(vals[w], vals[w + 1]) if w + 1 in vals else None,
+                "year_change_pct": pct(vals[w], vals[w + 52]) if w + 52 in vals else None,
+                "mode": "sea", "event": ev,
             })
 
-    # Generate booking volumes
+    # ------------------------------------------------------------------ contract vs spot booking volumes (40ft boxes per quarter)
+    mix = {
+        "VNSGN-GBFXT": [(0, 2300, 1700), (1, 2480, 1520), (2, 2640, 1360), (3, 2840, 1160), (4, 2720, 1280)],
+        "VNSGN-NLRTM": [(0, 1700, 1300), (1, 1760, 1240), (2, 1800, 1200), (3, 2000, 1000), (4, 1900, 1100)],
+        "VNSGN-USLAX": [(0, 1200, 800), (1, 1250, 750), (2, 1300, 700), (3, 1250, 750), (4, 1300, 700)],
+        "CNSHA-GBFXT": [(0, 1500, 750), (1, 1520, 730), (2, 1540, 710), (3, 1600, 650), (4, 1560, 690)],
+    }
+    labels = ["current quarter", "last quarter", "two quarters ago", "three quarters ago", "four quarters ago"]
     booking_volumes = []
-    periods = ["2026-Q4", "2026-Q1", "2026-Q2"]
-    for origin, dest in sea_lanes[:5]:
-        lane_id = f"{origin}-{dest}"
-        for period in periods:
-            total = r.randint(1000, 5000)
-            contract_pct = r.randint(40, 80)
-            contract_vol = int(total * contract_pct / 100)
+    for lane, rows in mix.items():
+        for q, c, s in rows:
+            t = c + s
             booking_volumes.append({
-                "lane_id": lane_id,
-                "booking_period": period,
-                "contract_volume_units": contract_vol,
-                "spot_volume_units": total - contract_vol,
-                "total_volume_units": total,
-                "contract_pct": round(contract_pct, 1),
-                "spot_pct": round(100 - contract_pct, 1)
+                "lane_id": lane, "booking_period": labels[q], "period_start": A - timedelta(weeks=13 * q),
+                "contract_volume_units": c, "spot_volume_units": s, "total_volume_units": t,
+                "contract_pct": round(c / t * 100, 1), "spot_pct": round(s / t * 100, 1),
             })
 
-    # Generate freight emissions
-    freight_emissions = []
-    freight_emissions.append({
-        "lane_id": "sea",
-        "shipment_type": "sea",
-        "mode": "40ft container",
-        "weight_kg": 20000,
-        "emissions_co2e_kg": 2500,
-        "emissions_co2e_per_kg": 0.125,
-        "data_source": "industry standard"
-    })
-    freight_emissions.append({
-        "lane_id": "air",
-        "shipment_type": "air",
-        "mode": "typical cargo",
-        "weight_kg": 5000,
-        "emissions_co2e_kg": 5000,
-        "emissions_co2e_per_kg": 1.0,
-        "data_source": "industry standard"
-    })
+    # ------------------------------------------------------------------ parcel spot rates by postcode (next-day service planning)
+    for origin, postcode, f in [("DC1", "SW1A", 1.15), ("DC1", "E1C", 1.12), ("DC1", "N1C", 1.10), ("DC2", "B1A", 1.0),
+                                ("DC2", "M1A", 1.02), ("DC3", "LS1", 0.95)]:
+        for svc, base, days in (("standard", 3.0, 3), ("express", 4.9, 2), ("next-day", 6.4, 1)):
+            for lo, hi, m in ((0, 1, 1.0), (1, 5, 1.35), (5, 20, 2.3)):
+                add_spot(lane_id=f"{origin}-{postcode}", mode="parcel", rate_date=A, rate_gbp=round(base * m * f, 2),
+                         unit=svc, origin=origin, destination=postcode, min_weight_kg=lo, max_weight_kg=hi,
+                         transit_days=days, source="carrier quote")
+
+    freight_emissions = [
+        {"lane_id": "sea", "shipment_type": "sea", "mode": "40ft container", "weight_kg": 20000,
+         "emissions_co2e_kg": 2500, "emissions_co2e_per_kg": 0.125, "data_source": "industry standard"},
+        {"lane_id": "air", "shipment_type": "air", "mode": "typical cargo", "weight_kg": 5000,
+         "emissions_co2e_kg": 5000, "emissions_co2e_per_kg": 1.0, "data_source": "industry standard"},
+    ]
 
     return {
-        "spot_rates": spot_rates,
-        "contract_rates": contract_rates,
-        "air_freight_quotes": air_freight_quotes,
-        "rate_history": rate_history,
-        "market_benchmarks": market_benchmarks,
-        "surcharges": surcharges,
-        "alternate_ports": alternate_ports,
-        "rate_forecast": rate_forecast,
-        "transit_times": transit_times,
-        "rate_indices": rate_indices,
-        "booking_volumes": booking_volumes,
-        "freight_emissions": freight_emissions
+        "spot_rates": spot_rates, "contract_rates": contract_rates, "air_freight_quotes": air_quotes,
+        "sea_air_routes": sea_air_routes, "air_rate_history": air_rate_history, "rate_history": rate_history,
+        "market_benchmarks": market_benchmarks, "surcharges": surcharges, "alternate_ports": alt,
+        "rate_forecast": rate_forecast, "transit_times": transit_times, "rate_indices": rate_indices,
+        "booking_volumes": booking_volumes, "freight_emissions": freight_emissions,
     }
