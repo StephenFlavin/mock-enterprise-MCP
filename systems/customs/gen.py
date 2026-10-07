@@ -429,6 +429,37 @@ def generate(g):
                 })
                 volume_id += 1
 
+    # Generate broker amendment requests
+    broker_requests = []
+    for i, hold in enumerate(holds_data[:10]):
+        request_id = f"BAR-{i+1:06d}"
+        broker_requests.append({
+            "request_id": request_id,
+            "declaration_id": hold["declaration_id"],
+            "supplier_id": hold["supplier_id"],
+            "amendment_type": hold["hold_reason"],
+            "description": f"Please amend declaration due to {hold['hold_reason']} issue",
+            "status": g.rng.choices(["sent", "acknowledged", "completed"], [0.3, 0.4, 0.3])[0],
+            "sent_date": hold["hold_date"],
+            "completed_date": hold["hold_date"] + timedelta(days=g.rng.randint(5, 20)) if g.rng.random() > 0.3 else None,
+        })
+
+    # Generate declaration amendments
+    amendments = []
+    for i, dec in enumerate(declarations_data[:20]):
+        if i % 4 == 0:  # Create amendments for ~25% of declarations
+            amendment_id = f"AMN-{i+1:06d}"
+            amendments.append({
+                "amendment_id": amendment_id,
+                "declaration_id": dec["declaration_id"],
+                "amendment_type": g.pick(["valuation", "classification", "documentation", "origin"]),
+                "description": f"Amendment to correct {dec['product_description']}",
+                "status": g.rng.choices(["draft", "submitted", "approved"], [0.2, 0.5, 0.3])[0],
+                "submitted_date": dec["declared_at"] + timedelta(days=g.rng.randint(1, 10)) if g.rng.random() > 0.4 else None,
+                "approved_date": dec["declared_at"] + timedelta(days=g.rng.randint(5, 30)) if g.rng.random() > 0.5 else None,
+                "created_date": dec["declared_at"],
+            })
+
     return {
         "customs_declarations": declarations_data,
         "shipments": shipments_data,
@@ -449,4 +480,6 @@ def generate(g):
         "lead_times": lead_times_data,
         "required_origin_documents": required_docs,
         "import_volumes": import_volumes,
+        "broker_amendment_requests": broker_requests,
+        "declaration_amendments": amendments,
     }
