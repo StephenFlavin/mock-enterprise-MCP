@@ -817,7 +817,62 @@ def generate(g):
               {'block_id': 'LB-900002', 'location_id': 'DC2-D-03-01', 'site_id': 'DC2', 'reason': 'Awaiting recount after variance', 'blocked_at': T(D(25), 10),
                'blocked_by': 'EMP-00184', 'unblocked_at': T(D(23), 14), 'status': 'released'}]
 
+    # ------------------------------------------------------------------ re-export story (02:14:Q7), own random stream
+    # UK DCs ship stock on to Ireland and EU stores and the Venlo DC. Planted after the ledger so nothing else moves.
+    rx = random.Random(1414)
+    ie_stores = [x['site_id'] for x in stores if x['country'] == 'IE']
+    eu_stores = [x['site_id'] for x in stores if x['country'] in ('DE', 'NL')]
+    import_pool = [sk for sk in stocked['DC1'] if prod[sk]['country_of_origin'] not in ('GB', '') and prod[sk]['hazmat'] == 'none'
+                   and stock_loc.get(('DC1', sk))]
+    uk_pool = [sk for sk in stocked['DC1'] if prod[sk]['country_of_origin'] == 'GB' and stock_loc.get(('DC1', sk))]
+    plan = []     # (weeks back, destination, qty)
+    for wk in range(1, 12):
+        plan += [(wk, rx.choice(ie_stores), rx.randint(120, 320)) for _ in range(3)]
+        plan += [(wk, rx.choice(eu_stores), rx.randint(150, 400)) for _ in range(2)]
+        plan.append((wk, 'DC4', rx.randint(600, 1500)))
+    for wk, dest, qty in plan:
+        sku = rx.choice(uk_pool if rx.random() < 0.15 else import_pool)
+        created = D(wk * 7 + rx.randint(0, 3))
+        received = wk >= 3
+        tid = f'STR-{len(transfers) + 1:06d}'
+        by = (controllers['DC1'] or ['EMP-00112'])[0]
+        transfers.append({
+            'transfer_id': tid, 'from_site_id': 'DC1', 'to_site_id': dest, 'sku': sku, 'qty_requested': qty, 'qty_allocated': qty,
+            'qty_shipped': qty, 'qty_received': qty if received else 0, 'created_at': T(created, 10),
+            'shipped_at': T(created + timedelta(days=2), 14), 'received_at': T(created + timedelta(days=5), 9) if received else None,
+            'status': 'received' if received else 'shipped', 'reason': 'export', 'created_by': by, 'updated_at': T(created, 10)})
+        mov(rx.choice(stock_loc[('DC1', sku)]), 'DC1', sku, 'transfer', -qty, tid, T(created + timedelta(days=2), 14), by)
+
+    # ------------------------------------------------------------------ handling damage reports (own random stream)
+    hr = random.Random(4040)
+    damage = []
+    non_sa = {sx: [d['sku'] for d in dc_stock if d['site_id'] == sx and prod[d['sku']]['category'] != 'Small Appliances'] for sx in DCS}
+    stages = ['receiving', 'putaway', 'replenishment', 'picking', 'packing', 'loading']
+    causes = {'receiving': 'Carton crushed on unloading', 'putaway': 'Pallet clipped by reach truck', 'replenishment': 'Case dropped during decanting',
+              'picking': 'Item dropped at pick face', 'packing': 'Damaged while packing', 'loading': 'Cage tipped on loading'}
+
+    def add_damage(site, sku, qty, stage, day, hour, cause=None):
+        pool = (clerks[site] or ['EMP-00112']) if stage == 'receiving' else (pickers[site] or ['EMP-00103'])
+        locs = stock_loc.get((site, sku)) or ['']
+        damage.append({'report_id': f'HDR-{len(damage) + 1:06d}', 'site_id': site, 'sku': sku, 'location_id': hr.choice(locs),
+                       'process_stage': stage, 'damage_qty': qty, 'cause': cause or causes[stage],
+                       'reported_at': T(day, hour, hr.randint(0, 59)), 'reported_by': hr.choice(pool)})
+    for site in DCS:
+        for wk in range(0, 12):
+            for _ in range(hr.randint(2, 5)):
+                add_damage(site, hr.choice(non_sa[site]), hr.randint(1, 6), hr.choice(stages), D(wk * 7 + hr.randint(3, 9)), hr.randint(7, 19))
+    # glass-fronted small appliances: our own handling damage is small and flat (the breakage rise is on the carrier lane)
+    for wk in range(0, 12):
+        add_damage('DC1', 'SKU-100532', 2, 'putaway' if wk % 2 else 'picking', D(wk * 7 + 4), 10 + wk % 5)
+        add_damage('DC2', 'K-1700', 1, 'picking', D(wk * 7 + 5), 11 + wk % 4)
+        if wk % 2 == 0:
+            add_damage('DC3', 'SKU-100539', 1, 'receiving', D(wk * 7 + 6), 9 + wk % 6)
+    damage.sort(key=lambda x: x['reported_at'])
+    for i, x in enumerate(damage):
+        x['report_id'] = f'HDR-{i + 1:06d}'
+
     return {
+        'handling_damage_reports': damage, 'wave_configurations': [], 'inventory_status_mapping': [],
         'cause_codes': cause_codes, 'pack_specifications': pack_specs, 'location_inventory': location_inventory,
         'pallet_position_history': history, 'goods_receipts': receipts, 'replenishment_tasks': repl, 'order_lines': order_lines,
         'stock_movements': movements, 'cycle_count_tasks': tasks, 'cycle_count_results': results, 'pick_exceptions': exceptions,
