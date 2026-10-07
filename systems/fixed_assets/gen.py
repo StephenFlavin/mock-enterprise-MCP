@@ -34,9 +34,7 @@ def generate(g):
         }
         useful_life = useful_life_map.get(asset_class, 10)
 
-        # Acquisition cost: use replacement_cost_gbp or estimate
-        replacement_cost = float(asset.get("replacement_cost_gbp", 0)) or r.uniform(15000, 250000)
-        # Assume acquisition cost is 70-90% of current replacement cost (inflation)
+        replacement_cost = float(asset.get("replacement_cost_gbp") or 0) or r.uniform(15000, 250000)
         acquisition_cost = replacement_cost * r.uniform(0.7, 0.9)
 
         # Calculate depreciation (straight-line)
@@ -69,55 +67,32 @@ def generate(g):
         }
         fixed_assets.append(fa)
 
-    # Generate planned capex (mix of automation, renewable energy, maintenance)
-    capex_id = 1
-
-    # Automation/robotics projects (including sorter replacement scenarios)
-    automation_projects = [
-        {"desc": "Sorter system replacement - Northampton DC", "class": "sorter", "cost": 450000, "site": "DC1", "months": 6},
-        {"desc": "Conveyor automation expansion - Daventry DC", "class": "conveyor", "cost": 320000, "site": "DC2", "months": 3},
-        {"desc": "Shuttle system upgrade - Leeds DC", "class": "shuttle", "cost": 280000, "site": "DC3", "months": 4},
-        {"desc": "Robotic picking system phase 1", "class": "other", "cost": 650000, "site": "DC1", "months": 9},
-        {"desc": "Conveyor system modernization", "class": "conveyor", "cost": 180000, "site": "DC4", "months": 5},
-    ]
-
-    # Renewable energy / sustainability projects
-    energy_projects = [
-        {"desc": "Solar panel installation - rooftop 10kW", "class": "other", "cost": 85000, "site": "DC1", "months": 4},
-        {"desc": "Battery storage system - energy smoothing", "class": "charger", "cost": 120000, "site": "DC2", "months": 3},
-        {"desc": "LED lighting retrofit all DCs", "class": "other", "cost": 95000, "site": None, "months": 2},
-        {"desc": "Renewable energy microgrids", "class": "other", "cost": 250000, "site": "DC1", "months": 8},
-    ]
-
-    # Maintenance/replacement projects
+    # Planned capex: the automation and renewable-energy stories are in seed/planned_capex.csv.
+    # Background here is routine maintenance/replacement spend only.
     maintenance_projects = [
         {"desc": "Forklift fleet upgrade - 15 units", "class": "forklift", "cost": 180000, "site": "DC1", "months": 3},
         {"desc": "Reach truck replacement", "class": "reach_truck", "cost": 95000, "site": "DC2", "months": 2},
         {"desc": "Dock leveller preventive replacement", "class": "dock_leveller", "cost": 65000, "site": "DC3", "months": 2},
         {"desc": "Compressor upgrade", "class": "compressor", "cost": 45000, "site": "DC4", "months": 1},
-        {"desc": "Motor replacement programme", "class": "motor", "cost": 110000, "site": None, "months": 4},
+        {"desc": "Motor replacement programme", "class": "motor", "cost": 110000, "site": "DC2", "months": 4},
         {"desc": "Gearbox maintenance overhaul", "class": "gearbox", "cost": 75000, "site": "DC5", "months": 3},
+        {"desc": "Racking safety refurbishment", "class": "racking", "cost": 60000, "site": "DC3", "months": 3},
+        {"desc": "Sprinkler system renewal", "class": "sprinkler", "cost": 85000, "site": "DC4", "months": 5},
     ]
-
-    all_projects = automation_projects + energy_projects + maintenance_projects
-
-    for proj in all_projects:
-        planned_date = g.as_of + timedelta(days=r.randint(30, 365))
-        status_choices = ["planned", "planned", "approved", "approved", "in_progress"]
-        status = r.choice(status_choices)
-
-        capex = {
+    capex_id = 1
+    for proj in maintenance_projects:
+        planned_capex.append({
             "capex_id": f"CAPEX-{capex_id:06d}",
             "asset_class": proj["class"],
+            "investment_type": "maintenance_replacement",
             "description": proj["desc"],
             "estimated_cost_gbp": proj["cost"],
-            "planned_date": planned_date,
-            "status": status,
-            "source_of_funds": r.choices(["capex_budget", "lease", "grant", "self_funded"], [60, 15, 15, 10])[0],
+            "planned_date": g.as_of + timedelta(days=r.randint(30, 365)),
+            "status": r.choice(["planned", "planned", "approved"]),
+            "source_of_funds": r.choices(["capex_budget", "lease", "self_funded"], [70, 20, 10])[0],
             "site_id": proj["site"],
             "created_at": g.as_of - timedelta(days=r.randint(7, 90)),
-        }
-        planned_capex.append(capex)
+        })
         capex_id += 1
 
     return {
