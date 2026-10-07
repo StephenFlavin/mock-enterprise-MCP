@@ -1,0 +1,178 @@
+id: ats
+name: Applicant Tracking System (ATS)
+instructions: >
+  Recruitment, job requisitions, hiring funnel and agency labour management.
+  Requisition ids look like REQ-000123, labour request ids like ALR-000123.
+  Use it for recruitment lead times, cost per hire, and hiring funnel bottlenecks.
+
+tables:
+  job_requisitions:
+    key: requisition_id
+    cols:
+      requisition_id: {type: str, desc: "Job requisition, e.g. REQ-000123"}
+      site_id: {type: str, desc: "Site, e.g. DC1 (home site for the role)"}
+      role: {type: str, desc: "Job title / role description"}
+      headcount_required: {type: int, desc: "Number of positions to fill"}
+      status: {type: enum, values: [open, in_progress, filled, cancelled], desc: Requisition status}
+      created_at: {type: timestamp, desc: "When the requisition was opened"}
+      filled_date: {type: date, desc: "Date when all positions were filled (if filled)"}
+      salary_gbp: {type: float, desc: "Annual salary in GBP"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  recruitment_funnel:
+    key: funnel_id
+    cols:
+      funnel_id: {type: str, desc: "Funnel entry, e.g. FUN-000123"}
+      requisition_id: {type: str, desc: "Job requisition this candidate applies for"}
+      candidate_name: {type: str, desc: "Candidate name"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "How candidate was sourced"}
+      stage: {type: enum, values: [application, screening, interview, offer, hired, rejected], desc: "Current hiring stage"}
+      applied_at: {type: timestamp, desc: "When application received"}
+      moved_at: {type: timestamp, desc: "When candidate moved to current stage"}
+      offer_date: {type: date, desc: "Date offer was made (if applicable)"}
+      start_date: {type: date, desc: "Planned start date (if hired)"}
+      days_in_stage: {type: int, desc: "Days since moving to current stage"}
+      feedback: {type: str, desc: "Interview feedback or rejection reason"}
+
+  agency_labour_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Agency labour request, e.g. ALR-000123"}
+      site_id: {type: str, desc: "DC or store site"}
+      shift: {type: enum, values: [early, late, night, days, office], desc: "Shift pattern"}
+      start_date: {type: date, desc: "Start date for the agency workers"}
+      end_date: {type: date, desc: "End date for the agency workers"}
+      positions_requested: {type: int, desc: "Number of agency workers needed"}
+      positions_filled: {type: int, desc: "Number of positions filled"}
+      role: {type: str, desc: "Job role (e.g. warehouse operative, picker)"}
+      status: {type: enum, values: [submitted, approved, in_progress, completed, cancelled], desc: "Request status"}
+      created_at: {type: timestamp, desc: "When the request was submitted"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  recruitment_metrics:
+    key: metric_id
+    cols:
+      metric_id: {type: str, desc: "Metric entry, e.g. MET-000123"}
+      role: {type: str, desc: "Job role"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "Recruitment channel"}
+      cost_per_hire_gbp: {type: float, desc: "Average cost per successful hire in GBP"}
+      days_to_hire: {type: int, desc: "Average days from application to hire"}
+      hires_count: {type: int, desc: "Number of successful hires in period"}
+      period: {type: str, desc: "Period covered, e.g. 2026-Q3"}
+      recorded_at: {type: date, desc: "Date this metric was recorded"}
+
+tools:
+  - name: create_job_requisition
+    desc: Opens a job requisition for recruitment. Returns the new requisition and status.
+    kind: insert
+    table: job_requisitions
+    id_prefix: REQ-
+    defaults: {status: open}
+    args:
+      site_id: {required: true}
+      role: {required: true, desc: "Job title or role description"}
+      headcount_required: {required: true, type: int, desc: "Number of positions to fill"}
+      salary_gbp: {required: true, type: float, desc: "Annual salary in GBP"}
+    example: {site_id: DC1, role: "Warehouse Operative", headcount_required: 5, salary_gbp: 26000}
+
+  - name: submit_agency_labour_request
+    desc: Submits a request for agency labour by site, shift and dates. Returns the new request.
+    kind: insert
+    table: agency_labour_requests
+    id_prefix: ALR-
+    defaults: {status: submitted, positions_filled: 0}
+    args:
+      site_id: {required: true}
+      shift: {required: true}
+      start_date: {required: true, type: date}
+      end_date: {required: true, type: date}
+      positions_requested: {required: true, type: int}
+      role: {required: true, desc: "Job role"}
+    example: {site_id: DC1, shift: night, start_date: "+7d", end_date: "+35d", positions_requested: 10, role: "Warehouse Operative"}
+
+  - name: get_recruitment_lead_times
+    desc: Time to hire and onboarding lead times by role. Shows average days from application to hire.
+    kind: sql
+    args:
+      role: {desc: "Filter by role (default all)"}
+    sql: |
+      SELECT role, recruitment_channel,
+             round(avg(days_to_hire), 1) AS avg_days_to_hire,
+             min(days_to_hire) AS min_days_to_hire,
+             max(days_to_hire) AS max_days_to_hire,
+             count(*) AS data_points
+      FROM recruitment_metrics
+      WHERE ($role IS NULL OR role = $role)
+      GROUP BY role, recruitment_channel
+      ORDER BY avg_days_to_hire DESC
+    limit: 20
+    example: {role: "Warehouse Operative"}
+
+  - name: get_recruitment_cost_per_hire
+    desc: Cost per hire by role and channel. Shows recruitment costs and volumes.
+    kind: sql
+    args:
+      role: {desc: "Filter by role (default all)"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "Filter by recruitment channel"}
+    sql: |
+      SELECT role, recruitment_channel,
+             round(avg(cost_per_hire_gbp), 2) AS avg_cost_per_hire_gbp,
+             round(min(cost_per_hire_gbp), 2) AS min_cost_gbp,
+             round(max(cost_per_hire_gbp), 2) AS max_cost_gbp,
+             sum(hires_count) AS total_hires
+      FROM recruitment_metrics
+      WHERE ($role IS NULL OR role = $role)
+        AND ($recruitment_channel IS NULL OR recruitment_channel = $recruitment_channel)
+      GROUP BY role, recruitment_channel
+      ORDER BY avg_cost_per_hire_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: get_time_to_hire_by_site
+    desc: Time to hire by site and role. Shows average days to fill positions by location.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by site (default all)"}
+      role: {desc: "Filter by role (default all)"}
+    sql: |
+      SELECT j.site_id, j.role,
+             count(DISTINCT r.funnel_id) AS applicants,
+             count(DISTINCT CASE WHEN r.stage = 'hired' THEN r.funnel_id END) AS hired,
+             round(avg(CAST(JULIANDAY(r.moved_at) - JULIANDAY(r.applied_at) AS FLOAT)) FILTER (WHERE r.stage = 'hired'), 1) AS avg_days_to_hire
+      FROM job_requisitions j
+      LEFT JOIN recruitment_funnel r ON r.requisition_id = j.requisition_id
+      WHERE ($site_id IS NULL OR j.site_id = $site_id)
+        AND ($role IS NULL OR j.role = $role)
+      GROUP BY j.site_id, j.role
+      ORDER BY avg_days_to_hire DESC NULLS LAST
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: list_recruitment_funnel_bottlenecks
+    desc: Stage conversion and delay in the hiring funnel. Shows drop-off rates and time spent in each stage.
+    kind: sql
+    args:
+      role: {desc: "Filter by role (default all)"}
+      site_id: {desc: "Filter by site (default all)"}
+    sql: |
+      SELECT j.site_id, j.role, r.stage,
+             count(*) AS count_in_stage,
+             round(100.0 * count(*) / sum(count(*)) OVER (PARTITION BY j.site_id, j.role), 1) AS pct_of_funnel,
+             round(avg(r.days_in_stage), 1) AS avg_days_in_stage,
+             max(r.days_in_stage) AS max_days_in_stage
+      FROM recruitment_funnel r
+      JOIN job_requisitions j ON r.requisition_id = j.requisition_id
+      WHERE ($role IS NULL OR j.role = $role)
+        AND ($site_id IS NULL OR j.site_id = $site_id)
+      GROUP BY j.site_id, j.role, r.stage
+      ORDER BY j.site_id, j.role,
+               CASE r.stage
+                 WHEN 'application' THEN 1
+                 WHEN 'screening' THEN 2
+                 WHEN 'interview' THEN 3
+                 WHEN 'offer' THEN 4
+                 WHEN 'hired' THEN 5
+                 WHEN 'rejected' THEN 6
+               END
+    limit: 50
+    example: {}
