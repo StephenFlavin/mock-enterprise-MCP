@@ -19,8 +19,7 @@ def generate(g):
 
     # Generate store performance for last 4 periods (months)
     for months_back in range(4, 0, -1):
-        period_date = g.days_ago(months_back * 30)
-        period = f"{period_date.year}-{period_date.month:02d}"
+        period_end = g.days_ago(months_back * 30 - 29)  # End of each month
 
         for site in sites[:50]:  # Top 50 stores
             region = site["region"]

@@ -1,0 +1,179 @@
+id: telematics
+name: Fleet Telematics
+instructions: >
+  Fleet telematics, vehicle tracking, driver hours and compliance for in-house transport.
+  Route ids look like RTE-000123, vehicle ids look like VEH-000456.
+  Use it for actual stop times, driver hours compliance, and operating costs.
+
+tables:
+  routes:
+    key: route_id
+    cols:
+      route_id: {type: str, desc: "Route, e.g. RTE-000123"}
+      name: {type: str, desc: Route name or lane}
+      origin_site_id: {type: str, desc: "Origin DC or site, e.g. DC1"}
+      destination_site_id: {type: str, desc: "Destination DC or site, e.g. DC2"}
+      distance_km: {type: float, desc: Route distance in km}
+      planned_hours: {type: float, desc: Planned hours including stops and unload}
+      planned_stops: {type: int, desc: Expected number of drops}
+      stop_time_assumption_minutes: {type: int, desc: "Assumed minutes per stop, e.g. 15"}
+      carrier_id: {type: str, desc: "Carrier if outsourced, e.g. CAR-002"}
+      status: {type: enum, values: [active, suspended, planned, archived], desc: Route status}
+
+  route_runs:
+    key: run_id
+    cols:
+      run_id: {type: str, desc: "Route run, e.g. RUN-000123"}
+      route_id: {type: str, desc: Route}
+      vehicle_id: {type: str, desc: "Fleet vehicle, e.g. VEH-000123"}
+      driver_id: {type: str, desc: "Driver, e.g. EMP-01234"}
+      run_date: {type: date, desc: Date of run}
+      actual_distance_km: {type: float, desc: Actual distance travelled}
+      actual_stops: {type: int, desc: Actual number of stops made}
+      total_stop_time_minutes: {type: int, desc: Total time spent at stops}
+      total_unload_time_minutes: {type: int, desc: Total unloading time"}
+      departure_time: {type: timestamp, desc: Actual departure time}
+      arrival_time: {type: timestamp, desc: Actual arrival time}
+      actual_drive_hours: {type: float, desc: Actual driving hours (excluding stops)"}
+      total_on_duty_hours: {type: float, desc: Total hours on duty including stops"}
+      hours_available: {type: float, desc: "Hours available for driving (e.g. 11)"}
+      traffic_delay_minutes: {type: int, desc: Estimated traffic delay minutes}
+      fuel_used_litres: {type: float, desc: Fuel consumed in litres}
+      tachograph_compliant: {type: bool, desc: Compliant with driver hours regulations}
+      violations: {type: str, desc: "Violation codes if any, semicolon-separated"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  fleet_vehicles:
+    key: vehicle_id
+    cols:
+      vehicle_id: {type: str, desc: "Vehicle, e.g. VEH-000123"}
+      registration: {type: str, desc: "Registration number, e.g. HX26ABC"}
+      vehicle_type: {type: enum, values: [box_van, curtainside, flatbed, refrigerated, articulated, parcel_van], desc: Vehicle type}
+      manufacturer: {type: str, desc: "Vehicle make, e.g. Volvo"}
+      model: {type: str, desc: "Vehicle model"}
+      purchase_date: {type: date, desc: Date purchased}
+      purchase_cost_gbp: {type: float, desc: Original purchase cost}
+      current_value_gbp: {type: float, desc: Current estimated value}
+      service_hours: {type: float, desc: Cumulative running hours}
+      annual_maint_cost_gbp: {type: float, desc: Annual maintenance cost"}
+      annual_fuel_cost_gbp: {type: float, desc: Annual fuel cost"}
+      annual_licence_tax_gbp: {type: float, desc: Annual vehicle tax and insurance}
+      annual_miles_km: {type: float, desc: Annual km travelled}
+      payload_capacity_kg: {type: float, desc: Maximum payload in kg}
+      fuel_consumption_l_per_100km: {type: float, desc: Average fuel consumption}
+      status: {type: enum, values: [active, maintenance, decommissioned, sold], desc: Vehicle status}
+      notes: {type: str, desc: Notes about the vehicle}
+
+  driver_compliance_logs:
+    key: log_id
+    cols:
+      log_id: {type: str, desc: "Log entry, e.g. DCL-000123"}
+      driver_id: {type: str, desc: "Driver, e.g. EMP-01234"}
+      route_id: {type: str, desc: Route}
+      run_date: {type: date, desc: Date of run}
+      hours_worked: {type: float, desc: "Hours worked on the date"}
+      weekly_hours: {type: float, desc: "Hours worked in the week"}
+      hours_available_working_time: {type: float, desc: "Available working hours per regulations"}
+      rest_period_hours: {type: float, desc: "Rest period taken since last check"}
+      tachograph_reading: {type: str, desc: "Tachograph compliance status"}
+      violation_type: {type: enum, values: [none, exceeded_daily_hours, insufficient_rest, falsified_record, other], desc: Violation type}
+      severity: {type: enum, values: [none, warning, minor, major], desc: Violation severity}
+      resolved: {type: bool, desc: Whether violation was addressed}
+
+tools:
+  - name: get_actual_stop_durations_by_route
+    desc: Observed stop and unloading durations by route, latest runs first. For capacity planning and stop-time assumptions.
+    kind: sql
+    args:
+      route_id: {required: true}
+      date_from: {type: date, default: "-60d", desc: "Runs on or after"}
+      limit: {type: int, default: 50}
+    sql: |
+      SELECT
+        r.route_id,
+        r.name AS route_name,
+        count(DISTINCT rr.run_id) AS runs_count,
+        round(avg(rr.total_stop_time_minutes), 1) AS avg_stop_time_minutes,
+        min(rr.total_stop_time_minutes) AS min_stop_time_minutes,
+        max(rr.total_stop_time_minutes) AS max_stop_time_minutes,
+        round(avg(rr.total_unload_time_minutes), 1) AS avg_unload_time_minutes,
+        min(rr.total_unload_time_minutes) AS min_unload_time_minutes,
+        max(rr.total_unload_time_minutes) AS max_unload_time_minutes,
+        round(avg(rr.actual_stops), 0) AS avg_stops,
+        r.stop_time_assumption_minutes AS planned_assumption_minutes
+      FROM route_runs rr
+      JOIN routes r USING (route_id)
+      WHERE r.route_id = $route_id AND rr.run_date >= CAST($date_from AS DATE)
+      GROUP BY r.route_id, r.name, r.stop_time_assumption_minutes
+    example: {route_id: RTE-000001}
+
+  - name: get_driver_hours_compliance_by_route
+    desc: Driver hours and tachograph compliance by route, flagging hours breaches and violations. Use to see why drivers are running out of hours.
+    kind: sql
+    args:
+      route_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Runs on or after"}
+    sql: |
+      SELECT
+        rr.run_id,
+        rr.route_id,
+        r.name AS route_name,
+        rr.run_date,
+        rr.driver_id,
+        rr.planned_hours,
+        rr.actual_drive_hours,
+        rr.total_on_duty_hours,
+        rr.hours_available,
+        CASE
+          WHEN rr.total_on_duty_hours > rr.hours_available THEN 'BREACH'
+          WHEN rr.total_on_duty_hours >= (rr.hours_available * 0.95) THEN 'NEAR_BREACH'
+          ELSE 'OK'
+        END AS compliance_status,
+        rr.tachograph_compliant,
+        rr.violations,
+        ROUND(rr.total_on_duty_hours - rr.hours_available, 2) AS hours_over_available
+      FROM route_runs rr
+      JOIN routes r USING (route_id)
+      WHERE r.route_id = $route_id AND rr.run_date >= CAST($date_from AS DATE)
+      ORDER BY rr.run_date DESC
+    example: {route_id: RTE-000001}
+
+  - name: get_fleet_operating_costs
+    desc: Fleet running costs, utilisation and vehicle age. Use for make vs buy and cost reduction analysis.
+    kind: sql
+    args:
+      vehicle_type: {desc: "Vehicle type (default all, e.g. box_van)"}
+      status: {type: enum, values: [active, maintenance, decommissioned, sold], desc: "Vehicle status (default active)"}
+    sql: |
+      SELECT
+        fv.vehicle_id,
+        fv.registration,
+        fv.vehicle_type,
+        fv.manufacturer,
+        fv.model,
+        CAST($as_of AS DATE) - fv.purchase_date AS age_days,
+        ROUND((CAST($as_of AS DATE) - fv.purchase_date) / 365.25, 1) AS age_years,
+        fv.purchase_cost_gbp,
+        fv.current_value_gbp,
+        ROUND(fv.purchase_cost_gbp - fv.current_value_gbp, 2) AS depreciation_gbp,
+        ROUND((fv.purchase_cost_gbp - fv.current_value_gbp) / fv.purchase_cost_gbp * 100, 1) AS depreciation_pct,
+        fv.annual_maint_cost_gbp,
+        fv.annual_fuel_cost_gbp,
+        fv.annual_licence_tax_gbp,
+        ROUND(fv.annual_maint_cost_gbp + fv.annual_fuel_cost_gbp + fv.annual_licence_tax_gbp, 2) AS annual_total_running_cost_gbp,
+        fv.annual_miles_km,
+        ROUND((fv.annual_maint_cost_gbp + fv.annual_fuel_cost_gbp + fv.annual_licence_tax_gbp) / NULLIF(fv.annual_miles_km, 0), 3) AS cost_per_km_gbp,
+        COUNT(DISTINCT rr.run_id) AS runs_last_12m,
+        ROUND(SUM(rr.actual_distance_km), 0) AS distance_km_12m,
+        fv.status
+      FROM fleet_vehicles fv
+      LEFT JOIN route_runs rr ON rr.vehicle_id = fv.vehicle_id AND rr.run_date >= DATE_TRUNC('month', CAST($as_of AS DATE)) - INTERVAL 365 DAY
+      WHERE ($vehicle_type IS NULL OR fv.vehicle_type = $vehicle_type)
+        AND ($status IS NULL OR fv.status = $status)
+      GROUP BY fv.vehicle_id, fv.registration, fv.vehicle_type, fv.manufacturer, fv.model,
+               fv.purchase_date, fv.purchase_cost_gbp, fv.current_value_gbp,
+               fv.annual_maint_cost_gbp, fv.annual_fuel_cost_gbp, fv.annual_licence_tax_gbp,
+               fv.annual_miles_km, fv.status
+      ORDER BY fv.vehicle_type, fv.registration
+    limit: 100
+    example: {status: active}

@@ -1,0 +1,84 @@
+id: cctv
+name: CCTV / Exception Reporting
+instructions: >
+  Store and DC video surveillance exception events and incident logs.
+  Reports anomalies detected by camera feeds and human review (unusual activity, tampering,
+  restricted area access, process violations). Event ids look like EXC-000123, incident ids like INC-000123.
+  Use for loss prevention investigations, pattern analysis and evidence during shrink reviews.
+
+tables:
+  cctv_exception_events:
+    key: event_id
+    cols:
+      event_id: {type: str, desc: "CCTV exception event, e.g. EXC-000123"}
+      site_id: {type: str, desc: "Store or DC, e.g. ST214"}
+      occurred_at: {type: timestamp, desc: "When the exception was detected"}
+      event_type: {type: enum, values: [person_in_restricted_area, unusual_activity, tailgating, tampering, unauthorized_access, scanning_error, system_fault], desc: "Type of exception"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Severity level"}
+      description: {type: str, desc: "Event description"}
+      camera_id: {type: str, desc: "Camera or sensor identifier"}
+      employee_id: {type: str, desc: "Employee involved, if identified"}
+      reviewed_by: {type: str, desc: "Employee who reviewed the event"}
+      reviewed_at: {type: timestamp, desc: "When the event was reviewed"}
+      status: {type: enum, values: [open, reviewed, escalated, resolved], desc: "Event status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  incident_logs:
+    key: incident_id
+    cols:
+      incident_id: {type: str, desc: "Incident log entry, e.g. INC-000123"}
+      site_id: {type: str, desc: "Store or DC"}
+      occurred_at: {type: timestamp, desc: "When the incident occurred"}
+      incident_type: {type: enum, values: [internal_theft, external_theft, process_error, system_fault, stock_discrepancy, pos_void, unauthorized_refund, equipment_failure], desc: "Incident classification"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Severity level"}
+      description: {type: str, desc: "Incident details and context"}
+      related_event_ids: {type: str, desc: "Comma-separated CCTV exception event ids"}
+      assigned_to: {type: str, desc: "Employee investigating"}
+      status: {type: enum, values: [open, investigating, evidence_collected, closed, dismissed], desc: "Investigation status"}
+      suspected_loss_gbp: {type: float, desc: "Estimated loss value"}
+      created_at: {type: timestamp, desc: "When the incident was logged"}
+      closed_at: {type: timestamp, desc: "When the incident was closed"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_cctv_exception_events_for_store
+    desc: "CCTV exception events for a store over a period: unusual activity, tampering, access violations. Newest first."
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Events on or after"}
+      event_type: {type: enum, values: [person_in_restricted_area, unusual_activity, tailgating, tampering, unauthorized_access, scanning_error, system_fault], desc: "Filter by event type (default all)"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity (default all)"}
+    sql: |
+      SELECT event_id, site_id, occurred_at, event_type, severity, description,
+             camera_id, employee_id, reviewed_by, reviewed_at, status
+      FROM cctv_exception_events
+      WHERE site_id = $site_id
+        AND occurred_at >= CAST($date_from AS DATE)
+        AND ($event_type IS NULL OR event_type = $event_type)
+        AND ($severity IS NULL OR severity IN ('critical', 'high', 'medium', 'low'))
+      ORDER BY occurred_at DESC
+    limit: 50
+    example: {site_id: "ST214", severity: "high"}
+
+  - name: search_cctv_incident_logs
+    desc: "Search incident logs for pattern analysis: internal/external theft, process errors, equipment faults. Newest first."
+    kind: sql
+    args:
+      site_id: {desc: "Store or DC (default all)"}
+      date_from: {type: date, default: "-180d", desc: "Incidents on or after"}
+      incident_type: {type: enum, values: [internal_theft, external_theft, process_error, system_fault, stock_discrepancy, pos_void, unauthorized_refund, equipment_failure], desc: "Filter by incident type (default all)"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity (default all)"}
+      status: {type: enum, values: [open, investigating, evidence_collected, closed, dismissed], desc: "Filter by status (default all)"}
+    sql: |
+      SELECT incident_id, site_id, occurred_at, incident_type, severity, description,
+             related_event_ids, assigned_to, status, suspected_loss_gbp, created_at, closed_at
+      FROM incident_logs
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND occurred_at >= CAST($date_from AS DATE)
+        AND ($incident_type IS NULL OR incident_type = $incident_type)
+        AND ($severity IS NULL OR severity IN ('critical', 'high', 'medium', 'low'))
+        AND ($status IS NULL OR status = $status)
+      ORDER BY occurred_at DESC
+    limit: 100
+    example: {severity: "high"}

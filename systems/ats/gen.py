@@ -60,7 +60,7 @@ def generate(g):
 
             # Some are open, some filled
             days_old = r.randint(10, 90)
-            created_at = g.as_of - timedelta(days=days_old)
+            created_at = datetime.combine(g.as_of - timedelta(days=days_old), datetime.min.time())
 
             status = r.choices(["open", "in_progress", "filled"], [0.2, 0.3, 0.5])[0]
             filled_date = None
@@ -146,26 +146,29 @@ def generate(g):
 
             status = r.choices(["submitted", "approved", "in_progress", "completed"], [0.1, 0.3, 0.4, 0.2])[0]
             if status == "submitted":
-                created_at = g.as_of - timedelta(days=r.randint(0, 5))
+                created_date = g.as_of - timedelta(days=r.randint(0, 5))
             elif status == "approved":
-                created_at = g.as_of - timedelta(days=r.randint(3, 15))
+                created_date = g.as_of - timedelta(days=r.randint(3, 15))
             elif status == "in_progress":
-                created_at = start_date - timedelta(days=r.randint(1, 10))
+                created_date = start_date - timedelta(days=r.randint(1, 10))
             else:  # completed
-                created_at = end_date - timedelta(days=r.randint(5, 20))
+                created_date = end_date - timedelta(days=r.randint(5, 20))
+
+            created_at = datetime.combine(created_date, datetime.min.time())
+            updated_at = created_at + timedelta(days=r.randint(0, 20))
 
             agency_requests.append({
                 "request_id": alr_id,
                 "site_id": site,
                 "shift": r.choice(shifts),
-                "start_date": start_date.date(),
-                "end_date": end_date.date(),
+                "start_date": start_date,
+                "end_date": end_date,
                 "positions_requested": positions,
                 "positions_filled": filled,
                 "role": r.choice(roles),
                 "status": status,
                 "created_at": created_at,
-                "updated_at": created_at + timedelta(days=r.randint(0, 20))
+                "updated_at": updated_at
             })
 
     return {

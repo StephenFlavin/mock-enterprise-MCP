@@ -5,6 +5,11 @@ from datetime import datetime, timedelta
 def generate(g):
     r = g.rng
     products = g.master("products")
+    employees = g.master("employees")
+
+    # Filter to active buyers/product managers
+    buyers = [e for e in employees if e.get("department") == "Buying" and e.get("status") == "active"]
+    buyer_ids = [b["employee_id"] for b in buyers] if buyers else ["EMP-00010", "EMP-00011", "EMP-00012"]
 
     # Assign strategic roles to products
     strategic_roles = []
@@ -43,13 +48,13 @@ def generate(g):
         p = r.choice(products)
         action = r.choices(["extend", "refresh", "reprice", "delete"], [40, 35, 20, 5])[0]
         status = r.choices(["draft", "approved", "in_progress"], [50, 35, 15])[0]
-        approved_by = r.choice(["EMP-00111", "EMP-00123", "EMP-00456", None])
+        approved_by = r.choice(buyer_ids + [None]) if status in ("approved", "in_progress") else None
         product_range_plan.append({
             "plan_id": f"PRP-{i + 1:06d}",
             "sku": p["sku"],
             "action": action,
             "status": status,
-            "approved_by": approved_by if status in ("approved", "in_progress") else None,
+            "approved_by": approved_by,
             "created_at": g.as_of - timedelta(days=r.randint(1, 60)),
             "updated_at": g.as_of - timedelta(days=r.randint(0, 20))
         })
@@ -64,7 +69,7 @@ def generate(g):
             "category": category,
             "reason": f"High market interest; {r.randint(2, 8)} competitor SKUs; estimated £{r.randint(50, 500)}k opportunity",
             "status": status,
-            "created_by": r.choice(["EMP-00123", "EMP-00456", "EMP-00789", "EMP-01234"]),
+            "created_by": r.choice(buyer_ids),
             "created_at": g.as_of - timedelta(days=r.randint(1, 45)),
             "updated_at": g.as_of - timedelta(days=r.randint(0, 20))
         })
@@ -85,7 +90,7 @@ def generate(g):
             "task_id": f"RVW-{i + 1:06d}",
             "sku": p["sku"],
             "reason": r.choice(reasons),
-            "owner": r.choice(["EMP-00789", "EMP-01234", "EMP-01567", "EMP-02000"]),
+            "owner": r.choice(buyer_ids),
             "status": status,
             "recommendation": r.choice(["delete", "refresh", "reprice", "investigate"]) if status == "completed" else None,
             "created_at": g.as_of - timedelta(days=r.randint(1, 60)),
