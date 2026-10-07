@@ -188,7 +188,7 @@ def generate(g):
             "current_throughput_msgs_per_sec": g.rng.uniform(500, 5000),
             "rated_capacity_msgs_per_sec": g.rng.randint(8000, 15000),
             "headroom_pct": headroom,
-            "last_measured": g.date_between(g.days_ago(7), g.days_ago(0)),
+            "last_measured": g.days_ago(g.rng.randint(0, 7)),
             "status": "degraded" if headroom < 20 else ("failing" if headroom < 5 else "operational"),
         })
 
@@ -296,14 +296,14 @@ def generate(g):
         ("Cache", "Redis", "7.0", "0"),
     ]
     for i, (sw_name, vendor, version, issues) in enumerate(vendors_software):
-        support_end = g.date_between(g.days_ago(0), g.days_ago(-365))
+        support_end = g.days_ago(g.rng.randint(-365, 0))
         vendor_software.append({
             "software_id": f"VSW-{900000 + i:06d}",
             "software_name": sw_name,
             "vendor_name": vendor,
             "installed_version": version,
             "system_or_location": g.rng.choice(["DC1", "DC2", "DC3", "HQ", "All"]),
-            "installation_date": g.date_between(g.days_ago(1095), g.days_ago(365)),
+            "installation_date": g.days_ago(g.rng.randint(365, 1095)),
             "support_end_date": support_end,
             "latest_available_version": f"{int(version.split('.')[0])}.{int(version.split('.')[1]) + 1}",
             "security_issues": int(issues),
@@ -347,7 +347,7 @@ def generate(g):
                 "max_duration_seconds": g.rng.uniform(600, 1800),
                 "min_duration_seconds": g.rng.uniform(5, 60),
                 "rows_processed": g.rng.randint(10000, 1000000),
-                "last_run_date": g.date_between(g.days_ago(1), g.days_ago(0)),
+                "last_run_date": g.days_ago(g.rng.randint(0, 1)),
                 "success_rate_pct": g.rng.uniform(95, 100),
             })
 

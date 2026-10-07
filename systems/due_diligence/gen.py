@@ -502,12 +502,13 @@ def generate(g):
                 })
                 doc_req_id += 1
 
-    # Generate company registry data
+    # Generate company registry data - use only valid countries from country_risk_indices
+    valid_countries = ["IN", "BD", "CN", "PK", "VN", "TH", "KH", "MX", "TN", "ET"]
     for idx, entity in enumerate(suppliers[:20]):
         company_registry.append({
             "entity_id": entity["supplier_id"],
             "entity_name": entity["name"],
-            "country": entity.get("country", r.choice(["IN", "BD", "CN", "VN", "TH"])),
+            "country": r.choice(valid_countries),
             "registration_number": f"REG-{entity['supplier_id'][-4:]}-{g.rng.randint(1000, 9999)}",
             "registry_source": r.choice(["National Company Registry", "Local Trade Office", "Chamber of Commerce"]),
             "legal_form": r.choice(["Private Limited Company", "Partnership", "Sole Proprietor", "Manufacturing Co-operative"]),

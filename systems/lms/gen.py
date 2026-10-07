@@ -144,7 +144,7 @@ def generate(g):
                 starter_count += 1
                 start_date = week_monday + timedelta(days=r.randint(0, 4))
                 ltype = r.choice(['permanent', 'agency'])
-                training_done = r.choice([True, False], p=[0.6, 0.4]) if start_date < g.as_of else False
+                training_done = (r.random() < 0.6) if start_date < g.as_of else False
                 training_d = start_date + timedelta(days=7) if training_done else None
                 starters.append({
                     'starter_id': f'NST-{starter_count:06d}', 'site_id': site,
@@ -167,9 +167,21 @@ def generate(g):
                 to_date = from_date + timedelta(days=r.randint(7, 42))
                 qty = r.randint(5, 25)
                 if from_date < g.as_of:
-                    status = r.choice(['confirmed', 'filled', 'cancelled'], p=[0.4, 0.3, 0.3])
+                    rand_val = r.random()
+                    if rand_val < 0.4:
+                        status = 'confirmed'
+                    elif rand_val < 0.7:
+                        status = 'filled'
+                    else:
+                        status = 'cancelled'
                 else:
-                    status = r.choice(['draft', 'submitted', 'confirmed'], p=[0.3, 0.3, 0.4])
+                    rand_val = r.random()
+                    if rand_val < 0.3:
+                        status = 'draft'
+                    elif rand_val < 0.6:
+                        status = 'submitted'
+                    else:
+                        status = 'confirmed'
                 supplier = r.choice(agencies) if status != 'draft' else None
                 rate = round(r.uniform(14.5, 22.0), 2) if status != 'draft' else None
                 requests.append({
