@@ -31,6 +31,9 @@ def generate(g):
 
     # Generate product_sales_fact: fortnightly Monday rows per sku/market (weekly for style STY-T-4410)
     import hashlib
+    import random
+    from pathlib import Path
+    import yaml
     from collections import defaultdict
     from datetime import date as _date, timedelta as _td
 
@@ -150,71 +153,116 @@ def generate(g):
             for market, mult in (("UK", 1.0), ("DE", 0.35)):
                 add_row(p, d, market, round(size_w * mult * g.rng.uniform(0.9, 1.1)), 0.14 + g.rng.uniform(-0.02, 0.02))
 
-    # Generate product_kpi_history
-    kpi_history = []
-    kpi_names = ["OTIF", "markdown_rate", "sell_through", "sell_through_rate", "inventory_turns"]
-    for week in g.weeks(-26):
-        for kpi_name in kpi_names:
-            if kpi_name == "OTIF":
-                base_value = 92
-                variance = g.rng.uniform(-5, 3)
-            elif kpi_name == "markdown_rate":
-                base_value = 25
-                variance = g.rng.uniform(-8, 8)
-            else:
-                base_value = 70 + g.rng.randint(-20, 20)
-                variance = g.rng.uniform(-5, 5)
+    # Best sellers that lack EU/Ireland compliance data (see compliance_db): make sure they sell, so their sales
+    # rank can be looked up. Own random stream so the rest of the generated data is unchanged.
+    COMPLIANCE_GAP = {   # sku: (units per fortnight, base markdown share)
+        "SKU-105551": (55, 0.08), "SKU-104732": (28, 0.14), "SKU-101813": (95, 0.35), "SKU-101148": (30, 0.10),
+        "SKU-104809": (25, 0.08), "SKU-104354": (55, 0.10), "SKU-103745": (24, 0.10), "SKU-103199": (45, 0.40),
+        "SKU-102779": (60, 0.12), "SKU-104060": (14, 0.10), "SKU-100336": (25, 0.10), "SKU-101428": (90, 0.10),
+        "SKU-102394": (6, 0.30), "SKU-105943": (18, 0.10)}
+    xr = random.Random(20261005)
+    planned_skus = {p["sku"] for p, _ in plan}
+    for sku, (base_u, md0) in COMPLIANCE_GAP.items():
+        p = prod_by_sku.get(sku)
+        if not p or sku in planned_skus:
+            continue
+        launch = _date.fromisoformat(p["launch_date"])
+        stop = g.as_of - _td(days=60) if p["status"] == "discontinued" else None
+        gr = YOY.get(p["category"], round((_h(p["category"]) - 0.5) * 0.12, 3))
+        for d in fort:
+            if d < launch + _td(days=7) or (stop and d > stop):
+                continue
+            age_y = (g.as_of - d).days / 365.0
+            units = max(1, round(base_u * (1 + gr) ** (-age_y) * xr.uniform(0.9, 1.1)))
+            md = max(0.02, md0 + xr.uniform(-0.02, 0.02))
+            site = stores["UK"][int(_h(sku + d.isoformat()) * len(stores["UK"]))]
+            key = (d, sku, site, p["size"])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            gross = units * float(p["retail_price_gbp"])
+            sales_fact.append({
+                "date": d, "sku": sku, "style_id": p["style_id"], "category": p["category"], "market": "UK",
+                "site_id": site, "size": p["size"], "units_sold": units, "sales_gbp": round(gross * (1 - md), 2),
+                "cost_gbp": round(units * float(p["unit_cost_gbp"]), 2), "markdown_gbp": round(gross * md, 2),
+                "customer_segment": xr.choices(["Budget", "Standard", "Premium", "VIP"], [24, 46, 22, 8])[0]})
 
-            target = 90 if kpi_name == "OTIF" else 20 if kpi_name == "markdown_rate" else 75
-            value = max(0, min(100, base_value + variance))
-
-            kpi_history.append({
-                "date": week,
-                "kpi_name": kpi_name,
-                "kpi_value": round(value, 1),
-                "period_type": "weekly",
-                "target_value": target,
-                "variance_pct": round(value - target, 1)
-            })
-
-            # Add monthly aggregates
-            if week.weekday() == 0:  # Monday
-                kpi_history.append({
-                    "date": week,
-                    "kpi_name": kpi_name,
-                    "kpi_value": round(value + g.rng.uniform(-2, 2), 1),
-                    "period_type": "monthly",
-                    "target_value": target,
-                    "variance_pct": round(value - target + g.rng.uniform(-2, 2), 1)
-                })
-
-    # Generate otif_metrics
+    # OTIF by supplier / category / DC / inbound mode / arrival weekday, weekly. The OTIF definition tightened on the
+    # Tuesday of the first September week (no grace day any more), which hits the road (truck) inbound flows hardest.
+    OTIF_COMBOS = [  # supplier, category, DC, inbound mode, weekday, units per week, OTIF % before, OTIF % after
+        ("SUP-0079", "Outerwear", "DC1", "truck", "Fri", 6200, 95.0, 81.5),
+        ("SUP-0037", "Knitwear", "DC3", "truck", "Mon", 4100, 94.5, 82.0),
+        ("SUP-0030", "Knitwear", "DC4", "truck", "Fri", 4600, 93.5, 84.5),
+        ("SUP-0014", "Footwear", "DC2", "truck", "Wed", 3000, 94.0, 91.0),
+        ("SUP-0001", "Dresses", "DC1", "sea", "Tue", 9000, 93.5, 93.0),
+        ("SUP-0013", "Small Appliances", "DC1", "air", "Thu", 3200, 96.0, 95.5),
+        ("SUP-0028", "Footwear", "DC5", "sea", "Wed", 5400, 94.0, 91.5),
+        ("SUP-0064", "Dresses", "DC4", "rail", "Tue", 3300, 93.0, 92.0)]
+    otr = random.Random(20260901)
+    ot_weeks = g.weeks(8)            # 4 weeks before the change (the last one only partly) and 4 weeks after
+    raw = []
+    for wi, wk in enumerate(ot_weeks):
+        for sup, cat, dc, mode, wd, units, before, after in OTIF_COMBOS:
+            frac = 0.0 if wi < 3 else 0.2 if wi == 3 else 1.0
+            pct = before + (after - before) * frac + otr.uniform(-0.6, 0.6)
+            raw.append([wk, sup, cat, dc, mode, wd, int(units * otr.uniform(0.93, 1.07)), pct, wi])
+    for lo, hi, goal in ((0, 3, 94.0), (4, 7, 89.0)):     # calibrate each month to the OTIF the business reported
+        rows = [r for r in raw if lo <= r[8] <= hi]
+        tot = sum(r[6] for r in rows)
+        for _ in range(30):
+            cur = sum(r[6] * r[7] for r in rows) / tot
+            for r in rows:
+                r[7] = min(99.5, r[7] + (goal - cur))
     otif_metrics = []
-    for week in g.weeks(-12):
-        for supplier in g.pick(suppliers, k=8):
-            for category in g.pick(categories, k=3):
-                for site in g.pick([s for s in sites if s["type"] == "dc"], k=3):
-                    for mode in g.pick(inbound_modes, k=2):
-                        for weekday_num in range(5):  # Mon-Fri
-                            total = g.rng.randint(500, 3000)
-                            on_time_pct = g.rng.uniform(0.85, 0.96)
-                            on_time = int(total * on_time_pct)
-                            early = int(total * g.rng.uniform(0.02, 0.08))
-                            late = total - on_time - early
+    for wk, sup, cat, dc, mode, wd, total, pct, _wi in raw:
+        on_time = round(total * pct / 100)
+        early = round(total * otr.uniform(0.01, 0.04))
+        otif_metrics.append({
+            "week": wk, "supplier_id": sup, "category": cat, "site_id": dc, "inbound_mode": mode, "weekday": wd,
+            "on_time_units": on_time, "total_units": total, "otif_pct": round(100.0 * on_time / total, 1),
+            "early_units": early, "late_units": total - on_time - early})
 
-                            otif_metrics.append({
-                                "week": week,
-                                "supplier_id": supplier["supplier_id"],
-                                "category": category,
-                                "site_id": site["site_id"],
-                                "inbound_mode": mode,
-                                "weekday": ["Mon", "Tue", "Wed", "Thu", "Fri"][weekday_num],
-                                "on_time_units": on_time,
-                                "total_units": total,
-                                "otif_pct": round(on_time_pct * 100, 1),
-                                "early_units": early,
-                                "late_units": late
-                            })
+    # KPI history: 18 monthly points (last year's peak included) per KPI, plus the last 8 weeks.
+    # name: (target, higher_is_better, unit, monthly values from 17 months ago to last month)
+    KPIS = {
+        "OTIF": (90.0, True, "%", [93.4, 93.8, 94.1, 93.6, 93.9, 93.2, 92.8, 90.1, 88.2, 92.6, 93.3, 93.7, 94.0, 94.2, 94.1, 93.9, 94.0, 89.0]),
+        "markdown_rate": (20.0, False, "%", [21.4, 20.8, 22.1, 26.5, 24.8, 21.2, 20.5, 24.9, 27.8, 31.5, 26.3, 21.9, 21.0, 20.6, 22.4, 27.2, 25.1, 23.4]),
+        "sell_through_rate": (75.0, True, "%", [74.8, 75.6, 76.1, 74.2, 75.0, 76.4, 77.1, 72.3, 69.5, 70.8, 73.9, 75.2, 75.8, 76.0, 75.1, 73.6, 74.4, 71.9]),
+        "inventory_turns": (6.0, True, "turns", [6.1, 6.2, 6.3, 6.2, 6.1, 6.0, 5.9, 6.4, 6.8, 5.7, 5.8, 5.9, 6.0, 6.1, 6.2, 6.1, 6.0, 5.9]),
+        "cost_per_unit_gbp": (2.41, False, "GBP", [2.38, 2.37, 2.36, 2.38, 2.37, 2.39, 2.42, 2.55, 2.63, 2.44, 2.40, 2.38, 2.37, 2.38, 2.36, 2.39, 2.40, 2.42]),
+        "inventory_accuracy": (98.5, True, "%", [98.8, 98.9, 98.7, 98.9, 98.8, 98.7, 98.8, 98.4, 98.1, 98.6, 98.8, 98.9, 98.8, 98.9, 99.0, 98.8, 98.9, 98.7]),
+    }
+    mon0 = _date(g.as_of.year, g.as_of.month, 1)
+    month_starts = []
+    yy, mm = mon0.year, mon0.month
+    for _ in range(18):
+        mm -= 1
+        if mm == 0:
+            mm, yy = 12, yy - 1
+        month_starts.append(_date(yy, mm, 1))
+    month_starts.reverse()
+    wk_otif = {}
+    for r in otif_metrics:
+        a = wk_otif.setdefault(r["week"], [0, 0])
+        a[0] += r["on_time_units"]; a[1] += r["total_units"]
+
+    def _kpi_row(d, name, val, ptype):
+        target, hib, unit, _ = KPIS[name]
+        dp = 1 if unit == "%" else 2
+        return {"date": d, "kpi_name": name, "kpi_value": round(val, dp), "period_type": ptype, "target_value": target,
+                "variance_pct": round(100.0 * (val - target) / target, 1), "higher_is_better": hib, "unit": unit}
+
+    kpi_history = []
+    for name, (_t, _h_, _u, vals) in KPIS.items():
+        for d, v in zip(month_starts, vals):
+            kpi_history.append(_kpi_row(d, name, v, "monthly"))
+        for wk in ot_weeks:
+            mval = vals[month_starts.index(_date(wk.year, wk.month, 1))] if _date(wk.year, wk.month, 1) in month_starts else vals[-1]
+            if name == "OTIF":
+                v = 100.0 * wk_otif[wk][0] / wk_otif[wk][1]
+            else:
+                v = mval * (1 + (_h(name + wk.isoformat()) - 0.5) * (0.01 if _u == "%" else 0.04))
+            kpi_history.append(_kpi_row(wk, name, v, "weekly"))
 
     # Generate product_markdown_rate: monthly history for fashion and small-appliance SKUs
     markdown_rate = []
@@ -244,57 +292,25 @@ def generate(g):
                     "avg_markdown_depth_pct": round(100 * rate * 0.9 + 8, 1), "lead_time_days": lead,
                     "cumulative_markdown_gbp": round(mdu * float(p["retail_price_gbp"]) * rate, 2)})
 
-    # Generate product_launch_history
+    # Generate product_launch_history: every product launched at least 5 weeks ago, with its master launch date
+    FASHION_FWD = {"Outerwear", "Knitwear", "Dresses", "Footwear", "Blouses", "Scarves", "Fragrance"}
     launches = []
-    for i in range(50):
-        sku = g.pick(skus)
-        product = next((p for p in products if p["sku"] == sku), None)
-        launch_date = g.date_between(start_days_ago=365, end_days_ago=30)
-        initial_alloc = g.rng.randint(100, 2000)
-        week1 = int(initial_alloc * g.rng.uniform(0.3, 0.8))
-        month1 = int(initial_alloc * g.rng.uniform(1.2, 2.5))
-
+    cutoff = (g.as_of - _td(days=35)).isoformat()
+    for n, p in enumerate(sorted([x for x in products if x["launch_date"] <= cutoff], key=lambda x: (x["launch_date"], x["sku"])), 1):
+        lr = random.Random("lnc-" + p["sku"])
+        fwd = p["category"] in FASHION_FWD
+        alloc = int(300 + 1700 * lr.random())
+        month1 = int(alloc * (lr.uniform(0.35, 0.98) if fwd else lr.uniform(0.55, 0.98)))
+        week1 = int(month1 * lr.uniform(0.2, 0.38))
+        peak = max(week1, int(month1 * lr.uniform(0.3, 0.42)))
+        fva = 100 + (8 if fwd else 1) + lr.gauss(0, 22 if fwd else 8)
+        days = (g.as_of - _date.fromisoformat(p["launch_date"])).days
         launches.append({
-            "launch_id": f"LNC-{900001 + i:06d}",
-            "sku": sku,
-            "style_id": product["style_id"] if product else "STY-0000",
-            "category": product["category"] if product else "General",
-            "launch_date": launch_date,
-            "initial_allocation_units": initial_alloc,
-            "units_sold_week1": week1,
-            "units_sold_month1": month1,
-            "forecast_vs_actual_pct": round(g.rng.uniform(85, 115), 1),
-            "sell_through_rate_pct": round((month1 / initial_alloc) * 100, 1),
-            "peak_week_demand_units": int(month1 * g.rng.uniform(0.2, 0.4)),
-            "status": g.pick(["launched", "evergreen", "discontinued"])
-        })
-
-    # Generate inventory_balance_reconciliation
-    inventory_recon = []
-    for site in g.pick([s for s in sites if s["type"] == "dc"], k=5):
-        for sku in g.pick(skus, k=30):
-            for week in g.weeks(-4):
-                wms = g.rng.randint(0, 2000)
-                erp = wms + g.rng.randint(-100, 100)  # Usually close
-                finance = erp + g.rng.randint(-50, 50)
-                phys = wms + g.rng.randint(-20, 20)
-
-                variance_category = "timing" if abs(wms - erp) < 50 else "definitional" if abs(erp - finance) < 100 else "error"
-
-                inventory_recon.append({
-                    "date": week,
-                    "site_id": site["site_id"],
-                    "sku": sku,
-                    "wms_units": wms,
-                    "erp_units": erp,
-                    "finance_units": finance,
-                    "physical_count_units": phys,
-                    "wms_erp_variance": wms - erp,
-                    "erp_finance_variance": erp - finance,
-                    "category": variance_category,
-                    "variance_explanation": f"{variance_category.capitalize()} difference" if variance_category != "timing" else "Cut-off timing",
-                    "adjustment_required": abs(wms - erp) > 50 or abs(erp - finance) > 100
-                })
+            "launch_id": f"LNC-{n:06d}", "sku": p["sku"], "style_id": p["style_id"], "category": p["category"],
+            "launch_date": p["launch_date"], "initial_allocation_units": alloc, "units_sold_week1": week1,
+            "units_sold_month1": month1, "forecast_vs_actual_pct": round(min(160, max(55, fva)), 1),
+            "sell_through_rate_pct": round(100.0 * month1 / alloc, 1), "peak_week_demand_units": peak,
+            "status": "discontinued" if p["status"] == "discontinued" else "launched" if days <= 120 else "evergreen"})
 
     # Generate product_performance_metrics: one current row per sku with sales (derived from the sales fact)
     perf_metrics = []
@@ -319,74 +335,110 @@ def generate(g):
             "strategic_role": role, "recommend_action": "",
             "return_rate_pct": round(0.5 + 6 * _h("rr" + sku), 1)})
 
-    # Generate warehouse_data_catalogue
-    catalogue = []
-    tables = [
-        ("product_sales_fact", "fact", "Daily product sales by market and size", 500000, "One row per date/sku/site/size", "[date, sku, site_id, size]", "daily"),
-        ("product_kpi_history", "fact", "Historical KPI measurements", 5000, "One row per date/kpi_name", "[date, kpi_name]", "daily"),
-        ("otif_metrics", "fact", "OTIF metrics by dimensions", 50000, "One row per week/supplier/category/dc/mode", "[week, supplier_id, category, site_id, inbound_mode]", "weekly"),
-        ("product_markdown_rate", "fact", "Markdown rates by product and period", 10000, "One row per sku/period", "[sku, period_type, period]", "monthly"),
-        ("product_launch_history", "fact", "New product launches", 500, "One row per launch", "launch_id", "as_launched"),
-        ("inventory_balance_reconciliation", "fact", "Inventory reconciliation", 100000, "One row per date/site/sku", "[date, site_id, sku]", "daily"),
-        ("product_performance_metrics", "fact", "Product performance summary", 10000, "One row per sku/period", "[sku, period]", "monthly"),
-        ("warehouse_data_catalogue", "dimension", "Index of warehouse tables", 20, "One row per table", "table_name", "manual"),
-        ("warehouse_column_index", "dimension", "Index of warehouse columns", 100, "One row per column", "[table_name, column_name]", "manual"),
-        ("saved_warehouse_views", "dimension", "Saved warehouse views", 50, "One row per view", "view_id", "manual")
-    ]
+    # Staging copies of the WMS, TMS and ERP order data (for the cost-per-order model), for a sample of recent orders
+    orders = g.master("orders")
+    ent_by_country = {"GB": "LE-UK", "IE": "LE-IE", "DE": "LE-DE", "NL": "LE-NL", "US": "LE-US"}
+    ent_by_site = {"DC1": "LE-UK", "DC2": "LE-UK", "DC3": "LE-UK", "DC4": "LE-NL", "DC5": "LE-US"}
+    cutoff_o = (g.as_of - _td(days=75)).isoformat()
+    wms_costs, tms_costs, erp_orders = [], [], []
+    ship_n = 800000
+    for o in orders:
+        if o["order_date"] < cutoff_o or o["status"] in ("cancelled", "placed") or _h("ord" + o["order_id"]) > 0.12:
+            continue
+        oid, units = o["order_id"], int(o["units"])
+        lines = max(1, min(units, 1 + int(_h("ln" + oid) * min(units, 5))))
+        pick_min = round(lines * 1.2 + units * 0.3, 1)
+        pick, pack = round(pick_min * 0.25, 2), round(units * 0.15, 2)
+        handling = round(lines * 0.5 + lines * 0.75, 2)
+        wms_costs.append({"order_id": oid, "fulfil_site_id": o["fulfil_site_id"], "order_date": o["order_date"],
+                          "order_lines": lines, "units": units, "pick_time_minutes": pick_min, "pick_labour_gbp": pick,
+                          "pack_labour_gbp": pack, "handling_cost_gbp": handling, "total_cost_gbp": round(pick + pack + handling, 2)})
+        n_ship = 1
+        if units >= 2 and _h("sp" + oid) < 0.09:
+            n_ship = 2 if units < 4 or _h("sq" + oid) < 0.8 else 3
+        carriers_ = ["CAR-011", "CAR-013"] if o["country"] == "GB" else ["CAR-012", "CAR-014"]
+        base_u, extra = divmod(units, n_ship)
+        for i in range(n_ship):
+            su = base_u + (1 if i < extra else 0)
+            ship_n += 1
+            cost = round((3.4 if o["country"] == "GB" else 7.9) * (1 + 0.8 * _h("fc" + oid + str(i))) + 0.35 * su, 2)
+            tms_costs.append({"shipment_id": f"SHP-{ship_n:06d}", "order_id": oid, "carrier_id": carriers_[i % 2],
+                              "mode": "parcel", "ship_date": _date.fromisoformat(o["order_date"]) + _td(days=i + (0 if _h("sd" + oid) < 0.6 else 1)),
+                              "units": su, "freight_cost_gbp": cost, "is_split": n_ship > 1})
+        value = float(o["value_gbp"])
+        fr = {"standard": 0.0 if value >= 50 else 3.99, "next_day": 5.99, "same_day": 8.99, "collect": 0.0}[o["delivery_service"]]
+        erp_orders.append({"order_id": oid, "entity_id": ent_by_country.get(o["country"], ent_by_site.get(o["fulfil_site_id"], "LE-UK")),
+                           "posting_date": o["order_date"], "revenue_gbp": round(value, 2), "freight_charge_gbp": fr,
+                           "handling_charge_gbp": 0.95 if value < 25 else 0.0,
+                           "discount_gbp": round(value * 0.05, 2) if _h("dc" + oid) < 0.15 else 0.0})
 
-    for tbl_name, tbl_type, desc, row_count, grain, key, freq in tables:
-        catalogue.append({
-            "table_name": tbl_name,
-            "table_type": tbl_type,
-            "description": desc,
-            "row_count": row_count,
-            "grain": grain,
-            "primary_key": key,
-            "last_updated": g.as_of,
-            "refresh_frequency": freq
-        })
+    # Generate warehouse_data_catalogue and warehouse_column_index from the table definitions
+    here = Path(__file__).resolve().parent
+    own = yaml.safe_load(open(here / "system.yaml"))["tables"]
+    mst = yaml.safe_load(open(here.parent / "_master" / "system.yaml"))["tables"]
+    import csv as _csv
 
-    # Generate warehouse_column_index
-    col_index = []
-    table_cols = {
-        "product_sales_fact": [
-            ("date", "date", "Sales transaction date", "sales"),
-            ("sku", "str", "Product SKU", "products"),
-            ("style_id", "str", "Style identifier", "products"),
-            ("category", "str", "Product category", "products"),
-            ("market", "str", "Geographic market", "sales"),
-            ("site_id", "str", "Store or channel", "sites"),
-            ("units_sold", "int", "Units sold", "sales"),
-            ("sales_gbp", "float", "Sales revenue", "sales"),
-            ("cost_gbp", "float", "Product cost", "finance")
-        ],
-        "product_kpi_history": [
-            ("date", "date", "KPI measurement date", "analytics"),
-            ("kpi_name", "str", "KPI identifier", "analytics"),
-            ("kpi_value", "float", "KPI value", "analytics"),
-            ("target_value", "float", "Target benchmark", "analytics")
-        ],
-        "otif_metrics": [
-            ("week", "date", "Week start date", "supply_chain"),
-            ("supplier_id", "str", "Supplier identifier", "suppliers"),
-            ("category", "str", "Product category", "products"),
-            ("site_id", "str", "Receiving DC", "sites"),
-            ("otif_pct", "float", "On-time-in-full %", "supply_chain")
-        ]
+    def _seed_n(name):
+        f = here / "seed" / f"{name}.csv"
+        return sum(1 for _ in _csv.DictReader(open(f))) if f.exists() else 0
+
+    counts = {"product_sales_fact": len(sales_fact), "product_kpi_history": len(kpi_history), "otif_metrics": len(otif_metrics),
+              "product_markdown_rate": len(markdown_rate), "product_launch_history": len(launches),
+              "inventory_balance_reconciliation": _seed_n("inventory_balance_reconciliation"),
+              "product_performance_metrics": len(perf_metrics), "wms_order_costs": len(wms_costs) + _seed_n("wms_order_costs"),
+              "tms_shipment_costs": len(tms_costs) + _seed_n("tms_shipment_costs"),
+              "erp_order_headers": len(erp_orders) + _seed_n("erp_order_headers"),
+              "warehouse_data_catalogue": 0, "warehouse_column_index": 0, "saved_warehouse_views": _seed_n("saved_warehouse_views")}
+    META = {  # table: (type, description, grain, refresh)
+        "product_sales_fact": ("fact", "Daily product sales, cost and markdown by market, store, size and customer segment", "One row per date/sku/site/size", "daily"),
+        "product_kpi_history": ("fact", "Monthly and weekly supply-chain and trading KPIs with targets", "One row per period/kpi/period type", "monthly"),
+        "otif_metrics": ("fact", "Weekly on-time-in-full by supplier, category, DC, inbound mode and arrival weekday", "One row per week/supplier/category/dc/mode", "weekly"),
+        "product_markdown_rate": ("fact", "Markdown rate and lead time by product and month", "One row per sku/period type/period", "monthly"),
+        "product_launch_history": ("fact", "New product launches with early-life demand, sell-through and forecast accuracy", "One row per launch", "as_launched"),
+        "inventory_balance_reconciliation": ("fact", "Inventory units in WMS, ERP and finance with physical count and variance type", "One row per date/site/sku", "daily"),
+        "product_performance_metrics": ("fact", "Trailing 90-day product performance summary", "One row per sku/period", "monthly"),
+        "wms_order_costs": ("fact", "Order pick, pack and handling cost replicated from the WMS (one row per order)", "One row per order", "daily"),
+        "tms_shipment_costs": ("fact", "Outbound shipment freight cost replicated from the TMS; a split order has several shipments", "One row per shipment", "daily"),
+        "erp_order_headers": ("fact", "Order header revenue, delivery charges and discount from the ERP", "One row per order", "daily"),
+        "warehouse_data_catalogue": ("dimension", "Index of warehouse tables", "One row per table", "manual"),
+        "warehouse_column_index": ("dimension", "Index of warehouse columns", "One row per table/column", "manual"),
+        "saved_warehouse_views": ("dimension", "Saved warehouse views", "One row per view", "manual"),
     }
+    MASTER_META = {"orders": "Customer orders (master): channel, fulfilling site, country, units, value, status",
+                   "shipments": "Inbound PO shipments (master): carrier, mode, ports, ETD/ETA",
+                   "products": "Product master: sku, style, category, supplier, cost, price, lead time",
+                   "sites": "Sites master: DCs, stores and offices", "carriers": "Carrier master: mode and scope",
+                   "suppliers": "Supplier master"}
+    catalogue, col_index = [], []
 
-    for table, cols in table_cols.items():
-        for col_name, col_type, desc, source in cols:
-            col_index.append({
-                "table_name": table,
-                "column_name": col_name,
-                "column_type": col_type,
-                "description": desc,
-                "source_system": source
-            })
+    def _cols(tname, cols, source):
+        for i, (cname, c) in enumerate(cols.items(), 1):
+            col_index.append({"table_name": tname, "column_name": cname, "ordinal": i, "column_type": c["type"],
+                              "description": c.get("desc", ""), "source_system": source})
 
-    # Generate saved_warehouse_views (initially empty - will be created via tool)
-    views = []
+    SRC = {"wms_order_costs": "wms", "tms_shipment_costs": "tms", "erp_order_headers": "erp"}
+    for tname, (ttype, desc, grain, freq) in META.items():
+        key = own[tname]["key"]
+        catalogue.append({"table_name": tname, "table_type": ttype, "description": desc, "row_count": counts[tname],
+                          "grain": grain, "primary_key": "[" + ", ".join(key) + "]" if isinstance(key, list) else key,
+                          "last_updated": g.as_of, "refresh_frequency": freq})
+        _cols(tname, own[tname]["cols"], SRC.get(tname, "warehouse"))
+    for tname, desc in MASTER_META.items():
+        key = mst[tname]["key"]
+        catalogue.append({"table_name": "master." + tname, "table_type": "master", "description": desc,
+                          "row_count": len(g.master(tname)), "grain": "One row per " + (key if isinstance(key, str) else "/".join(key)),
+                          "primary_key": "[" + ", ".join(key) + "]" if isinstance(key, list) else key,
+                          "last_updated": g.as_of, "refresh_frequency": "daily"})
+        _cols("master." + tname, mst[tname]["cols"], "master")
+
+    for c in catalogue:
+        if c["table_name"] == "warehouse_data_catalogue":
+            c["row_count"] = len(catalogue)
+        elif c["table_name"] == "warehouse_column_index":
+            c["row_count"] = len(col_index)
+
+    views = []   # saved views are created through create_warehouse_view (one is seeded)
+    inventory_recon = []   # seeded: see seed/inventory_balance_reconciliation.csv
 
     return {
         "product_sales_fact": sales_fact,
@@ -396,7 +448,10 @@ def generate(g):
         "product_launch_history": launches,
         "inventory_balance_reconciliation": inventory_recon,
         "product_performance_metrics": perf_metrics,
+        "wms_order_costs": wms_costs,
+        "tms_shipment_costs": tms_costs,
+        "erp_order_headers": erp_orders,
         "warehouse_data_catalogue": catalogue,
         "warehouse_column_index": col_index,
-        "saved_warehouse_views": views
+        "saved_warehouse_views": views,
     }
