@@ -31,11 +31,11 @@ def generate(g):
         "CUS-000026": dict(limit=250000, score=58, over=[(64000, 40), (58000, 18), (46000, 5)], open=[(22000, -10), (29000, -24)],
                            ins=(150000, 90), drift=24),
         "CUS-000033": dict(limit=200000, score=55, over=[(54000, 66), (47000, 35), (38000, 9)], open=[(25000, -15)]),
-        "CUS-000018": dict(limit=150000, score=49, over=[(44000, 58), (52000, 29), (31000, 6)], open=[(18000, -12)]),
+        "CUS-000018": dict(limit=150000, score=49, over=[(44000, 52), (52000, 21), (31000, 6)], open=[(18000, -12)]),
         "CUS-000015": dict(limit=150000, score=51, over=[(40000, 64), (36000, 33), (29000, 12)], open=[]),
         "CUS-000032": dict(limit=150000, score=60, over=[(61000, 47), (33000, 20)], open=[(20000, -20)]),
-        "CUS-000036": dict(limit=120000, score=59, over=[(38000, 55), (30000, 28), (22000, 10)], open=[(16000, -14)]),
-        "CUS-000039": dict(limit=120000, score=57, over=[(35000, 52), (28000, 26), (24000, 8)], open=[(15000, -18)]),
+        "CUS-000036": dict(limit=120000, score=59, over=[(38000, 50), (30000, 20), (22000, 10)], open=[(16000, -14)]),
+        "CUS-000039": dict(limit=120000, score=57, over=[(35000, 52), (28000, 20), (24000, 8)], open=[(15000, -18)]),
         "CUS-000030": dict(limit=120000, score=53, over=[(30000, 61), (26000, 31), (25000, 3)], open=[(12000, -22)]),
         "CUS-000016": dict(limit=60000, score=41, over=[(61000, 75), (10000, 34)], open=[], orders=["", "ORD-004880"]),
     }
@@ -118,13 +118,13 @@ def generate(g):
         age = r.randint(735, 750)
         while age > stop:
             if cls == "reliable":
-                delay = r.randint(-6, 2)
+                delay = r.randint(-9, 0) if r.random() > 0.06 else r.randint(1, 5)
             elif cls == "mixed":
-                delay = r.randint(-3, 10)
+                delay = r.randint(-6, 9)
             elif cls == "slow":
-                delay = r.randint(3, 20)
+                delay = r.randint(2, 18)
             else:
-                delay = r.randint(-4, 4)
+                delay = r.randint(-8, 0) if r.random() > 0.08 else r.randint(1, 4)
             delay += int(drift * max(0.0, 1 - age / 360.0))
             amt = size * r.uniform(0.6, 1.5)
             pay_ago = age - terms - delay
@@ -143,13 +143,13 @@ def generate(g):
             for amt, due in pl["open"]:
                 add(cid, due + TERMS, TERMS, planted_lines(amt), None, planted=True)
         if cid == DECOY:
-            for amt, due, paid_ago in [(120000, 80, 21), (90000, 60, 14)]:
+            for amt, due, paid_ago in [(120000, 80, 21), (90000, 66, 14)]:
                 add(cid, due + TERMS, TERMS, planted_lines(amt), paid_ago, planted=True)
             add(cid, 6 + TERMS, TERMS, planted_lines(12000), None, planted=True)
             for amt, due in [(30000, -12), (26000, -25)]:
                 add(cid, due + TERMS, TERMS, planted_lines(amt), None, planted=True)
         if cid == DISPUTE:
-            add(cid, 26, 30, [("SKU-100448", "Denim Blouse 10", 0, 4000, 60.0), ("SKU-100455", "Denim Blouse 12", 0, 4000, 60.0)],
+            add(cid, 24, 30, [("SKU-100448", "Denim Blouse 10", 0, 4000, 60.0), ("SKU-100455", "Denim Blouse 12", 0, 4000, 60.0)],
                 None, inv_id="INV-2026-900040", order_id="ORD-900040", dispute="disputed",
                 reason="Customer withholding payment: second delivery of 3,000 units signed for 2,640 only (360 damaged or missing)")
             add(cid, 55, 30, noise_lines(36000), 20)

@@ -108,6 +108,8 @@ tables:
     key: [supplier_id, factory_name, capacity_month]
     cols:
       supplier_id: {desc: "Supplier"}
+      factory_id: {type: str, desc: "Factory, e.g. FAC-0085 (blank for generic rows)"}
+      country: {type: str, desc: "Country of the factory (ISO code)"}
       factory_name: {type: str, desc: "Factory name or location"}
       capacity_month: {type: date, desc: "Start of month for this capacity"}
       total_capacity_units: {type: int, desc: "Total monthly capacity"}
@@ -202,7 +204,7 @@ tools:
     example: {category: Bedding}
 
   - name: get_supplier_scorecard_history
-    desc: Supplier's monthly scorecard history, latest first. Shows quality, on-time delivery, cost, responsiveness, compliance and overall score.
+    desc: Supplier's monthly scorecard history, latest first. Shows quality, on-time delivery, cost, lead time versus agreed, responsiveness, reaction time, flexibility, compliance and overall score.
     kind: sql
     args:
       supplier_id: {required: true}
@@ -210,7 +212,7 @@ tools:
     sql: |
       SELECT supplier_id, scorecard_month, quality_score, on_time_delivery_pct,
              cost_performance_score, lead_time_days, agreed_lead_time_days,
-             responsiveness_score, compliance_score, overall_score, status_category
+             responsiveness_score, reaction_time_hours, flexibility_score, compliance_score, overall_score, status_category
       FROM supplier_scorecards
       WHERE supplier_id = $supplier_id
       QUALIFY row_number() OVER (ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
@@ -381,14 +383,29 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_concentration_by_category
-    desc: Percentage of category spend from top suppliers. Shows concentration risk.
-    kind: select
-    from: master.suppliers
-    filters:
-      category_focus: {}
-    columns: [supplier_id, name, country, annual_spend_gbp]
-    order: annual_spend_gbp
-    limit: 20
+    desc: Percentage of category spend from top suppliers, ranked, with cumulative share and factory count. Shows concentration risk and single points of failure. Leave category blank for all categories.
+    kind: sql
+    args:
+      category_focus: {required: false, desc: "Category, e.g. Menswear, Womenswear, Home, Electricals"}
+      min_share_pct: {type: float, default: 0, desc: "Only suppliers with at least this % of their category spend"}
+    sql: |
+      WITH c AS (
+        SELECT s.supplier_id, s.name, s.country, s.category_focus, s.annual_spend_gbp, s.risk_rating,
+               (SELECT COUNT(*) FROM master.factories f WHERE f.supplier_id = s.supplier_id) AS factory_count,
+               SUM(s.annual_spend_gbp) OVER (PARTITION BY s.category_focus) AS category_spend_gbp,
+               ROW_NUMBER() OVER (PARTITION BY s.category_focus ORDER BY s.annual_spend_gbp DESC) AS rank_in_category
+        FROM master.suppliers s
+        WHERE s.status != 'exited'
+          AND ($category_focus IS NULL OR s.category_focus = $category_focus)
+      )
+      SELECT category_focus, rank_in_category, supplier_id, name, country, risk_rating, factory_count,
+             annual_spend_gbp, category_spend_gbp,
+             ROUND(annual_spend_gbp * 100.0 / category_spend_gbp, 1) AS share_of_category_pct,
+             ROUND(SUM(annual_spend_gbp) OVER (PARTITION BY category_focus ORDER BY rank_in_category) * 100.0 / category_spend_gbp, 1) AS cumulative_share_pct
+      FROM c
+      WHERE annual_spend_gbp * 100.0 / category_spend_gbp >= CAST($min_share_pct AS DOUBLE)
+      ORDER BY category_focus, rank_in_category
+    limit: 25
     example: {category_focus: Womenswear}
 
   - name: calculate_supplier_segmentation_score
@@ -439,32 +456,50 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: get_dual_sourcing_cost_estimate
-    desc: Cost and lead time to qualify a second source for a product category.
+    desc: Cost and lead time to qualify a second source for a product category. Lists the best candidate suppliers in the same category (by on-time-in-full) with an itemised cost and time to first PO.
     kind: sql
     args:
-      category: {required: true, desc: "Product category"}
+      category: {required: true, desc: "Product category, e.g. Menswear"}
       existing_supplier_id: {required: true, desc: "Current supplier"}
     sql: |
-      SELECT $category as category,
-             $existing_supplier_id as existing_supplier,
-             (SELECT supplier_id FROM master.suppliers WHERE status = 'active' AND supplier_id != $existing_supplier_id LIMIT 1) as alternative_supplier_id,
-             50000 as qualification_cost_gbp,
-             30 as qualification_time_days,
-             (SELECT ROUND(AVG(actual_lead_time_days), 0) FROM supplier_lead_times
-              WHERE supplier_id = (SELECT supplier_id FROM master.suppliers WHERE status = 'active' AND supplier_id != $existing_supplier_id LIMIT 1)) as alternative_lead_time_days,
-             'Cost includes samples, trials, audits' as cost_breakdown,
-             'Time to full qualification and first PO' as time_note
-    limit: 1
-    example: {category: Bedding, existing_supplier_id: SUP-0001}
+      WITH ex AS (
+        SELECT supplier_id, annual_spend_gbp FROM master.suppliers WHERE supplier_id = $existing_supplier_id
+      ),
+      lt AS (
+        SELECT supplier_id, ROUND(AVG(actual_lead_time_days), 0) AS avg_lead_time_days
+        FROM supplier_lead_times WHERE process_stage = 'total' GROUP BY supplier_id
+      ),
+      cand AS (
+        SELECT s.supplier_id, s.name, s.country, s.otif_pct_12m, s.risk_rating,
+               GREATEST(1, (SELECT COUNT(*) FROM master.factories f WHERE f.supplier_id = s.supplier_id AND f.status != 'delisted')) AS factories,
+               COALESCE(lt.avg_lead_time_days, 45) AS lead_days
+        FROM master.suppliers s
+        LEFT JOIN lt ON lt.supplier_id = s.supplier_id
+        WHERE s.status = 'active' AND s.category_focus = $category AND s.supplier_id != $existing_supplier_id
+      )
+      SELECT $category AS category, ex.supplier_id AS existing_supplier, c.supplier_id AS alternative_supplier_id,
+             c.name AS alternative_name, c.country AS alternative_country, c.otif_pct_12m AS alternative_otif_pct, c.risk_rating,
+             7500 AS samples_cost_gbp,
+             4500 * c.factories AS audit_cost_gbp,
+             ROUND(ex.annual_spend_gbp * 0.01, 0) AS trial_order_cost_gbp,
+             7500 + 4500 * c.factories + ROUND(ex.annual_spend_gbp * 0.01, 0) AS qualification_cost_gbp,
+             28 + 7 * c.factories + c.lead_days AS qualification_time_days,
+             c.lead_days AS alternative_lead_time_days,
+             'Samples 4 weeks, audit 1 week per factory, then trial order at the alternative lead time' AS time_note
+      FROM cand c CROSS JOIN ex
+      ORDER BY c.otif_pct_12m DESC
+    limit: 3
+    example: {category: Menswear, existing_supplier_id: SUP-0044}
 
   - name: get_alternative_factory_capacity
-    desc: Spare capacity at alternative factories if current supplier hits constraints.
+    desc: Spare capacity at alternative factories (outside the supplier's own sites) from the current month onwards, if the current supplier or its port hits constraints. Filter by supplier, minimum spare units a month and factory country.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {required: true, desc: "Supplier whose production would move, e.g. SUP-0016"}
       required_units: {type: int, default: 10000, desc: "Units needed per month"}
+      country: {required: false, desc: "Only factories in this country (ISO code)"}
     sql: |
-      SELECT supplier_id, factory_name, capacity_month,
+      SELECT supplier_id, factory_id, factory_name, country, capacity_month,
              total_capacity_units, committed_capacity_units,
              available_capacity_units, capacity_utilization_pct,
              lead_time_days, cost_per_unit_gbp,
@@ -472,8 +507,10 @@ tools:
       FROM supplier_factory_capacity
       WHERE supplier_id = $supplier_id
         AND is_alternative_source = true
-        AND available_capacity_units >= $required_units
-      ORDER BY capacity_month DESC
+        AND available_capacity_units >= CAST($required_units AS INT)
+        AND ($country IS NULL OR country = $country)
+        AND capacity_month >= CAST($as_of AS DATE) - INTERVAL 31 DAY
+      ORDER BY capacity_month, available_capacity_units DESC
     limit: 20
     example: {supplier_id: SUP-0003, required_units: 10000}
 

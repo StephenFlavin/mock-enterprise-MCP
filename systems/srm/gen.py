@@ -312,6 +312,8 @@ def generate(g):
 
                 factory_capacity.append({
                     "supplier_id": supplier["supplier_id"],
+                    "factory_id": "",
+                    "country": supplier["country"],
                     "factory_name": f"{supplier['name']} Factory {factory_idx + 1}",
                     "capacity_month": month_date,
                     "total_capacity_units": total_capacity,
@@ -323,6 +325,40 @@ def generate(g):
                     "cost_per_unit_gbp": round(r.uniform(1.5, 8.0), 2),
                     "updated_at": month_date,
                 })
+
+    # Alternative factories for Vietnam suppliers (southern Vietnam port closure scenario).
+    # Generic rows above named a supplier's own sites as "alternatives"; replace them with real master factories in
+    # other countries (same category). Uses its own rng so the draws above and below are unchanged.
+    vn_suppliers = {s["supplier_id"]: s for s in suppliers if s["country"] == "VN"}
+    factory_capacity[:] = [row for row in factory_capacity if row["supplier_id"] not in vn_suppliers]
+    all_factories = g.master("factories")
+    cat_of = {s["supplier_id"]: s["category_focus"] for s in suppliers}
+    cr = random.Random(5002)
+    PINNED = {"SUP-0016": ["FAC-0085", "FAC-0096", "FAC-0084"]}   # Menswear: Murphy Mill (PT), Brown Plant (CN), Slater Dyehouse (PT, small)
+    for sid in sorted(vn_suppliers):
+        cands = [f for f in all_factories if f["country"] != "VN" and f["status"] == "approved" and f["audit_rating"] in ("A", "B")
+                 and cat_of.get(f["supplier_id"]) == vn_suppliers[sid]["category_focus"]]
+        if sid in PINNED:
+            chosen = [f for f in all_factories if f["factory_id"] in PINNED[sid]]
+        else:
+            chosen = cr.sample(cands, min(2, len(cands)))
+        for f in chosen:
+            base_lt = {"PT": 30, "TR": 28, "IT": 30, "MX": 40, "IN": 45, "BD": 48, "CN": 50}.get(f["country"], 40)
+            unit = round(cr.uniform(4.5, 9.0), 2)
+            cap_total = int(f["capacity_units_month"])
+            for k in range(0, 4):
+                m = (g.as_of.replace(day=1) + timedelta(days=32 * k)).replace(day=1)
+                util = cr.randint(62, 88)
+                if sid == "SUP-0016" and f["factory_id"] == "FAC-0084":
+                    util = 78 + k                      # small factory: under 10,000 spare units
+                committed = int(cap_total * util / 100)
+                factory_capacity.append({
+                    "supplier_id": sid, "factory_id": f["factory_id"], "country": f["country"],
+                    "factory_name": f["name"], "capacity_month": m,
+                    "total_capacity_units": cap_total, "committed_capacity_units": committed,
+                    "available_capacity_units": cap_total - committed, "capacity_utilization_pct": float(util),
+                    "is_alternative_source": True, "lead_time_days": base_lt + cr.randint(-3, 5),
+                    "cost_per_unit_gbp": unit, "updated_at": g.as_of})
 
     # Generate 3PL integration capabilities
     providers = [
