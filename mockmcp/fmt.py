@@ -1,3 +1,4 @@
+import math
 """Compact, small-model-friendly output: summary line, then key: value (one row) or CSV (many rows)."""
 import csv
 import io
@@ -13,7 +14,9 @@ def cell(v, full=False) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, float):
-        s = f"{v:.2f}".rstrip("0").rstrip(".")  # never scientific notation: small models misread 5.25e+06
+        # never scientific notation (small models misread 5.25e+06); 2 dp, but 3 significant figures below 0.1
+        dp = 2 if abs(v) >= 0.1 or v == 0 else min(8, 2 - math.floor(math.log10(abs(v))))
+        s = f"{v:.{dp}f}".rstrip("0").rstrip(".")
         return "0" if s == "-0" else s
     if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d %H:%M") if (v.hour or v.minute) else v.date().isoformat()
