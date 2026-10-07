@@ -234,8 +234,9 @@ def prepare(db, system: System, master: System, tool: ToolSpec, args: dict[str, 
     notes, out = [], {}
     given = {k: v for k, v in (given or {}).items()}
     extra = [k for k in given if k not in args]
-    if extra:
-        notes.append(f"ignored unknown args: {', '.join(extra)}")
+    if extra:  # never silently drop a filter: the caller would get unfiltered rows and trust them
+        raise ArgError(f"Unknown argument{'s' if len(extra) > 1 else ''} {', '.join(extra)}. "
+                       f"{tool.name} takes: {', '.join(args) or 'no arguments'}.")
     for n, a in args.items():
         v = given.get(n)
         if v in (None, "") and a.default is not None:

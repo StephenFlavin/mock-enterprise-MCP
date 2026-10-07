@@ -39,11 +39,22 @@ SYSTEM = ("You are an assistant at {company}. Today is {today}. You can only use
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"(?<=\d),(?=\d{3})", "", str(s)).replace("£", "").lower()
+    s = re.sub(r"(?<=\d),(?=\d{3})", "", str(s)).replace("£", "").lower()
+    return re.sub(r"[_*]+", " ", s)
+
+
+def _forms(fact) -> list[str]:
+    """A fact and its equivalent spellings: an ISO date also matches '10 November', 'Nov 10', '10/11/2026'."""
+    f = str(fact)
+    if m := re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)", f):
+        d = date(*map(int, m.groups()))
+        return [f, f"{d.day} {d:%B}", f"{d.day} {d:%b}", f"{d:%B} {d.day}", f"{d:%b} {d.day}", f"{d.day}/{d.month}/{d.year}",
+                f"{d.day:02d}/{d.month:02d}/{d.year}"]
+    return [f]
 
 
 def _has(fact, text: str) -> bool:
-    opts = fact if isinstance(fact, list) else [fact]
+    opts = [x for o in (fact if isinstance(fact, list) else [fact]) for x in _forms(o)]
     return any(_norm(o) in _norm(text) for o in opts)
 
 
