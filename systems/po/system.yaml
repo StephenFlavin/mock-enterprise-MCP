@@ -1845,7 +1845,7 @@ tools:
     example: {}
 
   - name: list_purchase_orders_blocked_by_onboarding
-    desc: POs held up by supplier onboarding (supplier still onboarding or blocked, or an onboarding hold), with days waiting.
+    desc: POs held up by supplier onboarding (supplier still onboarding or blocked, or an onboarding hold), with hold reason, hold start and days on hold, longest-held first.
     kind: sql
     args: {}
     sql: |
@@ -1873,15 +1873,20 @@ tools:
                     THEN greatest(datediff('day', due_date, confirmed_delivery_date), COALESCE(days_overdue, 0), 0) END AS delay_days
         FROM d0
       )
-      SELECT dl.po_id, dl.supplier_id, s.name AS supplier_name, s.status AS supplier_status, dl.status AS po_status, dl.order_date, dl.due_date,
-             dl.total_units, datediff('day', dl.order_date, CAST($as_of AS DATE)) AS days_since_order,
-             (SELECT string_agg(DISTINCT b.block_reason, '; ') FROM po_blocks b WHERE b.status = 'active'
-                AND (b.po_id = dl.po_id OR (b.po_id IS NULL AND b.supplier_id = dl.supplier_id))) AS hold_reason
-      FROM dl JOIN master.suppliers s ON s.supplier_id = dl.supplier_id
-      WHERE dl.status IN ('draft','open','confirmed')
-        AND (s.status IN ('onboarding','blocked') OR EXISTS (SELECT 1 FROM po_blocks b WHERE b.status = 'active' AND b.block_reason ILIKE '%onboard%'
-              AND (b.po_id = dl.po_id OR (b.po_id IS NULL AND b.supplier_id = dl.supplier_id))))
-      ORDER BY dl.order_date
+      SELECT x.*, datediff('day', CAST(x.hold_since AS DATE), CAST($as_of AS DATE)) AS days_on_hold
+      FROM (
+        SELECT dl.po_id, dl.supplier_id, s.name AS supplier_name, s.status AS supplier_status, dl.status AS po_status, dl.order_date, dl.due_date,
+               dl.total_units, greatest(datediff('day', dl.order_date, CAST($as_of AS DATE)), 0) AS days_since_order,
+               (SELECT string_agg(DISTINCT b.block_reason, '; ') FROM po_blocks b WHERE b.status = 'active'
+                  AND (b.po_id = dl.po_id OR (b.po_id IS NULL AND b.supplier_id = dl.supplier_id))) AS hold_reason,
+               (SELECT min(b.blocked_at) FROM po_blocks b WHERE b.status = 'active'
+                  AND (b.po_id = dl.po_id OR (b.po_id IS NULL AND b.supplier_id = dl.supplier_id))) AS hold_since
+        FROM dl JOIN master.suppliers s ON s.supplier_id = dl.supplier_id
+        WHERE dl.status IN ('draft','open','confirmed')
+          AND (s.status IN ('onboarding','blocked') OR EXISTS (SELECT 1 FROM po_blocks b WHERE b.status = 'active' AND b.block_reason ILIKE '%onboard%'
+                AND (b.po_id = dl.po_id OR (b.po_id IS NULL AND b.supplier_id = dl.supplier_id))))
+      ) x
+      ORDER BY x.hold_since NULLS LAST, x.order_date
     limit: 50
     example: {}
 

@@ -140,7 +140,22 @@ def generate(g):
     for po in placed:
         for ln in lines.get(po["po_id"], []):
             rows_by_sku.setdefault(ln["sku"], []).append((po, ln))
-    reversal_skus = sorted(s for s, v in rows_by_sku.items() if len(v) >= 8)[3:9]
+    # Savings initiatives reported by spend (INIT-900002/5/6): what the PO price history shows for their suppliers.
+    #   Shirts SUP-0030 and Small Appliances SUP-0013: renegotiated price held for a few months, then the old price came back.
+    #   Footwear SUP-0028: only half of the agreed cut reached the PO prices.  Jewellery SUP-0049: no change at all (never real).
+    def story_var(sup, cat, age):
+        if (sup, cat) == ("SUP-0030", "Shirts"):
+            return -0.08 if 150 <= age <= 300 else (0.0 if age < 150 else None)
+        if (sup, cat) == ("SUP-0013", "Small Appliances"):
+            return -0.06 if 148 <= age <= 268 else (0.03 if age < 148 else None)
+        if (sup, cat) == ("SUP-0028", "Footwear"):
+            return -0.04 if age <= 200 else None
+        if (sup, cat) == ("SUP-0049", "Jewellery"):
+            return 0.0
+        return None
+    story_skus = {sku for sku, v in rows_by_sku.items() for po, _ in v
+                  if story_var(po["supplier_id"], products[sku]["category"], 0) is not None}
+    reversal_skus = [s for s in sorted(s for s, v in rows_by_sku.items() if len(v) >= 8)[3:9] if s not in story_skus]
     price_history = []
     for sku, items_ in rows_by_sku.items():
         items_.sort(key=lambda x: (x[0]["order_date"], x[0]["po_id"]))
@@ -148,11 +163,14 @@ def generate(g):
             quoted = float(ln["unit_cost"])
             age = (as_of - d(po["order_date"])).days
             var = r.gauss(0, 0.004)
-            if po["supplier_id"] in drift and age <= 270:
+            sv = story_var(po["supplier_id"], products[sku]["category"], age)
+            if sv is not None:
+                var += sv
+            elif po["supplier_id"] in drift and age <= 270:
                 var += 0.10 * (1 - age / 270)                       # ramps from 0 to about +10%
             elif po["supplier_id"] in appliance_sup and age <= 180:
                 var += 0.025
-            if sku in reversal_skus:
+            if sku in reversal_skus and sv is None:
                 var += -0.06 if 90 <= age <= 240 else 0.0           # a saving that was later given back
             actual = round(quoted * (1 + var), 4)
             done = po["status"] in DONE
@@ -177,6 +195,8 @@ def generate(g):
         asked = min(order_d + timedelta(days=1), as_of)
         got = r.random() < 0.85
         slip = r.choices([0, 2, 5, 9], [70, 15, 10, 5])[0]
+        if po["supplier_id"] == "SUP-0044":
+            slip = 0                                                # the best nearshore pilot supplier confirms and delivers on time
         confirmations.append({
             "confirmation_id": f"CNF-{len(confirmations) + 1:06d}", "po_id": po["po_id"], "supplier_id": po["supplier_id"],
             "confirmation_type": "order",
@@ -214,6 +234,13 @@ def generate(g):
             "start_date": start.isoformat(), "end_date": end.isoformat(), "volume_units": vol, "volume_uom": uom[commodity],
             "price_gbp_per_unit": round(base_price[commodity] * r.uniform(0.92, 1.08), 2), "used_to_date": used,
             "remaining_volume": vol - used, "status": status, "notes": None, "updated_at": ts(min(as_of, start + timedelta(days=60)), r)})
+
+    # Next year's cotton is not yet covered: only the two nearest-ending cotton contracts stay open (both end before next year's
+    # season); the other cotton contracts are already fully drawn.
+    open_cotton = sorted((c for c in commitments if c["commodity"] == "Cotton" and c["status"] in ("active", "partially_used")),
+                         key=lambda c: c["end_date"])
+    for c in open_cotton[2:]:
+        c.update(used_to_date=c["volume_units"], remaining_volume=0, status="fulfilled")
 
     # ---------------------------------------------------------------- ASNs: one per PO delivered in the last 12 weeks, plus shipped POs
     asns, asn_lines = [], []
