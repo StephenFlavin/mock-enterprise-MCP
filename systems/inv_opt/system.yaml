@@ -89,6 +89,7 @@ tools:
       abc_class: {}
       min_cv: {type: float, default: 0.4, desc: "Minimum coefficient of variation of weekly demand"}
       top_n_by_value: {type: int, desc: "Only consider the N highest-value SKUs (annual units x unit cost)"}
+      only_exclusion_candidates: {type: bool, default: false, desc: "List only SKUs to exclude from statistical safety stock (run-down, short history, intermittent), whatever their CV"}
       limit_count: {type: int, default: 50, desc: "Maximum results"}
     sql: |
       WITH b AS (
@@ -116,14 +117,15 @@ tools:
              round(a.demand_52w_stdev, 1) AS weekly_stdev, a.seasonality_factor, a.trend_direction, a.variability_driver,
              a.weeks_of_history, a.zero_weeks_pct, a.markdown_weeks_pct,
              round(100.0 * s.act_sd / s.act_lt, 1) AS lead_time_cv_pct,
-             CASE WHEN s.product_status IN ('discontinued', 'clearance') OR a.weeks_of_history < 26 OR a.zero_weeks_pct >= 30
+             CASE WHEN s.product_status IN ('discontinued', 'clearance') OR a.weeks_of_history < 16 OR a.zero_weeks_pct >= 30
                   THEN true ELSE false END AS exclude_from_statistical_ss,
              CASE WHEN s.product_status IN ('discontinued', 'clearance') THEN 'Run-down range (' || s.product_status || ')'
-                  WHEN a.weeks_of_history < 26 THEN 'Too little history (' || a.weeks_of_history || ' weeks)'
+                  WHEN a.weeks_of_history < 16 THEN 'Too little history (' || a.weeks_of_history || ' weeks)'
                   WHEN a.zero_weeks_pct >= 30 THEN 'Intermittent demand'
                   ELSE '' END AS exclude_reason
       FROM s JOIN sku_demand_analysis a ON a.sku = s.sku
-      WHERE a.demand_cv > $min_cv
+      WHERE CASE WHEN $only_exclusion_candidates THEN (s.product_status IN ('discontinued', 'clearance') OR a.weeks_of_history < 16 OR a.zero_weeks_pct >= 30)
+                   ELSE a.demand_cv > $min_cv END
         AND ($category IS NULL OR s.category = $category)
         AND ($abc_class IS NULL OR s.abc_class = $abc_class)
         AND ($top_n_by_value IS NULL OR s.value_rank <= $top_n_by_value)
@@ -276,15 +278,15 @@ tools:
     example: {sku: SKU-100007, target_service_level_pct: 97}
 
   - name: calculate_working_capital_impact
-    desc: Working capital change by category from resetting safety stock to a target service level, a lead-time increase, or a flat percentage change.
+    desc: Working capital change by category from resetting safety stock to recommended levels, to a target service level, or by a flat percentage.
     kind: sql
     args:
       category: {}
       abc_class: {}
-      target_service_level_pct: {type: int, desc: "Reset safety stock to the recommended level at this service level, e.g. 97"}
-      lead_time_increase_days: {type: int, default: 0, desc: "Extra supplier lead time to model, in days"}
-      safety_stock_change_pct: {type: int, default: 0, desc: "Flat percentage change in safety stock, e.g. -10 or 5, used when no target service level or lead-time increase is given"}
-      top_n_by_value: {type: int, desc: "Only the N highest-value SKUs (annual units x unit cost)"}
+      target_service_level_pct: {type: int, desc: "Reset to recommended safety stock at this service level, e.g. 97; omit to use each SKU's current target"}
+      safety_stock_change_pct: {type: int, desc: "Flat percentage change in current safety stock, e.g. -10 or 5, instead of resetting to recommended"}
+      top_n: {type: int, desc: "Only the N highest-ranked SKUs, ranked by rank_by"}
+      rank_by: {type: enum, values: [value, volume], default: value, desc: "Rank for top_n - value (annual units x unit cost) or volume (annual units)"}
     sql: |
       WITH b AS (
         SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
@@ -304,23 +306,22 @@ tools:
       ), s AS (
         SELECT r.*, zz.z_score AS z,
                zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
-               zz.z_score * sqrt((act_lt + $lead_time_increase_days) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
         FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($target_service_level_pct, r.cur_sl)
       ), n AS (
-        SELECT s.*, CASE WHEN $target_service_level_pct IS NOT NULL THEN rec_ext
-                         WHEN $lead_time_increase_days > 0 THEN cur_ss + (rec_ext - rec_now)
-                         ELSE cur_ss * (1 + $safety_stock_change_pct / 100.0) END AS new_ss
+        SELECT s.*, CASE WHEN $safety_stock_change_pct IS NOT NULL THEN cur_ss * (1 + $safety_stock_change_pct / 100.0)
+                         ELSE rec_now END AS new_ss
         FROM s
         WHERE ($category IS NULL OR category = $category) AND ($abc_class IS NULL OR abc_class = $abc_class)
-          AND ($top_n_by_value IS NULL OR value_rank <= $top_n_by_value)
+          AND ($top_n IS NULL OR (CASE WHEN $rank_by = 'volume' THEN volume_rank ELSE value_rank END) <= $top_n)
       )
       SELECT category, count(*) AS sku_count, round(sum(cur_ss), 0) AS current_ss_units, round(sum(new_ss), 0) AS new_ss_units,
              round(sum(cur_ss * cost), 2) AS current_value_gbp, round(sum(new_ss * cost), 2) AS new_value_gbp,
              round(sum((new_ss - cur_ss) * cost), 2) AS wc_change_gbp,
              round(sum((new_ss - cur_ss) * cost) * 0.25, 2) AS annual_carrying_cost_change_gbp,
-             CASE WHEN $target_service_level_pct IS NOT NULL THEN 'recommended safety stock at ' || $target_service_level_pct || '% service level'
-                  WHEN $lead_time_increase_days > 0 THEN 'current safety stock plus extra needed for +' || $lead_time_increase_days || ' days lead time'
-                  ELSE 'flat ' || $safety_stock_change_pct || '% change' END AS basis,
+             CASE WHEN $safety_stock_change_pct IS NOT NULL THEN 'flat ' || $safety_stock_change_pct || '% change'
+                  WHEN $target_service_level_pct IS NOT NULL THEN 'recommended safety stock at ' || $target_service_level_pct || '% service level'
+                  ELSE 'recommended safety stock at each SKU current service level target' END AS basis,
              'wc_change = sum((new_ss - current_ss) * unit_cost); carrying cost 25% a year' AS formula
       FROM n GROUP BY category ORDER BY wc_change_gbp DESC
     limit: 40
@@ -561,7 +562,7 @@ tools:
       sku: {}
       category: {}
       abc_class: {}
-      max_weekly_units: {type: float, default: 10, desc: "Long-tail definition - only SKUs selling at most this many units a week"}
+      max_weekly_units: {type: float, default: 20, desc: "Long-tail definition - only SKUs selling at most this many units a week"}
     sql: |
       WITH b AS (
         SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
@@ -595,10 +596,10 @@ tools:
       SELECT sku, category, abc_class, weekly_units, dcs_stocking, cur_ss AS current_safety_stock, round(pooled_ss, 0) AS centralised_safety_stock,
              round((cur_ss - pooled_ss) * cost, 2) AS working_capital_saving_gbp,
              round((cur_ss - pooled_ss) * cost * 0.25, 2) AS carrying_cost_saving_gbp,
-             round(vol * (dcs_stocking - 1.0) / dcs_stocking * 0.60, 2) AS extra_transport_cost_gbp,
-             round((cur_ss - pooled_ss) * cost * 0.25 - vol * (dcs_stocking - 1.0) / dcs_stocking * 0.60, 2) AS net_annual_saving_gbp,
+             round(vol * (dcs_stocking - 1.0) / dcs_stocking * 0.20, 2) AS extra_transport_cost_gbp,
+             round((cur_ss - pooled_ss) * cost * 0.25 - vol * (dcs_stocking - 1.0) / dcs_stocking * 0.20, 2) AS net_annual_saving_gbp,
              round(100.0 * (dcs_stocking - 1.0) / dcs_stocking, 0) AS volume_shipped_between_dcs_pct,
-             'pooled_ss = current_ss / sqrt(DCs); carrying 25% of value; transport 0.60 per unit moved between DCs' AS formula
+             'pooled_ss = current_ss / sqrt(DCs); carrying 25% of value; transport 0.20 per unit moved between DCs' AS formula
       FROM c ORDER BY net_annual_saving_gbp DESC
     limit: 50
     example: {}

@@ -97,7 +97,7 @@ def generate(g):
         force("SKU-101904", s, r.randint(25, 45), r.uniform(5, 7), 0, r.randint(5, 20))
     # at risk of stockout in next 4 weeks (list_projected_stockouts)
     risk = [("SKU-105159", "ST150", 14, 40), ("SKU-101834", "ST159", 20, 55), ("SKU-102338", "ST165", 18, 45),
-            ("SKU-105341", "ST214", 12, 36), ("SKU-100644", "ST216", 15, 50), ("SKU-101848", "ST215", 9, 30)]
+            ("SKU-105341", "ST214", 12, 36), ("SKU-101575", "ST216", 15, 50), ("SKU-101848", "ST215", 9, 30)]
     for sku, s, avail, dem in risk:
         force(sku, s, avail, dem, 0, 20)
     # shipment SHP-0000102 (PO-2026-004121) SKUs are low in stores
@@ -298,6 +298,17 @@ def generate(g):
                        "reason": "Regular inventory check", "counted_by": None, "counted_at": None,
                        "result_summary": None, "created_at": g.days_ago(r.randint(5, 30))})
 
+    # ================= PF-220 batches (consistent with positions) =================
+    batches = []
+    for (sku, site), p in positions.items():
+        if sku != "PF-220":
+            continue
+        a = int(round(p["on_hand"] * (0.59 if site == "DC2" else 0.7)))
+        for bid, q, age, st in (("BATCH-PF220-2509-A", a, 40, "quarantine"), ("BATCH-PF220-2508-B", p["on_hand"] - a, 70, "released")):
+            if q > 0:
+                batches.append({"batch_id": bid, "sku": sku, "site_id": site, "location_id": "", "on_hand": q,
+                                "received_date": g.days_ago(age), "status": st})
+
     # ================= stock plan (normal value, cover target, closing plan) =================
     from datetime import date
     season_end = date(g.as_of.year + 1 if g.as_of.month >= 8 else g.as_of.year, 1 if g.as_of.month >= 8 else 7, 31)
@@ -317,6 +328,7 @@ def generate(g):
 
     return {
         "stock_plan": plan,
+        "stock_batches": batches,
         "inventory_positions": pos_rows,
         "inventory_adjustments": adjustments,
         "cycle_count_tasks": counts,

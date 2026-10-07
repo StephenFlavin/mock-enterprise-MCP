@@ -54,7 +54,7 @@ def generate(g):
     planted_sup = [s for s, _ in sorted(sup_count.items(), key=lambda x: (-x[1], x[0]))[:3]]
     sup_shift = {}
     for s in sorted({p["supplier_id"] for p in products.values()}):
-        sup_shift[s] = r.uniform(-0.04, 0.06)
+        sup_shift[s] = r.uniform(-0.03, 0.03)
     for s, v in zip(planted_sup, (0.45, 0.35, 0.30)):
         sup_shift[s] = v
 
@@ -73,7 +73,7 @@ def generate(g):
         sl = TARGET[cls]
         base_lt = int(p["lead_time_days"])
         # policy as it was set at the last review (older demand and baseline lead time)
-        mu_p, sd_p = s["mu"] * r.uniform(0.94, 1.06), s["sd"] * r.uniform(0.92, 1.08)
+        mu_p, sd_p = s["mu"] * r.uniform(0.97, 1.03), s["sd"] * r.uniform(0.96, 1.04)
         sig_l = base_lt * 0.08 / 7.0
         ss = z[sl] * ((base_lt / 7.0) * sd_p ** 2 + mu_p ** 2 * sig_l ** 2) ** 0.5
         x = r.random()
@@ -97,13 +97,13 @@ def generate(g):
 
         # demand analysis and the main reason demand is volatile
         status = p["status"]
-        if s["n"] < 26:
+        if s["n"] < 16:
             why = "Short sales history (recent launch)"
         elif s["md"] >= 25:
             why = "Promotion and markdown driven"
         elif s["zero"] >= 10:
             why = "Intermittent demand (weeks with no sales)"
-        elif s["peak"] >= 1.6:
+        elif s["peak"] >= 1.8:
             why = "Strong seasonal peak"
         elif abs(s["chg"]) >= 25:
             why = "Recent trend shift (" + ("up" if s["chg"] > 0 else "down") + ")"
@@ -121,7 +121,7 @@ def generate(g):
         # supplier lead time actually observed
         sup = p["supplier_id"]
         act = max(1, int(round(base_lt * (1 + sup_shift[sup]) * r.uniform(0.98, 1.02))))
-        sd_frac = r.uniform(0.18, 0.26) if sup in planted_sup else r.uniform(0.06, 0.14)
+        sd_frac = r.uniform(0.18, 0.26) if sup in planted_sup else r.uniform(0.07, 0.10)
         lts.append({
             "sku": sku, "supplier_id": sup, "lead_time_days": act, "lead_time_stdev_days": round(act * sd_frac, 1),
             "change_from_baseline_pct": round((act - base_lt) / base_lt * 100, 1), "sample_size": r.randint(6, 24),

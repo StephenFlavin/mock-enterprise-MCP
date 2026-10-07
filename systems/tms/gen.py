@@ -19,15 +19,23 @@ def generate(g):
     ocean_carriers = [c for c in carriers if c["mode"] == "ocean"]
     air_carriers = [c for c in carriers if c["mode"] == "air"]
     
-    # Define lanes: DC to store
-    lanes = []
-    for dc in dcs[:3]:
-        for store in stores[:50]:
-            lanes.append(f"{dc['site_id']}-{store['site_id']}")
-    
-    STORY = {"DC1-ST214", "DC1-ST215", "DC1-ST001", "DC1-ST050", "DC1-ST100", "DC1-ST150"}
-    all_lanes = lanes
-    lanes = [l for l in all_lanes if l not in STORY]   # story lanes are fully planted from seed/story code
+    # Lanes: DC1 serves every third UK store; DC3 (Leeds) serves the north and Scotland as a regional cross-dock.
+    uk = [x for x in stores if x["country"] == "GB"]
+    region = {x["site_id"]: x["region"] for x in uk}
+    DISRUPT = ["DC1-ST214", "DC1-ST215"]                           # Glasgow / Dundee: Midshires slips in the last 2 weeks
+    NORTH = ["DC1-ST150", "DC1-ST151", "DC1-ST148", "DC1-ST207"]   # Leeds, Manchester, Newcastle, Glasgow drops
+    STORY = set(DISRUPT + NORTH)
+
+    def lane_base(origin, dest):
+        reg = region.get(dest, "UK South")
+        if origin == "DC3":
+            return {"UK North": 190, "Scotland": 390}.get(reg, 300)
+        return {"UK Midlands": 190, "UK South": 260, "UK North": 330, "Scotland": 560}.get(reg, 260)
+
+    lanes = [f"DC1-{x['site_id']}" for i, x in enumerate(uk) if i % 3 == 0]
+    lanes += [f"DC3-{x['site_id']}" for x in uk if x["region"] in ("UK North", "Scotland")]
+    lanes = [l for l in lanes if l not in STORY]
+    all_lanes = lanes + sorted(STORY)
     shipments = []
     carriers_lanes = []
     carrier_performance = []
@@ -41,25 +49,24 @@ def generate(g):
     postcodes = []
     reverse_logistics = []
     
-    # Generate carriers_lanes
-    for lane in lanes:
-        for carrier in r.sample(road_carriers, min(3, len(road_carriers))):
+    # Generate carriers_lanes (rate card per lane scales with distance; allocation sums to 100)
+    ROAD3 = ["CAR-001", "CAR-002", "CAR-003"]
+    for lane in all_lanes:
+        origin, dest = lane.split("-")
+        base = lane_base(origin, dest)
+        cs = ROAD3 if lane in STORY else r.sample(ROAD3, 2)
+        shares = [40.0, 35.0, 25.0] if lane in STORY else [70.0, 30.0]
+        for cid, pct in zip(cs, shares):
+            trip = float(round(base * {"CAR-001": 1.0, "CAR-002": 0.97, "CAR-003": 1.04}[cid]))
+            big = lane in STORY
             carriers_lanes.append({
-                "carrier_id": carrier["carrier_id"],
-                "lane": lane,
-                "mode": "road",
-                "status": r.choice(["active", "active", "active", "paused"]),
-                "weekly_capacity_trips": r.randint(5, 20),
-                "weekly_capacity_pallets": r.randint(50, 200),
-                "rate_per_trip_gbp": float(r.randint(120, 400)),
-                "rate_per_pallet_gbp": float(r.randint(15, 40)),
-                "min_pieces": r.randint(1, 10),
-                "cutoff_hour": r.choice([8, 12, 16, 17]),
-                "cutoff_day_offset": r.choice([0, 1, 1, 2]),
-                "pct_allocation": float(r.randint(20, 80)),
-                "updated_at": g.fake.date_time_this_year()
-            })
-    
+                "carrier_id": cid, "lane": lane, "mode": "road",
+                "status": "active", "weekly_capacity_trips": int((6 if big else 2) * pct / 25) + 1,
+                "weekly_capacity_pallets": int((130 if big else 60) * pct / 25) + 10,
+                "rate_per_trip_gbp": trip, "rate_per_pallet_gbp": round(trip / 26 * 1.15, 1),
+                "min_pieces": 5, "cutoff_hour": {"CAR-001": 17, "CAR-002": 16, "CAR-003": 15}[cid],
+                "cutoff_day_offset": 1, "pct_allocation": pct, "updated_at": g.as_of})
+
     # Generate shipments
     for i in range(2400):
         lane = r.choice(lanes)
@@ -82,7 +89,7 @@ def generate(g):
         units = r.randint(100, 2000)
         pallets = max(1, units // 50)
         fill_rate = float(r.randint(60, 98))
-        cost = float(r.randint(180, 800))
+        cost = float(round(lane_base(origin, dest) * r.uniform(0.85, 1.15)))
 
         shipments.append({
             "shipment_id": f"SHP-{len(shipments) + 1:06d}",
@@ -240,32 +247,32 @@ def generate(g):
     
     # Story: Midshires (CAR-002) service slips on Glasgow/Dundee lanes in the last 2 weeks; Northline stays strong.
     prof = {"CAR-001": (94, 88), "CAR-002": (90, 88), "CAR-003": (86, 84)}
-    for lane in ("DC1-ST214", "DC1-ST215"):
+    for lane in sorted(STORY):
         for cid, (ot, fr) in prof.items():
             for wk in range(-12, 0):
                 ws = g.as_of + timedelta(weeks=wk)
                 n = r.randint(14, 20)
                 o, f = float(ot + r.randint(-2, 2)), float(fr + r.randint(-3, 3))
-                if cid == "CAR-002" and wk >= -2:
+                if cid == "CAR-002" and wk >= -2 and lane in DISRUPT:
                     o, f = float(60 + r.randint(-4, 4)), float(66 + r.randint(-3, 3))
                 carrier_performance.append({
                     "carrier_id": cid, "lane": lane, "period_start": ws, "period_end": ws + timedelta(days=6),
                     "shipments_count": n, "on_time_count": round(n * o / 100), "on_time_pct": round(100 * round(n * o / 100) / n, 1),
-                    "avg_delay_minutes": 140.0 if cid == "CAR-002" and wk >= -2 else 25.0,
-                    "fill_rate_avg_pct": f, "total_cost_gbp": float(n * 270), "cost_per_shipment_gbp": 270.0,
+                    "avg_delay_minutes": 140.0 if cid == "CAR-002" and wk >= -2 and lane in DISRUPT else 25.0,
+                    "fill_rate_avg_pct": f, "total_cost_gbp": float(n * lane_base("DC1", lane.split("-")[1])), "cost_per_shipment_gbp": float(lane_base("DC1", lane.split("-")[1])),
                     "updated_at": g.as_of})
                 late_n = n - round(n * o / 100)
                 for k in range(n):
                     dep = ws + timedelta(days=k % 6)
                     late = k < late_n
-                    dly = (r.randint(90, 240) if cid != "CAR-002" or wk < -2 else r.randint(180, 420)) if late else 0
+                    dly = (r.randint(90, 240) if cid != "CAR-002" or wk < -2 or lane not in DISRUPT else r.randint(180, 420)) if late else 0
                     shipments.append({
                         "shipment_id": f"SHP-{len(shipments) + 1:06d}", "origin_site_id": "DC1", "dest_site_id": lane.split("-")[1],
                         "carrier_id": cid, "lane": lane, "mode": "road", "status": "delivered",
                         "planned_departure": dep, "actual_departure": dep, "planned_arrival": dep + timedelta(days=1),
                         "actual_arrival": dep + timedelta(days=1), "lines_count": r.randint(5, 15),
                         "volume_cbm": 15.0, "weight_kg": 2500.0, "pallets": max(1, round(f / 100 * 26)), "cases": 60, "units": 600,
-                        "fill_rate_pct": f, "freight_cost_gbp": 270.0, "delay_minutes": dly or None, "is_split": False,
+                        "fill_rate_pct": f, "freight_cost_gbp": float(lane_base("DC1", lane.split("-")[1])), "delay_minutes": dly or None, "is_split": False,
                         "created_at": g.as_of, "updated_at": g.as_of})
 
     # Generate carrier incidents
@@ -475,27 +482,80 @@ def generate(g):
         })
         postcode_id += 1
     
-    # Generate reverse_logistics
-    categories = ["Womenswear", "Menswear", "Home", "Accessories", "Clearance"]
-    for category in categories:
-        for week in range(-12, 1):
-            period_start = g.as_of + timedelta(weeks=week)
-            period_start = period_start - timedelta(days=period_start.weekday()) if isinstance(period_start, datetime) else period_start - timedelta(days=period_start.weekday())
-            period_end = period_start + timedelta(days=6)
-            
+    # Reverse logistics by department: apparel is cheap to move and resells well; Electricals/Home are bulky.
+    PROFILE = {"Womenswear": (900, 0.85, 3.2), "Menswear": (700, 0.95, 3.0), "Kids": (600, 1.1, 2.6), "Accessories": (300, 0.7, 4.4),
+               "Beauty": (250, 1.5, 0.4), "Home": (350, 3.4, 5.5), "Electricals": (200, 4.1, 9.0)}
+    for category, (units, cpu, resale) in PROFILE.items():
+        for week in range(-13, 0):
+            ps = g.as_of + timedelta(weeks=week)
+            n = int(units * r.uniform(0.85, 1.15))
+            u = round(cpu * r.uniform(0.95, 1.05), 2)
             reverse_logistics.append({
-                "category": category,
-                "period_start": period_start.date() if isinstance(period_start, datetime) else period_start,
-                "period_end": period_end.date() if isinstance(period_end, datetime) else period_end,
-                "return_units": r.randint(100, 1000),
-                "transport_cost_gbp": float(r.randint(200, 1500)),
-                "cost_per_unit_gbp": float(r.randint(1, 5)),
-                "processing_cost_gbp": float(r.randint(500, 3000)),
-                "resale_value_gbp": float(r.randint(1000, 8000)),
-                "updated_at": g.fake.date_time_this_year()
-            })
-    
+                "category": category, "period_start": ps, "period_end": ps + timedelta(days=6),
+                "return_units": n, "transport_cost_gbp": round(n * u, 2), "cost_per_unit_gbp": u,
+                "processing_cost_gbp": round(n * (1.2 if category != "Electricals" else 3.5), 2),
+                "resale_value_gbp": round(n * resale * r.uniform(0.9, 1.1), 2), "updated_at": g.as_of})
+
+    # shipment_lines: SKU lines of inbound shipments (from the PO lines), used to allocate freight to SKUs
+    shipment_lines = []
+    for sh in shipments:
+        if sh.get("po_id") and sh["po_id"] in lines:
+            for l in lines[sh["po_id"]]:
+                shipment_lines.append({"shipment_id": sh["shipment_id"], "line_no": int(l["line_no"]), "sku": l["sku"],
+                                       "units": int(l["qty_ordered"])})
+
+    # lane_buffers: planning buffer (days) added to carrier transit times, one row per inbound lane
+    lane_buffers = []
+    for ln in sorted({sh["lane"] for sh in shipments if sh.get("po_id")}):
+        mode = next(sh["mode"] for sh in shipments if sh["lane"] == ln and sh.get("po_id"))
+        lane_buffers.append({"lane": ln, "planning_buffer_days": {"ocean": 2, "air": 1}.get(mode, 1),
+                             "basis": "carrier published transit time", "updated_at": g.as_of})
+
+    # node_dwell: weekly average dwell at UK ports; Felixstowe has built up over the last 5 weeks
+    node_dwell = []
+    for port in ("GBFXT", "GBSOU", "GBLGP"):
+        for wk in range(-13, 0):
+            ws = g.as_of + timedelta(weeks=wk)
+            hrs = (62 if wk >= -5 else 34) if port == "GBFXT" else 30
+            node_dwell.append({"node_type": "port", "node": port, "week_start": ws,
+                               "visits": r.randint(18, 40), "avg_dwell_hours": round(hrs * r.uniform(0.93, 1.07), 1)})
+    for dc in ("DC1", "DC2", "DC3"):
+        for wk in range(-13, 0):
+            node_dwell.append({"node_type": "dc", "node": dc, "week_start": g.as_of + timedelta(weeks=wk),
+                               "visits": r.randint(150, 400), "avg_dwell_hours": round(r.uniform(4, 7), 1)})
+
+    # freight_invoices: one invoice per carrier and week, summed from TMS cost; the last 4 weeks carry a 210k gap
+    by = {}
+    for sh in shipments:
+        if sh.get("actual_departure") and sh["carrier_id"]:
+            d = sh["actual_departure"]
+            d = d.date() if isinstance(d, datetime) else d
+            wk = d - timedelta(days=d.weekday())
+            by[(sh["carrier_id"], wk)] = by.get((sh["carrier_id"], wk), 0.0) + sh["freight_cost_gbp"]
+    freight_invoices = []
+    first = g.as_of - timedelta(weeks=13)
+    for (cid, wk), amt in sorted(by.items()):
+        if wk < first or wk >= g.as_of:
+            continue
+        freight_invoices.append({"invoice_id": f"FINV-{len(freight_invoices) + 1:06d}", "carrier_id": cid, "week_start": wk,
+                                 "amount_gbp": round(amt, 2), "gl_account": "5110", "posted_to_ledger": True})
+    recent = sorted([x for x in freight_invoices if x["week_start"] >= g.as_of - timedelta(weeks=4)], key=lambda x: -x["amount_gbp"])
+    gap, k = 0.0, 0
+    for inv in recent:                      # first unposted (not accrued), then posted to the wrong account
+        if gap + inv["amount_gbp"] <= 210000 and k < 6:
+            inv["posted_to_ledger"] = False
+            gap += inv["amount_gbp"]; k += 1
+    for inv in recent:
+        if inv["posted_to_ledger"] and inv["carrier_id"] in ("CAR-001", "CAR-002") and gap + inv["amount_gbp"] <= 210000:
+            inv["gl_account"] = "5120"
+            gap += inv["amount_gbp"]
+    for inv in recent:                      # one short-billed invoice absorbs the remainder so the gap is exactly 210k
+        if inv["posted_to_ledger"] and inv["gl_account"] == "5110" and inv["amount_gbp"] > 210000 - gap + 1000:
+            inv["amount_gbp"] = round(inv["amount_gbp"] - (210000 - gap), 2)
+            break
+
     return {
+        "shipment_lines": shipment_lines, "lane_buffers": lane_buffers, "node_dwell": node_dwell, "freight_invoices": freight_invoices,
         "shipments": shipments,
         "carriers_lanes": carriers_lanes,
         "carrier_performance": carrier_performance,
