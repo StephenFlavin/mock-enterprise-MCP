@@ -227,9 +227,423 @@ def extract_bids(ctx, bid_file, call_out_per_year=None, term_years=3):
     return sorted(out, key=lambda r: r["total_cost_gbp"])
 
 
-def get_pl_extract(ctx, pl_file):
-    return _table_tool(pl_file, None, None, None, None, None, 200)
+def get_pl_extract(ctx, pl_file, where=None, exclude=None, group_by=None, sort_by=None, max_rows=200):
+    return _table_tool(pl_file, where, exclude, None, group_by, sort_by, max_rows)
 
 
-def get_po_payment(ctx, file_reference):
-    return _table_tool(file_reference, None, None, None, None, None, 200)
+def get_po_payment(ctx, file_reference, where=None, exclude=None, min_amount=None, group_by=None, sort_by=None, max_rows=200):
+    return _table_tool(file_reference, where, exclude, min_amount, group_by, sort_by, max_rows)
+
+
+# ---------------------------------------------------------------- drafting helpers
+
+DRAFT_HEAD = "DRAFT (not sent or saved)\n\n"
+
+
+def _split(s, sep=";"):
+    """Items of a ';' or newline separated list."""
+    return [p.strip() for p in re.split(r"[;\n]", s or "") if p.strip()]
+
+
+def _rows(s, n):
+    """Parse 'a|b|c' items into lists of exactly n fields (missing fields are blank)."""
+    out = []
+    for item in _split(s):
+        f = [x.strip() for x in item.split("|")]
+        out.append((f + [""] * n)[:n])
+    return out
+
+
+def _f(v, default=0.0):
+    try:
+        return float(str(v).replace(",", "").replace("£", "").replace("%", "").strip())
+    except ValueError:
+        return default
+
+
+def _gbp_s(v):
+    """£1.80m / £220k / £950 with a leading minus for negatives."""
+    sign = "-" if v < 0 else ""
+    a = abs(v)
+    if a >= 1e6:
+        return f"{sign}£{a / 1e6:.2f}m"
+    if a >= 1e4:
+        return f"{sign}£{a / 1e3:.0f}k"
+    return f"{sign}£{a:,.0f}"
+
+
+def _int(v):
+    return f"{v:,.0f}"
+
+
+def _rag_rank(s):
+    return {"RED": 3, "AMBER": 2, "GREEN": 1}.get(str(s).strip().upper(), 0)
+
+
+# ---------------------------------------------------------------- drafts
+
+
+def draft_management_accounts_commentary(ctx, variances_summary=None, period=None, operating_profit_variance_gbp=None,
+                                         volume_variance_gbp=0, price_mix_variance_gbp=0, cost_variance_gbp=0,
+                                         one_off_variance_gbp=0, timing_gbp=0, unexplained_gbp=0):
+    ov = operating_profit_variance_gbp
+    parts = {"Volume": _f(volume_variance_gbp), "Price and mix": _f(price_mix_variance_gbp), "Cost": _f(cost_variance_gbp),
+             "One-offs": _f(one_off_variance_gbp), "Unexplained": _f(unexplained_gbp)}
+    drivers = sum(parts.values())
+    ov = _f(ov) if ov is not None else drivers
+    timing = _f(timing_gbp)
+    unexpl = parts["Unexplained"]
+    permanent = ov - timing - unexpl
+    L = ["MANAGEMENT ACCOUNTS COMMENTARY", "", f"Period: {period or 'current month'}"]
+    if variances_summary:
+        L.append(f"Focus: {variances_summary}")
+    L += ["", f"OPERATING PROFIT VARIANCE TO BUDGET: {_gbp_s(ov)} ({'adverse' if ov < 0 else 'favourable'})", "", "BY DRIVER"]
+    for k, v in parts.items():
+        L.append(f"- {k}: {_gbp_s(v)} ({100 * v / ov:.0f}% of the variance)" if ov else f"- {k}: {_gbp_s(v)}")
+    if abs(drivers - ov) > 0.5:
+        L.append(f"- Not allocated to a driver: {_gbp_s(ov - drivers)}")
+    L += ["", "TIMING VERSUS PERMANENT",
+          f"- Timing (reverses in a later period): {_gbp_s(timing)}",
+          f"- Permanent, explained: {_gbp_s(permanent)}",
+          f"- Not yet explained: {_gbp_s(unexpl)}",
+          f"- Variance before one-offs: {_gbp_s(ov - parts['One-offs'])}", "", "COMMENTARY"]
+    big = max((kv for kv in parts.items() if kv[0] != "Unexplained"), key=lambda kv: abs(kv[1]))
+    L.append(f"Operating profit was {_gbp_s(abs(ov))} {'below' if ov < 0 else 'above'} budget. The largest driver was "
+             f"{big[0].lower()} at {_gbp_s(big[1])}. Of the total, {_gbp_s(timing)} is timing and {_gbp_s(permanent)} is permanent.")
+    if unexpl:
+        L.append(f"{_gbp_s(abs(unexpl))} ({100 * abs(unexpl) / abs(ov):.0f}% of the variance) is not yet explained and is being "
+                 "chased with the entity accountants before the accounts are finalised." if ov else "")
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_leadership_summary(ctx, reporting_period=None, revenue_actual_gbp=None, revenue_budget_gbp=None,
+                             operating_profit_actual_gbp=None, operating_profit_budget_gbp=None,
+                             top_issues=None, risks=None, opportunities=None):
+    L = ["LEADERSHIP SUMMARY", "", f"Period: {reporting_period or 'current month'}", "", "HEADLINE PERFORMANCE"]
+    worst, perf = 0, []
+    for name, a, b in (("Revenue", revenue_actual_gbp, revenue_budget_gbp),
+                       ("Operating profit", operating_profit_actual_gbp, operating_profit_budget_gbp)):
+        if a is None or b is None:
+            continue
+        a, b = _f(a), _f(b)
+        pct = 100 * (a - b) / b if b else 0.0
+        worst = max(worst, 0 if abs(pct) <= 2 else 1 if abs(pct) <= 5 or pct > 0 else 2)
+        perf.append(f"- {name}: {_gbp_s(a)} against budget {_gbp_s(b)}, variance {_gbp_s(a - b)} ({pct:+.1f}%)")
+    if perf:
+        L.append("Overall: " + ["ON PLAN", "WATCH (outside 2% of budget)", "OFF PLAN (more than 5% adverse)"][worst])
+        L += perf
+    for title, items in (("TOP ISSUES", top_issues), ("RISKS", risks), ("OPPORTUNITIES", opportunities)):
+        its = _split(items)
+        if its:
+            L += ["", title] + [f"{i}. {t}" for i, t in enumerate(its, 1)]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_dispute_response(ctx, customer_id, invoice_number=None, invoiced_units=None, delivered_units=None,
+                           invoiced_unit_price_gbp=None, agreed_unit_price_gbp=None, dispute_amount_gbp=None,
+                           offer_valid_days=10):
+    cust = ctx.q("SELECT * FROM master.customers WHERE customer_id = $c", c=customer_id)
+    L = ["DISPUTE RESPONSE", "", f"Customer: {customer_id}" + (f" ({cust[0]['segment']}, {cust[0]['country']})" if cust else ""),
+         f"Invoice: {invoice_number or 'not stated'}"]
+    if None in (invoiced_units, delivered_units, invoiced_unit_price_gbp, agreed_unit_price_gbp):
+        amt = _f(dispute_amount_gbp, 0)
+        L += ["", f"Disputed amount: £{_int(amt)}", "", "SUMMARY OF POSITION",
+              "We have reviewed your dispute. To state our position we need the invoiced and delivered units and the invoiced "
+              "and agreed unit prices.", "", "PROPOSED RESOLUTION", "To follow once the figures are confirmed."]
+        return DRAFT_HEAD + "\n".join(L)
+    iu, du, ip, ap = _f(invoiced_units), _f(delivered_units), _f(invoiced_unit_price_gbp), _f(agreed_unit_price_gbp)
+    invoiced = iu * ip
+    correct = du * ap
+    over = du * (ip - ap)
+    short = (iu - du) * ip
+    credit = invoiced - correct
+    disputed = _f(dispute_amount_gbp, invoiced)
+    L += ["", f"Invoiced: {_int(iu)} units at £{ip:.2f} = £{_int(invoiced)}",
+          f"Disputed amount (withheld by the customer): £{_int(disputed)}",
+          "", "OUR ANALYSIS",
+          f"- Agreed price: £{ap:.2f} a unit against £{ip:.2f} invoiced; overcharge on delivered units £{_int(over)}",
+          f"- Delivered {_int(du)} of {_int(iu)} units; {_int(iu - du)} units short, invoiced at £{_int(short)}",
+          f"- Correct value of the goods delivered at the agreed price: £{_int(correct)}",
+          f"- Total overbilled: £{_int(credit)} ({100 * credit / invoiced:.1f}% of the invoice)",
+          "", "OUR POSITION",
+          f"The customer is right on price and on the short delivery. The amount properly due is £{_int(correct)}; "
+          f"£{_int(credit)} of the invoice cannot be supported.",
+          "", "PROPOSED RESOLUTION",
+          f"We will issue a credit note for £{_int(credit)} and ask for payment of £{_int(correct)} within standard terms. "
+          f"This offer is valid for {int(_f(offer_valid_days))} business days."]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+_RATING = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+
+def draft_audit_findings_report(ctx, audit_subject=None, findings=None):
+    rows = _rows(findings, 6)
+    rows.sort(key=lambda r: (_RATING.get(r[1].upper(), 3), -_f(r[3])))
+    L = ["AUDIT FINDINGS REPORT", "", f"Subject: {audit_subject or 'Not stated'}", f"Date: {ctx.as_of}", "Prepared By: Internal Audit"]
+    if not rows:
+        L += ["", "No findings supplied."]
+        return DRAFT_HEAD + "\n".join(L)
+    for i, (title, rating, obs, amt, owner, test) in enumerate(rows, 1):
+        L += ["", f"FINDING #{i}: {title}", f"Risk Rating: {rating.upper()}", f"Observation: {obs}"]
+        if amt:
+            L.append(f"Value at risk: £{_int(_f(amt))}")
+        if test:
+            L.append(f"Next-step test: {test}")
+        if owner:
+            L.append(f"Owner: {owner}")
+    tot = sum(_f(r[3]) for r in rows)
+    cnt = {k: sum(1 for r in rows if r[1].upper() == k) for k in ("HIGH", "MEDIUM", "LOW")}
+    L += ["", "SUMMARY TABLE", "| Finding | Risk | Value at risk |", "|---|---|---|"]
+    L += [f"| {r[0]} | {r[1].upper()} | £{_int(_f(r[3]))} |" for r in rows]
+    L += ["", f"TOTAL VALUE AT RISK: £{_int(tot)} across {len(rows)} findings "
+              f"({cnt['HIGH']} high, {cnt['MEDIUM']} medium, {cnt['LOW']} low)"]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_board_paper(ctx, topic, options=None, envelope_gbp=None, hurdle_rate_pct=None, revenue_miss_pct=10):
+    opts = []
+    for n, capex, irr, irr_dn, risk in _rows(options, 5):
+        opts.append({"name": n, "capex": _f(capex), "irr": _f(irr), "dn": _f(irr_dn, _f(irr)), "risk": risk or "n/a"})
+    L = [f"BOARD PAPER: {topic}", ""]
+    if not opts:
+        L += ["EXECUTIVE SUMMARY", f"This paper presents {topic.lower()} for board consideration. No options were supplied to compare."]
+        return DRAFT_HEAD + "\n".join(L)
+    env = _f(envelope_gbp) if envelope_gbp is not None else sum(o["capex"] for o in opts)
+    hurdle = _f(hurdle_rate_pct) if hurdle_rate_pct is not None else None
+    miss = _f(revenue_miss_pct)
+    opts.sort(key=lambda o: -o["irr"])
+    left, funded = env, []
+    for o in opts:
+        o["funded"] = o["capex"] <= left
+        if o["funded"]:
+            left -= o["capex"]
+            funded.append(o)
+    ftot = sum(o["capex"] for o in funded)
+    L += ["EXECUTIVE SUMMARY",
+          f"{len(opts)} options assessed on one basis (IRR, and IRR after a {miss:.0f}% revenue miss) against an envelope of "
+          f"{_gbp_s(env)}. Funding in order of return fills {_gbp_s(ftot)}: " + ", ".join(o["name"] for o in funded) + ".",
+          "", "OPTIONS: RISK AND RETURN", "| Option | Capex | IRR | IRR after revenue miss | Change | Risk | Funded |", "|---|---|---|---|---|---|---|"]
+    for o in opts:
+        L.append(f"| {o['name']} | {_gbp_s(o['capex'])} | {o['irr']:.1f}% | {o['dn']:.1f}% | {o['dn'] - o['irr']:+.1f} pts | {o['risk']} | "
+                 f"{'yes' if o['funded'] else 'no'} |")
+    L += ["", f"SENSITIVITY: {miss:.0f}% REVENUE MISS"]
+    if hurdle is not None:
+        fail = sorted((o for o in opts if o["dn"] < hurdle), key=lambda o: o["dn"])
+        L.append(f"Hurdle rate {hurdle:.1f}%. Options falling below it in the downside: " +
+                 (", ".join(f"{o['name']} ({o['dn']:.1f}%)" for o in fail) if fail else "none") + ".")
+    sens = max(opts, key=lambda o: o["irr"] - o["dn"])
+    L.append(f"Most sensitive to the miss: {sens['name']} (loses {sens['irr'] - sens['dn']:.1f} points).")
+    L += ["", "KEY ASSUMPTIONS TO CHALLENGE", f"- {sens['name']}: return depends most on revenue delivery.",
+          f"- Envelope: {_gbp_s(env)}; unfunded demand {_gbp_s(sum(o['capex'] for o in opts if not o['funded']))}."]
+    if hurdle is not None and fail:
+        L += ["", "DEFER IF THE ECONOMY SOFTENS", f"{fail[0]['name']} has the weakest downside return ({fail[0]['dn']:.1f}% against hurdle {hurdle:.1f}%)."]
+    L += ["", "RECOMMENDATION", f"The board is invited to approve {_gbp_s(ftot)} across " + ", ".join(o["name"] for o in funded) +
+          (f", leaving {_gbp_s(left)} unallocated." if left > 0 else ".")]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_market_entry_brief(ctx, market_country, product_category="home range", language=None, import_duty_pct=None,
+                             vat_pct=None, regulations=None, labelling_requirements=None, style_preferences=None,
+                             price_low_gbp=None, price_high_gbp=None, typical_retail_margin_pct=None,
+                             unit_cost_gbp=None, products_needing_modification=None):
+    L = ["MARKET ENTRY BRIEF", "", f"Market: {market_country}", f"Category: {product_category}", "", "REGULATORY AND COMPLIANCE"]
+    if language:
+        L.append(f"- Language: {language}")
+    if import_duty_pct is not None:
+        L.append(f"- Import duty: {_f(import_duty_pct):.1f}%")
+    if vat_pct is not None:
+        L.append(f"- VAT: {_f(vat_pct):.1f}%")
+    for t, v in (("Regulations", regulations), ("Labelling", labelling_requirements)):
+        for x in _split(v):
+            L.append(f"- {t}: {x}")
+    if style_preferences or price_low_gbp is not None:
+        L += ["", "CONSUMER PREFERENCES"]
+        for x in _split(style_preferences):
+            L.append(f"- Style: {x}")
+        if price_low_gbp is not None and price_high_gbp is not None:
+            L.append(f"- Price points: £{_f(price_low_gbp):.2f} to £{_f(price_high_gbp):.2f}")
+    mods = _split(products_needing_modification)
+    if mods:
+        L += ["", "PRODUCTS NEEDING MODIFICATION"] + [f"- {m}" for m in mods]
+    rec = "Provide unit cost, price points, duty and VAT to test the margin."
+    if None not in (unit_cost_gbp, price_low_gbp, price_high_gbp, typical_retail_margin_pct):
+        cost, duty = _f(unit_cost_gbp), _f(import_duty_pct, 0)
+        vat = _f(vat_pct, 0)
+        landed = cost * (1 + duty / 100)
+        mid = (_f(price_low_gbp) + _f(price_high_gbp)) / 2
+        net = mid / (1 + vat / 100)
+        margin = 100 * (net - landed) / net
+        typ = _f(typical_retail_margin_pct)
+        L += ["", "MARGIN TEST",
+              f"- Landed unit cost with {duty:.1f}% duty: £{landed:.2f}",
+              f"- Mid price point £{mid:.2f}, or £{net:.2f} excluding {vat:.1f}% VAT",
+              f"- Implied margin: {margin:.1f}% against a typical retail margin of {typ:.1f}%"]
+        rec = ("PROCEED: the implied margin meets the typical retail margin." if margin >= typ else
+               f"PROCEED ONLY WITH CHANGES: the implied margin is {typ - margin:.1f} points below the typical retail margin; "
+               "cut landed cost or raise the price point.")
+    L += ["", "RECOMMENDATION", rec]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_incident_summary(ctx, incident_type, site_id, what_happened="Details being confirmed", impact="Under assessment",
+                           root_cause="Under investigation", next_steps="Complete root cause analysis and confirm the fix with the owning team",
+                           audience=None, severity=None, systems_affected=None, status="OPEN, under investigation",
+                           decisions_needed=None):
+    site = ctx.q("SELECT * FROM master.sites WHERE site_id = $s", s=site_id)
+    L = ["INCIDENT SUMMARY", "", f"Incident type: {str(incident_type).upper()}"]
+    if severity:
+        L.append(f"Severity: {severity}")
+    if audience:
+        L.append(f"Prepared for: {audience}")
+    L += [f"Site: {site[0]['name'] if site else site_id} ({site_id})", f"Date: {ctx.as_of}"]
+    if systems_affected:
+        L.append(f"Systems affected: {systems_affected}")
+    L += ["", "WHAT HAPPENED", what_happened, "", "IMPACT", impact, "", "ROOT CAUSE", root_cause, "", "NEXT STEPS"]
+    steps = _split(next_steps)
+    L += [f"{i}. {s}" for i, s in enumerate(steps, 1)] if len(steps) > 1 else [next_steps]
+    d = _split(decisions_needed)
+    if d:
+        L += ["", "DECISIONS NEEDED"] + [f"- {x}" for x in d]
+    L += ["", f"Status: {status}."]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_executive_briefing(ctx, topic, scorecard=None, issues=None, fix_window_weeks=13):
+    L = ["EXECUTIVE BRIEFING", "", f"Topic: {topic}", f"Date: {ctx.as_of}"]
+    sc = _rows(scorecard, 4)
+    if sc:
+        L += ["", "PERFORMANCE AGAINST PLAN", "| Area | Actual | Plan | Gap | Status |", "|---|---|---|---|---|"]
+        behind = 0
+        for area, a, p, d in sc:
+            av, pv = _f(a), _f(p)
+            gap = av - pv
+            good = gap >= 0 if d.lower().startswith("higher") else gap <= 0
+            near = pv and abs(gap) / abs(pv) <= 0.02
+            st = "ON PLAN" if near else ("AHEAD" if good else "BEHIND")
+            behind += st == "BEHIND"
+            L.append(f"| {area} | {a} | {p} | {gap:+.1f} | {st} |")
+        L.append(f"{behind} of {len(sc)} areas are behind plan.")
+    iss = [{"t": t, "cause": c, "impact": _f(i), "wk": _f(w)} for t, c, i, w in _rows(issues, 4)]
+    if iss:
+        iss.sort(key=lambda x: -x["impact"])
+        L += ["", "TOP ISSUES (largest impact first)"]
+        for n, x in enumerate(iss[:5], 1):
+            fix = "can be fixed within a quarter" if x["wk"] <= fix_window_weeks else "needs longer than a quarter"
+            L.append(f"{n}. {x['t']}: {_gbp_s(x['impact'])} a year; cause {x['cause']}; {x['wk']:.0f} weeks to fix, {fix}")
+        quick = [x for x in iss[:5] if x["wk"] <= fix_window_weeks]
+        L += ["", f"Most urgent: {iss[0]['t']}.",
+              f"Fixable within {int(fix_window_weeks)} weeks: {len(quick)} of {len(iss[:5])} (" + ", ".join(x["t"] for x in quick) + ")."]
+    if not sc and not iss:
+        L += ["", "SITUATION OVERVIEW", "No findings were supplied."]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def _plan_initiatives(items, budget):
+    ini = {}
+    for n, c, r, risk, dep, yrs in _rows(items, 6):
+        ini[n] = {"name": n, "cost": _f(c), "ret": _f(r), "risk": risk, "deps": [d.strip() for d in dep.split(",") if d.strip()], "yrs": _f(yrs, 1)}
+
+    def wave(n, seen=()):
+        deps = [d for d in ini[n]["deps"] if d in ini and d not in seen]
+        return 1 + max((wave(d, seen + (n,)) for d in deps), default=0)
+
+    for n in ini:
+        ini[n]["wave"] = wave(n)
+    order = sorted(ini.values(), key=lambda x: (x["wave"], -x["ret"]))
+    left, funded = budget, set()
+    for x in order:
+        ok = x["cost"] <= left and all(d in funded or d not in ini for d in x["deps"])
+        x["in"] = ok
+        if ok:
+            left -= x["cost"]
+            funded.add(x["name"])
+    return ini, order
+
+
+def draft_investment_roadmap(ctx, investment_theme, budget_million_gbp=None, initiatives=None, reduced_budget_million_gbp=None):
+    L = ["INVESTMENT ROADMAP", "", f"Theme: {investment_theme}"]
+    if not _split(initiatives):
+        L += ["No initiatives were supplied."]
+        return DRAFT_HEAD + "\n".join(L)
+    total = sum(_f(r[1]) for r in _rows(initiatives, 6))
+    budget = _f(budget_million_gbp) if budget_million_gbp is not None else total
+    L.append(f"Envelope: £{budget:g}m; initiatives asked for: £{total:g}m")
+    ini, order = _plan_initiatives(initiatives, budget)
+    for w in sorted({x["wave"] for x in order}):
+        grp = [x for x in order if x["wave"] == w]
+        L += ["", f"PHASE {w} (£{sum(x['cost'] for x in grp if x['in']):g}m funded)"]
+        for x in grp:
+            dep = f"; after {', '.join(x['deps'])}" if x["deps"] else ""
+            L.append(f"- {x['name']}: £{x['cost']:g}m, return {x['ret']:g}%, risk {x['risk']}, {x['yrs']:g} years{dep}"
+                     + ("" if x["in"] else " [OUTSIDE ENVELOPE]"))
+    used = sum(x["cost"] for x in order if x["in"])
+    L += ["", f"WITHIN ENVELOPE: £{used:g}m of £{budget:g}m"]
+    dependents = {n: [m for m, y in ini.items() if n in y["deps"]] for n in ini}
+    top = max(ini, key=lambda n: (len(dependents[n]), ini[n]["cost"]))
+    if dependents[top]:
+        L.append(f"BIGGEST DEPENDENCY: {top}, which {', '.join(dependents[top])} depend on.")
+    if reduced_budget_million_gbp is not None:
+        rb = _f(reduced_budget_million_gbp)
+        _, o2 = _plan_initiatives(initiatives, rb)
+        cut = [x for x in o2 if not x["in"]]
+        L += ["", f"IF THE ENVELOPE DROPS TO £{rb:g}m",
+              "Cut or deferred: " + (", ".join(f"{x['name']} (£{x['cost']:g}m)" for x in cut) if cut else "nothing"),
+              f"Funded: £{sum(x['cost'] for x in o2 if x['in']):g}m"]
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_sponsor_challenge_brief(ctx, project_name, total_investment_gbp=None, portfolio=None, envelope_gbp=None, hurdle_irr_pct=None):
+    rows = [{"p": p, "sp": s, "cap": _f(c), "irr": _f(i), "risk": r, "dec": d.lower(), "y1": _f(y1, None) if y1 else None}
+            for p, s, c, i, r, d, y1 in _rows(portfolio, 7)]
+    L = ["SPONSOR CHALLENGE BRIEF", "", f"Project/Portfolio: {project_name}", f"Date: {ctx.as_of}"]
+    if not rows:
+        L.append(f"Investment: £{_int(_f(total_investment_gbp))}" if total_investment_gbp is not None else "No portfolio supplied.")
+        return DRAFT_HEAD + "\n".join(L)
+    ask = sum(r["cap"] for r in rows)
+    env = _f(envelope_gbp) if envelope_gbp is not None else _f(total_investment_gbp, ask)
+    funded = [r for r in rows if r["dec"] == "fund"]
+    ftot = sum(r["cap"] for r in funded)
+    rank = {r["p"]: i for i, r in enumerate(sorted(rows, key=lambda r: -r["irr"]), 1)}
+    L += [f"Projects: {len(rows)}; total ask £{_int(ask)}; envelope £{_int(env)}; funded in full £{_int(ftot)}"]
+    hurdle = _f(hurdle_irr_pct) if hurdle_irr_pct is not None else None
+    for r in sorted((r for r in rows if r["dec"] != "fund"), key=lambda r: -r["irr"]):
+        L += ["", f"{r['p'].upper()} ({r['sp']}): {r['dec'].upper()}",
+              f"Ask: £{_int(r['cap'])}, IRR {r['irr']:g}% (rank {rank[r['p']]} of {len(rows)} on return), risk {r['risk']}"]
+        obj = f"Likely objection: why is a {r['irr']:g}% project not fully funded?"
+        if hurdle is not None and r["irr"] >= hurdle:
+            obj += f" It clears the {hurdle:g}% hurdle."
+        L.append(obj)
+        better = [x for x in funded if x["irr"] >= r["irr"]]
+        resp = f"Response: the envelope cannot hold the £{_int(ask)} asked; {len(better)} of the {len(funded)} funded projects return at least as much"
+        if r["dec"] == "phase" and r["y1"] is not None:
+            resp += f"; phasing limits year-one spend to £{_int(r['y1'])}"
+        if r["risk"].lower() == "high":
+            resp += "; delivery risk is rated high"
+        L.append(resp + ".")
+    return DRAFT_HEAD + "\n".join(L)
+
+
+def draft_highlight_report(ctx, programme_name, scope_status=None, schedule_status=None, budget_status=None, benefits_status=None,
+                           budget_gbp=None, forecast_gbp=None, go_live_date=None, schedule_slip_weeks=None,
+                           top_risks=None, decisions_needed=None):
+    dims = [("Scope", scope_status), ("Schedule", schedule_status), ("Budget", budget_status), ("Benefits", benefits_status)]
+    given = [(k, v) for k, v in dims if v]
+    overall = max((v.upper() for _, v in given), key=_rag_rank) if given else "NOT ASSESSED"
+    L = ["HIGHLIGHT REPORT", "", f"Programme: {programme_name}", f"Date: {ctx.as_of}", f"Overall status: {overall}", "", "STATUS BY DIMENSION"]
+    for k, v in given:
+        extra = ""
+        if k == "Schedule" and (schedule_slip_weeks is not None or go_live_date):
+            extra = " (" + ", ".join(x for x in [f"{_f(schedule_slip_weeks):g} weeks slip" if schedule_slip_weeks is not None else "",
+                                                  f"go-live {go_live_date}" if go_live_date else ""] if x) + ")"
+        if k == "Budget" and budget_gbp is not None and forecast_gbp is not None:
+            b, fc = _f(budget_gbp), _f(forecast_gbp)
+            extra = f" (budget {_gbp_s(b)}, forecast {_gbp_s(fc)}, {_gbp_s(fc - b)} / {100 * (fc - b) / b:+.1f}%)"
+        L.append(f"- {k}: {v.upper()}{extra}")
+    r = _rows(top_risks, 3)
+    if r:
+        L += ["", "TOP RISKS AND ISSUES"] + [f"{i}. {t} [{s}]: {im}" for i, (t, s, im) in enumerate(r, 1)]
+    d = _split(decisions_needed)
+    if d:
+        L += ["", "DECISIONS REQUIRED"] + [f"{i}. {x}" for i, x in enumerate(d, 1)]
+    return DRAFT_HEAD + "\n".join(L)

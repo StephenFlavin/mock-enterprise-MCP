@@ -573,6 +573,202 @@ def generate(g):
                 "stores_affected": None,
             })
 
+
+    # ------------------------------------------------------------------------------------------
+    # Tidy-up of the generated rows above. These steps draw no random numbers, so every earlier
+    # table (and every number the other questions rely on) is unchanged.
+    # ------------------------------------------------------------------------------------------
+    # Accuracy: fast-mover categories sit near 12% MAPE; slow movers near 22%; after the vendor upgrade reset the
+    # outlier-capping default (about eight weeks ago) the promotional categories on CFG-000001 became much worse.
+    change_cut = as_of - timedelta(weeks=7)
+    bad_cats = {"Outerwear", "Knitwear", "Fragrance", "Footwear", "Dresses", "Lighting"}
+    for a in forecast_accuracy:
+        m, b = a["mape_pct"], a["bias_pct"]
+        if a["config_id"] == "CFG-000003":
+            a["mape_pct"] = round(22.4 + (m - 12) * 0.35, 1)
+            a["bias_pct"] = round(2.0 + (b - 2) * 0.6, 1)
+        elif a["config_id"] == "CFG-000001" and a["category"] in bad_cats and a["period_end"] >= change_cut:
+            a["mape_pct"] = round(40 + (m - 12) * 0.5, 1)
+            a["bias_pct"] = round(13 + (b - 2) * 0.6, 1)
+        else:
+            a["mape_pct"] = round(12 + (m - 12) * 0.35, 1)
+            a["bias_pct"] = round(2.0 + (b - 2) * 0.6, 1)
+
+    # Home textiles (Bedding, Towels) have been over-forecast for the last twelve weeks.
+    textile_bias = {"Bedding": (14.0, "weather"), "Towels": (11.0, "promotion")}
+    wiggle12 = [-2.0, 1.5, -1.0, 2.0, 0.5, -1.5, 1.0, -0.5, 2.0, -2.0, 0.0, 0.0]
+    for bi in forecast_bias:
+        if bi["category"] in textile_bias and bi["sku"] is None:
+            k = (as_of - bi["period_end"]).days // 7
+            bi["bias_pct"] = round(textile_bias[bi["category"]][0] + wiggle12[k - 1], 1)
+            bi["primary_driver"] = textile_bias[bi["category"]][1]
+
+    # Generated stockout adjustments are small; the big ones are the story rows in seed/.
+    for adj in demand_history_adjustments:
+        adj["units_lost"] = 20 + (adj["units_lost"] - 50) * 100 // 450
+
+    # ------------------------------------------------------------------------------------------
+    # Added for the planner stories (everything below draws random numbers after all earlier tables).
+    # ------------------------------------------------------------------------------------------
+    # Category totals from the SKU history above; used to build earlier years and the longer forecast.
+    cat_totals = {}
+    for h in demand_history:
+        key = (h["category"], h["period_date"])
+        cu = cat_totals.setdefault(key, [0, 0.0])
+        cu[0] += h["units_sold"]
+        cu[1] += h["revenue_gbp"]
+    first_week = min(h["period_date"] for h in demand_history)
+
+    # Delisted and newly launched items the stories name; their history comes straight from master sales.
+    in_history = {h["sku"] for h in demand_history}
+    for sku in ("SKU-100441", "SKU-100028"):
+        if sku in weekly and sku not in in_history:
+            for wk, units, rev in weekly[sku]:
+                demand_history.append({
+                    "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": sku, "category": prod[sku]["category"],
+                    "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
+                    "correction_reason": None, "updated_at": as_of})
+
+    winter_cats = {"Outerwear", "Knitwear", "Scarves", "Bedding", "Towels", "Lighting", "Fragrance"}
+    summer_cats = {"Dresses", "Blouses", "Shirts", "T-Shirts", "Tops", "Trousers", "Footwear", "Bags", "Jewellery",
+                   "Drinkware"}
+    season_tab = {
+        "winter": [0.95, 0.80, 0.65, 0.55, 0.50, 0.45, 0.45, 0.55, 0.80, 1.00, 1.15, 1.25],
+        "summer": [0.90, 1.00, 1.30, 1.45, 1.55, 1.55, 1.45, 1.30, 1.10, 1.00, 0.95, 1.05],
+        "school": [0.90, 0.85, 0.90, 0.95, 0.95, 0.95, 1.10, 1.80, 1.50, 1.00, 0.95, 1.00],
+        "steady": [1.05, 0.95, 0.95, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.05, 1.15],
+    }
+
+    def season_group(cat):
+        return "winter" if cat in winter_cats else "summer" if cat in summer_cats else \
+            "school" if cat == "Schoolwear" else "steady"
+
+    def seasonal(cat, d):
+        tab = season_tab[season_group(cat)]
+        v0, v1 = tab[d.month - 1], tab[d.month % 12]
+        return v0 + (v1 - v0) * min((d.day - 1) / 30.0, 1.0)
+
+    # Category history for the two years before the SKU history starts, including the cost-of-living squeeze that
+    # began 104 weeks ago and lasted 26 weeks (discretionary categories fell most; essentials held up).
+    squeeze_pct = {
+        "Outerwear": -7, "Knitwear": -6, "Babywear": 1.5, "Small Appliances": -10, "Footwear": -12, "Smart Home": -14,
+        "Haircare": -2.5, "Trousers": -8, "Scarves": -10, "Schoolwear": 2.0, "Bodycare": -2, "Fragrance": -16,
+        "Personal Care": 0.5, "Skincare": -3, "Nightwear": -4, "Dresses": -15, "Shirts": -7, "Jewellery": -19,
+        "Blouses": -11, "Tops": -9, "Lighting": -11, "Audio": -13, "Storage": -6, "Towels": -2, "Cookware": -4,
+        "Bedding": -5, "Bags": -14, "Drinkware": -3, "T-Shirts": -8}
+    category_history = []
+    first_weeks = [first_week + timedelta(weeks=i) for i in range(8)]
+    for cat in categories:
+        u8 = [cat_totals.get((cat, w), [0, 0.0]) for w in first_weeks]
+        units8 = sum(x[0] for x in u8) / 8.0
+        price8 = (sum(x[1] for x in u8) / max(1, sum(x[0] for x in u8))) or 30.0
+        anchor = sum(seasonal(cat, w) for w in first_weeks) / 8.0
+        for k in range(104, 0, -1):
+            wk = first_week - timedelta(weeks=k)
+            weeks_back = (this_monday - wk).days // 7
+            if 79 <= weeks_back <= 104:
+                p = 104 - weeks_back
+                sf = min(1.0, (p + 1) / 4.0, (26 - p) / 4.0)
+            elif 53 <= weeks_back <= 78:
+                sf = 0.75 * (weeks_back - 52) / 26.0
+            else:
+                sf = 0.0
+            yrs = (first_week - wk).days / 365.0
+            units = units8 * seasonal(cat, wk) / anchor * (1.06 ** -yrs) * (1 + squeeze_pct.get(cat, -6) / 100.0 * sf)
+            units = max(1, int(round(units * r.gauss(1.0, 0.03))))
+            price = price8 * (0.97 ** yrs) * (1 + 0.05 * sf)
+            category_history.append({"category": cat, "period_date": wk, "units_sold": units,
+                                     "revenue_gbp": round(units * price, 2)})
+
+    # Category forecast, 52 weeks ahead: the SKU forecasts above for weeks 0-11, then seasonal extension.
+    base_wk, up_wk, dn_wk = {}, {}, {}
+    for f in forecasts:
+        if f["forecast_week"] >= this_monday:
+            tgt = {"base": base_wk, "upside": up_wk, "downside": dn_wk}[f["forecast_type"]]
+            tgt[(f["category"], f["forecast_week"])] = tgt.get((f["category"], f["forecast_week"]), 0) + f["units_forecast"]
+    category_forecasts = []
+    for cat in categories:
+        wks = [this_monday + timedelta(weeks=i) for i in range(52)]
+        base4 = [base_wk.get((cat, w), 0) for w in wks[:4]]
+        anchor = (sum(base4) / 4.0) / (sum(seasonal(cat, w) for w in wks[:4]) / 4.0)
+        s_base = sum(base_wk.get((cat, w), 0) for w in wks[:12]) or 1
+        ratio_up = sum(up_wk.get((cat, w), 0) for w in wks[:12]) / s_base
+        ratio_dn = sum(dn_wk.get((cat, w), 0) for w in wks[:12]) / s_base
+        for i, w in enumerate(wks):
+            if i < 12:
+                b, u, d = base_wk.get((cat, w), 0), up_wk.get((cat, w), 0), dn_wk.get((cat, w), 0)
+            else:
+                m = anchor * seasonal(cat, w) * (1 + 0.06 * i / 52.0) * r.gauss(1.0, 0.02)
+                eb, eu, ed = base_wk.get((cat, w), 0), up_wk.get((cat, w), 0), dn_wk.get((cat, w), 0)
+                b, u, d = m + eb, m * ratio_up + eu, m * ratio_dn + ed
+            for ftype, val in (("base", b), ("upside", u), ("downside", d)):
+                category_forecasts.append({"category": cat, "forecast_week": w, "forecast_type": ftype,
+                                           "units_forecast": int(round(val))})
+
+    # Slow movers: accuracy at store-SKU and cluster level (SKU-101897 matches the allocation story: 11.2% / 15.8%).
+    slow_skus = ["SKU-101897", "SKU-102898", "SKU-106034", "SKU-102289", "SKU-104130", "SKU-104053", "SKU-105936",
+                 "SKU-105985", "SKU-101414", "SKU-100049", "SKU-105054", "SKU-106083", "SKU-100882"]
+    zs = [-0.9, 0.3, 0.7, -0.1]
+    for sku in slow_skus:
+        for level, mean, bias in (("store_sku", 12.6, 1.2), ("cluster", 17.1, 2.4)):
+            for i, off in enumerate((-4, -3, -2, -1)):
+                val = (11.2 if level == "store_sku" else 15.8) if sku == "SKU-101897" else mean + zs[i]
+                period_end = as_of + timedelta(weeks=off)
+                forecast_accuracy.append({
+                    "accuracy_id": f"ACC-{len(forecast_accuracy) + 1:06d}", "config_id": "CFG-000003",
+                    "period_start": period_end - timedelta(days=6), "period_end": period_end, "sku": sku,
+                    "category": prod[sku]["category"], "forecast_level": level, "mape_pct": round(val, 1),
+                    "bias_pct": bias, "rmse": 14 if level == "store_sku" else 22})
+    # New-product launches (live accuracy of the comparable-product method, CFG-000004).
+    launch_mape = {"SKU-102800": 51.0, "SKU-101057": 46.0, "SKU-103892": 42.0, "SKU-101456": 39.0, "SKU-105446": 36.0,
+                   "SKU-103206": 29.0, "SKU-101750": 25.0, "SKU-103094": 17.0}
+    for sku, mean in launch_mape.items():
+        for i, off in enumerate((-4, -3, -2, -1)):
+            period_end = as_of + timedelta(weeks=off)
+            forecast_accuracy.append({
+                "accuracy_id": f"ACC-{len(forecast_accuracy) + 1:06d}", "config_id": "CFG-000004",
+                "period_start": period_end - timedelta(days=6), "period_end": period_end, "sku": sku,
+                "category": prod[sku]["category"], "forecast_level": "sku", "mape_pct": round(mean + zs[i] * 2, 1),
+                "bias_pct": round(mean * 0.7, 1), "rmse": 40})
+
+    # Backtests: holdout accuracy per configuration (new-product and slow-mover backtests look better than live).
+    fashion = {"Dresses", "Blouses", "Tops", "Shirts", "T-Shirts", "Trousers", "Knitwear", "Outerwear", "Footwear",
+               "Scarves", "Nightwear", "Jewellery"}
+    cat_items = {}
+    for sku in skus:
+        cat_items[prod[sku]["category"]] = cat_items.get(prod[sku]["category"], 0) + 1
+    forecast_backtests = []
+
+    def add_bt(cfg, level, cat, mape, bias, items):
+        forecast_backtests.append({
+            "backtest_id": f"BT-{len(forecast_backtests) + 1:06d}", "config_id": cfg, "forecast_level": level,
+            "category": cat, "period_start": as_of - timedelta(weeks=52), "period_end": as_of - timedelta(weeks=4),
+            "mape_pct": round(mape, 1), "bias_pct": round(bias, 1), "items_backtested": items})
+
+    for i, cat in enumerate(categories):
+        noise = ((i * 7) % 11 - 5) * 0.2
+        add_bt("CFG-000001", "category", cat, 11.4 + noise, 1.1, cat_items.get(cat, 1))
+        add_bt("CFG-000002", "category", cat, (10.2 if cat in fashion else 12.8) + noise, 0.9, cat_items.get(cat, 1))
+        add_bt("CFG-000003", "category", cat, 20.4 + noise, 1.4, cat_items.get(cat, 1))
+    add_bt("CFG-000003", "store_sku", None, 10.8, 0.9, 5200)
+    add_bt("CFG-000003", "cluster", None, 14.6, 1.6, 5200)
+    add_bt("CFG-000004", "sku", None, 18.4, 3.0, 24)
+
+    # Forecast run effort: weekly production runs for the last 13 weeks, by configuration and level.
+    forecast_run_metrics = []
+    run_specs = [("CFG-000003", "store_sku", 306400, 95, 48.0, 12.4, 6.0),
+                 ("CFG-000003", "cluster", 9800, 7, 3.6, 0.5, 1.5),
+                 ("CFG-000001", "sku", 8200, 22, 9.5, 2.1, 4.0),
+                 ("CFG-000004", "sku", 40, 2, 0.4, 0.1, 3.0)]
+    for cfg, level, series, minutes, cost, gb, hours in run_specs:
+        for off in range(-13, 0):
+            f = r.gauss(1.0, 0.04)
+            forecast_run_metrics.append({
+                "run_id": f"RUN-{len(forecast_run_metrics) + 1:06d}", "config_id": cfg, "forecast_level": level,
+                "run_date": this_monday + timedelta(weeks=off), "series_count": series,
+                "run_minutes": int(round(minutes * f)), "compute_cost_gbp": round(cost * f, 2),
+                "data_volume_gb": round(gb * f, 2), "planner_review_hours": round(hours * r.gauss(1.0, 0.05), 1)})
+
     return {
         "demand_history": demand_history,
         "forecasts": forecasts,
@@ -591,4 +787,8 @@ def generate(g):
         "returns_forecast": returns_forecast,
         "forecast_overrides": forecast_overrides,
         "demand_history_adjustments": demand_history_adjustments,
+        "category_history": category_history,
+        "category_forecasts": category_forecasts,
+        "forecast_backtests": forecast_backtests,
+        "forecast_run_metrics": forecast_run_metrics,
     }
