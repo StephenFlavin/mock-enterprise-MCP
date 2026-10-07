@@ -281,6 +281,30 @@ def generate(g):
                 tracking[key] = trow(p[0], p[1], wk, False, 0, None)
     availability = list(tracking.values())
 
+    # Availability story for product comparisons: three lines were short of stock about half of the time over the last
+    # twelve weeks. The weekly out-of-stock total is unchanged: each added gap is offset by one ambient gap that closes.
+    import hashlib as _hl
+
+    def _hh(*a):
+        return int(_hl.md5("|".join(map(str, a)).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+
+    POOR_AVAIL = {"SKU-105691", "SKU-104039", "SKU-103241"}
+    keep_out = POOR_AVAIL | {"SKU-101904", "K-1700", "PF-220"}
+    for wk in weeks:
+        flipped = 0
+        for key, row in list(tracking.items()):
+            if key[2] != wk or key[0] not in POOR_AVAIL or not row["available"]:
+                continue
+            if _hh("poor", *key) < 0.5:
+                tracking[key] = trow(key[0], key[1], wk, True, 1 + int(_hh("d", *key) * 6),
+                                     "forecast_under" if _hh("c", *key) < 0.5 else "allocation_shortfall", 0.2)
+                flipped += 1
+        pool = sorted((k for k, v in tracking.items() if k[2] == wk and not v["available"] and v["stockout_cause"] in base_causes
+                       and k[0] not in keep_out), key=lambda k: _hh("heal", *k))
+        for k in pool[:flipped]:
+            tracking[k] = trow(k[0], k[1], wk, False, 0, None)
+    availability = list(tracking.values())
+
     # ================= lost products: two years, ambient small =================
     losses = []
     n = 0
