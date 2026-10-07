@@ -1,0 +1,260 @@
+id: reviews
+name: Customer Reviews & Feedback Platform
+instructions: >
+  Customer reviews, ratings and feedback themes for products, stores and competitors.
+  Review ids look like REV-000123. Use it to analyze customer sentiment, product ratings trends,
+  and feedback by product, store, supplier or customer segment.
+
+tables:
+  reviews:
+    key: review_id
+    cols:
+      review_id: {type: str, desc: "Review id, e.g. REV-000123"}
+      sku: {desc: "Product SKU being reviewed"}
+      style_id: {desc: "Style of the product"}
+      store_id: {desc: "Store where feedback was collected (optional)"}
+      customer_segment: {type: str, desc: "Customer segment, e.g. 25-34, outdoor_enthusiast"}
+      rating: {type: int, desc: "Rating out of 5"}
+      review_text: {type: text, desc: "Review content"}
+      theme: {type: str, desc: "Main feedback theme, e.g. sizing, quality, durability, fit, comfort, value"}
+      created_at: {type: timestamp, desc: "When the review was created"}
+
+  competitor_products:
+    key: competitor_product_id
+    cols:
+      competitor_product_id: {type: str, desc: "Competitor product id, e.g. COMP-000123"}
+      competitor_name: {type: str, desc: "Name of the competitor"}
+      category: {type: str, desc: "Product category, e.g. insulated bottle, shoes, jeans"}
+      product_name: {type: str, desc: "Product name or description"}
+      price_gbp: {type: float, desc: "Competitor price in GBP"}
+      avg_rating: {type: float, desc: "Average rating out of 5"}
+      review_count: {type: int, desc: "Number of reviews"}
+      collected_at: {type: timestamp, desc: "When this data was collected"}
+
+tools:
+  - name: search_customer_reviews_for_product
+    desc: Search for customer reviews and ratings for a specific product.
+    kind: sql
+    args:
+      sku: {required: true}
+      rating: {type: int, desc: "Filter by minimum rating (1-5)"}
+      theme: {desc: "Filter by feedback theme"}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT review_id, sku, rating, review_text, theme, created_at
+      FROM reviews
+      WHERE sku = $sku
+        AND created_at >= CAST($date_from AS DATE)
+        AND ($rating IS NULL OR rating >= $rating)
+        AND ($theme IS NULL OR theme = $theme)
+      ORDER BY created_at DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_review_theme_summary
+    desc: Summary of review themes (feedback categories) and their frequency for a product.
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT theme, count(*) AS review_count, round(avg(rating), 1) AS avg_rating,
+             'theme_count = number of reviews mentioning this theme' AS formula
+      FROM reviews
+      WHERE sku = $sku AND created_at >= CAST($date_from AS DATE)
+      GROUP BY theme
+      ORDER BY review_count DESC
+    limit: 20
+    example: {sku: K-1700}
+
+  - name: search_customer_review_themes
+    desc: Review themes for a product, with examples of each theme's reviews.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT theme, count(*) AS count,
+             round(avg(rating), 1) AS avg_rating
+      FROM reviews
+      WHERE sku = $sku
+      GROUP BY theme
+      ORDER BY count DESC
+    limit: 20
+    example: {sku: PF-220}
+
+  - name: get_ratings_by_product
+    desc: Ratings summary by product, showing average rating and distribution.
+    kind: sql
+    args:
+      style_id: {}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT sku, style_id, count(*) AS review_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating = 5) AS five_star_count,
+             count(*) FILTER (WHERE rating = 4) AS four_star_count,
+             count(*) FILTER (WHERE rating = 3) AS three_star_count,
+             count(*) FILTER (WHERE rating <= 2) AS low_star_count,
+             'avg_rating = sum of ratings / review count' AS formula
+      FROM reviews
+      WHERE created_at >= CAST($date_from AS DATE)
+        AND ($style_id IS NULL OR style_id = $style_id)
+      GROUP BY sku, style_id
+      ORDER BY avg_rating DESC
+    limit: 50
+    example: {style_id: STY-5520}
+
+  - name: get_ratings_trend_for_sku
+    desc: Rating trend over time for a SKU, weekly average. Use to detect declining quality or sentiment.
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT date_trunc('week', created_at) AS week_ending,
+             count(*) AS review_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_count
+      FROM reviews
+      WHERE sku = $sku AND created_at >= CAST($date_from AS DATE)
+      GROUP BY date_trunc('week', created_at)
+      ORDER BY week_ending ASC
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_customer_feedback_themes_by_style
+    desc: Feedback themes for a style with frequency and average ratings by theme.
+    kind: sql
+    args:
+      style_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT theme, count(*) AS feedback_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_feedback
+      FROM reviews
+      WHERE style_id = $style_id AND created_at >= CAST($date_from AS DATE)
+      GROUP BY theme
+      ORDER BY feedback_count DESC
+    limit: 20
+    example: {style_id: STY-5520}
+
+  - name: get_customer_feedback_for_store
+    desc: Customer feedback and reviews collected at a specific store.
+    kind: sql
+    args:
+      store_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Feedback from this date onwards"}
+    sql: |
+      SELECT review_id, sku, store_id, rating, review_text, theme, created_at
+      FROM reviews
+      WHERE store_id = $store_id AND created_at >= CAST($date_from AS DATE)
+      ORDER BY created_at DESC
+    limit: 50
+    example: {store_id: ST214}
+
+  - name: search_customer_reviews_by_segment
+    desc: Customer reviews filtered by demographic or interest segment.
+    kind: sql
+    args:
+      customer_segment: {required: true, desc: "Segment, e.g. 25-34, outdoor_enthusiast"}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT review_id, sku, customer_segment, rating, review_text, theme, created_at
+      FROM reviews
+      WHERE customer_segment = $customer_segment AND created_at >= CAST($date_from AS DATE)
+      ORDER BY created_at DESC
+    limit: 50
+    example: {customer_segment: "25-34"}
+
+  - name: search_customer_feedback_for_supplier
+    desc: Customer reviews for products from a specific supplier.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT r.review_id, r.sku, r.rating, r.review_text, r.theme, r.created_at, p.supplier_id
+      FROM reviews r
+      JOIN master.products p ON r.sku = p.sku
+      WHERE p.supplier_id = $supplier_id AND r.created_at >= CAST($date_from AS DATE)
+      ORDER BY r.created_at DESC
+    limit: 50
+    example: {supplier_id: SUP-0042}
+
+  - name: search_review_text_by_topic
+    desc: Search review text for a specific topic or keyword. Case-insensitive substring search.
+    kind: sql
+    args:
+      topic: {required: true, type: str, desc: "Keyword or phrase to search for"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT review_id, sku, rating, review_text, theme, created_at
+      FROM reviews
+      WHERE review_text ILIKE '%' || $topic || '%' AND created_at >= CAST($date_from AS DATE)
+      ORDER BY created_at DESC
+    limit: 50
+    example: {topic: "sole separation"}
+
+  - name: get_competitor_ratings_for_products
+    desc: Competitor product ratings and prices for similar products.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. insulated bottle"}
+    sql: |
+      SELECT competitor_product_id, competitor_name, product_name, category, price_gbp,
+             avg_rating, review_count, collected_at
+      FROM competitor_products
+      WHERE category ILIKE $category
+      ORDER BY avg_rating DESC, review_count DESC
+    limit: 20
+    example: {category: "insulated bottle"}
+
+  - name: search_customer_reviews_for_competitor_products
+    desc: Search for reviews of competitor products by category.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. insulated bottle"}
+    sql: |
+      SELECT competitor_product_id, competitor_name, product_name, price_gbp,
+             avg_rating, review_count
+      FROM competitor_products
+      WHERE category ILIKE $category
+      ORDER BY avg_rating DESC
+    limit: 30
+    example: {category: "jeans"}
+
+  - name: get_range_reviews_summary
+    desc: Review summary for a product range (group of styles). Ratings, themes and key insights.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style id or style prefix"}
+    sql: |
+      SELECT style_id, count(*) AS review_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_reviews,
+             count(*) FILTER (WHERE rating <= 2) AS negative_reviews,
+             'range_avg = average of all reviews in this range' AS formula
+      FROM reviews
+      WHERE style_id = $style_id
+      GROUP BY style_id
+    limit: 10
+    example: {style_id: STY-5520}
+
+  - name: draft_range_review_shortlist
+    desc: Draft a shortlist of products for range review meeting, highlighting outliers.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style id for the range"}
+      limit_to: {type: int, desc: "Number of products to include", default: 5}
+    sql: |
+      SELECT style_id, sku, count(*) AS review_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating <= 2) AS problem_reviews
+      FROM reviews
+      WHERE style_id = $style_id
+      GROUP BY style_id, sku
+      ORDER BY avg_rating ASC, problem_reviews DESC
+      LIMIT $limit_to
+    limit: 20
+    example: {style_id: STY-5520}

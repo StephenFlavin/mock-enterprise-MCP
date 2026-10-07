@@ -6,9 +6,10 @@ import random
 def generate(g):
     r = g.rng
 
-    # Get master customers and orders
+    # Get master customers, orders, and products
     master_customers = g.master("customers")
     master_orders = g.master("orders")
+    master_products = g.master("products")
 
     # Generate customer accounts (one per customer)
     customer_accounts = []
@@ -107,14 +108,15 @@ def generate(g):
 
         customer_stats[cid]["invoices_created"] += 1
 
-        # Generate invoice lines from order
+        # Generate invoice lines from order with real SKU
         line_no = 1
-        # Simple: one line per invoice (details would come from order)
+        # Pick a random SKU from master
+        sku = master_products[r.randint(0, len(master_products)-1)]["sku"]
         invoice_lines.append({
             "invoice_id": inv_id,
             "line_no": line_no,
-            "sku": "SKU-INVOICE-001",  # Placeholder
-            "description": f"Order {oid}",
+            "sku": sku,
+            "description": f"Order {oid} line item",
             "qty": 1,
             "unit_price_gbp": amount,
             "line_total_gbp": amount

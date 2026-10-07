@@ -1,0 +1,352 @@
+id: hris
+name: HR Information System (HRIS)
+instructions: >
+  Workforce planning, headcount, attrition, absence and pay data. Requisition ids look like REQ-000123.
+  Use it for headcount planning, turnover analysis, absence rates, retention by shift and labour type,
+  org structure, management spans, and market pay comparisons.
+
+tables:
+  headcount_requisitions:
+    key: req_id
+    cols:
+      req_id: {type: str, desc: "Headcount requisition, e.g. REQ-000123"}
+      site_id: {type: str, desc: "DC or site where needed, e.g. DC1"}
+      role: {type: str, desc: "Job title or role"}
+      headcount: {type: int, desc: "Number of FTE required"}
+      employment_type: {type: enum, values: [permanent, agency, temporary], desc: "Type of employment"}
+      shift: {type: enum, values: [early, late, night, days, office], desc: "Shift pattern"}
+      required_by: {type: date, desc: "Date headcount needed"}
+      status: {type: enum, values: [draft, approved, filled, closed], desc: "Requisition status"}
+      created_at: {type: timestamp, desc: "When requisition was created"}
+      filled_count: {type: int, desc: "Number of hires against this requisition"}
+      required_skills: {type: str, desc: "Comma-separated required skills"}
+
+  pay_review_requests:
+    key: review_id
+    cols:
+      review_id: {type: str, desc: "Pay review request, e.g. PRR-000123"}
+      site_id: {type: str, desc: "Site affected by the pay review"}
+      role: {type: str, desc: "Role or job title"}
+      shift: {type: enum, values: [early, late, night, days, office], desc: "Shift pattern (if applicable)"}
+      reason: {type: str, desc: "Reason for pay review request, e.g. market rate gap, retention risk"}
+      created_at: {type: timestamp, desc: "When request was logged"}
+      created_by: {type: str, desc: "Employee id of requester"}
+      status: {type: enum, values: [submitted, under_review, approved, implemented], desc: "Review status"}
+
+  absence_records:
+    key: absence_id
+    cols:
+      absence_id: {type: str, desc: "Absence record, e.g. ABS-000123"}
+      employee_id: {type: str, desc: "Employee"}
+      site_id: {type: str, desc: "Home site of employee"}
+      shift_pattern: {type: enum, values: [early, late, night, days, office], desc: "Shift"}
+      absence_date: {type: date, desc: "Date of absence"}
+      hours_absent: {type: float, desc: "Hours absent"}
+      reason: {type: enum, values: [sickness, annual_leave, unpaid_leave, other], desc: "Reason for absence"}
+
+  employee_leavers:
+    key: leaver_id
+    cols:
+      leaver_id: {type: str, desc: "Leaver record, e.g. LVR-000123"}
+      employee_id: {type: str, desc: "Employee id of leaver"}
+      name: {type: str, desc: "Name"}
+      role: {type: str, desc: "Job title at time of leaving"}
+      site_id: {type: str, desc: "Home site"}
+      shift_pattern: {type: enum, values: [early, late, night, days, office], desc: "Shift pattern"}
+      employment_type: {type: enum, values: [permanent, agency, temporary, fixed_term], desc: "Type of employment"}
+      start_date: {type: date, desc: "When they started"}
+      end_date: {type: date, desc: "When they left"}
+      tenure_months: {type: int, desc: "Months employed"}
+      exit_reason: {type: str, desc: "Primary reason for leaving"}
+      exit_themes: {type: str, desc: "Semicolon-separated themes from exit interview"}
+      exit_interview_date: {type: date, desc: "When exit interview was conducted"}
+
+  employee_skills:
+    key: [employee_id, skill]
+    cols:
+      employee_id: {type: str, desc: "Employee"}
+      skill: {type: str, desc: "Skill or competency, e.g. forklift certification"}
+      proficiency: {type: enum, values: [beginner, intermediate, expert], desc: "Level of proficiency"}
+      verified_date: {type: date, desc: "Date skill was verified or certified"}
+
+  employee_commute:
+    key: [employee_id, site_id]
+    cols:
+      employee_id: {type: str, desc: "Employee"}
+      home_location: {type: str, desc: "City or postcode district of home"}
+      site_id: {type: str, desc: "Site they work at"}
+      distance_km: {type: float, desc: "Home to site distance in kilometres"}
+      commute_method: {type: enum, values: [car, public_transport, bike, other], desc: "Primary commute method"}
+
+  market_rates:
+    key: [site_id, role]
+    cols:
+      site_id: {type: str, desc: "DC or site"}
+      role: {type: str, desc: "Role or job title"}
+      our_hourly_gbp: {type: float, desc: "Our hourly rate in GBP"}
+      market_hourly_gbp: {type: float, desc: "Local market rate in GBP"}
+      market_date: {type: date, desc: "Date of market rate survey"}
+      gap_pct: {type: float, desc: "Gap between our rate and market (our as % of market)"}
+
+tools:
+  - name: search_employees
+    desc: Find employees by name, role, department or site; returns employee ids.
+    kind: select
+    from: master.employees
+    filters:
+      name: {op: like, desc: "Part of name, e.g. John"}
+      role: {op: like}
+      department: {}
+      site_id: {}
+      status: {}
+    columns: [employee_id, name, role, department, site_id, shift, start_date, status]
+    order: site_id
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_org_structure
+    desc: Organisation structure and headcount by function or department.
+    kind: sql
+    args:
+      function: {type: str, desc: "Function to filter by (optional, e.g. Logistics)", required: false}
+    sql: |
+      SELECT d.department, count(*) AS headcount,
+             count(*) FILTER (WHERE e.status = 'active') AS active_count,
+             count(*) FILTER (WHERE e.status = 'leaver') AS leavers_this_period,
+             count(DISTINCT e.manager_id) AS manager_count
+      FROM master.employees e
+      LEFT JOIN (SELECT DISTINCT department FROM master.employees) d ON e.department = d.department
+      WHERE ($function IS NULL OR e.department ILIKE '%' || $function || '%')
+      GROUP BY d.department
+      ORDER BY d.department
+    limit: 50
+    example: {}
+
+  - name: get_site_management_structure
+    desc: Management spans, vacancies and tenure at a site. Shows manager hierarchy and team sizes.
+    kind: sql
+    args:
+      site_id: {required: true}
+    sql: |
+      SELECT m.employee_id, m.name AS manager, m.role, m.start_date,
+             count(e.employee_id) AS team_size,
+             count(e.employee_id) FILTER (WHERE e.status = 'active') AS active_team,
+             count(e.employee_id) FILTER (WHERE e.status = 'leaver') AS leavers,
+             round((CAST($as_of AS DATE) - m.start_date) / 365.0, 1) AS manager_tenure_years
+      FROM master.employees m
+      LEFT JOIN master.employees e ON e.manager_id = m.employee_id AND e.site_id = $site_id
+      WHERE m.site_id = $site_id AND m.role ILIKE '%manager%'
+      GROUP BY m.employee_id, m.name, m.role, m.start_date
+      ORDER BY team_size DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_current_headcount_by_site_and_skill
+    desc: Current headcount and skills by site. Shows available skills and proficiency levels.
+    kind: sql
+    args:
+      site_id: {}
+      skill: {type: str, desc: "Filter by skill (optional)", required: false}
+    sql: |
+      SELECT e.site_id, e.shift, s.skill, s.proficiency,
+             count(DISTINCT e.employee_id) AS headcount
+      FROM master.employees e
+      LEFT JOIN employee_skills s ON e.employee_id = s.employee_id
+      WHERE e.status = 'active'
+        AND ($site_id IS NULL OR e.site_id = $site_id)
+        AND ($skill IS NULL OR s.skill ILIKE '%' || $skill || '%')
+      GROUP BY e.site_id, e.shift, s.skill, s.proficiency
+      ORDER BY e.site_id, e.shift
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_absence_rate_by_site_and_shift
+    desc: Absence by site and shift. Shows sickness, annual leave and absence rates.
+    kind: sql
+    args:
+      site_id: {}
+      shift_pattern: {}
+      date_from: {type: date, default: "-90d", desc: "Absences on or after"}
+      date_to: {type: date, default: "+0d", desc: "Absences up to and including"}
+    sql: |
+      SELECT a.site_id, a.shift_pattern,
+             count(DISTINCT a.absence_id) AS absence_count,
+             round(sum(a.hours_absent), 1) AS total_hours_absent,
+             round(sum(a.hours_absent) FILTER (WHERE a.reason = 'sickness'), 1) AS sickness_hours,
+             round(sum(a.hours_absent) FILTER (WHERE a.reason = 'annual_leave'), 1) AS annual_leave_hours,
+             count(DISTINCT a.employee_id) AS employees_absent
+      FROM absence_records a
+      WHERE ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($shift_pattern IS NULL OR a.shift_pattern = $shift_pattern)
+        AND a.absence_date >= CAST($date_from AS DATE)
+        AND a.absence_date <= CAST($date_to AS DATE)
+      GROUP BY a.site_id, a.shift_pattern
+      ORDER BY a.site_id, a.shift_pattern
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_attrition_by_site_and_shift
+    desc: Attrition by site and shift. Shows leaver rates and retention metrics.
+    kind: sql
+    args:
+      site_id: {}
+      shift_pattern: {}
+      date_from: {type: date, default: "-365d", desc: "Leavers from this date"}
+    sql: |
+      SELECT l.site_id, l.shift_pattern,
+             count(*) AS leavers,
+             count(*) FILTER (WHERE l.employment_type = 'permanent') AS permanent_leavers,
+             count(*) FILTER (WHERE l.employment_type = 'agency') AS agency_leavers,
+             round(count(*) FILTER (WHERE l.tenure_months < 6)::numeric / count(*), 3) AS early_leavers_pct,
+             round(avg(l.tenure_months), 1) AS avg_tenure_months
+      FROM employee_leavers l
+      WHERE ($site_id IS NULL OR l.site_id = $site_id)
+        AND ($shift_pattern IS NULL OR l.shift_pattern = $shift_pattern)
+        AND l.end_date >= CAST($date_from AS DATE)
+      GROUP BY l.site_id, l.shift_pattern
+      ORDER BY l.site_id, l.shift_pattern
+    limit: 50
+    example: {site_id: DC2}
+
+  - name: get_attrition_by_shift_pattern
+    desc: Leaver and retention rates by shift pattern and employment type.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-365d", desc: "Leavers from this date"}
+    sql: |
+      SELECT l.shift_pattern, l.employment_type,
+             count(*) AS leavers,
+             count(DISTINCT l.site_id) AS sites_affected,
+             round(avg(l.tenure_months), 1) AS avg_tenure_months,
+             round(count(*) FILTER (WHERE l.tenure_months < 6)::numeric / count(*), 3) AS early_leaver_rate,
+             string_agg(DISTINCT l.exit_reason, '; ') AS top_reasons
+      FROM employee_leavers l
+      WHERE l.end_date >= CAST($date_from AS DATE)
+      GROUP BY l.shift_pattern, l.employment_type
+      ORDER BY l.shift_pattern, l.employment_type
+    limit: 50
+    example: {}
+
+  - name: get_employee_commute_distances
+    desc: Home-to-site distances for employees. Shows commute patterns and distance analysis.
+    kind: sql
+    args:
+      site_id: {}
+      max_distance_km: {type: float, desc: "Filter for employees within this distance (optional)", required: false}
+    sql: |
+      SELECT e.employee_id, e.name, c.home_location,
+             c.site_id, c.distance_km, c.commute_method, e.role, e.shift
+      FROM employee_commute c
+      JOIN master.employees e ON c.employee_id = e.employee_id
+      WHERE ($site_id IS NULL OR c.site_id = $site_id)
+        AND ($max_distance_km IS NULL OR c.distance_km <= $max_distance_km)
+      ORDER BY c.distance_km DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_exit_interview_themes
+    desc: Exit reasons and themes by site. Shows patterns in why people leave.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-180d", desc: "Exit interviews from"}
+    sql: |
+      SELECT l.site_id, l.exit_reason, l.exit_themes,
+             count(*) AS count,
+             round(avg(l.tenure_months), 1) AS avg_tenure_months
+      FROM employee_leavers l
+      WHERE ($site_id IS NULL OR l.site_id = $site_id)
+        AND l.exit_interview_date >= CAST($date_from AS DATE)
+      GROUP BY l.site_id, l.exit_reason, l.exit_themes
+      ORDER BY l.site_id, count DESC
+    limit: 50
+    example: {site_id: DC2}
+
+  - name: get_pay_rates_vs_market
+    desc: Pay rates by site against local market data. Shows our competitiveness.
+    kind: sql
+    args:
+      site_id: {}
+      role: {type: str, desc: "Filter by role (optional)", required: false}
+    sql: |
+      SELECT m.site_id, m.role, m.our_hourly_gbp, m.market_hourly_gbp,
+             m.gap_pct, m.market_date,
+             round(m.our_hourly_gbp * 37.5 * 52, 0) AS our_annual_gbp,
+             round(m.market_hourly_gbp * 37.5 * 52, 0) AS market_annual_gbp
+      FROM market_rates m
+      WHERE ($site_id IS NULL OR m.site_id = $site_id)
+        AND ($role IS NULL OR m.role ILIKE '%' || $role || '%')
+      ORDER BY m.site_id, m.gap_pct ASC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_site_turnover_by_cohort
+    desc: Turnover by site, tenure, shift and manager. Shows which groups are at risk.
+    kind: sql
+    args:
+      site_id: {}
+    sql: |
+      SELECT l.site_id, l.shift_pattern,
+             CASE WHEN l.tenure_months < 6 THEN '<6 months'
+                  WHEN l.tenure_months < 12 THEN '6-12 months'
+                  WHEN l.tenure_months < 24 THEN '1-2 years'
+                  ELSE '2+ years' END AS tenure_band,
+             count(*) AS leavers,
+             round(avg(l.tenure_months), 1) AS avg_tenure_months,
+             string_agg(DISTINCT l.exit_reason, '; ') AS exit_reasons
+      FROM employee_leavers l
+      WHERE ($site_id IS NULL OR l.site_id = $site_id)
+      GROUP BY l.site_id, l.shift_pattern, tenure_band
+      ORDER BY l.site_id, tenure_band
+    limit: 100
+    example: {site_id: DC2}
+
+  - name: get_retention_by_labour_type
+    desc: Retention by hire route and labour type. Shows stability and reliability of different sources.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-365d", desc: "Analysis period from"}
+    sql: |
+      SELECT l.employment_type,
+             count(*) AS leavers,
+             round(avg(l.tenure_months), 1) AS avg_tenure_months,
+             min(l.tenure_months) AS min_tenure_months,
+             max(l.tenure_months) AS max_tenure_months,
+             round(count(*) FILTER (WHERE l.tenure_months < 3)::numeric / count(*), 3) AS very_early_leaver_rate,
+             string_agg(DISTINCT l.exit_reason, '; ') AS common_reasons
+      FROM employee_leavers l
+      WHERE l.end_date >= CAST($date_from AS DATE)
+      GROUP BY l.employment_type
+      ORDER BY l.employment_type
+    limit: 20
+    example: {}
+
+  - name: create_headcount_requisition
+    desc: Create a headcount requisition for a site and role. Returns the new requisition.
+    kind: insert
+    table: headcount_requisitions
+    id_prefix: REQ-
+    defaults: {status: draft}
+    args:
+      site_id: {required: true}
+      role: {required: true, desc: "Job title, e.g. Warehouse Operative"}
+      headcount: {required: true, type: int, desc: "Number of FTE needed"}
+      employment_type: {type: enum, values: [permanent, agency, temporary], desc: "Type of employment"}
+      shift: {type: enum, values: [early, late, night, days, office]}
+      required_by: {type: date, desc: "Date needed"}
+      required_skills: {type: str, desc: "Comma-separated skills, e.g. forklift, CSCS"}
+    example: {site_id: DC1, role: "Warehouse Operative", headcount: 20, employment_type: permanent, shift: night, required_by: "+28d"}
+
+  - name: create_pay_review_request
+    desc: Log a pay review request for a site or role group. Returns the new request.
+    kind: insert
+    table: pay_review_requests
+    id_prefix: PRR-
+    defaults: {status: submitted}
+    args:
+      site_id: {required: true}
+      role: {required: true, desc: "Role affected, e.g. Warehouse Operative"}
+      shift: {type: enum, values: [early, late, night, days, office], required: false}
+      reason: {required: true, desc: "Reason for review, e.g. market rate gap or retention risk"}
+      created_by: {type: str, desc: "Employee id of requester"}
+    example: {site_id: DC2, role: "Warehouse Operative", shift: night, reason: "Turnover 45% vs 28% elsewhere; market rate gap 12%"}

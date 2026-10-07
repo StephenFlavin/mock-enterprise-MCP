@@ -43,7 +43,7 @@ def generate(g):
             "promotional_intensity_pct": 18.5,
             "demand_assumption": "Modest growth 2% YoY, normal seasonality",
             "supply_assumption": "Normal lead times, all suppliers on track",
-            "created_at": g.date_between(f"-{100-i*7}d", f"-{70-i*7}d"),
+            "created_at": g.date_between(100 - i * 7, 70 - i * 7),
         })
 
     # Create scenarios for current cycle (2026-10)
@@ -63,10 +63,10 @@ def generate(g):
             "sop_cycle": current_cycle,
             "scenario_type": cfg["type"],
             "created_by": g.pick(emp_ids),
-            "created_at": g.date_between("-28d", "-21d"),
+            "created_at": g.date_between(28, 21),
             "description": cfg["desc"],
             "status": "approved" if cfg["type"] == "baseline" else "submitted",
-            "updated_at": g.date_between("-14d", "-7d"),
+            "updated_at": g.date_between(14, 7),
         })
 
         # Create a scenario run for each scenario
@@ -91,7 +91,7 @@ def generate(g):
             "run_id": run_id,
             "scenario_id": scenario_id,
             "sop_cycle": current_cycle,
-            "run_date": g.date_between("-14d", "-7d"),
+            "run_date": g.date_between(14, 7),
             "forecast_period": "Q4 2026",
             "base_revenue_gbp": round(base_revenue, 0),
             "scenario_revenue_gbp": round(scenario_revenue, 0),
@@ -106,7 +106,7 @@ def generate(g):
             "key_risks": "; ".join(risks),
             "mitigation_actions": "Weekly sync with supply chain" if cfg["type"] == "downside" else "Standard review cycle",
             "trigger_for_switch": "If weekly sales fall 3% below trend" if cfg["type"] == "downside" else "Watch consumer confidence indices",
-            "created_at": g.date_between("-14d", "-7d"),
+            "created_at": g.date_between(14, 7),
         })
 
     # Create assumptions for each scenario
@@ -143,7 +143,7 @@ def generate(g):
                     "raised_by": g.pick(emp_ids),
                     "reason": "Elasticity assumption needs revision based on H1 promotional response",
                     "alternative_value": "Demand down 3% instead of 5%",
-                    "raised_at": g.date_between("-10d", "-5d"),
+                    "raised_at": g.date_between(10, 5),
                     "resolution": "To be discussed at S&OP exec meeting",
                     "resolved_at": "",
                 })
@@ -170,7 +170,7 @@ def generate(g):
                 "reason": f"{category} data from last 4 weeks shows new trend",
                 "revenue_impact_gbp": round(revenue_impact, 0),
                 "inventory_impact_units": g.rng.randint(-200000, 200000),
-                "changed_at": g.date_between(f"-{70-cycle_idx*7}d", f"-{60-cycle_idx*7}d"),
+                "changed_at": g.date_between(70 - cycle_idx * 7, 60 - cycle_idx * 7),
             })
 
     # Generate new product launches
@@ -188,7 +188,7 @@ def generate(g):
             "sop_cycle": "2026-09",
             "sku": product["sku"],
             "style_id": product["style_id"],
-            "launch_date": g.date_between("-90d", "-30d"),
+            "launch_date": g.date_between(90, 30),
             "demand_assumption_units": assumed_demand,
             "actual_demand_units": actual_demand,
             "demand_assumption_accuracy_pct": accuracy,
@@ -223,9 +223,9 @@ def generate(g):
             "confidence_level": confidence,
             "impact_on_demand": f"Affects {category} elasticity" if category != "supply_disruption" else "May limit fulfillment capability",
             "impact_on_supply": "May increase lead times" if category == "supply_disruption" else "Minimal direct impact",
-            "news_exposure_date": g.date_between("-30d", "-3d"),
+            "news_exposure_date": g.date_between(30, 3),
             "already_in_forecast": g.rng.choice([True, False]),
-            "created_at": g.date_between("-21d", "-14d"),
+            "created_at": g.date_between(21, 14),
         })
 
     return {

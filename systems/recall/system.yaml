@@ -1,0 +1,361 @@
+id: recall
+name: Incident & Recall Management System
+instructions: >
+  Product recalls and incident management. Track customer incident reports, open recall cases,
+  estimate costs, manage regulatory notifications by country, and draft customer/press/store communications.
+  Recall case ids look like REC-000123.
+
+tables:
+  incidents:
+    key: incident_id
+    cols:
+      incident_id: {type: str, desc: "Incident report, e.g. INC-000123"}
+      sku: {desc: "SKU involved in incident"}
+      reported_at: {type: timestamp, desc: When the incident was reported}
+      customer_id: {type: str, desc: Customer reporting the issue}
+      description: {type: text, desc: Customer description of the issue}
+      severity: {type: enum, values: [minor, moderate, severe, critical], desc: Severity level}
+      status: {type: enum, values: [open, investigating, resolved, recalled], desc: Incident status}
+
+  recall_cases:
+    key: recall_id
+    cols:
+      recall_id: {type: str, desc: "Recall case, e.g. REC-000123"}
+      sku: {desc: "SKU being recalled"}
+      incident_id: {type: str, desc: Linked incident report}
+      reason: {type: text, desc: Recall reason}
+      batch_id: {type: str, desc: "Batch identifier"}
+      factory_id: {desc: "Factory that produced the batch"}
+      status: {type: enum, values: [open, approved, in_progress, suspended, closed, withdrawn], desc: Recall status}
+      units_affected: {type: int, desc: Estimated units in affected batch}
+      cost_estimate_gbp: {type: float, desc: Current cost estimate in GBP}
+      opened_at: {type: timestamp, desc: When the recall was opened}
+      updated_at: {type: timestamp, desc: Last update}
+
+  regulatory_notifications:
+    key: notification_id
+    cols:
+      notification_id: {type: str, desc: "Notification, e.g. RGN-000123"}
+      recall_id: {type: str, desc: Related recall case}
+      country: {type: str, desc: "ISO country code, e.g. GB"}
+      regulator: {type: str, desc: "Regulator name, e.g. TSS"}
+      notification_type: {type: enum, values: [recall, withdrawal], desc: Type of notification}
+      status: {type: enum, values: [draft, submitted, acknowledged], desc: Status}
+      sent_at: {type: timestamp, desc: When submitted to regulator}
+      deadline: {type: date, desc: Deadline for action}
+      content: {type: text, desc: Notification content}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  store_instructions:
+    key: instruction_id
+    cols:
+      instruction_id: {type: str, desc: "Instruction, e.g. STI-000123"}
+      recall_id: {type: str, desc: Related recall case}
+      sku: {desc: "SKU to pull"}
+      batch_id: {type: str, desc: "Batch to pull"}
+      action: {type: enum, values: [pull, quarantine, destroy, return_to_dc], desc: Action to take}
+      status: {type: enum, values: [draft, published, executed, cancelled], desc: Status}
+      published_at: {type: timestamp, desc: When published to stores}
+      content: {type: text, desc: Store instruction content}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  draft_communications:
+    key: draft_id
+    cols:
+      draft_id: {type: str, desc: "Draft, e.g. DRF-000123"}
+      recall_id: {type: str, desc: Related recall case}
+      communication_type: {type: enum, values: [customer_notice, press_statement, regulatory_notification, store_instructions], desc: Type}
+      content: {type: text, desc: Draft content}
+      created_at: {type: timestamp, desc: When drafted}
+      deleted_at: {type: timestamp, desc: "When deleted"}
+      status: {type: enum, values: [draft, submitted, published, deleted], desc: Status}
+
+  incident_history:
+    key: [sku, reported_at]
+    cols:
+      sku: {desc: "SKU"}
+      reported_at: {type: timestamp, desc: When reported"}
+      product_type: {type: str, desc: "Product type, e.g. Portable Fan"}
+      incident_count: {type: int, desc: Total incidents for this product type}
+      most_common_issue: {type: str, desc: "Most common issue, e.g. Battery overheating"}
+      previous_recalls: {type: int, desc: Previous recalls of this product type}
+
+tools:
+  - name: get_incident_report
+    desc: Customer incident report details and timeline. Use to understand what happened and which batch.
+    kind: sql
+    args:
+      incident_id: {required: true}
+    sql: |
+      SELECT incident_id, sku, reported_at, customer_id, description, severity, status
+      FROM incidents
+      WHERE incident_id = $incident_id
+    limit: 1
+    example: {incident_id: INC-900001}
+
+  - name: get_internal_incident_history
+    desc: Past incidents by product type to understand enforcement patterns and risk. Returns issue counts and previous recalls.
+    kind: sql
+    args:
+      sku: {}
+    sql: |
+      SELECT sku, count(*) AS incident_count, reported_at
+      FROM incidents
+      WHERE ($sku IS NULL OR sku = $sku) AND status IN ('open', 'investigating', 'recalled')
+      GROUP BY sku, reported_at
+      ORDER BY reported_at DESC
+    limit: 50
+    example: {sku: PF-220}
+
+  - name: get_historical_recall_costs
+    desc: Costs of past recalls by type (logistics, refunds, comms, legal). Use to estimate current recall cost.
+    kind: sql
+    args:
+      sku: {}
+      days: {type: int, default: 365, desc: "Look back this many days"}
+    sql: |
+      SELECT recall_id, sku, reason, units_affected, cost_estimate_gbp, opened_at, status
+      FROM recall_cases
+      WHERE ($sku IS NULL OR sku = $sku)
+        AND opened_at >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+        AND status IN ('approved', 'in_progress', 'closed')
+      ORDER BY opened_at DESC
+    limit: 20
+    example: {}
+
+  - name: calculate_recall_cost_estimate
+    desc: "All-in recall cost by scenario (logistics, refunds, comms, legal). Returns inputs and cost breakdown."
+    kind: sql
+    args:
+      units_affected: {type: int, required: true, desc: "Units to recall"}
+      retail_price_gbp: {type: float, required: true, desc: "Retail price per unit"}
+      logistics_cost_per_unit_gbp: {type: float, default: 2.5, desc: "Shipping and handling per unit"}
+      legal_fees_gbp: {type: float, default: 15000, desc: "Total legal and compliance fees"}
+      comms_cost_gbp: {type: float, default: 8000, desc: "Customer comms and press relations"}
+      insurance_recovery_pct: {type: float, default: 0, desc: "Percentage covered by insurance (0-100)"}
+    sql: |
+      SELECT
+        CAST($units_affected AS INT) AS units_affected,
+        $retail_price_gbp AS retail_price_gbp,
+        $logistics_cost_per_unit_gbp AS logistics_per_unit_gbp,
+        $legal_fees_gbp AS legal_fees_gbp,
+        $comms_cost_gbp AS comms_cost_gbp,
+        CAST($units_affected AS FLOAT) * $retail_price_gbp AS refund_cost_gbp,
+        CAST($units_affected AS FLOAT) * $logistics_cost_per_unit_gbp AS total_logistics_gbp,
+        (CAST($units_affected AS FLOAT) * $retail_price_gbp +
+         CAST($units_affected AS FLOAT) * $logistics_cost_per_unit_gbp +
+         $legal_fees_gbp + $comms_cost_gbp) AS total_cost_gbp,
+        round(((CAST($units_affected AS FLOAT) * $retail_price_gbp +
+         CAST($units_affected AS FLOAT) * $logistics_cost_per_unit_gbp +
+         $legal_fees_gbp + $comms_cost_gbp) * (1 - ($insurance_recovery_pct / 100))), 2) AS net_cost_after_insurance_gbp,
+        'total = refunds + logistics + legal + comms; net = total * (1 - insurance_pct)' AS formula
+    limit: 1
+    example: {units_affected: 18000, retail_price_gbp: 34.99, insurance_recovery_pct: 25}
+
+  - name: create_recall_case
+    desc: Open a recall case for an incident. Assign batch, factory, units affected and initial cost estimate.
+    kind: insert
+    table: recall_cases
+    id_prefix: REC-
+    defaults: {status: open}
+    args:
+      incident_id: {required: true}
+      sku: {required: true}
+      reason: {required: true, desc: "Reason for recall, e.g. Battery overheating hazard"}
+      batch_id: {required: true}
+      factory_id: {required: true}
+      units_affected: {required: true, type: int}
+      cost_estimate_gbp: {required: false, type: float, desc: "Initial estimate or blank"}
+    example: {incident_id: INC-900001, sku: PF-220, reason: "Battery overheating in portable fans", batch_id: "PF-220-AUG-2026-01", factory_id: FAC-0107, units_affected: 18000}
+
+  - name: update_recall_case_cost_estimate
+    desc: Record or change the cost estimate on a recall case after analysis.
+    kind: update
+    table: recall_cases
+    set: {cost_estimate_gbp: "$cost_estimate_gbp", updated_at: "$as_of"}
+    args:
+      cost_estimate_gbp: {required: true, type: float, desc: "Revised cost estimate in GBP"}
+    example: {recall_id: REC-900001, cost_estimate_gbp: 892500}
+
+  - name: draft_regulatory_notification
+    desc: "Draft regulator notification per country format. Includes recall facts, product details and mandatory disclosures."
+    kind: draft
+    args:
+      recall_id: {required: true}
+      country: {required: true, desc: "ISO country code, e.g. GB"}
+    sql:
+      recall: SELECT rc.recall_id, rc.sku, rc.reason, rc.units_affected, rc.opened_at FROM recall_cases rc WHERE rc.recall_id = $recall_id
+      product: SELECT p.sku, p.name, p.category, p.supplier_id, p.factory_id FROM master.products p WHERE p.sku = (SELECT sku FROM recall_cases WHERE recall_id = $recall_id)
+    template: |
+      REGULATORY NOTIFICATION — {{ country|upper }}
+
+      To the competent authority:
+
+      This notification advises of a safety recall for the following product:
+
+      PRODUCT DETAILS
+      SKU: {{ recall[0].sku }}
+      Reason: {{ recall[0].reason }}
+      Units affected: {{ recall[0].units_affected|num(0) }}
+      Recall opened: {{ recall[0].opened_at }}
+
+      AFFECTED PRODUCT INFORMATION
+      {% if product %}
+      Category: {{ product[0].category }}
+      Supplier: {{ product[0].supplier_id }}
+      Factory: {{ product[0].factory_id }}
+      {% endif %}
+
+      REQUIRED ACTIONS
+      - Immediate halt of sales in {{ country|upper }}
+      - Notification to all distributors and retailers
+      - Public safety notice to be issued
+      - Customer return logistics to be established
+
+      This notification is submitted in compliance with product safety regulations.
+    example: {recall_id: REC-900001, country: GB}
+
+  - name: send_regulatory_notification
+    desc: Submit a regulator notification for a recall or withdrawal. Records when sent and to whom.
+    kind: insert
+    table: regulatory_notifications
+    id_prefix: RGN-
+    defaults: {status: submitted}
+    args:
+      recall_id: {required: true}
+      country: {required: true, desc: "ISO country code"}
+      regulator: {required: true, desc: "Regulator name, e.g. TSS, NHTSA"}
+      notification_type: {required: true, type: enum, values: [recall, withdrawal]}
+      deadline: {required: true, type: date, desc: "Regulatory deadline for action"}
+      content: {required: true, type: text, desc: "Notification content"}
+    example: {recall_id: REC-900001, country: GB, regulator: TSS, notification_type: recall, deadline: "+7d", content: "Battery overheating risk in PF-220 portable fan..."}
+
+  - name: draft_customer_recall_notice
+    desc: Draft customer-facing recall notice from template. Includes safety warning, what to do, and compensation.
+    kind: draft
+    args:
+      recall_id: {required: true}
+    sql:
+      recall: SELECT rc.recall_id, rc.sku, rc.reason, rc.units_affected FROM recall_cases rc WHERE rc.recall_id = $recall_id
+      product: SELECT p.sku, p.name, p.retail_price_gbp FROM master.products p WHERE p.sku = (SELECT sku FROM recall_cases WHERE recall_id = $recall_id)
+    template: |
+      IMPORTANT SAFETY NOTICE — PRODUCT RECALL
+
+      Dear Valued Customer,
+
+      We are conducting a voluntary safety recall of the following product:
+
+      PRODUCT: {{ product[0].name }} ({{ recall[0].sku }})
+
+      REASON FOR RECALL
+      {{ recall[0].reason }}
+
+      Units Affected: approximately {{ recall[0].units_affected|num(0) }}
+
+      WHAT YOU SHOULD DO
+      1. Stop using this product immediately
+      2. Return it to any store or use our free return label at [URL]
+      3. We will provide a full refund (£{{ product[0].retail_price_gbp|num(2) }})
+
+      SAFETY RISK
+      There is a potential safety hazard. Do not attempt to repair or continue using.
+
+      Questions? Call us at 0800-RECALL-1 or email recall@company.com
+
+      We apologize for any inconvenience and thank you for your patience.
+    example: {recall_id: REC-900001}
+
+  - name: draft_store_instructions
+    desc: Draft store pull-and-quarantine instructions with batch, location actions and timeline.
+    kind: draft
+    args:
+      recall_id: {required: true}
+    sql:
+      recall: SELECT rc.recall_id, rc.sku, rc.batch_id, rc.reason FROM recall_cases rc WHERE rc.recall_id = $recall_id
+      product: SELECT p.sku, p.name FROM master.products p WHERE p.sku = (SELECT sku FROM recall_cases WHERE recall_id = $recall_id)
+    template: |
+      URGENT: STORE PULL & QUARANTINE INSTRUCTIONS
+
+      This instruction applies to all stores.
+
+      PRODUCT TO PULL
+      SKU: {{ recall[0].sku }}
+      Name: {{ product[0].name }}
+      Batch: {{ recall[0].batch_id }}
+
+      REASON: {{ recall[0].reason }}
+
+      ACTION REQUIRED (TODAY)
+      1. Pull all units from sales floor and backroom with matching SKU and batch
+      2. Quarantine in designated area (label: HOLD — SAFETY RECALL)
+      3. Count units and report to DC by EOD on our portal
+      4. Place window notice: "This product has been recalled. Please do not purchase."
+
+      CUSTOMER SERVICE
+      - Any customer who asks: explain recall, offer full refund or exchange
+      - Direct to online return label or collect in-store
+      - No questions asked returns
+
+      TIMELINE
+      - Immediate: Pull from shelves
+      - Within 24h: Count and report
+      - Within 72h: All units removed from store
+
+      Questions? Contact Recall Team at [contact details]
+    example: {recall_id: REC-900001}
+
+  - name: send_store_instructions
+    desc: Publish pull-and-quarantine instructions to stores. Records publication and timestamp.
+    kind: insert
+    table: store_instructions
+    id_prefix: STI-
+    defaults: {status: published}
+    args:
+      recall_id: {required: true}
+      sku: {required: true}
+      batch_id: {required: true}
+      action: {required: true, type: enum, values: [pull, quarantine, destroy, return_to_dc], desc: "Action for stores"}
+      content: {required: true, type: text, desc: "Detailed instruction content"}
+    example: {recall_id: REC-900001, sku: PF-220, batch_id: "PF-220-AUG-2026-01", action: pull, content: "URGENT: STORE PULL & QUARANTINE..."}
+
+  - name: draft_press_statement
+    desc: Draft press statement from recall facts. Includes safety message, company response and contact details.
+    kind: draft
+    args:
+      recall_id: {required: true}
+    sql:
+      recall: SELECT rc.recall_id, rc.sku, rc.reason, rc.units_affected, rc.opened_at FROM recall_cases rc WHERE rc.recall_id = $recall_id
+      product: SELECT p.sku, p.name FROM master.products p WHERE p.sku = (SELECT sku FROM recall_cases WHERE recall_id = $recall_id)
+    template: |
+      FOR IMMEDIATE RELEASE
+
+      HARBOUR & VALE RETAIL GROUP ANNOUNCES VOLUNTARY RECALL OF {{ product[0].name }}
+
+      [CITY, DATE] — Harbour & Vale Retail Group is conducting a voluntary safety recall of {{ product[0].name }} (SKU: {{ recall[0].sku }}) affecting approximately {{ recall[0].units_affected|num(0) }} units sold.
+
+      REASON FOR RECALL
+      {{ recall[0].reason }}
+
+      COMPANY STATEMENT
+      "Customer safety is our highest priority. Upon becoming aware of this issue, we immediately initiated a comprehensive review and are taking swift corrective action. We are working closely with relevant safety authorities and are committed to full transparency throughout this process."
+
+      ACTIONS CUSTOMERS SHOULD TAKE
+      Customers who own this product should stop using it immediately and return it for a full refund. Free return labels and collection are available online.
+
+      MEDIA CONTACT
+      Company Communications
+      Phone: +44 (0) 1234 567890
+      Email: press@company.com
+
+      ###
+
+      About Harbour & Vale Retail Group: UK-based global retailer with strong ESG commitments.
+    example: {recall_id: REC-900001}
+
+  - name: delete_draft_press_statement
+    desc: Delete a draft press statement that has not been published.
+    kind: update
+    table: draft_communications
+    set: {status: deleted, deleted_at: "$as_of"}
+    args: {}
+    example: {draft_id: DRF-900001}

@@ -8,33 +8,35 @@ def generate(g):
     r = g.rng
 
     # Get reference data
-    stores = [s for s in g.master("sites") if s["type"] == "store"]
-    products = g.master("products")[:500]  # Sample products
+    stores = [s for s in g.master("sites") if s["type"] == "store"][:100]  # Limit to 100 stores
+    products = g.master("products")[:300]  # Sample products
     employees = [e for e in g.master("employees") if e["site_id"] in [st["site_id"] for st in stores]]
 
     sales_txns = []
     exceptions = []
     rules = []
 
-    # Generate sales transactions (hourly grain for last 8 weeks)
+    # Generate sales transactions (hourly grain for last 8 weeks, sample stores)
     txn_id = 1
+    sample_stores = r.sample(stores, min(len(stores), 30))  # Only 30 stores
+
     for day_offset in range(-56, 0):  # Last 8 weeks
         day = g.as_of + timedelta(days=day_offset)
 
-        for store in r.sample(stores, min(len(stores), r.randint(20, len(stores)))):
-            # 3-8 transaction batches per store per day
-            for _ in range(r.randint(3, 8)):
+        for store in sample_stores:
+            # 2-3 transaction batches per store per day
+            for _ in range(r.randint(2, 3)):
                 hour = r.randint(8, 20)
-                txn_time = datetime.combine(day.date(), time(hour, r.randint(0, 59)))
+                txn_time = datetime.combine(day, time(hour, r.randint(0, 59)))
 
-                # 1-3 items per transaction
-                for _ in range(r.randint(1, 3)):
+                # 1-2 items per transaction
+                for _ in range(r.randint(1, 2)):
                     product = r.choice(products)
-                    qty = r.randint(1, 3)
+                    qty = r.randint(1, 2)
                     retail_price = float(product["retail_price_gbp"] or 50)
                     unit_cost = float(product["unit_cost_gbp"] or 20)
 
-                    # Slight discounting (5-20% off)
+                    # Slight discounting (5-10% off)
                     discount = retail_price * r.uniform(0.95, 1.0)
                     revenue = qty * discount
                     margin = qty * (discount - unit_cost)
@@ -63,15 +65,15 @@ def generate(g):
     for day_offset in range(-42, 0):  # Last 6 weeks
         day = g.as_of + timedelta(days=day_offset)
 
-        for store in r.sample(stores, min(len(stores), r.randint(5, 15))):
+        for store in sample_stores[:20]:  # Only 20 stores with exceptions
             store_emps = [e for e in employees if e["site_id"] == store["site_id"]]
             if not store_emps:
                 store_emps = employees[:5]
 
-            # 2-5 exceptions per store per day
-            for _ in range(r.randint(2, 5)):
+            # 1-3 exceptions per store per day
+            for _ in range(r.randint(1, 3)):
                 hour = r.randint(8, 20)
-                exc_time = datetime.combine(day.date(), time(hour, r.randint(0, 59)))
+                exc_time = datetime.combine(day, time(hour, r.randint(0, 59)))
 
                 exc_type = r.choices(
                     ["void", "refund", "discount", "scan_exception"],
@@ -122,12 +124,12 @@ def generate(g):
             "threshold_unit": "kg" if rule_type == "weight_tolerance" else "percent",
             "status": "active",
             "scan_exception_rate_pct": round(r.uniform(0.5, 3.0), 2),
-            "updated_at": datetime.combine((g.as_of - timedelta(days=r.randint(1, 30))).date(), time(9, 0)),
+            "updated_at": datetime.combine(g.as_of - timedelta(days=r.randint(1, 30)), time(9, 0)),
         })
         rule_id += 1
 
     # Store-level rules
-    for store in stores[:80]:  # 80 stores with rules
+    for store in sample_stores[:40]:  # 40 stores with rules
         for rule_type in rule_types:
             if r.random() < 0.6:  # 60% chance of store-specific rule
                 threshold = r.uniform(0.3, 0.8) if rule_type == "weight_tolerance" else r.uniform(0.05, 0.2)
@@ -141,7 +143,7 @@ def generate(g):
                     "threshold_unit": "kg" if rule_type == "weight_tolerance" else "percent",
                     "status": status,
                     "scan_exception_rate_pct": round(r.uniform(0.3, 5.0), 2),
-                    "updated_at": datetime.combine((g.as_of - timedelta(days=r.randint(1, 60))).date(), time(9, 0)),
+                    "updated_at": datetime.combine(g.as_of - timedelta(days=r.randint(1, 60)), time(9, 0)),
                 })
                 rule_id += 1
 

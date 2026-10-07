@@ -55,7 +55,7 @@ tools:
     args:
       sku: {required: true}
       store_id: {}
-      hours_back: {type: int, default: 72}
+      hours_back: {type: int, default: 72, desc: "Hours to look back"}
     sql: |
       SELECT DATE_TRUNC('hour', t.transaction_time) AS hour, t.store_id, s.name AS store_name,
              COUNT(*) AS transactions, SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 2) AS revenue_gbp,
@@ -64,11 +64,11 @@ tools:
       JOIN master.sites s ON t.store_id = s.site_id
       WHERE t.sku = $sku
         AND ($store_id IS NULL OR t.store_id = $store_id)
-        AND t.transaction_time >= $as_of - INTERVAL '24 HOUR' * CAST($hours_back AS INT)
+        AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - (CAST($hours_back AS INT) * INTERVAL 1 HOUR)
       GROUP BY ALL
       ORDER BY hour DESC, t.store_id
     limit: 100
-    example: {sku: "SKU-100234"}
+    example: {sku: "SKU-100070"}
 
   - name: get_period_sales_to_date_for_region
     desc: Period sales to date by region, with units, revenue and margin. Compares current period to last year.
@@ -77,13 +77,18 @@ tools:
       region: {}
       period: {type: str, default: "this period", desc: "Period name, e.g. this period, last 30 days, Q3"}
     sql: |
-      SELECT s.region, SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
-             ROUND(SUM(t.margin_gbp), 0) AS margin_gbp, ROUND(100.0 * SUM(t.margin_gbp) / SUM(t.revenue_gbp), 1) AS margin_pct
-      FROM sales_transactions t
-      JOIN master.sites s ON t.store_id = s.site_id
-      WHERE ($region IS NULL OR s.region = $region)
-        AND t.transaction_time >= $as_of - INTERVAL 30 DAY
-      GROUP BY s.region
+      WITH regional_sales AS (
+        SELECT s.region, SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
+               ROUND(SUM(t.margin_gbp), 0) AS margin_gbp
+        FROM sales_transactions t
+        JOIN master.sites s ON t.store_id = s.site_id
+        WHERE ($region IS NULL OR s.region = $region)
+          AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 30 DAY
+        GROUP BY s.region
+      )
+      SELECT region, units_sold, revenue_gbp, margin_gbp,
+             ROUND(100.0 * margin_gbp / NULLIF(revenue_gbp, 0), 1) AS margin_pct
+      FROM regional_sales
       ORDER BY revenue_gbp DESC
     limit: 20
     example: {region: "UK North"}
@@ -93,10 +98,10 @@ tools:
     kind: sql
     args:
       store_id: {required: true}
-      date_from: {type: date, default: "-30d"}
+      date_from: {type: date, default: "-30d", desc: "Start date"}
       date_to: {type: date, default: "today", desc: "End date (today if omitted)"}
     sql: |
-      SELECT CAST(t.transaction_time AS DATE) AS sale_date, COUNT(*) AS transactions,
+      SELECT t.store_id, CAST(t.transaction_time AS DATE) AS sale_date, COUNT(*) AS transactions,
              SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
              ROUND(SUM(t.margin_gbp), 0) AS margin_gbp, ROUND(100.0 * SUM(t.margin_gbp) / SUM(t.revenue_gbp), 1) AS margin_pct,
              ROUND(AVG(t.availability_pct), 1) AS avg_availability_pct
@@ -114,7 +119,7 @@ tools:
     kind: sql
     args:
       category: {required: true, desc: "Product category, e.g. Dresses"}
-      weeks_back: {type: int, default: 26}
+      weeks_back: {type: int, default: 26, desc: "Weeks to look back"}
     sql: |
       SELECT DATE_TRUNC('week', t.transaction_time) AS week_start, COUNT(DISTINCT t.sku) AS skus,
              SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
@@ -122,38 +127,38 @@ tools:
       FROM sales_transactions t
       JOIN master.products p ON t.sku = p.sku
       WHERE p.category = $category
-        AND t.transaction_time >= $as_of - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+        AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
       GROUP BY ALL
       ORDER BY week_start DESC
     limit: 50
-    example: {category: "Dresses"}
+    example: {category: "Tops"}
 
   - name: get_sales_mix_shift_for_category
     desc: Size and style mix by week for a category, showing how product assortment sales have shifted.
     kind: sql
     args:
-      category: {required: true}
-      weeks_back: {type: int, default: 13}
+      category: {required: true, desc: "Product category, e.g. Dresses"}
+      weeks_back: {type: int, default: 13, desc: "Weeks to look back"}
     sql: |
-      SELECT DATE_TRUNC('week', t.transaction_time) AS week, COALESCE(t.size, 'No Size') AS size, p.style_id,
+      SELECT DATE_TRUNC('week', t.transaction_time) AS week, COALESCE(t.size, 'No Size') AS size,
              SUM(t.quantity) AS units, ROUND(100.0 * SUM(t.quantity) / SUM(SUM(t.quantity)) OVER (PARTITION BY DATE_TRUNC('week', t.transaction_time)), 1) AS mix_pct
       FROM sales_transactions t
       JOIN master.products p ON t.sku = p.sku
       WHERE p.category = $category
-        AND t.transaction_time >= $as_of - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
-      GROUP BY ALL
+        AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+      GROUP BY DATE_TRUNC('week', t.transaction_time), t.size
       ORDER BY week DESC, mix_pct DESC
     limit: 100
-    example: {category: "Dresses"}
+    example: {category: "Lighting"}
 
   - name: get_pos_voids_and_refunds_for_store
     desc: Voids, refunds and discounts by till and employee at a store over the last 4 weeks.
     kind: sql
     args:
       store_id: {required: true}
-      date_from: {type: date, default: "-28d"}
+      date_from: {type: date, default: "-28d", desc: "Start date"}
     sql: |
-      SELECT e.employee_id, e.name, p.till_id, p.exception_type, COUNT(*) AS count,
+      SELECT p.store_id, e.employee_id, e.name, p.till_id, p.exception_type, COUNT(*) AS count,
              ROUND(SUM(p.amount_gbp), 0) AS amount_gbp, ROUND(AVG(p.amount_gbp), 2) AS avg_amount_gbp
       FROM pos_exceptions p
       LEFT JOIN master.employees e ON p.employee_id = e.employee_id
@@ -169,7 +174,7 @@ tools:
     kind: sql
     args:
       region: {required: true, desc: "Trading region, e.g. UK North"}
-      date_from: {type: date, default: "-42d"}
+      date_from: {type: date, default: "-42d", desc: "Start date"}
     sql: |
       SELECT s.site_id, s.name AS store_name, p.exception_type, COUNT(*) AS count,
              ROUND(SUM(p.amount_gbp), 0) AS amount_gbp
@@ -180,7 +185,7 @@ tools:
       GROUP BY ALL
       ORDER BY s.site_id, amount_gbp DESC
     limit: 100
-    example: {region: "UK North"}
+    example: {region: "Scotland"}
 
   - name: list_pos_exceptions
     desc: List voids, refunds and discounts by till, employee and reason. Filter by store, type, date or employee.
@@ -201,15 +206,14 @@ tools:
     kind: sql
     args:
       region: {}
-      weeks_back: {type: int, default: 13}
+      weeks_back: {type: int, default: 13, desc: "Weeks to look back"}
     sql: |
       WITH exc AS (
-        SELECT DATE_TRUNC('week', p.exception_time) AS week, s.region, p.exception_type,
+        SELECT DATE_TRUNC('week', p.exception_time) AS week, p.exception_type,
                SUM(p.amount_gbp) AS week_amount
         FROM pos_exceptions p
-        JOIN master.sites s ON p.store_id = s.site_id
-        WHERE p.exception_time >= $as_of - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
-          AND ($region IS NULL OR s.region = $region)
+        WHERE p.exception_time >= CAST($as_of AS TIMESTAMP) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+          AND ($region IS NULL OR p.region = $region)
         GROUP BY ALL
       )
       SELECT week, exception_type, ROUND(week_amount, 0) AS amount_gbp,
@@ -219,14 +223,14 @@ tools:
       FROM exc
       ORDER BY week DESC, exception_type
     limit: 100
-    example: {region: "UK North"}
+    example: {region: "Scotland"}
 
   - name: get_store_sell_through_ranking
     desc: Store ranking by sell-through % for a category or range. Shows the top and bottom 10 stores.
     kind: sql
     args:
-      category: {required: true}
-      days_back: {type: int, default: 30}
+      category: {required: true, desc: "Product category, e.g. Dresses"}
+      days_back: {type: int, default: 30, desc: "Days to look back"}
     sql: |
       SELECT s.site_id, s.name AS store_name, s.cluster, SUM(t.quantity) AS units_sold,
              COUNT(DISTINCT t.sku) AS skus_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
@@ -235,35 +239,35 @@ tools:
       JOIN master.sites s ON t.store_id = s.site_id
       JOIN master.products p ON t.sku = p.sku
       WHERE p.category = $category
-        AND t.transaction_time >= $as_of - CAST($days_back AS INT) * INTERVAL 1 DAY
+        AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - CAST($days_back AS INT) * INTERVAL 1 DAY
         AND s.type = 'store'
       GROUP BY ALL
       ORDER BY rank
     limit: 50
-    example: {category: "Dresses"}
+    example: {category: "Tops"}
 
   - name: get_size_curve_vs_sales
     desc: Size distribution (% of sales by size) for a category versus the expected curve, last 30 days.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Product category, e.g. Dresses"}
     sql: |
       SELECT COALESCE(t.size, 'No Size') AS size, SUM(t.quantity) AS units,
              ROUND(100.0 * SUM(t.quantity) / SUM(SUM(t.quantity)) OVER (), 1) AS sales_pct
       FROM sales_transactions t
       JOIN master.products p ON t.sku = p.sku
       WHERE p.category = $category
-        AND t.transaction_time >= $as_of - INTERVAL 30 DAY
+        AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 30 DAY
       GROUP BY t.size
       ORDER BY units DESC
     limit: 50
-    example: {category: "Dresses"}
+    example: {category: "Tops"}
 
   - name: get_availability_impact_on_sales
     desc: Calculate correlation between shelf availability and sales volume by product. Shows lost sales opportunity.
     kind: sql
     args:
-      days_back: {type: int, default: 30}
+      days_back: {type: int, default: 30, desc: "Days to look back"}
     sql: |
       WITH avail_buckets AS (
         SELECT t.sku, p.name, CASE
@@ -276,7 +280,7 @@ tools:
           ROUND(AVG(t.availability_pct), 1) AS avg_availability_pct
         FROM sales_transactions t
         JOIN master.products p ON t.sku = p.sku
-        WHERE t.transaction_time >= $as_of - CAST($days_back AS INT) * INTERVAL 1 DAY
+        WHERE t.transaction_time >= CAST($as_of AS TIMESTAMP) - CAST($days_back AS INT) * INTERVAL 1 DAY
         GROUP BY t.sku, p.name, availability_level
       )
       SELECT availability_level, COUNT(DISTINCT sku) AS sku_count, SUM(units) AS total_units,
@@ -303,7 +307,7 @@ tools:
              ROUND(AVG(r.scan_exception_rate_pct), 1) AS avg_exception_rate_pct,
              COUNT(DISTINCT r.rule_id) AS active_rules
       FROM self_checkout_rules r
-      JOIN master.sites s ON r.store_id = s.site_id
+      LEFT JOIN master.sites s ON r.store_id = s.site_id
       WHERE r.status = 'active'
         AND ($store_id IS NULL OR r.store_id = $store_id)
         AND ($rule_type IS NULL OR r.rule_type = $rule_type)
@@ -319,4 +323,4 @@ tools:
     set: {threshold_value: "{threshold_value}", updated_at: "$as_of"}
     args:
       threshold_value: {type: float, required: true, desc: "New threshold value"}
-    example: {rule_id: "SCR-000001", threshold_value: 0.5}
+    example: {rule_id: "SCR-900001", threshold_value: 0.7}

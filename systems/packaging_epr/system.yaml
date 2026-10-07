@@ -265,17 +265,18 @@ tools:
     args:
       country: {required: true}
       volume_tonnes: {type: float, required: true, desc: "Annual volume in tonnes"}
+      material: {type: str, default: plastic, desc: "Packaging material type"}
     sql: |
-      SELECT $country AS country, $volume_tonnes AS volume_tonnes,
-             COALESCE(SUM(s.fee_per_tonne_gbp), 0) AS epr_fee_per_tonne_gbp,
-             ROUND($volume_tonnes * COALESCE(SUM(s.fee_per_tonne_gbp), 0), 2) AS annual_epr_cost_gbp,
-             COALESCE(MAX(r.plastic_tax_pct), 0) AS plastic_tax_pct,
-             ROUND($volume_tonnes * 1000 * COALESCE(MAX(r.plastic_tax_pct), 0) / 100.0, 2) AS annual_plastic_tax_gbp,
-             ROUND($volume_tonnes * COALESCE(SUM(s.fee_per_tonne_gbp), 0) + $volume_tonnes * 1000 * COALESCE(MAX(r.plastic_tax_pct), 0) / 100.0, 2) AS total_annual_cost_gbp,
+      SELECT $country AS country, $volume_tonnes AS volume_tonnes, $material AS material,
+             COALESCE(s.fee_per_tonne_gbp, 0) AS epr_fee_per_tonne_gbp,
+             ROUND($volume_tonnes * COALESCE(s.fee_per_tonne_gbp, 0), 2) AS annual_epr_cost_gbp,
+             COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) AS plastic_tax_pct,
+             ROUND($volume_tonnes * 1000 * COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) / 100.0, 2) AS annual_plastic_tax_gbp,
+             ROUND($volume_tonnes * COALESCE(s.fee_per_tonne_gbp, 0) + $volume_tonnes * 1000 * COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) / 100.0, 2) AS total_annual_cost_gbp,
              'total_cost = (epr_fee_per_tonne * volume) + (plastic_tax_pct * volume * 1000 / 100)' AS formula
       FROM epr_fee_schedules s
-      LEFT JOIN packaging_regulations r ON r.country = s.country
       WHERE s.country = $country
+        AND s.material = $material
         AND s.effective_from <= CAST($as_of AS DATE)
         AND (s.effective_to IS NULL OR s.effective_to >= CAST($as_of AS DATE))
     limit: 1

@@ -22,7 +22,7 @@ def generate(g):
             "respondent_gender": r.choice(genders),
             "response_rating": r.randint(1, 5),
             "response_text": response_text,
-            "response_date": g.date_between(0, -180)
+            "response_date": g.date_between(180, 0)
         }
         survey_responses.append(response)
 
@@ -48,7 +48,7 @@ def generate(g):
             "waist_cm": base_waist + r.randint(-5, 5),
             "hip_cm": base_hip + r.randint(-5, 5),
             "height_cm": base_height + r.randint(-5, 5),
-            "survey_date": g.date_between(0, -365)
+            "survey_date": g.date_between(365, 0)
         }
         anthropometric.append(measurement)
 
@@ -104,7 +104,7 @@ def generate(g):
                 "typical_retail_margin_pct": margin,
                 "consumer_preference_notes": g.fake.sentence(nb_words=8),
                 "currency": "GBP" if country == "UK" else "EUR" if country in ["Poland", "Czechia", "Germany", "France", "Spain"] else "JPY",
-                "data_date": g.date_between(0, -90)
+                "data_date": g.date_between(90, 0)
             }
             market_data.append(market)
 
@@ -124,7 +124,7 @@ def generate(g):
                 "category_focus": r.choice(categories_comp),
                 "distance_m": r.randint(50, 2000),
                 "last_observed_activity": r.choice(activities),
-                "last_observed_date": g.date_between(0, -60)
+                "last_observed_date": g.date_between(60, 0)
             }
             local_competitors.append(comp)
 
@@ -139,7 +139,7 @@ def generate(g):
                 "event_id": f"EV-{i * 3 + j + 1:06d}",
                 "site_id": store,
                 "event_type": r.choice(event_types),
-                "event_date": g.date_between(-60, 0),  # Past and upcoming events
+                "event_date": g.date_between(60, 0),
                 "expected_visitor_impact": r.choice(impacts)
             }
             local_events.append(event)
@@ -151,7 +151,7 @@ def generate(g):
     road_works = []
     for i, store in enumerate(stores):
         for j in range(2):  # 2 road works per store
-            start = g.date_between(-30, -5)
+            start = g.date_between(30, 5)
             end = start + timedelta(days=r.randint(7, 60))
 
             work = {
@@ -171,7 +171,7 @@ def generate(g):
     market_launches = []
     for i, country in enumerate(launch_countries):
         for j, category in enumerate(launch_categories):
-            launch_date = g.date_between(-180, -365)
+            launch_date = g.date_between(365, 180)
             units = r.randint(5_000, 100_000)
             revenue = units * r.randint(10, 50)
             weeks_to_breakeven = r.randint(4, 26)

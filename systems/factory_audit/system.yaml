@@ -71,7 +71,7 @@ tools:
       status: {type: enum, values: [open, in_progress, closed, reopened], desc: "Filter by status"}
       severity: {type: enum, values: [critical, major, minor], desc: "Filter by severity"}
     sql: |
-      SELECT af.finding_id, af.audit_id, af.category, af.severity, af.description, af.status,
+      SELECT af.finding_id, af.factory_id, af.audit_id, af.category, af.severity, af.description, af.status,
              af.is_repeat, af.found_date, a.overall_score
       FROM audit_findings af
       JOIN audits a ON af.audit_id = a.audit_id
@@ -88,7 +88,7 @@ tools:
     args:
       factory_id: {required: true, desc: "Factory, e.g. FAC-0001"}
     sql: |
-      SELECT af.finding_id, af.audit_id, af.category, af.severity, af.description, af.status,
+      SELECT af.finding_id, af.factory_id, af.audit_id, af.category, af.severity, af.description, af.status,
              af.is_repeat, af.found_date, a.audit_date, a.overall_score
       FROM audit_findings af
       JOIN audits a ON af.audit_id = a.audit_id
@@ -101,7 +101,7 @@ tools:
     desc: Audit status and score for a supplier across all its factories. Use for sourcing decisions.
     kind: sql
     args:
-      supplier_id: {required: true, desc: "Supplier, e.g. SUP-0042"}
+      supplier_id: {required: true, desc: "Supplier, e.g. SUP-0001"}
     sql: |
       SELECT DISTINCT s.supplier_id, s.name, COUNT(DISTINCT a.audit_id) AS audit_count,
              MAX(a.audit_date) AS last_audit_date, MAX(a.overall_score) AS latest_score
@@ -110,7 +110,7 @@ tools:
       WHERE a.supplier_id = $supplier_id
       GROUP BY s.supplier_id, s.name
     limit: 1
-    example: {supplier_id: SUP-0042}
+    example: {supplier_id: SUP-0001}
 
   - name: list_audit_reports_for_factory
     desc: All audit reports for a factory, newest first. Shows audit history and trends.
@@ -123,7 +123,7 @@ tools:
     columns: [audit_id, audit_date, audit_type, overall_score, status, notes]
     order: audit_date DESC
     limit: 20
-    example: {factory_id: FAC-0107}
+    example: {factory_id: FAC-0001}
 
   - name: list_overdue_critical_findings
     desc: Critical findings past due date by factory. Use to prioritise escalation and follow-up.
@@ -131,7 +131,7 @@ tools:
     args:
       min_days_overdue: {type: int, default: 0, desc: "Only findings this many days overdue"}
     sql: |
-      SELECT af.finding_id, af.factory_id, af.category, af.description, ca.corrective_action_id,
+      SELECT af.finding_id, af.factory_id, af.category, af.severity, af.description, ca.corrective_action_id,
              ca.due_date, CAST($as_of AS DATE) - CAST(ca.due_date AS DATE) AS days_overdue,
              s.name AS supplier, ca.assigned_to
       FROM audit_findings af
@@ -158,7 +158,7 @@ tools:
     columns: [audit_id, factory_id, supplier_id, audit_date, audit_type, overall_score, status]
     order: audit_date DESC
     limit: 20
-    example: {factory_id: FAC-0107}
+    example: {factory_id: FAC-0001}
 
   - name: get_factory_audit_scores
     desc: Latest audit score for each factory. Use to identify quality risk by factory.
@@ -189,7 +189,7 @@ tools:
       supplier_id: {required: true}
       audit_type: {required: true, type: enum, values: [social, ethical, quality]}
       requested_by: {required: true}
-    example: {factory_id: FAC-0107, supplier_id: SUP-0042, audit_type: social, requested_by: EMP-01234}
+    example: {factory_id: FAC-0001, supplier_id: SUP-0001, audit_type: social, requested_by: EMP-00008}
 
   - name: create_corrective_action_plan
     desc: Create a corrective action plan record against a factory. Returns the new CAP.
@@ -204,7 +204,7 @@ tools:
       description: {required: true}
       assigned_to: {required: true}
       due_date: {required: true, type: date}
-    example: {finding_id: FND-900001, factory_id: FAC-0107, supplier_id: SUP-0042, description: Implement overtime controls, assigned_to: EMP-01234, due_date: "+30d"}
+    example: {finding_id: FND-900001, factory_id: FAC-0001, supplier_id: SUP-0001, description: Implement overtime controls, assigned_to: EMP-00008, due_date: "+30d"}
 
   - name: draft_corrective_action_plan
     desc: Draft corrective action plan with timelines and owners. Use to prepare formal CAP document.
@@ -220,7 +220,7 @@ tools:
       WHERE af.factory_id = $factory_id AND af.status IN ('open', 'in_progress')
       ORDER BY af.severity DESC
     limit: 50
-    example: {factory_id: FAC-0107}
+    example: {factory_id: FAC-0001}
 
   - name: draft_next_audit_focus_plan
     desc: Draft focus areas for the next audit. Use to plan follow-up audit scope.
@@ -235,7 +235,7 @@ tools:
       GROUP BY af.category
       ORDER BY finding_count DESC
     limit: 20
-    example: {factory_id: FAC-0107}
+    example: {factory_id: FAC-0001}
 
   - name: get_corrective_action_status
     desc: Status and ageing of corrective actions. Shows which CAPs are overdue or delayed.
@@ -253,7 +253,7 @@ tools:
         AND ($status IS NULL OR ca.status = $status)
       ORDER BY ca.due_date ASC, af.severity DESC
     limit: 50
-    example: {factory_id: FAC-0107, status: overdue}
+    example: {factory_id: FAC-0001, status: overdue}
 
   - name: compare_audit_findings_across_audits
     desc: Repeat and reopened findings across successive audits. Shows systemic issues.
@@ -275,14 +275,14 @@ tools:
         JOIN audits a ON af.audit_id = a.audit_id
         WHERE af.factory_id = $factory_id AND af.audit_id IN (SELECT audit_id FROM recent_audits)
       )
-      SELECT category, severity, is_repeat, COUNT(*) AS occurrence_count,
+      SELECT category, severity, is_repeat, status, COUNT(*) AS occurrence_count,
              STRING_AGG(DISTINCT finding_id, ', ') AS finding_ids
       FROM findings_with_rank
       WHERE is_repeat OR status = 'reopened'
-      GROUP BY category, severity, is_repeat
+      GROUP BY category, severity, is_repeat, status
       ORDER BY severity DESC, occurrence_count DESC
     limit: 20
-    example: {factory_id: FAC-0107}
+    example: {factory_id: FAC-0001}
 
   - name: update_audit_finding_status
     desc: Change the status or classification of an audit finding. Mark as closed, reopen, etc.
