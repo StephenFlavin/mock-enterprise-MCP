@@ -196,7 +196,7 @@ def generate(g):
         for n in names:
             for comp in r.sample([1, 2, 3, 4, 5, 6], 3):
                 promos = []
-                if r.random() < 0.08:
+                if r.random() < 0.0:  # no random background promotions: keeps period tools free of unrelated noise
                     k0 = r.randint(2, 11)
                     promos = [(k0, max(0, k0 - r.randint(1, 3)), r.choice(["percentage", "clearance"]), r.choice([10, 20, 30, 40]), "Seasonal offer")]
                 add(comp, "N%02d" % len(S), None, cat, cat, dept, n, "Own brand", "Everyday range", round(r.uniform(lo, hi), 2), promos=promos)

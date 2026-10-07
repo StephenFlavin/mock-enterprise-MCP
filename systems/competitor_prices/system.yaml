@@ -372,25 +372,25 @@ tools:
     example: {date_from: "-90d"}
 
   - name: get_competitor_price_response_history
-    desc: How competitors have historically responded to price shocks or market changes.
+    desc: How each competitor responded to past price shocks or market price rises, one row per event (price change, days to react, promotion used), newest first. Filter by event type and category.
     kind: sql
     args:
-      event_type: {type: str, desc: "Type of shock, e.g. tariff, cost_rise, seasonal", required: true}
-      date_from: {type: date, default: "-180d", desc: "Look back this far"}
+      event_type: {type: str, desc: "Type of shock: tariff, cost_rise, price_rise or seasonal (default all)"}
+      category: {type: str, desc: "Competitor product category, e.g. Small appliances (default all)"}
+      competitor_id: {}
+      date_from: {type: date, default: "-730d", desc: "Look back this far"}
     sql: |
-      SELECT c.competitor_id, c.name, prom.promo_type, cp.category,
-             ROUND(AVG(prom.discount_pct), 1) as avg_discount_pct,
-             COUNT(*) as promotion_count,
-             ROUND(AVG(prom.duration_days), 0) as avg_duration_days,
-             MAX(prom.promo_start) as last_promotion_date
-      FROM competitor_promotions prom
-      JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
-      JOIN competitors c ON c.competitor_id = prom.competitor_id
-      WHERE prom.promo_start >= CAST($date_from AS DATE)
-      GROUP BY c.competitor_id, c.name, prom.promo_type, cp.category
-      ORDER BY promotion_count DESC, avg_discount_pct DESC
+      SELECT e.event_date, e.event_type, e.event_desc, c.competitor_id, c.name AS competitor, e.category, e.response,
+             e.price_change_pct, e.response_lag_days, e.promo_support_pct, e.promo_weeks, e.notes
+      FROM competitor_price_events e
+      JOIN competitors c ON c.competitor_id = e.competitor_id
+      WHERE e.event_date >= CAST($date_from AS DATE)
+        AND ($event_type IS NULL OR e.event_type = lower($event_type))
+        AND ($category IS NULL OR e.category ILIKE '%' || $category || '%')
+        AND ($competitor_id IS NULL OR e.competitor_id = $competitor_id)
+      ORDER BY e.event_date DESC, e.price_change_pct DESC, c.competitor_id
     limit: 50
-    example: {event_type: "tariff", date_from: "-180d"}
+    example: {event_type: "tariff", date_from: "-730d"}
 
   - name: compare_markdown_to_competitors
     desc: Draft comparison of our products in a category against competitor clearance depth and timing. Use to see where our markdown is out of line.
@@ -556,71 +556,84 @@ tools:
     example: {category: "Small appliances"}
 
   - name: get_competitor_promotions_for_period
-    desc: Competitor promotions during a specific period. Shows promotional activity by type and depth.
+    desc: Competitor promotions that ran at any point during a period (overlapping it), with depth, dates and description. Filter by department or category to see what rivals ran against our event.
     kind: sql
     args:
       date_from: {type: date, default: "-30d", desc: "Period start"}
       date_to: {type: date, default: "+0d", desc: "Period end"}
+      department: {type: str, desc: "Our department the product sits in, e.g. Home, Menswear, Electricals (default all)"}
+      category: {type: str, desc: "Competitor product category, e.g. Men's jackets (default all)"}
       promo_type: {type: str, desc: "Filter by promotion type, default all"}
     sql: |
-      SELECT c.competitor_id, c.name, cp.category, cp.their_name,
+      SELECT c.competitor_id, c.name, cp.department, cp.category, cp.their_name,
              prom.promo_type, prom.discount_pct, prom.discount_gbp,
              prom.promo_start, prom.promo_end, prom.duration_days,
              prom.promo_description, prom.status
       FROM competitor_promotions prom
       JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
       JOIN competitors c ON c.competitor_id = prom.competitor_id
-      WHERE prom.promo_start >= CAST($date_from AS DATE)
-        AND prom.promo_end <= CAST($date_to AS DATE)
+      WHERE prom.promo_start <= CAST($date_to AS DATE)
+        AND prom.promo_end >= CAST($date_from AS DATE)
+        AND ($department IS NULL OR cp.department ILIKE $department)
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
         AND ($promo_type IS NULL OR prom.promo_type = $promo_type)
       ORDER BY prom.discount_pct DESC, prom.promo_start DESC
     limit: 100
     example: {date_from: "-30d"}
 
   - name: get_competitor_promotions_near_stores
-    desc: Competitor promotions active near our stores. Shows local promotional intensity around each location.
+    desc: Promotions running now at competitors that have an open store near our locations, with count and depth per site and category. Filter by site or sales region.
     kind: sql
     args:
-      site_id: {type: str, desc: "Our store location to check, default all"}
-      date_from: {type: date, default: "-30d", desc: "Period start"}
+      site_id: {type: str, desc: "Our store location to check, e.g. ST214; default all"}
+      region: {type: str, desc: "Our sales region to cover, e.g. Scotland, UK North; default all"}
+      date_from: {type: date, default: "-30d", desc: "Promotions started on or after"}
     sql: |
-      SELECT DISTINCT cs.site_id, c.competitor_id, c.name,
+      SELECT cs.site_id, c.competitor_id, c.name,
              COUNT(prom.promotion_id) as active_promotions,
              ROUND(AVG(prom.discount_pct), 1) as avg_discount,
              MAX(prom.discount_pct) as max_discount,
              cp.category
       FROM competitor_stores cs
+      JOIN master.sites s ON s.site_id = cs.site_id
       JOIN competitors c ON c.competitor_id = cs.competitor_id
       JOIN competitor_promotions prom ON prom.competitor_id = c.competitor_id
       JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
       WHERE prom.promo_start >= CAST($date_from AS DATE)
         AND prom.status = 'active'
+        AND prom.promo_end >= CAST($as_of AS DATE)
         AND ($site_id IS NULL OR cs.site_id = $site_id)
+        AND ($region IS NULL OR s.region ILIKE '%' || $region || '%')
         AND cs.status = 'open'
       GROUP BY cs.site_id, c.competitor_id, c.name, cp.category
-      ORDER BY cs.site_id, avg_discount DESC
-    limit: 50
-    example: {}
+      ORDER BY cs.site_id, avg_discount DESC, c.name
+    limit: 100
+    example: {site_id: "ST214"}
 
   - name: get_competitor_response_to_past_cost_shocks
-    desc: How competitors reacted to past cost/tariff shocks. Shows promotional depth and timing patterns.
+    desc: Per competitor summary of how they reacted to past cost or tariff shocks in a category - average price rise passed on, days to react, promotion used. Use before a cost-driven pricing decision.
     kind: sql
     args:
-      event_type: {type: str, default: "tariff", desc: "Type of shock: tariff, seasonal, or supply"}
-      date_from: {type: date, default: "-180d", desc: "Look back this far"}
+      event_type: {type: str, default: "tariff", desc: "Type of shock: tariff, cost_rise or price_rise"}
+      category: {type: str, desc: "Competitor product category, e.g. Small appliances (default all)"}
+      date_from: {type: date, default: "-730d", desc: "Look back this far"}
     sql: |
-      SELECT c.competitor_id, c.name,
-             COUNT(prom.promotion_id) as total_promotions,
-             ROUND(AVG(prom.discount_pct), 1) as avg_discount_depth,
-             MAX(prom.discount_pct) as max_discount,
-             ROUND(AVG(prom.duration_days), 0) as avg_duration_days,
-             COUNT(*) FILTER (WHERE prom.promo_type = 'clearance') as clearance_count,
-             prom.promo_type
-      FROM competitor_promotions prom
-      JOIN competitors c ON c.competitor_id = prom.competitor_id
-      WHERE prom.promo_start >= CAST($date_from AS DATE)
-      GROUP BY c.competitor_id, c.name, prom.promo_type
-      ORDER BY total_promotions DESC, avg_discount_depth DESC
+      SELECT c.competitor_id, c.name AS competitor, e.category, count(*) AS shocks_observed,
+             round(avg(e.price_change_pct), 1) AS avg_price_change_pct,
+             max(e.price_change_pct) AS max_price_change_pct,
+             round(avg(e.response_lag_days), 0) AS avg_days_to_react,
+             count(*) FILTER (WHERE e.response IN ('passed_on', 'matched')) AS fully_passed_on,
+             count(*) FILTER (WHERE e.response = 'partly_passed_on') AS partly_passed_on,
+             count(*) FILTER (WHERE e.response IN ('absorbed', 'held')) AS absorbed,
+             round(avg(e.promo_support_pct) FILTER (WHERE e.promo_support_pct > 0), 0) AS avg_promo_depth_pct,
+             max(e.event_date) AS latest_event
+      FROM competitor_price_events e
+      JOIN competitors c ON c.competitor_id = e.competitor_id
+      WHERE e.event_type = lower($event_type)
+        AND e.event_date >= CAST($date_from AS DATE)
+        AND ($category IS NULL OR e.category ILIKE '%' || $category || '%')
+      GROUP BY c.competitor_id, c.name, e.category
+      ORDER BY avg_price_change_pct DESC, c.competitor_id
     limit: 50
     example: {event_type: "tariff"}
 
@@ -648,7 +661,8 @@ tools:
              d.price_gbp < m.unit_cost_gbp AS below_our_cost
       FROM dated_prices d
       JOIN master.products m ON m.sku = d.sku
-      WHERE d.prev_price IS NOT NULL
+      WHERE m.status = 'active'
+        AND d.prev_price IS NOT NULL
         AND d.price_date >= CAST($date_from AS DATE)
         AND ABS(100.0 * (d.price_gbp - d.prev_price) / NULLIF(d.prev_price, 0)) >= $min_change_pct
       ORDER BY ABS(change_pct) DESC
@@ -660,7 +674,8 @@ tools:
     desc: Our price vs competitors for our top sellers. Shows which products are overpriced or underpriced.
     kind: sql
     args:
-      category: {type: str, desc: "Filter to category, default all"}
+      category: {type: str, desc: "Filter to competitor category, e.g. Pots and pans; default all"}
+      department: {type: str, desc: "Our department, e.g. Home, Electricals, Menswear; default all"}
       min_gap_pct: {type: float, default: 5, desc: "Minimum gap to show"}
     sql: |
       WITH matched_skus AS (
@@ -670,10 +685,11 @@ tools:
           AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
       ),
       our_prices AS (
-        SELECT mp.sku, mp.name, mp.retail_price_gbp, ms.category
+        SELECT mp.sku, mp.name, mp.retail_price_gbp, ms.category, mp.department
         FROM master.products mp
         JOIN matched_skus ms ON ms.sku = mp.sku
         WHERE mp.status = 'active'
+          AND ($department IS NULL OR mp.department ILIKE $department)
       ),
       comp_prices AS (
         SELECT cp.sku, ROUND(AVG(p.price_gbp), 2) as avg_comp_price,
@@ -687,7 +703,7 @@ tools:
           AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
         GROUP BY cp.sku
       )
-      SELECT oup.sku, oup.name, oup.category, oup.retail_price_gbp,
+      SELECT oup.sku, oup.name, oup.department, oup.category, oup.retail_price_gbp,
              ROUND(cp.avg_comp_price, 2) as competitor_avg_price,
              cp.min_comp_price, cp.max_comp_price, cp.num_competitors,
              ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) as gap_pct,
@@ -717,8 +733,8 @@ tools:
       FROM competitor_stores cs
       JOIN competitors c ON c.competitor_id = cs.competitor_id
       WHERE cs.site_id = $site_id
-        AND (cs.opening_date >= CAST($as_of AS DATE) - INTERVAL 12 MONTH
-             OR (cs.closing_date IS NOT NULL AND cs.closing_date >= CAST($as_of AS DATE) - INTERVAL 12 MONTH))
+        AND (cs.opening_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INTEGER)) MONTH
+             OR (cs.closing_date IS NOT NULL AND cs.closing_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INTEGER)) MONTH))
       ORDER BY COALESCE(cs.closing_date, cs.opening_date) DESC
     limit: 20
     example: {site_id: "ST214"}
@@ -756,21 +772,26 @@ tools:
     example: {}
 
   - name: search_competitor_openings_and_closures_near_stores
-    desc: Competitor store openings and closures near all our locations. For store impact analysis.
+    desc: Competitor store openings and closures near our locations, newest first, with site and competitor. Filter by sales region or site; for store impact analysis.
     kind: sql
     args:
+      region: {type: str, desc: "Our sales region to cover, e.g. Scotland, UK North; default all"}
+      site_id: {type: str, desc: "One of our stores, e.g. ST214; default all"}
       date_from: {type: date, default: "-180d", desc: "Look back this far"}
     sql: |
-      SELECT cs.site_id, cs.competitor_id, c.name, cs.opening_date, cs.closing_date, cs.status,
+      SELECT cs.site_id, s.name AS our_store, cs.competitor_id, c.name, cs.opening_date, cs.closing_date, cs.status,
              CASE WHEN cs.status = 'open' THEN 'Opening' ELSE 'Closure' END as event_type,
              COALESCE(cs.closing_date, cs.opening_date) as event_date
       FROM competitor_stores cs
       JOIN competitors c ON c.competitor_id = cs.competitor_id
+      JOIN master.sites s ON s.site_id = cs.site_id
       WHERE (cs.opening_date >= CAST($date_from AS DATE)
              OR cs.closing_date >= CAST($date_from AS DATE))
-      ORDER BY cs.site_id, event_date DESC
+        AND ($site_id IS NULL OR cs.site_id = $site_id)
+        AND ($region IS NULL OR s.region ILIKE '%' || $region || '%')
+      ORDER BY event_date DESC, cs.site_id
     limit: 100
-    example: {}
+    example: {region: "Scotland"}
 
   - name: search_competitor_openings_near_store
     desc: Competitor store openings and closures near a specific store location.
@@ -852,11 +873,12 @@ tools:
       material: {type: str, desc: "Material, e.g. recycled, wool"}
       silhouette: {type: str, desc: "Fit or shape, e.g. oversized, cropped"}
       brand: {type: str, desc: "Brand filter"}
+      department: {type: str, desc: "Our department the range sits in, e.g. Home, Womenswear, Electricals"}
     sql: |
       WITH latest AS (
         SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
       )
-      SELECT cp.competitor_product_id, c.competitor_id, c.name AS competitor, cp.their_name, cp.category, cp.subcategory,
+      SELECT cp.competitor_product_id, c.competitor_id, c.name AS competitor, cp.their_name, cp.department, cp.category, cp.subcategory,
              cp.colour, cp.material, cp.silhouette, cp.features, cp.brand, cp.launch_date, p.price_gbp AS current_price_gbp
       FROM competitor_products cp
       JOIN competitors c ON c.competitor_id = cp.competitor_id
@@ -868,6 +890,7 @@ tools:
         AND ($material IS NULL OR cp.material ILIKE '%' || $material || '%')
         AND ($silhouette IS NULL OR cp.silhouette ILIKE '%' || $silhouette || '%')
         AND ($brand IS NULL OR cp.brand ILIKE '%' || $brand || '%')
+        AND ($department IS NULL OR cp.department ILIKE $department)
       ORDER BY cp.category, c.competitor_id
     limit: 100
     example: {features: "insulated"}
