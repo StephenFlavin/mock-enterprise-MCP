@@ -13,7 +13,8 @@ tables:
       respondent_age_group: {type: str, desc: "Age group, e.g. 25-34"}
       respondent_region: {type: str, desc: "Region, e.g. UK, Germany, France, Spain"}
       respondent_gender: {type: str, desc: "Gender, e.g. male, female"}
-      response_rating: {type: int, desc: "Rating 1-5"}
+      response_rating: {type: int, desc: "Rating 1-5 (5 = most positive; on consumer priorities, 5 = coping well with cost pressure)"}
+      theme: {type: str, desc: "Main theme of the response, e.g. awareness, effort, price, waterproofing, trading down"}
       response_text: {type: str, desc: "Narrative response"}
       response_date: {type: date, desc: "Response date"}
 
@@ -48,11 +49,13 @@ tables:
       market_id: {type: str, desc: "Market id, e.g. MKT-000123"}
       country: {type: str, desc: "Country, e.g. Poland, Spain, Japan"}
       category: {type: str, desc: "Product category, e.g. home, outdoor clothing, small kitchen appliances"}
+      segment: {type: str, desc: "Sub-segment within the category, e.g. air fryers; all = whole category"}
       market_size_gbp: {type: float, desc: "Annual market size in GBP"}
       growth_pct_yoy: {type: float, desc: "Year-on-year growth percentage"}
       typical_pack_formats: {type: str, desc: "Common pack formats, semicolon-separated"}
       typical_retail_margin_pct: {type: float, desc: "Typical retail margin percentage"}
       consumer_preference_notes: {type: str, desc: "Key consumer preferences"}
+      price_points: {type: str, desc: "Typical retail price points in GBP equivalent, e.g. Core GBP 5-15"}
       currency: {type: str, desc: "Local currency if different from GBP"}
       data_date: {type: date, desc: "Date of data"}
 
@@ -60,20 +63,25 @@ tables:
     key: competitor_id
     cols:
       competitor_id: {type: str, desc: "Competitor id, e.g. LC-000123"}
-      site_id: {type: str, desc: "Store location"}
+      country: {type: str, desc: "Market country, e.g. UK, Japan"}
+      site_id: {type: str, desc: "Our store it is near; blank for market-level competitors"}
       competitor_name: {type: str, desc: "Competitor name"}
       category_focus: {type: str, desc: "Category focus, e.g. premium, discount, online"}
-      distance_m: {type: int, desc: "Distance in metres"}
+      distance_m: {type: int, desc: "Distance in metres from our store; blank for market-level rows"}
+      estimated_stores: {type: int, desc: "Estimated number of outlets in the market (0 = online only or closed)"}
       last_observed_activity: {type: str, desc: "Recent activity, e.g. price reduction, new opening"}
       last_observed_date: {type: date, desc: "Date of observation"}
+      opened_date: {type: date, desc: "When the competitor opened near our store, if recent"}
 
   local_events:
     key: event_id
     cols:
       event_id: {type: str, desc: "Event id, e.g. EV-000123"}
       site_id: {type: str, desc: "Store location"}
+      event_name: {type: str, desc: "Event name"}
       event_type: {type: str, desc: "Event type, e.g. festival, market, sports event"}
       event_date: {type: date, desc: "Event date"}
+      expected_attendance: {type: int, desc: "Expected attendance"}
       expected_visitor_impact: {type: str, desc: "Expected impact on store, e.g. high footfall increase"}
 
   road_works:
@@ -90,172 +98,199 @@ tables:
     key: launch_id
     cols:
       launch_id: {type: str, desc: "Launch id, e.g. LNC-000123"}
-      country: {type: str, desc: "Country launched"}
+      country: {type: str, desc: "Country launched, e.g. Italy, Ireland (comparable markets, not the ones being planned)"}
       category: {type: str, desc: "Product category"}
       launch_date: {type: date, desc: "Launch date"}
       total_units_sold: {type: int, desc: "Units sold in first year"}
-      total_revenue_gbp: {type: float, desc: "Revenue in GBP"}
+      total_revenue_gbp: {type: float, desc: "First-year revenue in GBP"}
+      investment_gbp: {type: float, desc: "Total launch investment in GBP"}
       breakeven_weeks: {type: int, desc: "Weeks to break even"}
+      launch_format: {type: str, desc: "How it launched, e.g. online plus 6 concessions"}
 
 tools:
   - name: search_survey_responses_by_topic
-    desc: "Survey responses on a topic. Filter by topic, age group or region."
+    desc: "Individual survey responses on a topic with theme, rating and verbatim text. Filter by topic, theme, age group or region."
     kind: select
     from: survey_responses
     filters:
       topic: {op: like}
-      respondent_age_group: {op: like}
+      theme: {op: like}
+      respondent_age_group: {}
       respondent_region: {}
     order: response_date DESC
     limit: 50
     example: {topic: resale}
 
   - name: search_survey_results_by_segment
-    desc: "Segment analysis: survey responses aggregated by age group and region. Shows counts and rating trends."
+    desc: "Survey responses for a topic summarised by age group and/or region: counts, average rating and the themes raised. Use split_by to group by age, region or both."
     kind: sql
     args:
-      topic: {required: true}
+      topic: {required: true, desc: "Survey topic, e.g. outdoor clothing, consumer priorities"}
       respondent_age_group: {}
       respondent_region: {}
+      split_by: {type: str, default: both, values: [both, age_group, region], desc: "Group results by age group, region or both"}
     sql: |
-      SELECT respondent_age_group, respondent_region, count(*) AS response_count,
-             round(avg(response_rating), 1) AS avg_rating
+      SELECT
+        CASE WHEN $split_by IN ('both', 'age_group') THEN respondent_age_group ELSE 'all ages' END AS age_group,
+        CASE WHEN $split_by IN ('both', 'region') THEN respondent_region ELSE 'all regions' END AS region,
+        count(*) AS response_count,
+        round(avg(response_rating), 2) AS avg_rating,
+        string_agg(DISTINCT theme, ', ') AS themes,
+        string_agg(DISTINCT response_text, ' | ') AS example_comments
       FROM survey_responses
       WHERE topic ILIKE '%' || $topic || '%'
         AND ($respondent_age_group IS NULL OR respondent_age_group = $respondent_age_group)
-        AND ($respondent_region IS NULL OR respondent_region = $respondent_region)
-      GROUP BY respondent_age_group, respondent_region
-      ORDER BY response_count DESC
-    limit: 20
-    example: {topic: "outdoor clothing"}
+        AND ($respondent_region IS NULL OR lower(respondent_region) = lower($respondent_region))
+      GROUP BY ALL
+      ORDER BY avg_rating, age_group, region
+    limit: 30
+    example: {topic: "outdoor clothing", respondent_age_group: "25-34"}
 
   - name: compare_survey_results_by_market
-    desc: "Compare survey responses between two regions for the same topic. Shows preference differences."
+    desc: "Compare survey responses between two regions for the same topic, by age group: ratings, themes and rating difference. Optional age group filter."
     kind: sql
     args:
-      topic: {required: true}
-      region_1: {type: str, required: true, desc: "First region to compare"}
-      region_2: {type: str, required: true, desc: "Second region to compare"}
+      topic: {required: true, desc: "Survey topic, e.g. outdoor clothing"}
+      region_1: {type: str, required: true, desc: "First region to compare, e.g. UK"}
+      region_2: {type: str, required: true, desc: "Second region to compare, e.g. Germany"}
+      respondent_age_group: {}
     sql: |
-      SELECT
-        r1.respondent_age_group, r1.respondent_region AS region_1, r1.avg_rating AS rating_region_1,
-        r2.respondent_region AS region_2, r2.avg_rating AS rating_region_2,
-        round(r2.avg_rating - r1.avg_rating, 1) AS rating_difference
-      FROM (
-        SELECT respondent_age_group, respondent_region, avg(response_rating) AS avg_rating
-        FROM survey_responses
-        WHERE topic ILIKE '%' || $topic || '%' AND respondent_region = $region_1
-        GROUP BY respondent_age_group, respondent_region
-      ) r1
-      FULL OUTER JOIN (
-        SELECT respondent_age_group, respondent_region, avg(response_rating) AS avg_rating
-        FROM survey_responses
-        WHERE topic ILIKE '%' || $topic || '%' AND respondent_region = $region_2
-        GROUP BY respondent_age_group, respondent_region
-      ) r2 ON r1.respondent_age_group = r2.respondent_age_group
-      ORDER BY r1.respondent_age_group, rating_difference DESC
+      WITH base AS (
+        SELECT * FROM survey_responses
+        WHERE topic ILIKE '%' || $topic || '%'
+          AND ($respondent_age_group IS NULL OR respondent_age_group = $respondent_age_group)
+      ), r1 AS (
+        SELECT respondent_age_group, count(*) AS n, round(avg(response_rating), 2) AS avg_rating,
+               string_agg(DISTINCT theme, ', ') AS themes, string_agg(DISTINCT response_text, ' | ') AS comments
+        FROM base WHERE lower(respondent_region) = lower($region_1) GROUP BY respondent_age_group
+      ), r2 AS (
+        SELECT respondent_age_group, count(*) AS n, round(avg(response_rating), 2) AS avg_rating,
+               string_agg(DISTINCT theme, ', ') AS themes, string_agg(DISTINCT response_text, ' | ') AS comments
+        FROM base WHERE lower(respondent_region) = lower($region_2) GROUP BY respondent_age_group
+      )
+      SELECT coalesce(r1.respondent_age_group, r2.respondent_age_group) AS age_group,
+             $region_1 AS region_1, r1.n AS responses_region_1, r1.avg_rating AS rating_region_1, r1.themes AS themes_region_1, r1.comments AS comments_region_1,
+             $region_2 AS region_2, r2.n AS responses_region_2, r2.avg_rating AS rating_region_2, r2.themes AS themes_region_2, r2.comments AS comments_region_2,
+             round(r2.avg_rating - r1.avg_rating, 2) AS rating_difference
+      FROM r1 FULL OUTER JOIN r2 ON r1.respondent_age_group = r2.respondent_age_group
+      ORDER BY age_group
     limit: 20
     example: {topic: "outdoor clothing", region_1: UK, region_2: Germany}
 
   - name: search_anthropometric_survey_data
-    desc: "Body measurements by country, gender and age group from anthropometric surveys. For size chart comparison."
+    desc: "Average body measurements (chest, waist, hip, height) by country, gender and age group from anthropometric surveys. For size chart comparison."
     kind: select
     from: anthropometric_measurements
     filters:
       country: {}
       gender: {}
       age_group: {}
-    order: survey_date DESC
+    order: country, gender, age_group
     limit: 50
     example: {country: GB, gender: female}
 
   - name: compare_size_chart_to_body_measurements
-    desc: "Compare our size charts to actual consumer body measurements. Shows fit gaps."
+    desc: "Compare our size chart to average body measurements: nearest chart size per country, gender and age group, with chest, waist and hip gaps, biggest gaps first. Country optional."
     kind: sql
     args:
-      category: {required: true, desc: "Product category, e.g. womenswear"}
-      country: {required: true, desc: "Country code, e.g. GB"}
+      category: {required: true, desc: "Product category, e.g. womenswear or menswear"}
+      country: {type: str, desc: "Country code, e.g. GB, DE, FR. Omit for all countries"}
     sql: |
-      SELECT
-        sc.size_label, am.age_group, am.gender,
-        am.chest_cm AS actual_chest, sc.chest_cm AS chart_chest,
-        round(sc.chest_cm - am.chest_cm, 1) AS chest_diff,
-        am.waist_cm AS actual_waist, sc.waist_cm AS chart_waist,
-        round(sc.waist_cm - am.waist_cm, 1) AS waist_diff,
-        am.hip_cm AS actual_hip, sc.hip_cm AS chart_hip,
-        round(sc.hip_cm - am.hip_cm, 1) AS hip_diff
-      FROM product_size_charts sc
-      CROSS JOIN anthropometric_measurements am
-      WHERE sc.category ILIKE '%' || $category || '%'
-        AND am.country = $country
-      ORDER BY sc.size_label, am.gender, am.age_group
-    limit: 50
-    example: {category: womenswear, country: GB}
+      WITH am AS (
+        SELECT * FROM anthropometric_measurements
+        WHERE ($country IS NULL OR country = upper($country))
+          AND gender = CASE WHEN lower($category) LIKE 'wom%' THEN 'female' WHEN lower($category) LIKE 'men%' THEN 'male' ELSE gender END
+      ), j AS (
+        SELECT am.country, am.gender, am.age_group, sc.size_label AS nearest_size,
+               am.chest_cm AS actual_chest, sc.chest_cm AS chart_chest, round(sc.chest_cm - am.chest_cm, 1) AS chest_diff,
+               am.waist_cm AS actual_waist, sc.waist_cm AS chart_waist, round(sc.waist_cm - am.waist_cm, 1) AS waist_diff,
+               am.hip_cm AS actual_hip, sc.hip_cm AS chart_hip, round(sc.hip_cm - am.hip_cm, 1) AS hip_diff,
+               row_number() OVER (PARTITION BY am.measurement_id ORDER BY abs(sc.chest_cm - am.chest_cm), sc.chest_cm) AS rn
+        FROM am CROSS JOIN product_size_charts sc
+        WHERE lower(sc.category) = CASE WHEN lower($category) LIKE 'wom%' THEN 'womenswear' WHEN lower($category) LIKE 'men%' THEN 'menswear' ELSE lower($category) END
+      )
+      SELECT country, gender, age_group, nearest_size, actual_chest, chart_chest, chest_diff,
+             actual_waist, chart_waist, waist_diff, actual_hip, chart_hip, hip_diff,
+             greatest(abs(chest_diff), abs(waist_diff), abs(hip_diff)) AS largest_gap_cm,
+             CASE WHEN abs(hip_diff) >= greatest(abs(chest_diff), abs(waist_diff)) THEN 'hip'
+                  WHEN abs(waist_diff) >= abs(chest_diff) THEN 'waist' ELSE 'chest' END AS largest_gap_on
+      FROM j WHERE rn = 1
+      ORDER BY largest_gap_cm DESC, country, age_group
+    limit: 30
+    example: {category: womenswear}
 
   - name: search_market_size_by_category
-    desc: "Market size and growth by category and country. Shows opportunities and typical margins."
+    desc: "Market size, growth and typical retail margin by category, sub-segment and country, largest first. Use to size opportunities within a category."
     kind: select
     from: market_data
     filters:
       category: {op: like}
+      segment: {op: like}
       country: {}
+    columns: [country, category, segment, market_size_gbp, growth_pct_yoy, typical_retail_margin_pct, consumer_preference_notes, price_points, data_date]
     order: market_size_gbp DESC
     limit: 50
-    example: {category: "kitchen"}
+    example: {category: "kitchen", country: UK}
 
   - name: get_market_size_and_growth_for_country
-    desc: "Market size, growth and key metrics for all categories in one country."
+    desc: "Market size, growth and typical margin for each category in one country, largest first."
     kind: select
     from: market_data
     filters:
       country: {}
+      category: {op: like}
+    columns: [country, category, segment, market_size_gbp, growth_pct_yoy, typical_retail_margin_pct, consumer_preference_notes, data_date]
     order: market_size_gbp DESC
     limit: 20
     example: {country: Spain}
 
   - name: get_market_size_and_pack_formats_for_country
-    desc: "Market size and typical pack formats for a country and category."
+    desc: "Market size, growth, typical pack formats and size preferences by category for one country. Optional category filter."
     kind: sql
     args:
       country: {required: true}
       category: {}
     sql: |
-      SELECT country, category, market_size_gbp, growth_pct_yoy, typical_pack_formats
+      SELECT country, category, segment, market_size_gbp, growth_pct_yoy, typical_pack_formats, consumer_preference_notes
       FROM market_data
-      WHERE country = $country
+      WHERE lower(country) = lower($country)
         AND ($category IS NULL OR category ILIKE '%' || $category || '%')
       ORDER BY market_size_gbp DESC
     limit: 20
     example: {country: Japan}
 
   - name: get_typical_retail_margins_for_market
-    desc: "Typical retail margins for a market (country and category)."
+    desc: "Typical retail margin percentage for a market, by category. Optional category filter."
     kind: sql
     args:
       country: {required: true}
-      category: {required: true}
+      category: {}
     sql: |
-      SELECT country, category, typical_retail_margin_pct, market_size_gbp, growth_pct_yoy
+      SELECT country, category, segment, typical_retail_margin_pct, market_size_gbp, growth_pct_yoy
       FROM market_data
-      WHERE country = $country AND category ILIKE '%' || $category || '%'
-      LIMIT 10
+      WHERE lower(country) = lower($country)
+        AND ($category IS NULL OR category ILIKE '%' || $category || '%')
+      ORDER BY market_size_gbp DESC
+    limit: 20
     example: {country: Poland, category: home}
 
   - name: get_consumer_preferences_and_price_points
-    desc: "Consumer preferences and typical retail margins for a market (country and category)."
+    desc: "Consumer preferences and typical retail price points for a market, by category, with market size and margin. Optional category filter."
     kind: sql
     args:
       country: {required: true}
-      category: {required: true}
+      category: {}
     sql: |
-      SELECT country, category, consumer_preference_notes, typical_retail_margin_pct, market_size_gbp
+      SELECT country, category, segment, consumer_preference_notes, price_points, currency, typical_retail_margin_pct, market_size_gbp
       FROM market_data
-      WHERE country = $country AND category ILIKE '%' || $category || '%'
-      LIMIT 10
+      WHERE lower(country) = lower($country)
+        AND ($category IS NULL OR category ILIKE '%' || $category || '%')
+      ORDER BY market_size_gbp DESC
+    limit: 20
     example: {country: Poland, category: home}
 
   - name: get_comparable_market_launch_results
-    desc: "Comparable market launch results: units, revenue and payback for similar categories and countries."
+    desc: "Results of our launches in comparable markets: units, first-year revenue, investment and weeks to break even. Filter by country or category."
     kind: select
     from: market_launches
     filters:
@@ -263,46 +298,58 @@ tools:
       category: {op: like}
     order: launch_date DESC
     limit: 50
-    example: {country: Spain}
+    example: {category: home}
 
   - name: search_local_competitors_in_market
-    desc: "Competitors active in a region or near a specific store, with recent activity."
+    desc: "Competitors in a country market or near one of our stores: focus, size, recent activity. Filter by country, store or focus."
     kind: select
     from: local_competitors
     filters:
+      country: {}
       site_id: {}
       category_focus: {op: like}
+    columns: [competitor_id, country, site_id, competitor_name, category_focus, distance_m, estimated_stores, last_observed_activity, last_observed_date, opened_date]
     order: last_observed_date DESC
     limit: 30
-    example: {site_id: ST214}
+    example: {country: Japan}
 
   - name: get_local_competitor_activity_for_store
-    desc: "Local competitor activity summary for a store: names, categories, distance and recent moves."
+    desc: "Local competitor activity for one store: names, focus, distance, when they opened and recent moves, nearest first."
     kind: select
     from: local_competitors
     filters:
       site_id: {}
+    columns: [competitor_id, site_id, competitor_name, category_focus, distance_m, last_observed_activity, last_observed_date, opened_date]
     order: distance_m ASC
     limit: 20
     example: {site_id: ST214}
 
   - name: search_local_events_near_store
-    desc: "Local events near a store: festivals, markets, sports events that could affect footfall."
+    desc: "Local events near a store (festivals, markets, sports) in a date window with expected attendance and footfall impact, soonest first."
     kind: select
     from: local_events
     filters:
       site_id: {}
       event_type: {op: like}
+      date_from: {col: event_date, op: ">=", type: date, default: "-0d", desc: "Earliest event date"}
+      date_to: {col: event_date, op: "<=", type: date, default: "+30d", desc: "Latest event date"}
     order: event_date ASC
     limit: 30
     example: {site_id: ST214}
 
   - name: search_road_works_near_store
-    desc: "Roadworks near a store that could affect access, with duration and impact."
-    kind: select
-    from: road_works
-    filters:
-      site_id: {}
-    order: start_date ASC
+    desc: "Roadworks near a store that overlap a date window, with dates, location and expected impact on access, soonest first."
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-0d", desc: "Start of window"}
+      date_to: {type: date, default: "+30d", desc: "End of window"}
+    sql: |
+      SELECT roadwork_id, site_id, start_date, end_date, location_description, expected_impact
+      FROM road_works
+      WHERE site_id = $site_id
+        AND start_date <= CAST($date_to AS DATE)
+        AND end_date >= CAST($date_from AS DATE)
+      ORDER BY start_date
     limit: 20
     example: {site_id: ST214}
