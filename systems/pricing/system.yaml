@@ -483,22 +483,35 @@ tools:
     example: {expected_uplift_pct: -10, baseline_daily_sales_units: 60}
 
   - name: calculate_promotion_roi_ranking
-    desc: Rank promotions by ROI (margin return per promotion investment).
+    desc: Rank promotions by ROI, the margin they return per point of discount we fund. Margin is actual where the promotion has run, planned otherwise, taken net of cannibalisation (the promotion's own, else its category's past average, else the overall average) and discount depth net of supplier funding. Covers promotions that ended within the lookback or start within the lookahead, cancelled ones excluded.
     kind: sql
     args:
-      lookback_days: {type: int, default: 90, desc: "Days of history to include"}
+      lookback_days: {type: int, default: 90, desc: "Days of history to include (0 for only promotions running or coming)"}
+      lookahead_days: {type: int, default: 90, desc: "Days ahead to include promotions that have not started"}
+      category: {desc: "Only this category. Omit for all"}
     sql: |
-      SELECT promotion_id, category,
-             round(actual_margin_gbp, 2) AS actual_margin_gbp,
-             round(planned_margin_gbp, 2) AS planned_margin_gbp,
-             round(CASE WHEN planned_margin_gbp > 0 THEN (actual_margin_gbp / planned_margin_gbp - 1) * 100 ELSE NULL END, 1) AS vs_plan_pct,
-             round(actual_uplift_pct, 1) AS actual_uplift_pct,
-             'ROI = margin generated / investment cost' AS formula
-      FROM promotions
-      WHERE status IN ('completed', 'cancelled')
-        AND end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
-      ORDER BY actual_margin_gbp DESC
-      LIMIT 20
+      WITH cat AS (
+        SELECT lower(category) AS category, avg(cannibalisation_pct) AS cann
+        FROM promotions WHERE status = 'completed' AND cannibalisation_pct IS NOT NULL GROUP BY 1),
+      base AS (
+        SELECT p.*, COALESCE(p.actual_margin_gbp, p.planned_margin_gbp) AS margin_gbp,
+               CASE WHEN p.actual_margin_gbp IS NULL THEN 'planned' ELSE 'actual' END AS margin_basis,
+               COALESCE(p.cannibalisation_pct, c.cann, (SELECT avg(cannibalisation_pct) FROM promotions WHERE status = 'completed')) AS cann_pct,
+               p.discount_depth_pct * (1 - COALESCE(p.supplier_funded_pct, 0) / 100.0) AS funded_depth_pct
+        FROM promotions p LEFT JOIN cat c ON c.category = lower(p.category)
+        WHERE p.status IN ('completed', 'active', 'scheduled', 'draft')
+          AND p.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
+          AND p.start_date <= CAST($as_of AS DATE) + INTERVAL (CAST($lookahead_days AS INT)) DAY
+          AND ($category IS NULL OR lower(p.category) = lower($category)))
+      SELECT promotion_id, event_name, category, status, round(discount_depth_pct, 1) AS discount_depth_pct,
+             round(supplier_funded_pct, 1) AS supplier_funded_pct, start_date, end_date, margin_basis,
+             round(margin_gbp, 2) AS margin_gbp, round(cann_pct, 1) AS cannibalisation_pct,
+             round(margin_gbp * (1 - cann_pct / 100.0), 2) AS net_margin_gbp,
+             CASE WHEN funded_depth_pct > 0 THEN round(margin_gbp * (1 - cann_pct / 100.0) / funded_depth_pct, 1) END AS roi_net_margin_per_funded_discount_point,
+             'ROI = net margin (after cannibalisation) per point of discount we fund (after supplier funding)' AS formula
+      FROM base
+      ORDER BY roi_net_margin_per_funded_discount_point DESC NULLS LAST, promotion_id
+      LIMIT 30
     example: {lookback_days: 90}
 
   - name: calculate_sales_lost_to_price_gaps
@@ -625,12 +638,16 @@ tools:
       category: {required: true}
       planned_discount_pct: {type: float, required: true, desc: "Discount % of planned promotion"}
     sql: |
-      SELECT category, promotion_type, discount_depth_pct,
+      SELECT promotion_id, event_name, category, promotion_type, discount_depth_pct,
+             start_date, dayname(start_date) AS start_weekday, end_date,
+             CAST((end_date - start_date) AS INT) + 1 AS duration_days,
+             round(planned_uplift_pct, 1) AS planned_uplift_pct,
              round(actual_uplift_pct, 1) AS past_uplift_pct,
+             round(planned_margin_gbp, 2) AS planned_margin_gbp,
              round(actual_margin_gbp, 2) AS past_margin_gbp,
-             status, end_date
+             status
       FROM promotions
-      WHERE category = $category
+      WHERE lower(category) = lower($category)
         AND status IN ('completed', 'cancelled')
         AND ABS(discount_depth_pct - $planned_discount_pct) < 5
       ORDER BY end_date DESC
@@ -945,19 +962,22 @@ tools:
     kind: sql
     args: {}
     sql: |
-      SELECT p.promotion_id, p.category,
-             p.discount_depth_pct, p.start_date, p.end_date,
+      SELECT p.promotion_id, p.event_name, p.category,
+             round(p.discount_depth_pct, 1) AS discount_depth_pct, p.start_date, p.end_date,
              round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
              round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
+             round(p.actual_uplift_pct - p.planned_uplift_pct, 1) AS uplift_variance_pct,
              round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
              round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
-             'Black Friday 2025 results' AS event
+             round(p.supplier_funded_pct, 1) AS supplier_funded_pct,
+             round(p.cannibalisation_pct, 1) AS cannibalisation_pct,
+             round(p.post_promo_dip_pct, 1) AS post_promo_dip_pct
       FROM promotions p
-      WHERE (p.start_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
-        AND p.start_date <= CAST($as_of AS DATE))
-        AND (p.promotion_type = 'percentage_discount' OR EXTRACT(MONTH FROM p.start_date) = 11)
-      ORDER BY p.start_date DESC
-      LIMIT 5
+      WHERE p.event_name = 'Black Friday' AND p.status = 'completed'
+        AND p.start_date >= (SELECT max(start_date) FROM promotions WHERE event_name = 'Black Friday' AND status = 'completed')
+                            - INTERVAL 30 DAY
+      ORDER BY p.start_date DESC, p.promotion_id
+      LIMIT 20
     example: {}
 
   - name: get_our_markdown_depth_and_timing
@@ -1255,14 +1275,16 @@ tools:
       category: {required: true}
       lookback_weeks: {type: int, default: 52, desc: "Weeks of history"}
     sql: |
-      SELECT promotion_id, category, promotion_type,
+      SELECT promotion_id, event_name, category, promotion_type,
              round(discount_depth_pct, 1) AS discount_depth_pct,
-             start_date, end_date,
-             CAST((end_date - start_date) AS INT) AS duration_days,
-             round(CAST((end_date - start_date) AS INT) / 7.0, 1) AS duration_weeks,
+             start_date, dayname(start_date) AS start_weekday, end_date,
+             CAST((end_date - start_date) AS INT) + 1 AS duration_days,
+             round((CAST((end_date - start_date) AS INT) + 1) / 7.0, 1) AS duration_weeks,
+             round(planned_uplift_pct, 1) AS planned_uplift_pct,
+             round(actual_uplift_pct, 1) AS actual_uplift_pct,
              status
       FROM promotions
-      WHERE category = $category
+      WHERE lower(category) = lower($category)
         AND end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
       ORDER BY start_date DESC
       LIMIT 50
@@ -1336,7 +1358,7 @@ tools:
     args:
       promotion_id: {required: true}
     sql: |
-      SELECT p.promotion_id, p.category,
+      SELECT p.promotion_id, p.event_name, p.category,
              round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
              round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
              round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
@@ -1344,6 +1366,14 @@ tools:
              CASE WHEN p.planned_margin_gbp > 0
                THEN round((p.actual_margin_gbp / p.planned_margin_gbp - 1) * 100, 1)
                ELSE NULL END AS margin_vs_plan_pct,
+             round(p.supplier_funded_pct, 1) AS supplier_funded_pct,
+             round(p.cannibalisation_pct, 1) AS cannibalisation_pct,
+             round(p.post_promo_dip_pct, 1) AS post_promo_dip_pct,
+             (SELECT count(*) FROM promotions h WHERE lower(h.category) = lower(p.category)
+                AND h.status = 'completed' AND h.promotion_id <> p.promotion_id) AS past_promotions_in_category,
+             (SELECT round(avg((h.actual_margin_gbp / h.planned_margin_gbp - 1) * 100), 1) FROM promotions h
+              WHERE lower(h.category) = lower(p.category) AND h.status = 'completed' AND h.planned_margin_gbp > 0
+                AND h.promotion_id <> p.promotion_id) AS category_past_margin_vs_plan_pct,
              p.status
       FROM promotions p
       WHERE p.promotion_id = $promotion_id
@@ -1355,15 +1385,19 @@ tools:
     args:
       promotion_id: {required: true}
     sql: |
-      SELECT p.promotion_id, p.category,
+      SELECT p.promotion_id, p.event_name, p.category, p.department,
+             round(p.discount_depth_pct, 1) AS discount_depth_pct,
              round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
              round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
              round(p.actual_uplift_pct - p.planned_uplift_pct, 1) AS uplift_variance_pct,
              round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
              round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
              round(p.actual_margin_gbp - p.planned_margin_gbp, 2) AS margin_variance_gbp,
+             round(p.cannibalisation_pct, 1) AS cannibalisation_pct,
+             round(p.post_promo_dip_pct, 1) AS post_promo_dip_pct,
              p.status,
-             p.start_date, p.end_date
+             p.start_date, p.end_date,
+             CAST((p.end_date - p.start_date) AS INT) + 1 AS days_running
       FROM promotions p
       WHERE p.promotion_id = $promotion_id
     example: {promotion_id: "PROMO-900002"}
@@ -1393,15 +1427,27 @@ tools:
 
   - name: list_promotions_in_calendar
     desc: List all promotions in the calendar for a date range. Use for seeing full promotional schedule.
-    kind: select
-    from: promotion_calendar
-    filters:
-      site_id: {}
-      start_date: {col: start_date, op: ">=", default: "-7d"}
-      end_date: {col: end_date, op: "<=", default: "+90d"}
-    columns: [promotion_id, site_id, category, promotion_type, start_date, end_date]
-    order: start_date
-    limit: 100
+    kind: sql
+    args:
+      site_id: {desc: "Only promotions running at this store. Omit for the whole chain"}
+      start_date: {type: date, default: "-7d", desc: "Promotions starting on or after"}
+      end_date: {type: date, default: "+90d", desc: "Promotions ending on or before"}
+    sql: |
+      SELECT pc.promotion_id, pr.event_name, pc.category, pc.promotion_type,
+             round(pr.discount_depth_pct, 1) AS discount_depth_pct,
+             round(pr.supplier_funded_pct, 1) AS supplier_funded_pct,
+             pc.start_date, pc.end_date,
+             COALESCE(pr.status, 'scheduled') AS status,
+             count(DISTINCT pc.site_id) AS store_count
+      FROM promotion_calendar pc LEFT JOIN promotions pr ON pr.promotion_id = pc.promotion_id
+      WHERE ($site_id IS NULL OR pc.site_id = $site_id)
+        AND pc.start_date >= CAST($start_date AS DATE)
+        AND pc.end_date <= CAST($end_date AS DATE)
+        AND COALESCE(pr.status, 'scheduled') <> 'cancelled'
+      GROUP BY pc.promotion_id, pr.event_name, pc.category, pc.promotion_type, pr.discount_depth_pct,
+               pr.supplier_funded_pct, pc.start_date, pc.end_date, pr.status
+      ORDER BY pc.start_date, pc.promotion_id
+      LIMIT 100
     example: {site_id: "ST001"}
 
   - name: list_promotions_next_six_weeks
@@ -1410,7 +1456,7 @@ tools:
     args:
       weeks_ahead: {type: int, default: 6, desc: "How many weeks ahead"}
     sql: |
-      SELECT DISTINCT p.promotion_id, p.category, p.promotion_type,
+      SELECT DISTINCT p.promotion_id, p.event_name, p.category, p.promotion_type,
              round(p.discount_depth_pct, 1) AS discount_depth_pct,
              p.start_date, p.end_date,
              round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
@@ -1418,7 +1464,7 @@ tools:
       FROM promotions p
       WHERE p.start_date >= CAST($as_of AS DATE)
         AND p.start_date < CAST($as_of AS DATE) + INTERVAL (CAST($weeks_ahead * 7 AS INT)) DAY
-        AND p.status IN ('scheduled', 'active')
+        AND p.status IN ('draft', 'scheduled', 'active')
       ORDER BY p.start_date
       LIMIT 50
     example: {weeks_ahead: 6}

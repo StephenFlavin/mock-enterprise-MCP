@@ -36,7 +36,7 @@ tables:
       old_bank_country: {type: str, desc: Previous bank country}
       new_bank_country: {type: str, desc: New bank country}
       requested_date: {type: date, desc: When the change was requested}
-      requested_by: {type: str, desc: Employee who requested}
+      requested_by: {type: str, desc: "Employee id, or supplier portal user id such as SUPP-00001, who requested"}
       approval_status: {type: enum, values: [pending, approved, rejected], desc: Approval status}
       approvals_count: {type: int, desc: Number of approvals received}
       first_payment_date: {type: date, desc: Date of first payment to new account}
@@ -210,30 +210,45 @@ tools:
     example: {vendor_id: VND-000048}
 
   - name: list_bank_detail_change_requests
-    desc: Bank detail change history and approval status. Shows requested changes, approval progress and first payments to new accounts.
-    kind: select
-    from: bank_detail_changes
-    filters:
+    desc: Bank detail change requests with requester, approvals received against the approvals the vendor requires, and days to first payment. Use to find under-approved changes.
+    kind: sql
+    args:
       vendor_id: {}
       approval_status: {}
-    columns: [change_id, vendor_id, old_bank_account, new_bank_account, requested_date, approval_status, approvals_count, first_payment_date]
-    order: requested_date DESC
+      date_from: {type: date, default: "-365d", desc: "Changes requested on or after"}
+    sql: |
+      SELECT b.change_id, b.vendor_id, v.name AS vendor_name, b.old_bank_country, b.new_bank_country,
+             b.requested_date, b.requested_by, b.approval_status, b.approvals_count,
+             v.control_approvals_required AS approvals_required,
+             greatest(v.control_approvals_required - b.approvals_count, 0) AS approvals_shortfall,
+             b.first_payment_date, b.first_payment_date - b.requested_date AS days_to_first_payment
+      FROM bank_detail_changes b JOIN vendors v ON v.vendor_id = b.vendor_id
+      WHERE ($vendor_id IS NULL OR b.vendor_id = $vendor_id)
+        AND ($approval_status IS NULL OR b.approval_status = $approval_status)
+        AND b.requested_date >= CAST($date_from AS DATE)
+      ORDER BY b.requested_date DESC
     limit: 50
     example: {approval_status: approved}
 
   - name: get_vendor_master_controls
-    desc: Vendor master data control settings, approval requirements and change audit trail.
+    desc: Vendor master control settings (approvals required, bank country, payment hold) plus bank changes in the last 12 months and how many were under-approved.
     kind: sql
     args:
       vendor_id: {}
       supplier_id: {}
     sql: |
-      SELECT vendor_id, supplier_id, name, country, bank_country, tax_id,
-             payment_terms_days, on_payment_hold, hold_reason, control_approvals_required, updated_at
-      FROM vendors
-      WHERE ($vendor_id IS NULL OR vendor_id = $vendor_id)
-        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
-      ORDER BY vendor_id
+      SELECT v.vendor_id, v.supplier_id, v.name, v.country, v.bank_country, v.tax_id,
+             v.payment_terms_days, v.on_payment_hold, v.hold_reason, v.control_approvals_required,
+             (SELECT count(*) FROM bank_detail_changes b
+               WHERE b.vendor_id = v.vendor_id AND b.requested_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY) AS bank_changes_12m,
+             (SELECT count(*) FROM bank_detail_changes b
+               WHERE b.vendor_id = v.vendor_id AND b.requested_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+                 AND b.approvals_count < v.control_approvals_required) AS under_approved_changes_12m,
+             v.updated_at
+      FROM vendors v
+      WHERE ($vendor_id IS NULL OR v.vendor_id = $vendor_id)
+        AND ($supplier_id IS NULL OR v.supplier_id = $supplier_id)
+      ORDER BY v.vendor_id
     limit: 50
     example: {supplier_id: SUP-0023}
 
@@ -571,18 +586,27 @@ tools:
     example: {}
 
   - name: get_goods_receipt_vs_invoice_discrepancies
-    desc: Goods receipt vs invoice mismatches by type (quantity, price or both). Shows control gaps.
+    desc: Goods receipt vs invoice mismatches (quantity, price or both) with supplier, receiving site and each supplier's over-billing total. Worst supplier first.
     kind: sql
     args:
       po_id: {desc: "Filter by PO (optional)"}
+      supplier_id: {}
       status: {desc: "Filter by status (optional)"}
+      date_from: {type: date, default: "-180d", desc: "Variance detected on or after"}
     sql: |
-      SELECT variance_id, po_id, invoice_id, quantity_variance, amount_variance_gbp,
-             variance_type, status, created_date
-      FROM goods_receipt_invoice_variance
-      WHERE ($po_id IS NULL OR po_id = $po_id)
-        AND ($status IS NULL OR status = $status)
-      ORDER BY created_date DESC
+      SELECT * FROM (
+        SELECT v.variance_id, pur.supplier_id, v.po_id, pur.dest_site_id, v.invoice_id, v.grn_quantity, v.invoice_quantity,
+               v.quantity_variance, v.amount_variance_gbp, v.variance_type, v.status, v.created_date,
+               count(*) FILTER (WHERE v.amount_variance_gbp > 0) OVER (PARTITION BY pur.supplier_id) AS supplier_overbilled_invoices,
+               round(sum(greatest(v.amount_variance_gbp, 0)) OVER (PARTITION BY pur.supplier_id), 2) AS supplier_overbilled_gbp
+        FROM goods_receipt_invoice_variance v
+        JOIN master.purchase_orders pur ON pur.po_id = v.po_id
+        WHERE ($po_id IS NULL OR v.po_id = $po_id)
+          AND ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+          AND ($status IS NULL OR v.status = $status)
+          AND v.created_date >= CAST($date_from AS DATE)
+      ) t
+      ORDER BY supplier_overbilled_gbp DESC, supplier_id, created_date DESC
     limit: 100
     example: {}
 
@@ -648,19 +672,34 @@ tools:
     example: {payment_run_id: RUN-900002, cancellation_reason: "Liquidity constraint"}
 
   - name: get_payment_runs_for_changed_vendors
-    desc: Payments made or queued to vendors whose bank details recently changed.
+    desc: Payments made or queued (open invoices with a scheduled date and payment run) to vendors whose bank details changed recently, with the change and its approvals.
     kind: sql
     args:
-      days_back: {type: int, default: 90, desc: "Look back this many days"}
+      days_back: {type: int, default: 90, desc: "Bank changes requested within this many days"}
+      vendor_id: {}
     sql: |
-      SELECT p.payment_id, p.supplier_id, p.vendor_id, p.amount_gbp, p.payment_date,
-             b.change_id, b.old_bank_account, b.new_bank_account, b.requested_date
-      FROM supplier_payments p
-      JOIN bank_detail_changes b ON b.vendor_id = p.vendor_id
-      WHERE p.payment_date >= b.requested_date
-        AND p.payment_date <= CAST($as_of AS DATE)
-        AND b.requested_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
-      ORDER BY b.requested_date DESC
+      SELECT * FROM (
+        SELECT b.vendor_id, v.supplier_id, v.name AS vendor_name, b.change_id, b.requested_date, b.requested_by,
+               b.old_bank_country, b.new_bank_country, b.approval_status, b.approvals_count,
+               v.control_approvals_required AS approvals_required, v.on_payment_hold,
+               'paid' AS payment_state, p.invoice_id, p.amount_gbp, p.payment_date, p.payment_run_id
+        FROM bank_detail_changes b
+        JOIN vendors v ON v.vendor_id = b.vendor_id
+        JOIN supplier_payments p ON p.vendor_id = b.vendor_id AND p.payment_date >= b.requested_date
+             AND p.payment_date <= CAST($as_of AS DATE)
+        UNION ALL
+        SELECT b.vendor_id, v.supplier_id, v.name, b.change_id, b.requested_date, b.requested_by,
+               b.old_bank_country, b.new_bank_country, b.approval_status, b.approvals_count,
+               v.control_approvals_required, v.on_payment_hold,
+               'queued', i.invoice_id, i.amount_gbp, i.scheduled_payment_date, i.payment_run_id
+        FROM bank_detail_changes b
+        JOIN vendors v ON v.vendor_id = b.vendor_id
+        JOIN invoices i ON i.vendor_id = b.vendor_id AND i.payment_status = 'open' AND i.scheduled_payment_date IS NOT NULL
+             AND i.scheduled_payment_date >= b.requested_date
+      ) t
+      WHERE requested_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
+        AND ($vendor_id IS NULL OR vendor_id = $vendor_id)
+      ORDER BY requested_date DESC, vendor_id, payment_date
     limit: 100
     example: {}
 

@@ -6,6 +6,7 @@ Deterministic stories (all dates are in data time and move to today at runtime):
   - freight cost: GBP 208,822 invoiced but not accrued (CAR-001/002/006/008) plus four miscoded freight invoices
   - payment performance: SUP-0053 pays on time; SUP-0012 is paid late by us
   - facilities: SUP-0014 / SUP-0026 / SUP-0067 monthly invoices, SUP-0067 with three one-off project invoices
+  - goods receipt vs invoice: SUP-0020 over-invoiced on five POs; SUP-0001 bank changed to India the day before the as-of date
   - vendor fraud: VND-000023 bank in HK, VND-000048 shared bank account + bank change before a payment, etc.
   - rebates: SUP-0001 / SUP-0015 / SUP-0008 volume agreements, SUP-0008 over-accrued last year
 Everything else is light, clean background noise.
@@ -15,7 +16,7 @@ from datetime import date, timedelta
 
 # supplier id -> overrides for the vendor master (score, indicators, bank country, tax id)
 OVR = {
-    "SUP-0001": dict(score=66, ind=["recent_bank_change", "bank_country_mismatch"], bank="NL"),
+    "SUP-0001": dict(score=66, ind=["recent_bank_change", "bank_country_mismatch"], bank="IN"),
     "SUP-0023": dict(score=82, ind=["bank_country_mismatch", "unverified_bank_account"], bank="HK"),
     "SUP-0027": dict(score=55, ind=["unusual_payment_terms"]),
     "SUP-0034": dict(score=64, ind=["new_vendor", "duplicate_name_similarity"], tax="TAX-518430"),
@@ -390,23 +391,50 @@ def generate(g):
         add_invoice(supplier=p["supplier_id"], inv_date=inv_date, amount=float(p["total_value"]) * r.uniform(0.97, 1.03),
                     po_id=p["po_id"], match=match, gl="5000", cc="CC-2113", desc="Goods invoice",
                     pay_days=terms + r.randint(-6, 6) if age > terms + 8 else None)
-    for n, inv in enumerate([i for i in invoices if i["three_way_match_status"] == "variance" and i["po_id"]][:8], 1):
+    # supplier fraud signal (loss prevention): SUP-0020 invoices more units than were received on five POs
+    # in the last ~4 months, every time; everyone else only has small, mixed quantity differences
+    STORY_GRN = "SUP-0020"
+    taken = {i["po_id"] for i in invoices if i["po_id"]}
+    story_pos = [p for p in pos if p["supplier_id"] == STORY_GRN and p["status"] in ("closed", "received")
+                 and p["po_id"] not in taken
+                 and (A - timedelta(days=150)).isoformat() <= p["order_date"] <= (A - timedelta(days=50)).isoformat()]
+    story_pos.sort(key=lambda p: p["po_id"])
+    story_pos = story_pos[:5]
+    assert len(story_pos) == 5
+    story_over = [260, 300, 220, 280, 240]
+    story_inv = {}
+    for p, over in zip(story_pos, story_over):
+        od = iso(p["order_date"])
+        inv_date = min(A - timedelta(days=6), od + timedelta(days=r.randint(25, 45)))
+        age = (A - inv_date).days
+        units = int(p["total_units"])
+        up = float(p["total_value"]) / units
+        inv = add_invoice(supplier=STORY_GRN, inv_date=inv_date, amount=(units + over) * up, po_id=p["po_id"], match="variance",
+                          gl="5000", cc="CC-2113", desc="Goods invoice", pay_days=62 if age > 70 else None)
+        story_inv[p["po_id"]] = (inv, units, over, up)
+    n = 0
+    for po_id, (inv, units, over, up) in story_inv.items():
+        n += 1
+        grn_amt = round(units * up, 2)
+        inv_amt = round((units + over) * up, 2)
+        grn.append({"variance_id": f"VAR-9{n:05d}", "po_id": po_id, "invoice_id": inv["invoice_id"], "grn_quantity": units,
+                    "invoice_quantity": units + over, "quantity_variance": over, "grn_amount_gbp": grn_amt,
+                    "invoice_amount_gbp": inv_amt, "amount_variance_gbp": round(inv_amt - grn_amt, 2),
+                    "variance_type": "quantity", "status": "pending" if n > 2 else "investigated",
+                    "created_date": inv["invoice_date"] + timedelta(days=5)})
+    for n, inv in enumerate([i for i in invoices if i["three_way_match_status"] == "variance" and i["po_id"]
+                             and i["supplier_id"] != STORY_GRN][:6], 1):
         po = next(p for p in pos if p["po_id"] == inv["po_id"])
         units = int(po["total_units"])
-        qv = r.choice([-40, -25, 0, 0, 30, 60])
-        gq = units
-        iq = units + qv
+        qv = r.choice([-25, -20, 20, 20, -40, 25])
         up = float(po["total_value"]) / units
-        pv = r.choice([0.0, 0.0, round(up * r.uniform(0.02, 0.06), 2)])
-        grn_amt = round(gq * up, 2)
-        inv_amt = round(iq * (up + pv), 2)
-        if qv == 0 and pv == 0:
-            qv, iq, inv_amt = 20, units + 20, round((units + 20) * up, 2)
-        vtype = "both" if qv and pv else "quantity" if qv else "price"
-        grn.append({"variance_id": f"VAR-{n:06d}", "po_id": inv["po_id"], "invoice_id": inv["invoice_id"], "grn_quantity": gq,
-                    "invoice_quantity": iq, "quantity_variance": iq - gq, "grn_amount_gbp": grn_amt, "invoice_amount_gbp": inv_amt,
-                    "amount_variance_gbp": round(inv_amt - grn_amt, 2), "variance_type": vtype,
-                    "status": r.choice(["pending", "pending", "investigated", "resolved"]), "created_date": inv["invoice_date"] + timedelta(days=5)})
+        grn_amt = round(units * up, 2)
+        inv_amt = round((units + qv) * up, 2)
+        grn.append({"variance_id": f"VAR-{n:06d}", "po_id": inv["po_id"], "invoice_id": inv["invoice_id"], "grn_quantity": units,
+                    "invoice_quantity": units + qv, "quantity_variance": qv, "grn_amount_gbp": grn_amt, "invoice_amount_gbp": inv_amt,
+                    "amount_variance_gbp": round(inv_amt - grn_amt, 2), "variance_type": "quantity",
+                    "status": r.choice(["pending", "investigated", "resolved", "resolved"]),
+                    "created_date": inv["invoice_date"] + timedelta(days=5)})
 
     return {
         "vendors": vendors, "bank_detail_changes": bank_changes, "invoices": invoices, "invoice_lines": lines,
