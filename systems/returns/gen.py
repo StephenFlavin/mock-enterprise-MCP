@@ -112,7 +112,7 @@ def generate(g):
 
         sku = r.choice(skus_in_order)
         prod = sku_map.get(sku, {})
-        category = prod.get("category", "Other")
+        category = prod.get("category", "Apparel")  # Default to Apparel which we have rules for
 
         # Item age when returned
         item_age_days = (return_date.date() - order_date.date()).days

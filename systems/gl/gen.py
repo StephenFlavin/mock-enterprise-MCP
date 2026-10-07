@@ -143,20 +143,22 @@ def generate(g):
 
     for cost_centre in cost_centres:
         for period in periods:
-            # 3-5 accounts per cost centre per period
-            for _ in range(g.rng.randint(3, 6)):
-                account = g.pick(accounts)
-                amount = g.rng.randint(5000, 50000)
-                budget = amount * g.rng.uniform(0.9, 1.1)
+            # Use each account only once per cost centre per period
+            used_accounts = set()
+            for account in g.pick(accounts, k=5):
+                if account not in used_accounts:
+                    used_accounts.add(account)
+                    amount = g.rng.randint(5000, 50000)
+                    budget = amount * g.rng.uniform(0.9, 1.1)
 
-                cost_centre_actuals.append({
-                    'cost_centre_id': cost_centre,
-                    'account_code': account,
-                    'period': period,
-                    'amount_gbp': round(amount, 2),
-                    'budget_gbp': round(budget, 2),
-                    'variance_gbp': round(amount - budget, 2),
-                })
+                    cost_centre_actuals.append({
+                        'cost_centre_id': cost_centre,
+                        'account_code': account,
+                        'period': period,
+                        'amount_gbp': round(amount, 2),
+                        'budget_gbp': round(budget, 2),
+                        'variance_gbp': round(amount - budget, 2),
+                    })
 
     # ===== Intercompany Transactions =====
     intercompany_transactions = []
@@ -242,6 +244,7 @@ def generate(g):
 
     # ===== Freight Costs =====
     freight_costs = []
+    shipment_ids = ['SHP-0000001', 'SHP-0000002', 'SHP-0000003', 'SHP-0000004', 'SHP-0000005']
     for _ in range(40):
         freight_id += 1
         cost = g.rng.randint(500, 5000)
@@ -251,7 +254,7 @@ def generate(g):
             'je_id': f'JE-{g.rng.randint(1, 150):06d}',
             'posting_date': g.date_between(30, 0),
             'account_code': f'{6000 + g.rng.randint(0, 99):05d}',
-            'shipment_id': f'SHP-{g.rng.randint(1000, 9999)}' if g.rng.random() > 0.3 else '',
+            'shipment_id': g.pick(shipment_ids) if g.rng.random() > 0.3 else '',
             'supplier_id': g.pick(suppliers)['supplier_id'] if suppliers else 'SUP-0001',
             'cost_gbp': round(cost, 2),
             'description': 'Inbound freight' if g.rng.random() > 0.5 else 'Outbound freight',
