@@ -1,0 +1,301 @@
+id: ecommerce
+name: E-commerce Platform
+instructions: >
+  Customer orders, delivery promises, pricing and marketing for online sales.
+  Order ids look like ECO-2026-0123456. Postcode areas use UK postcodes (e.g. SW1, SE1, M1).
+  Use it for online order volumes, conversion rates, delivery promises, price changes, and resale programme.
+
+tables:
+  ecommerce_orders:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "E-commerce order, e.g. ECO-2026-0123456"}
+      customer_id: {type: str, desc: "Customer, e.g. CUS-004512"}
+      sku: {type: str, desc: "SKU ordered"}
+      order_date: {type: date, desc: Order date}
+      channel: {type: enum, values: [web, app, marketplace], desc: Sales channel}
+      region: {type: str, desc: "Market region, e.g. UK, DE, FR, US"}
+      postcode_area: {type: str, desc: "UK postcode area, e.g. SW1, M1, B1"}
+      basket_value_gbp: {type: float, desc: Order value in GBP}
+      units: {type: int, desc: Units in order}
+      delivery_promise: {type: str, desc: "Promised delivery, e.g. next-day, standard"}
+      status: {type: enum, values: [placed, delivered, returned, cancelled], desc: Order status}
+      returned: {type: bool, desc: Whether the order was returned}
+      delivery_date: {type: date, desc: Actual delivery date}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  order_daily_volumes:
+    key: [region, date]
+    cols:
+      region: {type: str, desc: "Market region, e.g. UK, DE, FR, US"}
+      date: {type: date, desc: Order date}
+      units: {type: int, desc: Units ordered}
+      orders: {type: int, desc: Number of orders}
+      value_gbp: {type: float, desc: Total order value in GBP}
+      avg_basket_gbp: {type: float, desc: Average basket value}
+
+  market_metrics:
+    key: region
+    cols:
+      region: {type: str, desc: "Market region, e.g. UK, DE, FR, US"}
+      conversion_rate_pct: {type: float, desc: Conversion percentage}
+      return_rate_pct: {type: float, desc: Return rate percentage}
+      avg_basket_gbp: {type: float, desc: Average basket value in GBP}
+      is_cross_border: {type: bool, desc: Cross-border market}
+      measured_at: {type: date, desc: Measurement date}
+
+  peak_marketing_plans:
+    key: plan_id
+    cols:
+      plan_id: {type: str, desc: "Marketing plan, e.g. MKT-900001"}
+      region: {type: str, desc: "Market region, e.g. UK"}
+      campaign_name: {type: str, desc: Campaign name}
+      start_date: {type: date, desc: Campaign start}
+      end_date: {type: date, desc: Campaign end}
+      budget_gbp: {type: float, desc: Budget in GBP}
+      expected_uplift_pct: {type: float, desc: Expected traffic uplift percentage}
+      channels: {type: str, desc: "Marketing channels, comma-separated"}
+      target_segment: {type: str, desc: "Target customer segment"}
+      status: {type: enum, values: [planned, active, completed], desc: Status}
+
+  price_changes:
+    key: [sku, changed_at]
+    cols:
+      sku: {type: str, desc: "SKU"}
+      changed_at: {type: date, desc: Date price changed}
+      old_price_gbp: {type: float, desc: Previous price}
+      new_price_gbp: {type: float, desc: New price}
+      change_pct: {type: float, desc: Percentage change}
+      reason: {type: str, desc: Reason for change}
+
+  resale_listings:
+    key: listing_id
+    cols:
+      listing_id: {type: str, desc: "Resale listing, e.g. RSL-000123"}
+      sku: {type: str, desc: "SKU being resold"}
+      new_price_gbp: {type: float, desc: Price of new item in GBP}
+      resale_price_gbp: {type: float, desc: Resale listing price in GBP}
+      discount_pct: {type: float, desc: Discount vs new price"}
+      condition: {type: enum, values: [like_new, good, fair, poor], desc: Item condition}
+      listed_date: {type: date, desc: Listing date}
+      sold: {type: bool, desc: Whether item has sold}
+      views: {type: int, desc: Number of views}
+
+  parcel_volumes:
+    key: [destination_country, date]
+    cols:
+      destination_country: {type: str, desc: "Destination country code, e.g. GB, DE, FR, US"}
+      date: {type: date, desc: Parcel date}
+      parcels: {type: int, desc: Number of parcels}
+      value_gbp: {type: float, desc: Total parcel value in GBP}
+      avg_parcel_value_gbp: {type: float, desc: Average parcel value}
+
+  delivery_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Delivery rule, e.g. DLR-000123"}
+      postcode_area: {type: str, desc: "UK postcode area, e.g. SW1, M1"}
+      delivery_promise: {type: str, desc: "Delivery promise, e.g. next-day, standard, 2-3 days"}
+      next_day_enabled: {type: bool, desc: Next-day delivery available}
+      cutoff_date: {type: date, desc: Peak season delivery cutoff date}
+      cutoff_time: {type: str, desc: "Cutoff time, e.g. 14:00"}
+      status: {type: enum, values: [active, archived], desc: Rule status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: get_conversion_and_basket_history_by_market
+    desc: Conversion rate and average basket by market over time. Use to compare performance.
+    kind: sql
+    args:
+      region: {desc: "Market region"}
+      date_from: {type: date, default: "-90d", desc: "Data from"}
+    sql: |
+      SELECT m.region, m.conversion_rate_pct, m.return_rate_pct, m.avg_basket_gbp,
+             m.is_cross_border, m.measured_at,
+             'conversion = orders / sessions (approx), return_rate = returned / delivered' AS formula
+      FROM market_metrics m
+      WHERE ($region IS NULL OR m.region = $region)
+        AND m.measured_at >= CAST($date_from AS DATE)
+      ORDER BY m.measured_at DESC
+    limit: 50
+    example: {region: UK}
+
+  - name: get_cross_border_order_baskets
+    desc: Cross-border orders and basket values for markets outside UK. Returns volume and average basket.
+    kind: sql
+    args:
+      region: {desc: "Market region, e.g. DE, FR, US"}
+      basket_min_gbp: {type: float, desc: "Minimum basket value"}
+    sql: |
+      SELECT eo.region, count(*) AS orders, round(avg(eo.basket_value_gbp), 2) AS avg_basket_gbp,
+             round(sum(eo.basket_value_gbp), 2) AS total_value_gbp, round(sum(eo.units), 0) AS total_units
+      FROM ecommerce_orders eo
+      WHERE eo.region != 'UK'
+        AND ($region IS NULL OR eo.region = $region)
+        AND ($basket_min_gbp IS NULL OR eo.basket_value_gbp >= $basket_min_gbp)
+      GROUP BY eo.region
+      ORDER BY total_value_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: get_delivery_promise_changes
+    desc: Recent changes to delivery promises. Use to see what promises we are currently offering.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Changes since"}
+    sql: |
+      SELECT pc.sku, pc.changed_at, pc.old_price_gbp, pc.new_price_gbp, pc.change_pct, pc.reason
+      FROM price_changes pc
+      WHERE pc.changed_at >= CAST($date_from AS DATE)
+      ORDER BY pc.changed_at DESC
+    limit: 50
+    example: {}
+
+  - name: get_ecom_order_volumes_and_mix
+    desc: E-commerce order volumes and basket mix by region. Use to forecast demand or analyze growth.
+    kind: sql
+    args:
+      region: {desc: "Market region"}
+      date_from: {type: date, default: "-90d", desc: "Orders from"}
+    sql: |
+      SELECT od.region, od.date, od.orders, od.units, round(od.value_gbp, 2) AS value_gbp,
+             round(od.avg_basket_gbp, 2) AS avg_basket_gbp
+      FROM order_daily_volumes od
+      WHERE ($region IS NULL OR od.region = $region)
+        AND od.date >= CAST($date_from AS DATE)
+      ORDER BY od.date DESC
+    limit: 100
+    example: {region: UK}
+
+  - name: get_marketing_plan_for_peak
+    desc: Peak season marketing plans with budget, uplift expectations and timing. Use to forecast peak demand.
+    kind: sql
+    args:
+      region: {desc: "Market region"}
+    sql: |
+      SELECT plan_id, region, campaign_name, start_date, end_date, budget_gbp, expected_uplift_pct,
+             channels, target_segment, status
+      FROM peak_marketing_plans
+      WHERE ($region IS NULL OR region = $region)
+        AND status IN ('planned', 'active')
+      ORDER BY start_date ASC
+    limit: 20
+    example: {region: UK}
+
+  - name: get_orders_by_postcode_area
+    desc: Orders by UK postcode area with volumes and basket values. Use to assess delivery and next-day service.
+    kind: sql
+    args:
+      postcode_area: {desc: "UK postcode area, e.g. SW1, M1"}
+      date_from: {type: date, default: "-60d", desc: "Orders from"}
+    sql: |
+      SELECT eo.postcode_area, count(*) AS orders, round(sum(eo.units), 0) AS units,
+             round(sum(eo.basket_value_gbp), 2) AS total_value_gbp, round(avg(eo.basket_value_gbp), 2) AS avg_basket_gbp,
+             round(count(*) FILTER (WHERE eo.delivery_promise = 'next-day') * 100.0 / count(*), 1) AS next_day_pct
+      FROM ecommerce_orders eo
+      WHERE ($postcode_area IS NULL OR eo.postcode_area = $postcode_area)
+        AND eo.order_date >= CAST($date_from AS DATE)
+      GROUP BY eo.postcode_area
+      ORDER BY orders DESC
+    limit: 50
+    example: {}
+
+  - name: get_parcel_volumes_by_destination
+    desc: Parcel counts and values by destination country. Use to plan carrier capacity and customs processing.
+    kind: sql
+    args:
+      destination_country: {desc: "Destination country code, e.g. GB, DE, FR"}
+    sql: |
+      SELECT pv.destination_country, pv.date, pv.parcels, round(pv.value_gbp, 2) AS value_gbp,
+             round(pv.avg_parcel_value_gbp, 2) AS avg_parcel_value_gbp
+      FROM parcel_volumes pv
+      WHERE ($destination_country IS NULL OR pv.destination_country = $destination_country)
+      ORDER BY pv.date DESC
+    limit: 50
+    example: {}
+
+  - name: get_price_changes_for_top_products
+    desc: Price changes for top products over time. Use to assess promotion effectiveness and margin impact.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Price changes since"}
+    sql: |
+      SELECT pc.sku, pc.changed_at, pc.old_price_gbp, pc.new_price_gbp, pc.change_pct, pc.reason
+      FROM price_changes pc
+      WHERE pc.changed_at >= CAST($date_from AS DATE)
+      ORDER BY pc.changed_at DESC, pc.sku ASC
+    limit: 50
+    example: {}
+
+  - name: get_resale_listing_price_vs_new_price
+    desc: Resale listings with new vs resale prices. Use to analyze discount depth and price positioning.
+    kind: sql
+    args:
+      discount_min_pct: {type: float, desc: "Minimum discount percentage"}
+    sql: |
+      SELECT rl.listing_id, rl.sku, rl.new_price_gbp, rl.resale_price_gbp, rl.discount_pct,
+             rl.condition, rl.sold, rl.views, rl.listed_date
+      FROM resale_listings rl
+      WHERE ($discount_min_pct IS NULL OR rl.discount_pct >= $discount_min_pct)
+      ORDER BY rl.discount_pct DESC, rl.views DESC
+    limit: 100
+    example: {}
+
+  - name: get_return_rates_by_market
+    desc: Return rates by market. Use to analyze return behaviour and trial charge strategies.
+    kind: sql
+    args:
+      region: {desc: "Market region"}
+    sql: |
+      SELECT m.region, m.return_rate_pct, m.conversion_rate_pct, m.avg_basket_gbp,
+             m.measured_at, m.is_cross_border,
+             'return_rate = returned orders / delivered orders' AS formula
+      FROM market_metrics m
+      WHERE ($region IS NULL OR m.region = $region)
+      ORDER BY m.return_rate_pct DESC
+    limit: 20
+    example: {}
+
+  - name: get_top_products_by_sales
+    desc: Top products by sales volume and value. Use to analyze bestsellers and price positioning.
+    kind: select
+    from: master.products
+    filters:
+      department: {op: like}
+      category: {op: like}
+      status: {}
+    columns: [sku, style_id, name, category, supplier_id, retail_price_gbp, status]
+    order: retail_price_gbp DESC
+    limit: 200
+    example: {}
+
+  - name: update_delivery_cutoff_dates_on_site
+    desc: Set peak-period delivery cut-off dates displayed on the site. Writes to delivery rules.
+    kind: update
+    table: delivery_rules
+    set: {cutoff_date: "{cutoff_date}", cutoff_time: "{cutoff_time}"}
+    args:
+      postcode_area: {required: true}
+      cutoff_date: {type: date, required: true, desc: "Delivery cutoff date"}
+      cutoff_time: {required: true, desc: "Cutoff time, e.g. 14:00"}
+    example: {rule_id: DLR-900001, postcode_area: SW1, cutoff_date: "+14d", cutoff_time: "14:00"}
+
+  - name: update_delivery_promise_rule
+    desc: Change the delivery promise or cut-off rule shown at checkout. Updates the promise for a postcode area.
+    kind: update
+    table: delivery_rules
+    set: {delivery_promise: "{delivery_promise}"}
+    args:
+      postcode_area: {required: true}
+      delivery_promise: {required: true, desc: "New delivery promise, e.g. next-day, standard, 2-3 days"}
+    example: {rule_id: DLR-900002, postcode_area: M1, delivery_promise: "next-day"}
+
+  - name: update_next_day_postcode_eligibility
+    desc: Enable or disable next-day delivery for a postcode area. Updates eligibility at checkout.
+    kind: update
+    table: delivery_rules
+    set: {next_day_enabled: "{next_day_enabled}"}
+    args:
+      postcode_area: {required: true}
+      next_day_enabled: {type: bool, required: true, desc: "Enable next-day delivery"}
+    example: {rule_id: DLR-900003, postcode_area: B1, next_day_enabled: true}

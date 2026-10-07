@@ -1,5 +1,5 @@
 """AR system: customer invoices, payments, credit accounts and collection patterns."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import random
 
 
@@ -145,8 +145,7 @@ def generate(g):
     for cid, stats in customer_stats.items():
         # Generate last 52 weeks of collection data
         for weeks_back in range(0, 52, 4):  # Every 4 weeks
-            recorded_on_date = datetime.combine(g.as_of, datetime.min.time()) - timedelta(weeks=weeks_back)
-            recorded_on = recorded_on_date.date()
+            recorded_on = g.as_of - timedelta(weeks=weeks_back)
 
             # Simulate customer invoices in that period
             period_invoices = r.randint(2, 8)
@@ -171,14 +170,17 @@ def generate(g):
             cid = cust["customer_id"]
             policy_id = f"INS-{len(credit_insurance) + 1:05d}"
 
+            policy_start = g.as_of - timedelta(days=r.randint(60, 365))
+            policy_end = g.as_of + timedelta(days=r.randint(60, 365))
+
             credit_insurance.append({
                 "policy_id": policy_id,
                 "customer_id": cid,
                 "insurer": r.choice(["Atradius", "Coface", "AXA Credit Insurance", "Zurich"]),
                 "cover_limit_gbp": r.choice([50000, 100000, 200000, 500000]),
                 "cover_percentage_pct": r.choice([80, 90, 95]),
-                "policy_start": (g.as_of - timedelta(days=r.randint(60, 365))).date(),
-                "policy_end": (g.as_of + timedelta(days=r.randint(60, 365))).date(),
+                "policy_start": policy_start,
+                "policy_end": policy_end,
                 "status": "active",
                 "updated_at": g.as_of
             })

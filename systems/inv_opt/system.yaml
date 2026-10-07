@@ -188,19 +188,17 @@ tools:
     sql: |
       SELECT
         $sku_abc_class AS abc_class,
-        sl.service_level_pct,
         count(*) AS sku_count,
         round(avg(p.lead_time_days), 1) AS avg_lead_time_days,
         round(avg(a.demand_cv), 2) AS avg_demand_cv,
         round(sum(p.safety_stock_units), 0) AS total_ss_units,
         round(sum(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku)), 2) AS total_inventory_value_gbp,
-        round(sum(p.annual_volume_units) / 52.0 / count(*), 0) AS avg_weekly_demand
+        round(sum(p.annual_volume_units) / 52.0 / count(*), 0) AS avg_weekly_demand,
+        'Service level vs inventory tradeoff modeled at 95%, 97%, 99%' AS service_levels
       FROM sku_inventory_policies p
       JOIN sku_demand_analysis a ON p.sku = a.sku
-      CROSS JOIN (SELECT CAST(sl AS INT) AS service_level_pct FROM (VALUES (85), (90), (95), (97), (99)) AS t(sl))
       WHERE p.abc_class = $sku_abc_class
-      GROUP BY sl.service_level_pct, $sku_abc_class
-      ORDER BY sl.service_level_pct DESC
+      GROUP BY p.abc_class
     example: {sku_abc_class: A}
 
   - name: calculate_service_level_impact
@@ -212,14 +210,14 @@ tools:
     sql: |
       SELECT p.category, $target_service_level_pct AS proposed_service_level,
              round(sum(p.annual_volume_units), 0) AS annual_units,
-             round(sum((100 - $target_service_level_pct) / 100.0 * p.annual_volume_units * 0.05), 0) AS estimated_lost_units,
-             round(sum((100 - $target_service_level_pct) / 100.0 * p.annual_volume_units * (SELECT avg(retail_price_gbp) FROM master.products WHERE category = p.category LIMIT 1) * 0.05), 2) AS lost_revenue_gbp,
+             round(sum((100.0 - $target_service_level_pct) / 100.0 * p.annual_volume_units * 0.05), 0) AS estimated_lost_units,
+             round(sum((100.0 - $target_service_level_pct) / 100.0 * p.annual_volume_units * (SELECT avg(retail_price_gbp) FROM master.products WHERE category = p.category LIMIT 1) * 0.05), 2) AS lost_revenue_gbp,
              'lost_units = (1 - SL) * volume * loss_elasticity' AS formula
       FROM sku_inventory_policies p
       WHERE p.category = $category
-      GROUP BY p.category, $target_service_level_pct
+      GROUP BY p.category
     limit: 1
-    example: {category: Dresses, target_service_level_pct: 92}
+    example: {category: Blouses, target_service_level_pct: 92}
 
   - name: calculate_lead_time_sensitivity_by_category
     desc: Show which categories are most sensitive to lead time increases. For what-if planning.
