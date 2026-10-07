@@ -337,7 +337,7 @@ def generate(g):
         F("FCT-000002", "TRD-000002", "AW27", "US",
           "US led the UK by about ten weeks and is already easing; by AW27 oversized is replenishment only in the US.", "high"),
         F("FCT-000003", "TRD-000001", "AW27", "UK",
-          "Quiet luxury is in decline, with search down about 50% from peak. Premium basics survive as a quality position but the understated styling cue fades over the next 9-12 months to mid 2027.", "medium"),
+          "Quiet luxury is in decline, with search down about 50% from peak. Premium basics survive as a quality position but the understated styling cue fades over the next 9-12 months to mid 2027 and is replaced by bold maximalism (colour, print and statement texture).", "medium"),
         F("FCT-000004", "TRD-000008", "AW27", "UK",
           "Bold maximalism (colour, print, statement texture) replaces quiet luxury over the next 12-18 months, peaking around mid 2027 and lasting into 2028.", "medium"),
         F("FCT-000005", "TRD-000009", "AW27", "UK",
