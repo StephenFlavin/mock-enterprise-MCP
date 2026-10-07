@@ -105,14 +105,14 @@ def generate(g):
     for partner in partners[:20]:
         # Most partners support multiple message types
         supported_types = r.sample(message_types, k=r.randint(2, len(message_types)))
-        last_msg = r.choice(messages)
-        last_msg_date = last_msg["sent_at"] if messages else datetime.now()
+        last_msg = r.choice(messages) if messages else None
+        last_msg_date = last_msg["sent_at"] if last_msg else g.as_of
 
         # Count recent errors (failed or reprocessing from last 7 days)
         recent_errors = sum(1 for m in messages
                            if m["partner_id"] == partner["partner_id"]
                            and m["status"] in ("failed", "reprocessing")
-                           and (datetime.now() - m["sent_at"]).days <= 7)
+                           and (g.as_of - m["sent_at"].date()).days <= 7)
 
         # Connection status based on recent errors
         if recent_errors > 5:
