@@ -373,6 +373,7 @@ def generate(g):
         u, s_, c_, mdv = agg[sku]
         hv = _h(product["style_id"])
         role = "clearance" if product["status"] == "clearance" else ("strategic" if hv < 0.12 else "growth" if hv < 0.35 else "core")
+        role = {"SKU-101876": "core", "SKU-103640": "clearance"}.get(sku, role)  # 06:54:Q2: as range_planning holds them (core basic top vs clearance line)
         perf_metrics.append({
             "sku": sku, "style_id": product["style_id"], "category": product["category"], "period": "latest",
             "units_sold": u, "sales_gbp": round(s_, 2), "margin_gbp": round(s_ - c_, 2),
