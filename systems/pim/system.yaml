@@ -1,0 +1,367 @@
+id: pim
+name: Product Information Management (PIM)
+instructions: >
+  Product master data, attributes, taxonomy and claims. Tracks product attributes (dimensions, materials, care),
+  completeness metrics, sustainability claims, and EPR reporting fields. Attribute ids like ATTR-001, product claims
+  like CLM-000123, and attribute groups like GRP-001.
+
+tables:
+  attributes:
+    key: attribute_id
+    cols:
+      attribute_id: {type: str, desc: "Attribute id, e.g. ATTR-001"}
+      name: {type: str, desc: "Attribute name, e.g. Material Composition"}
+      attribute_type: {type: enum, values: [text, numeric, list, boolean, enum], desc: Data type}
+      category: {type: str, desc: "Category this attribute applies to, e.g. Home Appliances"}
+      data_format: {type: str, desc: "Format guidance, e.g. Percentage, ISO 639-1 code"}
+      is_mandatory: {type: bool, desc: "Required for compliance or marketplaces"}
+      description: {type: str, desc: "What this attribute means"}
+      status: {type: enum, values: [active, deprecated, proposed], desc: Attribute status}
+      created_at: {type: timestamp, desc: When attribute was added}
+
+  attribute_groups:
+    key: group_id
+    cols:
+      group_id: {type: str, desc: "Attribute group id, e.g. GRP-001"}
+      name: {type: str, desc: "Group name, e.g. Textiles_Core"}
+      category: {type: str, desc: "Category, e.g. Textiles"}
+      description: {type: str, desc: "What attributes this group covers"}
+      attribute_count: {type: int, desc: "Number of attributes in this group"}
+      status: {type: enum, values: [active, proposed, deprecated], desc: Group status}
+      version: {type: str, desc: "Version, e.g. v1.0"}
+      created_at: {type: timestamp, desc: When group was created}
+
+  product_attributes:
+    key: [sku, attribute_id]
+    cols:
+      sku: {type: str, desc: "Product SKU, e.g. SKU-100234"}
+      attribute_id: {type: str, desc: "Attribute id"}
+      value: {type: text, desc: "Attribute value"}
+      confidence: {type: float, desc: "Confidence 0-100 (data quality score)"}
+      source: {type: enum, values: [supplier, internal, external, marketplace], desc: Data source}
+      last_updated: {type: timestamp, desc: When this value was last verified"}
+      is_complete: {type: bool, desc: "True if value meets marketplace requirements"}
+
+  product_claims:
+    key: claim_id
+    cols:
+      claim_id: {type: str, desc: "Claim id, e.g. CLM-000123"}
+      sku: {type: str, desc: "Product SKU"}
+      claim_type: {type: enum, values: [organic, recycled_content, fair_trade, sustainable, ecolabel, other], desc: Claim category}
+      claim_text: {type: text, desc: "The claim as displayed"}
+      certification_type: {type: str, desc: "Certificate type, e.g. GOTS"}
+      has_evidence: {type: bool, desc: "True if we hold chain-of-custody or certification"}
+      evidence_ref: {type: str, desc: "Reference to evidence file or document"}
+      status: {type: enum, values: [active, pending_review, insufficient_evidence, removed], desc: Claim status}
+      created_at: {type: timestamp, desc: When claim was created"}
+      updated_at: {type: timestamp, desc: Last update}
+
+  epr_data_fields:
+    key: field_id
+    cols:
+      field_id: {type: str, desc: "Field id, e.g. EPR-001"}
+      field_name: {type: str, desc: "Field name, e.g. Unit Weight"}
+      category: {type: str, desc: "Product category"}
+      data_type: {type: enum, values: [numeric, text, date, enum], desc: Data type}
+      description: {type: str, desc: "What this field means for EPR compliance"}
+      is_held: {type: bool, desc: "True if we collect this data for most products"}
+      coverage_pct: {type: float, desc: "Percentage of products in category where we hold this"}
+      unit: {type: str, desc: "Unit if numeric, e.g. kg, cm"}
+      created_at: {type: timestamp, desc: When field was added}
+
+tools:
+  - name: search_products
+    desc: Find SKUs by name, style, category or supplier; returns ids to use with other tools.
+    kind: select
+    from: master.products
+    filters:
+      name: {op: like, desc: "Words in the product name, e.g. glass kettle"}
+      style_id: {op: like, desc: "Style id or part of it, e.g. 5520"}
+      category: {}
+      supplier_id: {}
+    columns: [sku, style_id, name, category, colour, size, supplier_id, status]
+    order: sku
+    example: {name: kettle}
+
+  - name: get_pim_taxonomy_and_attributes
+    desc: Return current attribute structure by category with all attributes, their types and mandatory status.
+    kind: sql
+    args:
+      category: {required: false, desc: "Filter to one category, e.g. Textiles"}
+    sql: |
+      SELECT DISTINCT a.category, a.attribute_id, a.name, a.attribute_type, a.data_format, a.is_mandatory,
+             COUNT(*) OVER (PARTITION BY a.category) as attribute_count_in_category
+      FROM attributes a
+      WHERE ($category IS NULL OR a.category = $category) AND a.status = 'active'
+      ORDER BY a.category, a.is_mandatory DESC, a.name
+    limit: 100
+    example: {category: Textiles}
+
+  - name: get_pim_attribute_completeness
+    desc: Show which product data fields are missing and their prevalence across a category.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Textiles"}
+      min_completeness_pct: {type: int, desc: "Only attributes below this completeness %", default: 100}
+    sql: |
+      SELECT a.attribute_id, a.name, a.is_mandatory,
+             ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) / COUNT(*), 1) as completeness_pct,
+             COUNT(*) as products_in_category,
+             COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) as products_with_value
+      FROM attributes a
+      LEFT JOIN product_attributes pa ON pa.attribute_id = a.attribute_id
+      LEFT JOIN master.products p ON p.sku = pa.sku AND p.category = $category
+      WHERE a.category = $category AND a.status = 'active'
+      GROUP BY a.attribute_id, a.name, a.is_mandatory
+      HAVING ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) / COUNT(*), 1) < $min_completeness_pct
+      ORDER BY completeness_pct ASC, a.is_mandatory DESC
+    limit: 50
+    example: {category: Textiles}
+
+  - name: get_pim_attribute_completeness_by_category
+    desc: Completeness metrics by category: which categories have missing mandatory data and how widespread it is.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT p.category,
+             COUNT(DISTINCT p.sku) as total_products,
+             COUNT(DISTINCT a.attribute_id) as attributes_active,
+             ROUND(100.0 * SUM(CASE WHEN pa.is_complete THEN 1 ELSE 0 END) /
+                  (COUNT(DISTINCT p.sku) * COUNT(DISTINCT a.attribute_id)), 1) as avg_completeness_pct,
+             COUNT(DISTINCT CASE WHEN a.is_mandatory AND pa.value IS NULL THEN p.sku END) as products_missing_mandatory
+      FROM master.products p
+      CROSS JOIN attributes a
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+      WHERE a.status = 'active' AND p.status IN ('active', 'new')
+      GROUP BY p.category
+      ORDER BY avg_completeness_pct ASC, total_products DESC
+    limit: 50
+    example: {}
+
+  - name: get_pim_attributes_for_product
+    desc: Return all attributes and values for one product, with completeness status and data source.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU, e.g. SKU-100234"}
+    sql: |
+      SELECT p.sku, p.name, p.category, a.attribute_id, a.name as attribute_name, a.attribute_type,
+             pa.value, pa.confidence, pa.source, pa.is_complete,
+             COALESCE(pa.last_updated, p.launch_date) as last_updated
+      FROM master.products p
+      LEFT JOIN attributes a ON a.category = p.category AND a.status = 'active'
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+      WHERE p.sku = $sku
+      ORDER BY a.is_mandatory DESC, a.name
+    limit: 100
+    example: {sku: SKU-100234}
+
+  - name: list_products_by_attribute_in_category
+    desc: List products in a category that match specific attribute values (e.g. materials, sizes).
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Outdoor Clothing"}
+      attribute_filter: {type: text, desc: "Attribute id and value, e.g. ATTR-005:wool"}
+      min_completeness: {type: int, desc: "Minimum attribute completeness %", default: 80}
+    sql: |
+      SELECT DISTINCT p.sku, p.name, p.category, p.colour, p.size, p.retail_price_gbp,
+             STRING_AGG(a.attribute_id || ':' || pa.value, '; ') as attributes_matched
+      FROM master.products p
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku
+      LEFT JOIN attributes a ON a.attribute_id = pa.attribute_id
+      WHERE p.category = $category
+        AND p.status IN ('active', 'new')
+        AND ($attribute_filter IS NULL OR LOWER(pa.value) ILIKE LOWER('%' || SPLIT_STRING($attribute_filter, ':')[2] || '%'))
+        AND pa.is_complete
+      GROUP BY p.sku, p.name, p.category, p.colour, p.size, p.retail_price_gbp
+      ORDER BY p.sku
+    limit: 100
+    example: {category: "Outdoor Clothing", attribute_filter: "ATTR-002:wool"}
+
+  - name: get_product_attributes_for_range
+    desc: Get all attributes for products in a style range to assess market fit and what would need to change.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style id, e.g. STY-5520"}
+    sql: |
+      SELECT p.sku, p.name, p.colour, p.size, a.attribute_id, a.name as attribute_name,
+             pa.value, pa.confidence, a.category
+      FROM master.products p
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku
+      LEFT JOIN attributes a ON a.attribute_id = pa.attribute_id
+      WHERE p.style_id = $style_id
+      ORDER BY p.colour, p.size, a.attribute_id
+    limit: 200
+    example: {style_id: STY-5520}
+
+  - name: list_product_claims
+    desc: List all active product claims by type (organic, recycled, fair trade, etc), with evidence status.
+    kind: select
+    from: product_claims
+    filters:
+      sku: {}
+      claim_type: {}
+      status: {default: active}
+    columns: [claim_id, sku, claim_type, claim_text, certification_type, has_evidence, status, updated_at]
+    order: updated_at DESC
+    limit: 100
+    example: {status: active}
+
+  - name: get_available_epr_reporting_data_fields
+    desc: Which EPR data fields we collect for reporting (weights, materials, recyclability) and coverage by category.
+    kind: sql
+    args:
+      category: {required: false, desc: "Filter to one category, e.g. Textiles"}
+      min_coverage_pct: {type: int, desc: "Only fields with at least this coverage", default: 50}
+    sql: |
+      SELECT field_id, field_name, category, data_type, description, is_held, coverage_pct, unit
+      FROM epr_data_fields
+      WHERE ($category IS NULL OR category = $category)
+        AND is_held
+        AND coverage_pct >= $min_coverage_pct
+      ORDER BY category, coverage_pct DESC, field_name
+    limit: 50
+    example: {}
+
+  - name: draft_attribute_taxonomy_proposal
+    desc: Draft a recommended attribute structure for a category with mappings to marketplace requirements.
+    kind: sql
+    args:
+      category: {required: true, desc: "Target category, e.g. Home Appliances"}
+      for_marketplace: {type: text, desc: "Marketplace name, e.g. Amazon.de"}
+    sql: |
+      SELECT 'Proposed Taxonomy for ' || $category as section,
+             a.attribute_id, a.name, a.attribute_type, a.is_mandatory,
+             COUNT(*) OVER (PARTITION BY a.category) as total_attributes,
+             ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) /
+                  COUNT(DISTINCT pa.sku), 1) as current_coverage_pct
+      FROM attributes a
+      LEFT JOIN product_attributes pa ON pa.attribute_id = a.attribute_id
+      WHERE a.category = $category AND a.status IN ('active', 'proposed')
+      GROUP BY a.attribute_id, a.name, a.attribute_type, a.is_mandatory, a.category
+      ORDER BY a.is_mandatory DESC, current_coverage_pct DESC
+    limit: 100
+    example: {category: "Home Appliances"}
+
+  - name: calculate_migration_effort_for_taxonomy
+    desc: Estimate effort to migrate from current to proposed taxonomy (data mapping complexity, coverage gaps).
+    kind: sql
+    args:
+      from_category: {required: true, desc: "Current category structure, e.g. Home"}
+      to_category: {required: false, desc: "Target structure, e.g. Home_v2"}
+    sql: |
+      WITH current_attrs AS (
+        SELECT COUNT(DISTINCT attribute_id) as count FROM attributes WHERE category = $from_category AND status = 'active'
+      ),
+      target_attrs AS (
+        SELECT COUNT(DISTINCT attribute_id) as count FROM attributes
+        WHERE category = COALESCE($to_category, $from_category) AND status IN ('active', 'proposed')
+      ),
+      coverage AS (
+        SELECT ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) /
+                    COUNT(*), 1) as current_completeness
+        FROM master.products p
+        LEFT JOIN product_attributes pa ON pa.sku = p.sku
+        WHERE p.category = $from_category
+      )
+      SELECT
+        $from_category as current_structure,
+        COALESCE($to_category, $from_category) as target_structure,
+        (SELECT count FROM current_attrs) as current_attribute_count,
+        (SELECT count FROM target_attrs) as target_attribute_count,
+        (SELECT current_completeness FROM coverage) as current_completeness_pct,
+        ROUND(((SELECT count FROM target_attrs) - (SELECT count FROM current_attrs))::float /
+              (SELECT count FROM current_attrs) * 100, 1) as net_attribute_change_pct,
+        ROUND(40 + ((SELECT count FROM target_attrs) / 5.0), 1) as estimated_effort_hours,
+        'Map attributes, validate data, retrain systems, test marketplace feeds' as migration_tasks
+    limit: 1
+    example: {from_category: Home}
+
+  - name: draft_bulk_attribute_correction_file
+    desc: Generate a CSV file template with products needing corrections and fields to fix (for marketplace compliance).
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Home Appliances"}
+      incomplete_only: {type: bool, desc: "Only products with missing mandatory fields", default: true}
+    sql: |
+      SELECT p.sku, p.name, p.category, STRING_AGG(a.name, '; ') as missing_fields,
+             COUNT(CASE WHEN pa.value IS NULL AND a.is_mandatory THEN 1 END) as num_mandatory_missing,
+             'review_required' as correction_status
+      FROM master.products p
+      CROSS JOIN attributes a
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+      WHERE p.category = $category AND p.status IN ('active', 'new')
+        AND a.category = $category AND a.status = 'active'
+        AND ($incomplete_only IS FALSE OR (pa.value IS NULL AND a.is_mandatory))
+      GROUP BY p.sku, p.name, p.category
+      HAVING COUNT(CASE WHEN pa.value IS NULL AND a.is_mandatory THEN 1 END) > 0
+      ORDER BY num_mandatory_missing DESC, p.sku
+    limit: 500
+    example: {category: "Home Appliances"}
+
+  - name: update_pim_attributes_in_bulk
+    desc: Apply a bulk correction file to update product attributes in batch.
+    kind: insert
+    table: product_attributes
+    id_prefix: null
+    defaults: {source: internal, last_updated: "$as_of", is_complete: true, confidence: 95}
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      attribute_id: {required: true, desc: "Attribute id"}
+      value: {required: true, desc: "New attribute value"}
+    example: {sku: SKU-100234, attribute_id: ATTR-001, value: "100% polyester"}
+
+  - name: create_pim_attribute_group
+    desc: Create a new attribute group in the PIM taxonomy to organize attributes by theme.
+    kind: insert
+    table: attribute_groups
+    id_prefix: GRP-
+    defaults: {status: active, version: "1.0", created_at: "$as_of"}
+    args:
+      name: {required: true, desc: "Group name, e.g. Textiles_Core"}
+      category: {required: true, desc: "Product category"}
+      description: {required: true, desc: "What this group covers"}
+      attribute_count: {type: int, required: false, default: 0}
+    example: {name: "Textiles_Sustainability", category: "Textiles", description: "Recycled content and certification"}
+
+  - name: update_product_claim
+    desc: Update the wording or type of a product claim in PIM.
+    kind: update
+    table: product_claims
+    set: {updated_at: "$as_of"}
+    args:
+      claim_text: {required: false, desc: "New claim wording"}
+      certification_type: {required: false, desc: "Certificate type"}
+      has_evidence: {required: false, type: bool, desc: "Whether we hold evidence"}
+    example: {claim_id: CLM-000123, claim_text: "100% GOTS certified organic cotton"}
+
+  - name: remove_product_claim
+    desc: Removes a product claim from a listing in PIM.
+    kind: update
+    table: product_claims
+    set: {status: removed, updated_at: "$as_of"}
+    args: {}
+    example: {claim_id: CLM-000123}
+
+  - name: compare_range_fit_to_market
+    desc: Assess if products in a style range would work for a target market (Japan, etc) based on attributes.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style id, e.g. STY-5520"}
+      target_market: {required: true, desc: "Target country/market, e.g. Japan"}
+    sql: |
+      SELECT p.sku, p.name, p.size, p.colour,
+             STRING_AGG(DISTINCT a.name, '; ' ORDER BY a.name) as attributes,
+             ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) /
+                    COUNT(DISTINCT a.attribute_id), 1) as completeness_pct,
+             CASE
+               WHEN p.size IN ('XS', 'XXL') THEN 'Size may not suit ' || $target_market
+               ELSE 'Standard sizing available'
+             END as fit_notes
+      FROM master.products p
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku
+      LEFT JOIN attributes a ON a.attribute_id = pa.attribute_id
+      WHERE p.style_id = $style_id
+      GROUP BY p.sku, p.name, p.size, p.colour
+      ORDER BY p.colour, p.size
+    limit: 200
+    example: {style_id: STY-5520, target_market: Japan}

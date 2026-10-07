@@ -145,9 +145,19 @@ def generate(g):
     load_test_runs = []
     for i in range(20):
         interface = g.rng.choice(interfaces)
-        scheduled = g.date_between(g.days_ago(90), g.days_ago(-5))
-        started = g.date_between(scheduled, g.days_ago(0)) if g.rng.random() > 0.3 else None
-        completed = g.date_between(started, g.days_ago(0)) if started else None
+        scheduled_days = g.rng.randint(-90, -5)
+        scheduled = g.days_ago(-scheduled_days)
+
+        started = None
+        if g.rng.random() > 0.3:
+            started_days = g.rng.randint(0, -scheduled_days - 1) if -scheduled_days > 1 else 0
+            started = g.days_ago(started_days)
+
+        completed = None
+        if started:
+            comp_days = g.rng.randint(0, -scheduled_days - 1) if -scheduled_days > 1 else 0
+            completed = g.days_ago(comp_days)
+
         status = "passed" if completed and g.rng.random() > 0.2 else ("failed" if completed else ("in_progress" if started else "scheduled"))
         load_test_runs.append({
             "test_run_id": f"LTR-{900000 + i:06d}",
