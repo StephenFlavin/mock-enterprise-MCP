@@ -75,7 +75,12 @@ BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 7.10), 
                 ("labour_sew", "Welding and assembly", 0.95), ("labour_finish", "Polish and test", 0.45),
                 ("packing", "Gift box", 0.85), ("inbound_freight", "Inbound freight", 2.35), ("tooling", "Tooling amortisation", 1.95),
                 ("overhead", "Overhead allocation", 1.97)]
-STORY_MD_OFFSET = {"SKU-101897": 1.0}
+# STORY: SKU-103157 is on clearance, so it carries heavy markdown (plan markdown moves with it, so variance to plan is unchanged)
+STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0}
+# STORY: target margins that make the pipeline and overshirt questions discoverable (no random draws, applied after the row is built)
+TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5}
+# fabric price per metre used to turn a cost-sheet fabric line into metres per garment
+FABRIC_PRICE = {"COTTON": 6.9, "POLYESTER": 5.2, "WOOL": 12.3, "NYLON": 7.4}
 # STORY: cotton fabric per metre up 9% (average) over six months while the cotton index rose 4%.
 # (supplier, a SKU it supplies, price per metre six months ago, price rise %)
 COTTON_STORY = [("SUP-0064", "SKU-100007", 6.20, 16.0), ("SUP-0001", "SKU-100070", 6.50, 13.0), ("SUP-0065", "SKU-100574", 6.40, 9.0),
@@ -181,13 +186,20 @@ def generate(g):
             "created_at": g.as_of - timedelta(days=r.randint(30, 120)), "updated_at": g.as_of - timedelta(days=r.randint(0, 30)),
         }
         row.update(STORY_COSTING.get(sku, {}))
+        if sku in TARGET_OVERRIDE:
+            row["target_margin_pct"] = TARGET_OVERRIDE[sku]
         if sku == BOTTLE:
             row["target_margin_pct"] = 58.0
             row["notes"] = "Stainless insulated bottle costing; steel body is the main cost"
         costings.append(row)
         for i, (t, d, c) in enumerate(lines, 1):
-            sheets.append({"costing_id": row["costing_id"], "line_no": i, "component_type": t, "description": d, "quantity": 1,
-                           "unit": "unit", "unit_cost_gbp": c, "total_cost_gbp": c, "as_pct_of_total": round(c / total * 100, 1)})
+            qty_, unit_, ucost_ = 1, "unit", c
+            if t == "fabric" and c > 0:  # fabric is costed per metre: metres per garment = line cost / commodity price per metre
+                fp = FABRIC_PRICE.get(COMMODITY.get(cat, ("",))[0], 6.5)
+                qty_ = round(c / fp, 2)
+                unit_, ucost_ = "metre", round(c / qty_, 3)
+            sheets.append({"costing_id": row["costing_id"], "line_no": i, "component_type": t, "description": d, "quantity": qty_,
+                           "unit": unit_, "unit_cost_gbp": ucost_, "total_cost_gbp": c, "as_pct_of_total": round(c / total * 100, 1)})
         if cat in COMMODITY and row["status"] == "active":
             code, ctype, el = COMMODITY[cat]
             ln = next((x for x in lines if x[0] == ctype), None)
@@ -517,4 +529,5 @@ def generate(g):
         "recovery_rates": rates, "scenario_analyses": scen, "cost_sheet_details": sheets, "commodity_exposures": exposures,
         "supplier_cost_history": hist, "fob_price_history": fob, "origin_cost_quotes": quotes,
         "cost_bridges": bridges, "holding_cost_rates": holds, "repair_costs": repairs, "packaging_options": pack, "recycled_premiums": recs,
+        "fix_options": [],  # STORY: seed/fix_options.csv
     }

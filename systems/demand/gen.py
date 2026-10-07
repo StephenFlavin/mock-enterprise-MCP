@@ -705,6 +705,21 @@ def generate(g):
                 category_forecasts.append({"category": cat, "forecast_week": w, "forecast_type": ftype,
                                            "units_forecast": int(round(val))})
 
+    # Weeks 52-77 (to 18 months ahead): same shape, drawn after everything above so earlier numbers do not move.
+    for cat in categories:
+        wks0 = [this_monday + timedelta(weeks=i) for i in range(12)]
+        base4 = [base_wk.get((cat, w), 0) for w in wks0[:4]]
+        anchor = (sum(base4) / 4.0) / (sum(seasonal(cat, w) for w in wks0[:4]) / 4.0)
+        s_base = sum(base_wk.get((cat, w), 0) for w in wks0) or 1
+        ratio_up = sum(up_wk.get((cat, w), 0) for w in wks0) / s_base
+        ratio_dn = sum(dn_wk.get((cat, w), 0) for w in wks0) / s_base
+        for i in range(52, 78):
+            w = this_monday + timedelta(weeks=i)
+            m = anchor * seasonal(cat, w) * (1 + 0.06 * i / 52.0) * r.gauss(1.0, 0.02)
+            for ftype, val in (("base", m), ("upside", m * ratio_up), ("downside", m * ratio_dn)):
+                category_forecasts.append({"category": cat, "forecast_week": w, "forecast_type": ftype,
+                                           "units_forecast": int(round(val))})
+
     # Slow movers: accuracy at store-SKU and cluster level (SKU-101897 matches the allocation story: 11.2% / 15.8%).
     slow_skus = ["SKU-101897", "SKU-102898", "SKU-106034", "SKU-102289", "SKU-104130", "SKU-104053", "SKU-105936",
                  "SKU-105985", "SKU-101414", "SKU-100049", "SKU-105054", "SKU-106083", "SKU-100882"]
@@ -745,10 +760,15 @@ def generate(g):
             "category": cat, "period_start": as_of - timedelta(weeks=52), "period_end": as_of - timedelta(weeks=4),
             "mape_pct": round(mape, 1), "bias_pct": round(bias, 1), "items_backtested": items})
 
+    window_gain = {"Knitwear": -2.6, "Outerwear": -2.2, "Dresses": -1.9, "Nightwear": -1.6, "Scarves": -1.3,
+                   "T-Shirts": -1.1, "Blouses": -0.9, "Tops": -0.8, "Shirts": -0.6, "Footwear": -0.5,
+                   "Jewellery": -0.3, "Trousers": 0.2}
     for i, cat in enumerate(categories):
         noise = ((i * 7) % 11 - 5) * 0.2
+        # A 26-week window helps fashion categories (more with strong seasonality) and hurts stable ones.
+        shift = window_gain[cat] if cat in fashion else 0.6 + ((i * 5) % 7) * 0.5 + i * 0.013
         add_bt("CFG-000001", "category", cat, 11.4 + noise, 1.1, cat_items.get(cat, 1))
-        add_bt("CFG-000002", "category", cat, (10.2 if cat in fashion else 12.8) + noise, 0.9, cat_items.get(cat, 1))
+        add_bt("CFG-000002", "category", cat, 11.4 + noise + shift, 0.9, cat_items.get(cat, 1))
         add_bt("CFG-000003", "category", cat, 20.4 + noise, 1.4, cat_items.get(cat, 1))
     add_bt("CFG-000003", "store_sku", None, 10.8, 0.9, 5200)
     add_bt("CFG-000003", "cluster", None, 14.6, 1.6, 5200)
