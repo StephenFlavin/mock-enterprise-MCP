@@ -275,6 +275,7 @@ tools:
       max_sell_through_pct: {type: float, desc: "Only SKUs at or below this sell-through percentage, e.g. 60"}
       group_by: {type: enum, values: [sku, category], default: sku, desc: "Row level: one row per SKU, or per category"}
     sql: |
+      WITH g AS (
       SELECT CASE WHEN $group_by = 'category' THEN 'ALL SKUS' ELSE s.sku END AS sku,
              CASE WHEN $group_by = 'category' THEN '' ELSE p.status END AS sku_status,
              s.category, s.season, count(*) AS skus,
@@ -286,8 +287,8 @@ tools:
       WHERE ($sku IS NULL OR s.sku = $sku) AND ($season IS NULL OR s.season = $season)
         AND ($category IS NULL OR s.category = $category)
         AND ($max_sell_through_pct IS NULL OR s.sell_through_pct <= $max_sell_through_pct)
-      GROUP BY ALL
-      ORDER BY CASE WHEN $group_by = 'category' THEN -sum((s.received_units - s.units_sold) * p.unit_cost_gbp) ELSE sell_through_pct END, 1
+      GROUP BY ALL)
+      SELECT * FROM g ORDER BY CASE WHEN $group_by = 'category' THEN -unsold_cost_gbp ELSE sell_through_pct END, sku
     limit: 100
     example: {season: SS26, max_sell_through_pct: 60, group_by: category}
 
@@ -420,15 +421,16 @@ tools:
                round(vol.v * 100, 1) AS volatility_pct, round(last.r * 100, 1) AS latest_sell_through_pct,
                least(35.0, 8.0 + 120 * vol.v + 50 * greatest(0.0, 1 - last.r)) AS reserve_pct
         FROM bud JOIN vol USING (category) JOIN last USING (category))
-      SELECT category, round(otb) AS category_otb_gbp, volatility_pct, latest_sell_through_pct,
-             round(reserve_pct, 1) AS recommended_reserve_pct, round(otb * reserve_pct / 100) AS recommended_chase_reserve_gbp,
-             round(otb * (1 - reserve_pct / 100)) AS initial_buy_gbp,
-             'reserve_pct = min(35, 8 + 120 x volatility + 50 x shortfall to plan)' AS formula
-      FROM c
-      UNION ALL
-      SELECT 'TOTAL', round(sum(otb)), NULL, NULL, round(sum(otb * reserve_pct) / sum(otb), 1), round(sum(otb * reserve_pct / 100)),
-             round(sum(otb * (1 - reserve_pct / 100))), 'sum of categories' FROM c HAVING count(*) > 0
-      ORDER BY category = 'TOTAL', category
+      , r AS (
+        SELECT 1 AS ord, category, round(otb) AS category_otb_gbp, volatility_pct, latest_sell_through_pct,
+               round(reserve_pct, 1) AS recommended_reserve_pct, round(otb * reserve_pct / 100) AS recommended_chase_reserve_gbp,
+               round(otb * (1 - reserve_pct / 100)) AS initial_buy_gbp,
+               'reserve_pct = min(35, 8 + 120 x volatility + 50 x shortfall to plan)' AS formula
+        FROM c
+        UNION ALL
+        SELECT 2, 'TOTAL', round(sum(otb)), NULL, NULL, round(sum(otb * reserve_pct) / sum(otb), 1), round(sum(otb * reserve_pct / 100)),
+               round(sum(otb * (1 - reserve_pct / 100))), 'sum of categories' FROM c HAVING count(*) > 0)
+      SELECT * EXCLUDE (ord) FROM r ORDER BY ord, category
     limit: 50
     example: {total_otb_gbp: 2100000, season: SS}
 

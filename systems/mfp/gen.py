@@ -26,8 +26,8 @@ STORY_BANDS = {
     ("Womenswear", "Outerwear"): (0.76, 0.88, 0.97),
 }
 ATHLEISURE = {  # region -> sell-through vs plan for the new Athleisure range (launched 10 weeks ago)
-    "UK North": 0.70, "Scotland": 0.72, "UK Midlands": 0.77, "UK South": 0.86,
-    "Ireland": 0.79, "EU Central": 0.88, "US": 0.85,
+    "UK North": 0.71, "Scotland": 0.73, "UK Midlands": 0.78, "UK South": 0.87,
+    "Ireland": 0.80, "EU Central": 0.89, "US": 0.86,
 }
 SPRING_CATS = ["Dresses", "Tops", "Blouses", "Trousers", "Knitwear", "Outerwear", "Footwear", "Shirts"]
 OTB_TOTAL = {"Dresses": 450000, "Tops": 220000, "Blouses": 140000, "Trousers": 260000,
@@ -123,7 +123,7 @@ def generate(g):
 
     # ---- SKU-level season sell-through (master SKUs of finished / running seasons)
     sku_st = []
-    cat_ratio = {"Tops": 0.58, "Footwear": 0.66, "Small Appliances": 0.74}
+    cat_ratio = {"Tops": 0.55, "Footwear": 0.58, "Small Appliances": 0.57}
     for p in products:
         if p["season"] not in ("SS26", "AW26", "CORE"):
             continue
@@ -186,10 +186,10 @@ def generate(g):
           "Tops": (9.0, 1.4), "Trousers": (8.5, 1.3), "Shirts": (8.0, 1.2), "Blouses": (9.0, 1.3),
           "Small Appliances": (7.0, 1.9), "Fragrance": (6.0, 2.3), "Bags": (7.5, 1.5), "Bedding": (10.5, 1.0),
           "Babywear": (9.0, 1.4), "Lighting": (8.0, 1.1)}
-    delta = {"Knitwear": (1.6, 0.0), "Outerwear": (1.8, 0.0), "Dresses": (0.9, 0.0), "Footwear": (0.4, 0.0),
-             "Tops": (0.3, 0.0), "Trousers": (0.1, 0.0), "Shirts": (0.0, 0.0), "Blouses": (0.2, 0.0),
-             "Small Appliances": (0.0, 0.6), "Fragrance": (0.0, 0.7), "Bags": (0.1, 0.2), "Bedding": (0.2, 0.0),
-             "Babywear": (0.0, 0.0), "Lighting": (0.0, 0.1)}
+    delta = {"Knitwear": (1.6, 0.0), "Outerwear": (1.8, 0.0), "Dresses": (0.9, 0.0), "Footwear": (0.4, 0.1),
+             "Tops": (0.3, 0.1), "Trousers": (0.1, 0.0), "Shirts": (0.0, 0.0), "Blouses": (0.2, 0.0),
+             "Small Appliances": (0.0, 1.0), "Fragrance": (0.0, 1.2), "Bags": (0.1, 0.5), "Bedding": (0.2, 0.0),
+             "Babywear": (0.0, 0.0), "Lighting": (0.0, 0.2)}
     notes = {"Knitwear": "Temporary: autumn knitwear overbought, early markdowns to clear",
              "Outerwear": "Temporary: warm September left outerwear behind plan, markdown to clear",
              "Dresses": "Temporary: summer dress clearance ran two weeks longer than planned",
@@ -221,7 +221,7 @@ def generate(g):
     var = {"UK North": {8: -5.1, 9: -6.2, 10: -5.4}, "UK South": {8: -1.2, 9: -1.8, 10: -1.5},
            "UK Midlands": {8: -2.0, 9: -2.5, 10: -2.2}, "Scotland": {8: 0.2, 9: 0.6, 10: 0.4},
            "Ireland": {8: 1.0, 9: 1.4, 10: 1.2}, "EU Central": {8: 2.6, 9: 3.1, 10: 2.8}, "US": {8: 2.1, 9: 2.4, 10: 2.2}}
-    risk = {"UK North": "Autumn knitwear and outerwear 12-14% behind plan after a mild September; Saturday footfall soft in northern stores; promotional calendar does not start until mid November",
+    risk = {"UK North": "Autumn knitwear and outerwear 15-17% behind plan after a mild September; Saturday footfall soft in northern stores; promotional calendar does not start until mid November",
             "UK South": "Outerwear slightly behind plan; otherwise on track",
             "UK Midlands": "Knitwear behind plan; Black Friday week phasing uncertain"}
     cat_var = {"Knitwear": -14.0, "Outerwear": -12.0, "Dresses": -5.0, "Footwear": -2.0, "Tops": -1.0, "Trousers": -2.0,
@@ -264,6 +264,20 @@ def generate(g):
                     "optimistic_units": units(base * 1.05), "optimistic_gbp": round(base * 1.05, -2),
                     "forecast_date": fdate,
                 })
+
+    # period forecasts equal the sum of their category forecasts
+    tot = defaultdict(lambda: [0.0, 0.0, 0])
+    for f in sales_fc:
+        t = tot[(f["region"], f["fy_period"])]
+        t[0] += f["plan_gbp"]; t[1] += f["base_forecast_gbp"]; t[2] += f["base_forecast_units"]
+    for pf in period_fc:
+        plan_t, base_t, units_t = tot[(pf["region"], pf["fy_period"])]
+        pf["plan_value_gbp"], pf["forecast_value_gbp"], pf["forecast_units"] = round(plan_t, -2), round(base_t, -2), units_t
+        pf["forecast_vs_plan_pct"] = round((base_t - plan_t) * 100 / plan_t, 1)
+        if pf["fy_period"] == 9:
+            pf["actual_to_date_gbp"] = round(base_t * 0.15, -2)
+        elif pf["fy_period"] == 8:
+            pf["actual_to_date_gbp"] = round(base_t, -2)
 
     # ---- market (country) sales forecasts for expansion analysis
     markets = {  # market: (code, mature sales per store GBP m, opening stores per year, online share)

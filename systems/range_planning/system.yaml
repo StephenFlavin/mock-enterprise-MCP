@@ -141,16 +141,19 @@ tools:
     args:
       sku: {required: true, desc: "SKU id, e.g. K-1700"}
       action: {type: enum, values: [extend, refresh, reprice, delete], required: true, desc: "Planned action"}
-      current_price_gbp: {type: float, desc: "Current retail price; defaults to the SKU's retail price"}
+      current_price_gbp: {type: float, desc: "Current selling price; defaults to the average price realised over the last 13 weeks"}
     sql: |
-      WITH base AS (
+      WITH sales AS (
+        SELECT sku, sum(store_units + online_units) AS units, sum(revenue_gbp) AS revenue
+        FROM master.sales_weekly
+        WHERE sku = $sku AND CAST(week_start AS DATE) > CAST($as_of AS DATE) - INTERVAL 91 DAY
+        GROUP BY sku
+      ), base AS (
         SELECT p.sku, p.name, p.category, p.unit_cost_gbp,
-               COALESCE($current_price_gbp, p.retail_price_gbp) AS price,
-               COALESCE(sum(s.store_units + s.online_units), 0) / 13.0 AS weekly_units,
-               COALESCE(sum(s.markdown_gbp), 0) / 13.0 AS weekly_markdown
-        FROM master.products p
-        LEFT JOIN master.sales_weekly s ON s.sku = p.sku AND CAST(s.week_start AS DATE) > CAST($as_of AS DATE) - INTERVAL 91 DAY
-        WHERE p.sku = $sku GROUP BY ALL
+               COALESCE($current_price_gbp, s.revenue / NULLIF(s.units, 0), p.retail_price_gbp) AS price,
+               COALESCE(s.units, 0) / 13.0 AS weekly_units
+        FROM master.products p LEFT JOIN sales s ON s.sku = p.sku
+        WHERE p.sku = $sku
       ), a AS (
         SELECT * FROM (VALUES ('extend', 12.0, 0.0, 0.0), ('refresh', 18.0, 0.0, 2.0),
                               ('reprice', -4.0, 5.0, 0.0), ('delete', -100.0, 0.0, 0.0)) t(action, units_pct, price_pct, cost_pct)
@@ -158,13 +161,13 @@ tools:
       )
       SELECT b.sku, b.name, b.category, a.action, round(b.price, 2) AS price_gbp, b.unit_cost_gbp,
              round(b.weekly_units, 0) AS current_weekly_units,
-             round(b.weekly_units * (b.price - b.unit_cost_gbp) - b.weekly_markdown, 0) AS current_weekly_margin_gbp,
+             round(b.weekly_units * (b.price - b.unit_cost_gbp), 0) AS current_weekly_margin_gbp,
              round(b.weekly_units * (1 + a.units_pct / 100), 0) AS projected_weekly_units,
              round(CASE WHEN a.action = 'delete' THEN 0
-                        ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) - b.weekly_markdown * (1 + a.units_pct / 100) END, 0) AS projected_weekly_margin_gbp,
+                        ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) END, 0) AS projected_weekly_margin_gbp,
              round((CASE WHEN a.action = 'delete' THEN 0
-                         ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) - b.weekly_markdown * (1 + a.units_pct / 100) END
-                   - (b.weekly_units * (b.price - b.unit_cost_gbp) - b.weekly_markdown)) * 52, 0) AS annual_margin_impact_gbp,
+                         ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) END
+                   - (b.weekly_units * (b.price - b.unit_cost_gbp))) * 52, 0) AS annual_margin_impact_gbp,
              'impact = (projected - current weekly margin) x 52; assumptions per action: extend units +12%, refresh units +18% and unit cost +2%, reprice price +5% and units -4%, delete all sales and margin lost' AS formula
       FROM base b, a
     limit: 1

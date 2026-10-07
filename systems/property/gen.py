@@ -29,7 +29,7 @@ def _effect(site, d):
     if d == date(2026, 7, 18):
         m *= 1.30   # summer music festival
     if d == date(2026, 8, 8):
-        m *= 0.88   # home football match, parking
+        m *= 0.80   # home football match, parking
     if d >= date(2026, 9, 14):
         m *= 0.93   # JD Sports opens 300 m away
     if d >= date(2026, 9, 15):

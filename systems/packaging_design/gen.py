@@ -42,7 +42,9 @@ def generate(g):
     r = g.rng
     products = g.master("products")
     suppliers = [s["supplier_id"] for s in g.master("suppliers")][:20]
-    pool = sorted((p for p in products if p["sku"] not in STORY_SKUS and p["style_id"] not in STORY_STYLES),
+    story_cats = {"Small Appliances", "Drinkware", "Personal Care", "Lighting"}
+    pool = sorted((p for p in products if p["sku"] not in STORY_SKUS and p["style_id"] not in STORY_STYLES
+                   and p["category"] not in story_cats),
                   key=lambda p: p["sku"])
     noise = r.sample(pool, 60)
 
@@ -67,7 +69,7 @@ def generate(g):
             h, w, d = r.randint(80, 300), r.randint(100, 300), r.randint(60, 200)
             wall = {"corrugated": 2.5, "moulded_pulp": 3.0, "recycled_plastic": 1.5, "rigid_plastic": 2.5}[material]
             wall = round(wall + r.choice([-0.5, 0, 0, 0.5]), 1)
-            weight = round(2 * (h * w + h * d + w * d) / 100 * wall * r.uniform(0.35, 0.5), 1)
+            weight = round(2 * (h * w + h * d + w * d) / 100 * wall * r.uniform(0.012, 0.016), 1)
             pallet = pallet_units(h, w, d)
         base, rec, recyclable = MATERIALS[material]
         size = max(0.4, (h * w + h * d + w * d) / 60000) if pack_type not in ("polybag", "hanging") else 1.0
