@@ -21,7 +21,7 @@ def load_run(rd: Path) -> list[dict]:
     tasks = {t["id"]: t for t in read_jsonl(rd / "tasks.jsonl")}
     results = {r["task_id"]: r for r in read_jsonl(rd / "results.jsonl")}
     recipe = (yaml.safe_load((rd / "recipe.yaml").read_text()) if (rd / "recipe.yaml").exists() else None) or {}
-    strat = recipe.get("distractors", "n/a")
+    strat = (recipe.get("tools") or {}).get("distractors") or recipe.get("distractors", "n/a")
     strat = strat.get("strategy", "n/a") if isinstance(strat, dict) else strat
     toks = [t["tool_budget"]["tokens"] for t in tasks.values() if (t.get("tool_budget") or {}).get("tokens")]
     budget = f"~{round(statistics.median(toks) / 1000)}k tokens" if toks else "n/a"

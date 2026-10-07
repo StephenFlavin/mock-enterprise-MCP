@@ -175,8 +175,9 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
             "harness": answers.get("harness") or info.get("harness") or "claude-code",
             "cost_usd": round(sum(t.get("cost_usd") or 0 for t in turns), 6),
             "duration_ms": int(sum(t.get("duration_ms") or 0 for t in turns)),
-            "tokens": {"input": usage("input_tokens"), "output": usage("output_tokens"),
-                       "cache_read": usage("cache_read_input_tokens", "cache_read")},
+            "tokens": {"input": usage("input_tokens", "input"), "output": usage("output_tokens", "output"),
+                       "cache_read": usage("cache_read_input_tokens", "cache_read"),
+                       "cache_creation": usage("cache_creation_input_tokens", "cache_creation")},
             "tool_calls": len(read_jsonl(task_dir / "trace.jsonl")),
             "judge_cost_usd": (verdict.get("judge") or {}).get("cost_usd", 0.0), "judge": (verdict.get("judge") or {}).get("backend", "")}
 

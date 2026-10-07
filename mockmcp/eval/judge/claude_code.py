@@ -68,6 +68,6 @@ class ClaudeCodeJudge(Judge):
         verdict = verdict or {"outcome": "judge_failed", "categories": [], "severity": "none", "per_turn": [],
                               "unsupported_claims": [], "actions": [], "confidence": 0.0,
                               "rationale": f"judge failed: {meta.get('error', 'no valid verdict')}"}
-        verdict["judge"] = {"backend": self.name, "model": ",".join(meta.get("models") or []) or self.model,
+        verdict["judge"] = {"backend": self.name, "model": self.model, "models_used": meta.get("models") or [],
                             "cost_usd": cost, "duration_ms": ms}
         return verdict
