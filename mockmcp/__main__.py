@@ -34,8 +34,12 @@ def main():
     b.add_argument("--model", default="haiku"), b.add_argument("--workers", type=int, default=6)
     b.add_argument("--only", help="run cases whose id contains this")
     b.add_argument("--coverage", action="store_true", help="which question slices have a case (no model)")
+    from .eval import cli as eval_cli
+    eval_cli.add_parser(sub)
     a = ap.parse_args()
 
+    if a.cmd == "eval":
+        sys.exit(eval_cli.main(a) or 0)
     if a.cmd == "serve":
         import uvicorn
         from .server import Engine, hub_app
