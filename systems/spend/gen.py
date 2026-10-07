@@ -1,215 +1,253 @@
-"""Spend analytics: supplier spend, savings initiatives, price benchmarks."""
-from datetime import datetime, timedelta
+"""Spend analytics: supplier spend (reconciled to master annual spend), savings tracker, price variance, input costs."""
+import math
+from collections import defaultdict
+from datetime import date, timedelta
+
+NEARSHORE = {"PT", "TR", "PL"}
+
+# service (indirect) spend carved out of a stand-in supplier's master annual spend: supplier -> [(category, 12m gbp, kind)]
+INDIRECT = {
+    "SUP-0014": [("Facilities", 1220000, "recurring")],
+    "SUP-0026": [("Facilities", 400000, "recurring")],
+    "SUP-0067": [("Facilities", 900000, "project")],
+    "SUP-0050": [("Energy", 550000, "recurring")],
+    "SUP-0071": [("Energy", 200000, "recurring")],
+    "SUP-0073": [("Packaging", 600000, "recurring")],
+    "SUP-0077": [("Packaging", 700000, "recurring")],
+}
+SERVICE_RATE = {"Facilities": 35.0, "Energy": 190.0, "Packaging": 0.42}
+
+# monthly slope of a supplier's spend profile over the last 12 months (negative = losing volume)
+SLOPE = {"SUP-0027": -0.55, "SUP-0013": -0.35, "SUP-0055": 0.9, "SUP-0062": 0.7, "SUP-0074": 0.15}
+
+SEASON = {"Home": [1, 1, 1, 1, 1, 1, 1, 1.05, 1.1, 1.2, 1.25, 1.1], "Kids": [1, 1, 1, 1, 1, 1.05, 1.2, 1.3, 1.1, 1, 1, 1],
+          "Womenswear": [1, 1, 1.1, 1.15, 1.1, 1, 1, 1.05, 1.15, 1.1, 1, 1], "Menswear": [1, 1, 1.05, 1.1, 1.05, 1, 1, 1.05, 1.15, 1.1, 1, 1]}
+
+# annual input-cost inflation by component (default) and overrides
+LABOUR = {"TR": 0.22, "CN": 0.05, "IN": 0.07, "VN": 0.06, "BD": 0.08, "PT": 0.05, "MX": 0.06}
+MIX = {"Home": (40, 20, 15, 15, 10), "Womenswear": (45, 30, 8, 12, 5), "Menswear": (45, 30, 8, 12, 5), "Kids": (45, 30, 8, 12, 5),
+       "Accessories": (50, 25, 8, 12, 5), "Beauty": (45, 15, 10, 15, 15), "Electricals": (55, 15, 8, 12, 10)}
+COMPONENTS = ("raw materials", "labour", "energy", "shipping", "packaging")
+OVERPAY_BENCH = {"Knitwear": 0.085, "Shirts": 0.055, "Outerwear": 0.04, "Footwear": 0.02, "Jewellery": -0.012}
+SUP_CONTRACT_VAR = {"SUP-0055": 0.07, "SUP-0062": 0.05, "SUP-0013": 0.045}
 
 
 def generate(g):
     r = g.rng
-    categories = ["Home", "Womenswear", "Menswear", "Kids", "Accessories"]
-    suppliers = [s["supplier_id"] for s in g.master("suppliers") if s["status"] == "active"][:40]
-    countries = set(s["country"] for s in g.master("suppliers") if s["status"] == "active")
+    sup = {s["supplier_id"]: s for s in g.master("suppliers")}
+    prods = g.master("products")
+    cat_dept = {p["category"]: p["department"] for p in prods}
+    sup_cats = defaultdict(lambda: defaultdict(int))
+    ucost = defaultdict(list)
+    for p in prods:
+        sup_cats[p["supplier_id"]][p["category"]] += 1
+        ucost[(p["supplier_id"], p["category"])].append(float(p["unit_cost_gbp"]))
+    dept_cats = defaultdict(list)
+    for c, d in cat_dept.items():
+        dept_cats[d].append(c)
 
-    # Generate supplier_spend: monthly spend by supplier and category for last 13 months
-    supplier_spend = []
-    spend_keys = set()
-    for _ in range(400):
-        attempts = 0
-        while attempts < 10:
-            supplier_id = r.choice(suppliers)
-            category = r.choice(categories)
-            month_offset = r.randint(0, 12)
-            period_date = g.as_of - timedelta(days=30 * month_offset)
-            period = period_date.strftime("%Y-%m")
-            key = (supplier_id, category, period)
-            if key not in spend_keys:
-                spend_keys.add(key)
-                break
-            attempts += 1
-        if attempts >= 10:
+    # 24 months, mid-month dates, oldest first; last full month is the one before as_of
+    first = date(g.as_of.year, g.as_of.month, 1)
+    months = []
+    y, m = first.year, first.month
+    for _ in range(24):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        months.append(date(y, m, 15))
+    months.reverse()
+
+    def profile(sid, kind="product"):
+        s = sup[sid]
+        slope = SLOPE.get(sid, r.uniform(-0.1, 0.1))
+        out = []
+        for i, d in enumerate(months):
+            t = (i - 12) / 11.0 if i >= 12 else 0.0
+            sea = SEASON.get(s["category_focus"], [1] * 12)[d.month - 1] if kind == "product" else 1.0
+            w = max(0.05, 1 + slope * (t - 0.5)) * sea * r.uniform(0.95, 1.05)
+            if i < 12:
+                w *= r.uniform(0.86, 0.98)
+            if d < date.fromisoformat(s["onboarded_date"]):
+                w = 0
+            if s["status"] == "exited" and i >= 19:
+                w = 0
+            out.append(w)
+        return out
+
+    def scale(ws, total):
+        tail = sum(ws[12:])
+        return [w * total / tail for w in ws] if tail else ws
+
+    spend_rows = []
+    cell = {}  # (sid, cat) -> monthly spend list
+    for sid, s in sup.items():
+        annual = float(s["annual_spend_gbp"])
+        extra = INDIRECT.get(sid, [])
+        product_annual = annual - sum(x[1] for x in extra)
+        cats = dict(sup_cats.get(sid) or {})
+        if not cats:
+            cs = dept_cats[s["category_focus"]]
+            cats = {c: 1 for c in cs[:3]}
+        n = sum(cats.values())
+        base = scale(profile(sid), 1.0)
+        for c, k in cats.items():
+            vals = [v * product_annual * k / n for v in base]
+            cell[(sid, c)] = vals
+        for cat, total, kind in extra:
+            ws = [0.0] * 24
+            if kind == "project":  # one-off refurbishment: three big months plus a small run-rate
+                for i in range(24):
+                    ws[i] = r.uniform(0.9, 1.1) * (1 if i >= 12 else 0.8)
+                tot12 = sum(ws[12:])
+                ws = [w * 230000 / tot12 for w in ws]  # run-rate base ~ 230k a year
+                for i, amt in ((18, 270000), (19, 240000), (20, 160000)):
+                    ws[i] += amt
+                ws[:12] = [w * 0.8 for w in ws[:12]]
+            else:
+                for i in range(24):
+                    ws[i] = r.uniform(0.96, 1.04) * (1 if i >= 12 else r.uniform(0.82, 0.92)) * (1 + (0.01 * (i - 12) if cat == "Energy" else 0))
+                if sid == "SUP-0014":
+                    ws[21] += 0.12 * 1.0 * sum(ws[12:]) / 12 * 1.0  # one extra deep-clean month
+                tot12 = sum(ws[12:])
+                ws = [w * total / tot12 for w in ws]
+            cell[(sid, cat)] = ws
+
+    # round to pounds, fix the last-12-month total to the master annual spend
+    for sid, s in sup.items():
+        keys = [k for k in cell if k[0] == sid]
+        for k in keys:
+            cell[k] = [round(v) for v in cell[k]]
+        diff = round(float(s["annual_spend_gbp"])) - sum(sum(cell[k][12:]) for k in keys)
+        big = max(keys, key=lambda k: sum(cell[k][12:]))
+        j = max(range(12, 24), key=lambda i: cell[big][i])
+        cell[big][j] += diff
+    for (sid, c), vals in cell.items():
+        s = sup[sid]
+        pref = s["tier"] in ("strategic", "preferred")
+        if c in SERVICE_RATE:
+            dept, base_uc = "Indirect", SERVICE_RATE[c]
+        else:
+            dept = cat_dept.get(c, s["category_focus"])
+            ul = ucost.get((sid, c)) or [30.0]
+            base_uc = sum(ul) / len(ul)
+        for i, v in enumerate(vals):
+            if v <= 0:
+                continue
+            uc = base_uc * (1 + 0.004 * (i - 12))
+            units = max(1, round(v / uc))
+            spend_rows.append({"supplier_id": sid, "category": c, "department": dept, "period": months[i], "spend_gbp": float(v),
+                               "units": units, "invoice_count": r.randint(2, 9) if c not in SERVICE_RATE else r.randint(1, 3),
+                               "avg_unit_cost_gbp": round(v / units, 2), "is_preferred": pref})
+
+    # supplier sales (for share of wallet)
+    last12 = defaultdict(float)
+    for row in spend_rows:
+        last12[row["supplier_id"]] += row["spend_gbp"] if row["period"] >= months[12] else 0
+    explicit = {"SUP-0074": 0.253}
+    supplier_volume = []
+    for sid in sup:
+        share = explicit.get(sid, r.uniform(0.04, 0.4))
+        supplier_volume.append({"supplier_id": sid, "annual_sales_gbp": float(round(last12[sid] / share, -3))})
+
+    # payment terms benchmark
+    base_days = {"CN": 60, "IN": 60, "VN": 60, "TR": 60, "BD": 60, "PT": 45, "IT": 60, "MX": 60, "GB": 30, "DE": 45, "PL": 45, "FR": 45}
+    payment = []
+    for c in sorted(cat_dept):
+        for ctry, d in base_days.items():
+            std = d + r.choice([-15, 0, 0, 15])
+            payment.append({"category": c, "supplier_country": ctry, "market_standard_days": std, "typical_min_days": max(15, std - 30),
+                            "typical_max_days": std + 30, "observations_count": r.randint(6, 40)})
+
+    # nearshore forecast
+    units_by = defaultdict(float)
+    for row in spend_rows:
+        units_by[(row["supplier_id"], row["period"])] += row["units"]
+    near = []
+    fut = [date(months[-1].year + (months[-1].month + k - 1) // 12, (months[-1].month + k - 1) % 12 + 1, 15) for k in range(1, 7)]
+    for sid, s in sup.items():
+        if s["country"] not in NEARSHORE or s["status"] != "active":
             continue
-        spend = r.randint(10000, 500000)
-        units = r.randint(100, 5000)
-        supplier_spend.append({
-            "supplier_id": supplier_id,
-            "category": category,
-            "period": period,
-            "spend_gbp": float(spend),
-            "units": units,
-            "invoice_count": r.choice([1, 2, 3, 4, 5, 6]),
-            "avg_unit_cost_gbp": float(spend / max(units, 1)),
-            "is_preferred": r.choices([True, False], [0.7, 0.3])[0]
-        })
+        acc = 0.87 if sid == "SUP-0044" else r.uniform(0.9, 1.04)
+        com = 0.90 if sid == "SUP-0044" else r.uniform(0.7, 0.95)
+        for i, d in enumerate(months[12:], 12):
+            act = units_by[(sid, d)]
+            if act:
+                near.append({"supplier_id": sid, "period": d, "forecasted_volume_units": round(act / (acc * r.uniform(0.97, 1.03))),
+                             "commitment_level_pct": round(com * 100, 1)})
+        avg = sum(units_by[(sid, d)] for d in months[18:]) / 6
+        for d in fut:
+            near.append({"supplier_id": sid, "period": d, "forecasted_volume_units": round(avg * r.uniform(1.0, 1.12)),
+                         "commitment_level_pct": round(com * 100, 1)})
 
-    # Generate savings_initiatives
+    # price variance from master PO lines (actual price = master product cost; volume = received qty)
+    po = {p["po_id"]: p for p in g.master("purchase_orders")}
+    pmap = {p["sku"]: p for p in prods}
+    pv = []
+    for l in g.master("po_lines"):
+        p = po.get(l["po_id"])
+        if not p or p["status"] not in ("closed", "received") or int(l["qty_received"] or 0) <= 0:
+            continue
+        prod = pmap[l["sku"]]
+        actual = float(prod["unit_cost_gbp"])
+        sid = p["supplier_id"]
+        cv = SUP_CONTRACT_VAR.get(sid, r.uniform(-0.01, 0.02))
+        contract = actual / (1 + cv + r.uniform(-0.01, 0.01))
+        bv = OVERPAY_BENCH.get(prod["category"], r.uniform(-0.01, 0.03)) + r.uniform(-0.015, 0.015)
+        bench = actual / (1 + bv)
+        pv.append({"po_id": l["po_id"], "line_no": int(l["line_no"]), "po_date": p["order_date"], "sku": l["sku"], "supplier_id": sid,
+                   "category": prod["category"], "contract_price_gbp": round(contract, 2), "benchmark_price_gbp": round(bench, 2),
+                   "actual_price_gbp": actual, "volume_units": int(l["qty_received"])})
+
+    # input costs
+    ic = []
+    for sid, s in sup.items():
+        if s["status"] in ("exited",):
+            continue
+        dept = s["category_focus"]
+        mix = list(MIX[dept])
+        k = r.choice([-2, 0, 2])
+        mix[0] += k
+        mix[1] -= k
+        rates = {"raw materials": r.uniform(0.01, 0.05), "labour": LABOUR.get(s["country"], 0.05) + r.uniform(-0.01, 0.01),
+                 "energy": r.uniform(0.02, 0.08), "shipping": r.uniform(-0.02, 0.05), "packaging": r.uniform(0.01, 0.04)}
+        if sid == "SUP-0074":
+            rates = {"raw materials": 0.12, "labour": 0.07, "energy": 0.15, "shipping": 0.04, "packaging": 0.05}
+        for comp, pct in zip(COMPONENTS, mix):
+            for i, d in enumerate(months):
+                idx = 100 * (1 + rates[comp]) ** ((i - 11) / 12.0) + r.uniform(-0.4, 0.4)
+                ic.append({"supplier_id": sid, "cost_component": comp, "period": d, "index_value": round(idx, 1), "pct_of_total": float(pct)})
+
+    # price increase history
+    inc = []
+    n = 0
+    for sid, s in sup.items():
+        if s["status"] != "active":
+            continue
+        cats = list(sup_cats.get(sid) or {}) or dept_cats[s["category_focus"]][:1]
+        for _ in range(r.choice([0, 0, 1, 1, 2])):
+            n += 1
+            c = r.choice(cats)
+            inc.append({"increase_id": f"PRI-{n:06d}", "supplier_id": sid, "category": c, "department": cat_dept.get(c, s["category_focus"]),
+                        "effective_date": g.days_ago(r.randint(60, 900)), "increase_pct": round(r.uniform(1.5, 6.0), 1),
+                        "reason": r.choice(["Raw material costs", "Labour cost rise", "Energy costs", "Freight costs", "Annual uplift"]),
+                        "outcome": r.choice(["accepted", "accepted", "negotiated", "rejected"])})
+
+    # savings initiatives (older, completed history; recent story rows come from seed)
     initiatives = []
-    init_types = ["consolidation", "renegotiation", "spec_change", "nearshore", "other"]
-    statuses = ["planned", "in_progress", "completed", "abandoned"]
-    for i in range(80):
-        reported = r.randint(50000, 500000)
-        # Realised is typically 60-90% of reported
-        realised = int(reported * r.uniform(0.6, 0.95)) if r.choice([True, False]) else 0
-        status = r.choice(statuses)
-        start_date = g.days_ago(r.randint(30, 300))
-        target_date = start_date + timedelta(days=r.randint(60, 180))
-        actual_date = target_date + timedelta(days=r.randint(-30, 60)) if status == "completed" else None
+    rate = {"consolidation": 0.82, "renegotiation": 0.66, "spec_change": 0.55, "nearshore": 0.72, "other": 0.70}
+    cats_all = sorted(cat_dept)
+    for i in range(48):
+        t = r.choice(list(rate))
+        c = r.choice(cats_all)
+        rep = float(r.randrange(30, 400, 5) * 1000)
+        comp = g.days_ago(r.randint(420, 1300))
+        start = comp - timedelta(days=r.randint(90, 240))
+        initiatives.append({"initiative_id": f"INIT-{i + 1:06d}", "name": f"{c} {t.replace('_', ' ')}", "category": c,
+                            "supplier_id": r.choice([None] + [x for x, v in sup_cats.items() if c in v] or [None]),
+                            "initiative_type": t, "reported_saving_gbp": rep, "realised_saving_gbp": float(round(rep * rate[t] * r.uniform(0.85, 1.15), -3)),
+                            "status": "completed", "start_date": start, "target_completion_date": comp - timedelta(days=r.randint(0, 30)),
+                            "actual_completion_date": comp, "created_at": start, "updated_at": comp})
 
-        initiatives.append({
-            "initiative_id": f"INIT-{i+1:06d}",
-            "name": f"Initiative {i+1}",
-            "category": r.choice(categories),
-            "supplier_id": r.choice([None] + suppliers),
-            "initiative_type": r.choice(init_types),
-            "reported_saving_gbp": float(reported),
-            "realised_saving_gbp": float(realised) if status == "completed" else None,
-            "status": status,
-            "start_date": start_date,
-            "target_completion_date": target_date,
-            "actual_completion_date": actual_date,
-            "created_at": start_date,
-            "updated_at": start_date + timedelta(days=r.randint(1, 90))
-        })
-
-    # Generate savings_realisation_rates: historical completion data
-    realisation_rates = []
-    for init_type in init_types:
-        for month_offset in range(0, 12, 3):
-            period_date = g.as_of - timedelta(days=30 * month_offset)
-            period = period_date.strftime("%Y-%m")
-            # Rate improves over time
-            rate = 60 + month_offset * 3 + r.randint(-5, 5)
-            rate = min(rate, 95)
-            reported = r.randint(200000, 1000000)
-            realised = int(reported * rate / 100)
-
-            realisation_rates.append({
-                "initiative_type": init_type,
-                "period": period,
-                "realisation_rate_pct": float(rate),
-                "initiatives_count": r.randint(3, 10),
-                "reported_total_gbp": float(reported),
-                "realised_total_gbp": float(realised)
-            })
-
-    # Generate payment_terms_benchmark
-    payment_terms = []
-    for category in categories:
-        for country in list(countries)[:15]:
-            payment_terms.append({
-                "category": category,
-                "supplier_country": country,
-                "market_standard_days": r.choice([30, 45, 60, 90]),
-                "typical_min_days": r.choice([15, 30, 45]),
-                "typical_max_days": r.choice([60, 90, 120]),
-                "observations_count": r.randint(5, 30)
-            })
-
-    # Generate preferred_supplier_tracking: monthly tracking
-    pref_tracking = []
-    for category in categories:
-        for month_offset in range(0, 13):
-            period_date = g.as_of - timedelta(days=30 * month_offset)
-            period = period_date.strftime("%Y-%m")
-            total_spend = r.randint(1000000, 5000000)
-            # Preferred share increases over time (consolidation working)
-            base_share = 60 + month_offset * 1.5
-            share = min(base_share + r.uniform(-3, 3), 95)
-            pref_spend = int(total_spend * share / 100)
-
-            pref_tracking.append({
-                "category": category,
-                "period": period,
-                "total_category_spend_gbp": float(total_spend),
-                "preferred_spend_gbp": float(pref_spend),
-                "preferred_share_pct": float(share),
-                "preferred_supplier_count": r.randint(3, 8)
-            })
-
-    # Generate nearshore_forecast: nearshore supplier data
-    nearshore_suppliers = suppliers[:8]
-    nearshore_data = []
-    for supplier_id in nearshore_suppliers:
-        for month_offset in range(0, 13):
-            period_date = g.as_of - timedelta(days=30 * month_offset)
-            period = period_date.strftime("%Y-%m")
-            spend = r.randint(50000, 300000)
-            forecast = r.randint(2000, 10000)
-            actual = int(forecast * r.uniform(0.8, 1.1))
-            commitment = r.uniform(0.7, 1.0)
-
-            nearshore_data.append({
-                "supplier_id": supplier_id,
-                "period": period,
-                "actual_spend_gbp": float(spend),
-                "forecasted_volume_units": forecast,
-                "actual_volume_units": actual,
-                "commitment_level_pct": float(commitment * 100)
-            })
-
-    # Generate price_variance_data: price paid vs benchmark
-    price_variance = []
-    pos = [p["po_id"] for p in g.master("purchase_orders") if p["status"] in ("received", "closed")][:50]
-    for idx, po_id in enumerate(pos):
-        for line_no in range(1, r.randint(2, 4)):
-            po_lines = [p for p in g.master("po_lines") if p["po_id"] == po_id]
-            if not po_lines or line_no > len(po_lines):
-                continue
-            line = po_lines[line_no - 1]
-            sku = line["sku"]
-            po = next((p for p in g.master("purchase_orders") if p["po_id"] == po_id), None)
-            if not po:
-                continue
-
-            unit_cost = float(line["unit_cost"])
-            contract_price = unit_cost * r.uniform(0.95, 1.0)
-            actual_price = unit_cost * r.uniform(0.95, 1.08)
-            volume = int(line["qty_received"])
-            variance_pct = (actual_price - contract_price) / contract_price * 100
-            variance_gbp = actual_price - contract_price
-
-            product = next((p for p in g.master("products") if p["sku"] == sku), None)
-            category = product["category"] if product else "Unknown"
-
-            price_variance.append({
-                "po_id": po_id,
-                "line_no": line_no,
-                "sku": sku,
-                "supplier_id": po["supplier_id"],
-                "category": category,
-                "contract_price_gbp": float(contract_price),
-                "actual_price_gbp": float(actual_price),
-                "volume_units": volume,
-                "variance_pct": float(variance_pct),
-                "variance_gbp": float(variance_gbp),
-                "source": r.choice(["contract", "benchmark", "market"])
-            })
-
-    # Generate supplier_input_costs: cost index data
-    input_costs = []
-    cost_components = ["raw materials", "labour", "shipping", "energy", "packaging"]
-    for supplier_id in suppliers[:20]:
-        for component in cost_components:
-            for month_offset in range(0, 12):
-                period_date = g.as_of - timedelta(days=30 * month_offset)
-                period = period_date.strftime("%Y-%m")
-                # Index increases over time (inflation scenario)
-                base_index = 100
-                trend = month_offset * 1.5
-                index = base_index + trend + r.uniform(-2, 2)
-
-                input_costs.append({
-                    "supplier_id": supplier_id,
-                    "cost_component": component,
-                    "period": period,
-                    "index_value": float(index),
-                    "pct_of_total": float(100 / len(cost_components) + r.uniform(-5, 5))
-                })
-
-    return {
-        "supplier_spend": supplier_spend,
-        "savings_initiatives": initiatives,
-        "savings_realisation_rates": realisation_rates,
-        "payment_terms_benchmark": payment_terms,
-        "preferred_supplier_tracking": pref_tracking,
-        "nearshore_forecast": nearshore_data,
-        "price_variance_data": price_variance,
-        "supplier_input_costs": input_costs
-    }
+    return {"supplier_spend": spend_rows, "supplier_volume": supplier_volume, "payment_terms_benchmark": payment,
+            "nearshore_forecast": near, "price_variance_data": pv, "supplier_input_costs": ic, "supplier_price_increases": inc,
+            "savings_initiatives": initiatives}

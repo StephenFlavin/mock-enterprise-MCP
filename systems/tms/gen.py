@@ -62,7 +62,7 @@ def generate(g):
             carriers_lanes.append({
                 "carrier_id": cid, "lane": lane, "mode": "road",
                 "status": "active", "weekly_capacity_trips": int((6 if big else 2) * pct / 25) + 1,
-                "weekly_capacity_pallets": int((130 if big else 60) * pct / 25) + 10,
+                "weekly_capacity_pallets": int((85 if big else 60) * pct / 25) + 10,
                 "rate_per_trip_gbp": trip, "rate_per_pallet_gbp": round(trip / 26 * 1.15, 1),
                 "min_pieces": 5, "cutoff_hour": {"CAR-001": 17, "CAR-002": 16, "CAR-003": 15}[cid],
                 "cutoff_day_offset": 1, "pct_allocation": pct, "updated_at": g.as_of})
@@ -78,14 +78,14 @@ def generate(g):
         is_past = planned_dep < g.as_of
 
         if is_past:
-            delay = int(r.gauss(0, 1.5))
+            delay = int(r.gauss(0, 0.7))
             actual_dep = planned_dep + timedelta(days=max(0, delay))
             actual_arr = planned_arr + timedelta(days=delay)
         else:
             actual_dep = None
             actual_arr = None
 
-        is_split = r.random() < 0.12
+        is_split = False
         units = r.randint(100, 2000)
         pallets = max(1, units // 50)
         fill_rate = float(r.randint(60, 98))
@@ -100,7 +100,7 @@ def generate(g):
             "carrier_id": carrier["carrier_id"],
             "lane": lane,
             "mode": "road",
-            "status": r.choice(["delivered", "delivered", "in_transit", "planned", "booked"]) if is_past else r.choice(["planned", "booked", "in_transit"]),
+            "status": ("delivered" if actual_arr < g.as_of else "in_transit") if is_past else r.choice(["planned", "booked"]),
             "planned_departure": planned_dep,
             "actual_departure": actual_dep,
             "planned_arrival": planned_arr,
@@ -119,77 +119,69 @@ def generate(g):
             "updated_at": g.fake.date_time_this_year()
         })
 
-    # Generate parcel shipments
-    for i in range(100):
-        lane = r.choice(lanes)
-        origin, dest = lane.split("-")
-        carrier = r.choice(parcel_carriers) if parcel_carriers else r.choice(road_carriers)
-
-        planned_dep = g.date_between(90, -14)
-        planned_arr = planned_dep + timedelta(days=r.randint(1, 3))
-        is_past = planned_dep < g.as_of
-
-        if is_past:
-            delay = int(r.gauss(0, 0.5))
-            actual_dep = planned_dep + timedelta(days=max(0, delay))
-            actual_arr = planned_arr + timedelta(days=delay)
-        else:
-            actual_dep = None
-            actual_arr = None
-
-        units = r.randint(10, 200)
-        fill_rate = float(r.randint(50, 85))
-        cost = float(r.randint(10, 150))
-
-        shipments.append({
-            "shipment_id": f"SHP-{len(shipments) + 1:06d}",
-            "order_id": r.choice(orders)["order_id"] if r.random() < 0.8 else None,
-            "po_id": None,
-            "origin_site_id": origin,
-            "dest_site_id": dest,
-            "carrier_id": carrier["carrier_id"],
-            "lane": lane,
-            "mode": "parcel",
-            "status": "delivered" if is_past else r.choice(["planned", "booked"]),
-            "planned_departure": planned_dep,
-            "actual_departure": actual_dep,
-            "planned_arrival": planned_arr,
-            "actual_arrival": actual_arr,
-            "lines_count": 1,
-            "volume_cbm": float(r.randint(1, 5)),
-            "weight_kg": float(r.randint(10, 100)),
-            "pallets": 0,
-            "cases": r.randint(1, 10),
-            "units": units,
-            "fill_rate_pct": fill_rate,
-            "freight_cost_gbp": cost,
-            "delay_minutes": (delay * 1440) if is_past and delay > 0 else None,
-            "is_split": False,
-            "created_at": g.fake.date_time_this_year(),
-            "updated_at": g.fake.date_time_this_year()
-        })
+    # Parcel shipments for a quarter of the last 8 weeks of online orders; split orders rise sharply over the last 4 weeks.
+    PARCEL = {"GB": ["CAR-011", "CAR-012", "CAR-013"], "IE": ["CAR-012"], "DE": ["CAR-014"], "NL": ["CAR-014"], "FR": ["CAR-014"], "US": ["CAR-015"]}
+    SVC = {"standard": 4.6, "next_day": 7.4, "same_day": 11.5}
+    ords = [o for o in orders if o["channel"] in ("web", "app", "marketplace") and o["status"] in ("delivered", "shipped", "returned", "part_returned")
+            and date.fromisoformat(o["order_date"]) >= g.as_of - timedelta(days=56)]
+    split_p = [0.03, 0.03, 0.03, 0.03, 0.05, 0.07, 0.09, 0.10]
+    for k, o in enumerate(ords):
+        if k % 4:
+            continue
+        od = date.fromisoformat(o["order_date"])
+        wk = min(7, max(0, (od - (g.as_of - timedelta(days=56))).days // 7))
+        svc = o["delivery_service"] if o["delivery_service"] in SVC else "standard"
+        cid = r.choice(PARCEL.get(o["country"], ["CAR-012"]))
+        if svc != "standard" and cid in ("CAR-013", "CAR-014", "CAR-015"):
+            svc = "standard"
+        units = int(o["units"])
+        split = units >= 2 and r.random() < split_p[wk] * 2.2
+        dep = od + timedelta(days=0 if svc != "standard" else 1)
+        late = r.random() < {"CAR-011": 0.05, "CAR-012": 0.06, "CAR-013": 0.12, "CAR-014": 0.09, "CAR-015": 0.08}[cid]
+        parts = [(o["fulfil_site_id"], (units + 1) // 2 if split else units, dep)]
+        if split:
+            parts.append(("DC1" if o["fulfil_site_id"] != "DC1" else "DC2", units // 2, dep + timedelta(days=1)))
+        for origin, u, d_ in parts:
+            transit = {"standard": 3, "next_day": 1, "same_day": 0}[svc] + (2 if o["country"] not in ("GB",) else 0)
+            arr = d_ + timedelta(days=transit)
+            dly = r.randint(1, 3) if late else 0
+            cost = round(SVC[svc] * (1 + 0.1 * (u - 1)) * (1.9 if o["country"] in ("DE", "NL", "FR", "IE") else 3.4 if o["country"] == "US" else 1.0) * r.uniform(0.95, 1.05), 2)
+            done = arr + timedelta(days=dly) < g.as_of
+            shipments.append({
+                "shipment_id": f"SHP-{len(shipments) + 1:06d}", "order_id": o["order_id"], "po_id": None,
+                "origin_site_id": origin, "dest_site_id": None, "carrier_id": cid, "lane": f"{origin}-{o['country']}",
+                "mode": "parcel", "service_level": svc, "status": "delivered" if done else "in_transit",
+                "planned_departure": d_, "actual_departure": d_, "planned_arrival": arr,
+                "actual_arrival": arr + timedelta(days=dly) if done else None,
+                "lines_count": 1, "volume_cbm": round(0.02 * u, 2), "weight_kg": round(0.6 * u, 1), "pallets": 0, "cases": 1, "units": u,
+                "fill_rate_pct": None, "freight_cost_gbp": cost,
+                "delay_minutes": dly * 1440 if done else None, "is_split": split,
+                "created_at": g.as_of, "updated_at": g.as_of})
 
     # Generate 2025 shipments for peak capacity analysis
     dc1_st214_lane = "DC1-ST214"
-    for i in range(200):
+    for i in range(950):
         # Ensure some shipments are on DC1-ST214 lane for test
-        lane = dc1_st214_lane if i < 100 else r.choice(lanes)
+        lane = r.choice(sorted(STORY)) if i < 900 else r.choice(lanes)
         origin, dest = lane.split("-")
         carrier = r.choice(road_carriers)
 
         # Generate dates in December 2025 (past peak period)
-        peak_date = datetime(2025, 12, r.randint(1, 31)).date()
+        peak_date = g.as_of - timedelta(days=315) + timedelta(days=r.randint(0, 34))
         planned_dep = peak_date
         planned_arr = planned_dep + timedelta(days=r.randint(1, 5))
 
-        delay = int(r.gauss(0, 1.5))
+        delay = int(r.gauss(0, 0.7))
         actual_dep = planned_dep + timedelta(days=max(0, delay))
         actual_arr = planned_arr + timedelta(days=delay)
 
         units = r.randint(100, 2000)
         pallets = max(1, units // 50)
-        fill_rate = float(r.randint(80, 98))
-        cost = float(r.randint(200, 800))
+        if i < 900:
+            pallets = r.randint(18, 24)
+            units = pallets * 50
+        fill_rate = float(round(pallets / 26 * 100))
+        cost = float(round(lane_base(origin, dest) * (0.45 + 0.55 * pallets / 26)))
 
         shipments.append({
             "shipment_id": f"SHP-{len(shipments) + 1:06d}",
@@ -219,16 +211,17 @@ def generate(g):
             "updated_at": g.fake.date_time_this_year()
         })
     
+    lane_fill = {}
     # Generate carrier_performance
     for lane in lanes[:100]:
         for carrier in r.sample([c for c in road_carriers if c["carrier_id"] in ("CAR-001","CAR-002","CAR-003")], min(2, len(road_carriers))):
-            for week_offset in range(-12, 2):
+            for week_offset in range(-12, 0):
                 week_start = g.as_of + timedelta(weeks=week_offset)
                 week_start = week_start - timedelta(days=week_start.weekday())
                 week_end = week_start + timedelta(days=6)
                 
                 shipments_count = r.randint(5, 20)
-                on_time_count = int(shipments_count * r.gauss(0.92, 0.05))
+                on_time_count = min(shipments_count, int(round(shipments_count * r.gauss(0.92, 0.03))))
                 
                 carrier_performance.append({
                     "carrier_id": carrier["carrier_id"],
@@ -237,11 +230,11 @@ def generate(g):
                     "period_end": week_end.date() if isinstance(week_end, datetime) else week_end,
                     "shipments_count": shipments_count,
                     "on_time_count": max(0, on_time_count),
-                    "on_time_pct": float(max(0, min(100, r.gauss(90, 8)))),
+                    "on_time_pct": round(100.0 * max(0, on_time_count) / shipments_count, 1),
                     "avg_delay_minutes": float(r.randint(-30, 120)) if r.random() < 0.3 else 0.0,
-                    "fill_rate_avg_pct": float(r.randint(70, 96)),
-                    "total_cost_gbp": float(r.randint(2000, 6000)),
-                    "cost_per_shipment_gbp": float(r.randint(250, 450)),
+                    "fill_rate_avg_pct": float(round(lane_fill.setdefault(lane, r.randint(76, 90)) + r.randint(-2, 2))),
+                    "total_cost_gbp": float(shipments_count * lane_base(*lane.split("-"))),
+                    "cost_per_shipment_gbp": float(lane_base(*lane.split("-"))),
                     "updated_at": g.fake.date_time_this_year()
                 })
     
@@ -251,10 +244,12 @@ def generate(g):
         for cid, (ot, fr) in prof.items():
             for wk in range(-12, 0):
                 ws = g.as_of + timedelta(weeks=wk)
-                n = r.randint(14, 20)
+                n = r.randint(4, 7)
                 o, f = float(ot + r.randint(-2, 2)), float(fr + r.randint(-3, 3))
                 if cid == "CAR-002" and wk >= -2 and lane in DISRUPT:
-                    o, f = float(60 + r.randint(-4, 4)), float(66 + r.randint(-3, 3))
+                    o, f = float(60 + r.randint(-4, 4)), float(62 + r.randint(-3, 3))
+                elif lane in DISRUPT and wk >= -2:
+                    f = f - 14.0
                 carrier_performance.append({
                     "carrier_id": cid, "lane": lane, "period_start": ws, "period_end": ws + timedelta(days=6),
                     "shipments_count": n, "on_time_count": round(n * o / 100), "on_time_pct": round(100 * round(n * o / 100) / n, 1),
@@ -274,6 +269,12 @@ def generate(g):
                         "volume_cbm": 15.0, "weight_kg": 2500.0, "pallets": max(1, round(f / 100 * 26)), "cases": 60, "units": 600,
                         "fill_rate_pct": f, "freight_cost_gbp": float(lane_base("DC1", lane.split("-")[1])), "delay_minutes": dly or None, "is_split": False,
                         "created_at": g.as_of, "updated_at": g.as_of})
+
+    for sh in shipments:
+        if sh["status"] in ("planned", "booked"):
+            sh["actual_departure"] = sh["actual_arrival"] = sh["delay_minutes"] = None
+        elif sh["status"] == "in_transit":
+            sh["actual_arrival"] = sh["delay_minutes"] = None
 
     # Generate carrier incidents
     for i in range(150):
@@ -370,8 +371,10 @@ def generate(g):
             rc = "supplier_late"
         elif rc == "other" and r.random() < 0.7 and sea_rolled:
             rc = "carrier_rolled"
+        if in_q and i % 4 == 0 and sup not in top3:
+            rc = "carrier_rolled"
         if rc == "carrier_rolled":
-            rolled = r.choice(sea_rolled)["shipment_id"]
+            rolled = r.choice(sea_rolled + [x_ for x_ in sea_rolled if x_["carrier_id"] == "CAR-006"] * 2)["shipment_id"]
         avoid = rc in ("supplier_late", "demand_forecast_lift") or (rc in ("stockout_recovery", "carrier_rolled") and r.random() < 0.5)
         air_freight.append({
             "air_shipment_id": f"AIR-{i + 1:06d}", "shipment_id": sid, "po_id": m["po_id"], "supplier_id": sup,
@@ -408,21 +411,23 @@ def generate(g):
             "route_id": route["route_id"],
             "driver_id": f"DRV-{r.randint(1, 500):05d}",
             "breach_type": r.choice(["daily_limit_exceeded", "weekly_limit_exceeded"]),
-            "hours_breached": float(r.randint(1, 6)),
+            "hours_breached": round(r.uniform(0.3, 1.4), 1),
             "status": r.choice(["reported", "remediated"]),
             "remediation": g.fake.sentence() if r.random() < 0.7 else None,
-            "created_at": g.fake.date_time_this_year()
+            "created_at": g.as_of
         })
     
     # Generate planned_stops with unique composite keys
     stop_id = 0
     for lane in lanes:
+        if lane in ("DC3-ST151", "DC3-ST160", "DC3-ST161", "DC3-ST162"):
+            continue                      # M62 drops are planted in seed/planned_stops.csv
         origin, dest = lane.split("-")
         planned_stops.append({
             "stop_id": f"STP-{stop_id:06d}",
             "lane": lane,
             "customer_or_store": dest,
-            "stop_time_minutes": r.randint(15, 60),
+            "stop_time_minutes": r.choice([25, 30, 30, 35, 40]),
             "frequency_per_week": float(r.randint(1, 5)),
             "source": "route planning history",
             "updated_at": g.fake.date_time_this_year()
@@ -464,24 +469,22 @@ def generate(g):
             "created_at": g.fake.date_time_this_year()
         })
     
-    # Generate postcodes with unique keys
-    postcodes_data = ["M1", "L1", "S1", "B1", "E1", "SW1", "OX1", "EX1"]
-    postcode_id = 0
-    for postcode in postcodes_data:
-        carrier = r.choice(parcel_carriers + road_carriers)
-        postcodes.append({
-            "postcode_id": f"PC-{postcode_id:06d}",
-            "postcode": postcode,
-            "region": r.choice(["North West", "North East", "Yorkshire", "Midlands", "East Anglia", "London", "South East", "South West"]),
-            "carrier_id": carrier["carrier_id"],
-            "next_day_available": r.choice([True, True, False]),
-            "next_day_cost_gbp": float(r.randint(3, 15)) if r.random() < 0.7 else 0.0,
-            "standard_cost_gbp": float(r.randint(2, 8)),
-            "coverage_from": (g.as_of - timedelta(days=r.randint(30, 365))).date() if isinstance(g.as_of, datetime) else g.as_of - timedelta(days=r.randint(30, 365)),
-            "updated_at": g.fake.date_time_this_year()
-        })
-        postcode_id += 1
-    
+    # Next-day coverage by postcode area and parcel carrier (cost per drop rises with distance from Daventry)
+    AREAS = [("B", "Midlands", 4.8), ("CV", "Midlands", 4.8), ("NN", "Midlands", 4.6), ("LE", "Midlands", 4.8), ("NG", "Midlands", 5.0),
+             ("M", "North West", 5.9), ("L", "North West", 6.1), ("LS", "Yorkshire", 6.0), ("S", "Yorkshire", 5.8), ("NE", "North East", 6.8),
+             ("G", "Scotland", 7.6), ("EH", "Scotland", 7.6), ("AB", "Scotland", 9.4), ("IV", "Highlands", 12.5), ("KW", "Highlands", 13.5),
+             ("SW", "London", 5.2), ("E", "London", 5.2), ("SE", "London", 5.2), ("BN", "South East", 5.7), ("EX", "South West", 7.2),
+             ("PL", "South West", 8.0), ("TR", "South West", 9.8), ("CF", "Wales", 6.9), ("LD", "Wales", 9.0)]
+    pc = 0
+    for area, reg, cost in AREAS:
+        for cid in ("CAR-011", "CAR-012"):
+            pc += 1
+            ok = not (reg in ("Highlands",) or (cid == "CAR-012" and reg in ("Wales", "South West", "Scotland")))
+            postcodes.append({"postcode_id": f"PC-{pc:06d}", "postcode": area, "region": reg, "carrier_id": cid,
+                              "next_day_available": ok, "next_day_cost_gbp": round(cost * (1.0 if cid == "CAR-011" else 1.07), 2),
+                              "standard_cost_gbp": round(cost * 0.62, 2), "coverage_from": g.as_of - timedelta(days=200),
+                              "updated_at": g.as_of})
+
     # Reverse logistics by department: apparel is cheap to move and resells well; Electricals/Home are bulky.
     PROFILE = {"Womenswear": (900, 0.85, 3.2), "Menswear": (700, 0.95, 3.0), "Kids": (600, 1.1, 2.6), "Accessories": (300, 0.7, 4.4),
                "Beauty": (250, 1.5, 0.4), "Home": (350, 3.4, 5.5), "Electricals": (200, 4.1, 9.0)}
@@ -508,7 +511,7 @@ def generate(g):
     lane_buffers = []
     for ln in sorted({sh["lane"] for sh in shipments if sh.get("po_id")}):
         mode = next(sh["mode"] for sh in shipments if sh["lane"] == ln and sh.get("po_id"))
-        lane_buffers.append({"lane": ln, "planning_buffer_days": {"ocean": 2, "air": 1}.get(mode, 1),
+        lane_buffers.append({"buffer_lane": ln, "planning_buffer_days": {"ocean": 2, "air": 1}.get(mode, 1),
                              "basis": "carrier published transit time", "updated_at": g.as_of})
 
     # node_dwell: weekly average dwell at UK ports; Felixstowe has built up over the last 5 weeks
@@ -565,7 +568,6 @@ def generate(g):
         "route_hours_breaches": route_hours_breaches,
         "planned_stops": planned_stops,
         "allocation_scenarios": allocation_scenarios,
-        "transfer_scenarios": transfer_scenarios,
         "postcodes": postcodes,
         "reverse_logistics": reverse_logistics
     }

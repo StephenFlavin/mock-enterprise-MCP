@@ -120,7 +120,9 @@ def generate(g):
             q = int(tot * sh)
             row = dict(base)
             row.update({"location_id": loc, "on_hand": q, "allocated": int(base["allocated"] * sh),
-                        "available": q - int(base["allocated"] * sh), "hold_qty": 0})
+                        "available": q - int(base["allocated"] * sh), "hold_qty": 0,
+                        "weekly_demand": round(base["weekly_demand"] * sh, 1),
+                        "safety_stock": int(base["safety_stock"] * sh), "reorder_point": int(base["reorder_point"] * sh)})
             positions[(sku + "@" + loc, "DC1")] = row
     # PF-220 and K-1700 DC2 demand (master stock; chain sales ~ 240/week)
     for sku, dem in (("K-1700", 240.0), ("PF-220", 260.0)):
@@ -205,7 +207,7 @@ def generate(g):
     rate_by_week = [4.0] * 7 + [4.6, 5.4, 6.0, 6.5, 6.5]
     rate_by_week = rate_by_week[-12:]
     # causes per week (extra OOS above baseline)
-    base_causes = ["forecast_under", "allocation_shortfall", "supplier_late", "dc_receiving_delay", "count_error"]
+    base_causes = ["forecast_under", "allocation_shortfall", "supplier_late", "count_error", "stock_record_error"]
     base_w = [0.35, 0.25, 0.2, 0.1, 0.1]
     sup13 = [p for p in panel_pairs if products[p[0]]["supplier_id"] == "SUP-0013"]
     dc2_pairs = [p for p in panel_pairs if p[1] == "DC2"]
@@ -326,7 +328,20 @@ def generate(g):
         plan.append({"site_id": site, "category": cat, "plan_value_gbp": round(val * f, 2),
                      "plan_cover_weeks": 10.7, "plan_closing_units": int(close * f), "period_end": season_end})
 
+    import csv, os
+    fr = []
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "franchise", "data", "partner_stock.csv")
+    if os.path.exists(f):
+        for row in csv.DictReader(open(f)):
+            if row["sku"] in products:
+                fr.append({"partner_id": row["partner_id"], "sku": row["sku"], "on_hand": int(row["on_hand"]),
+                           "available": int(row["available"]), "target_stock": int(row["target_stock"]),
+                           "is_core_range": row["is_core_range"] == "true"})
+    if not fr:
+        fr = [{"partner_id": "PTN-011", "sku": "SKU-100007", "on_hand": 100, "available": 90, "target_stock": 80, "is_core_range": False}]
+
     return {
+        "franchise_stock": fr,
         "stock_plan": plan,
         "stock_batches": batches,
         "inventory_positions": pos_rows,

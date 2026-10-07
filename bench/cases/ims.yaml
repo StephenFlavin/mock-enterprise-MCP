@@ -1,12 +1,11 @@
 - id: ims-01:4:Q1-a
   question: "01:4:Q1"
   prompt: >
-    The count for bay DC1-C-14-02 at DC1 is way off. What stock adjustments have been posted against that location
-    in the last 90 days, for which SKU and with what cause?
+    The count for bay C-14 at Northampton DC (DC1) was way off on Tuesday. Look at the stock adjustments posted
+    against that bay in the last 90 days. Is it one SKU or several, and what causes were used?
   ref:
-    - {tool: list_inventory_adjustments_for_location, args: {site_id: DC1, location_id: DC1-C-14-02}}
-  facts: ["K-1700", "cycle_count_variance", "-8"]
-  notes: "Tool takes no date argument (cannot limit to 90 days). Only one adjustment exists for the location, so 'one SKU or several?' is trivially answered."
+    - {tool: list_inventory_adjustments_for_location, args: {site_id: DC1, location_id: DC1-C-14, date_from: -90d}}
+  facts: ["SKU-100084", "DC1-C-14-02", ["picking_error", "picking error"], ["receiving_variance", "receiving variance"], "-24"]
 
 - id: ims-01:4:Q1-b
   question: "01:4:Q1"
@@ -14,46 +13,83 @@
     Schedule a recount of location DC1-C-14-02 at DC1 for three days from now, reason "Recount after variance".
   ref:
     - {tool: create_cycle_count_task, args: {site_id: DC1, location_id: DC1-C-14-02, scheduled_date: +3d, reason: Recount after variance}}
-  facts: ["scheduled", "DC1-C-14-02"]
+  facts: ["DC1-C-14-02", "scheduled"]
+
+- id: ims-01:4:Q2
+  question: "01:4:Q2"
+  prompt: >
+    At DC1, list the stock adjustments over 500 pounds in value from the last 100 days. Which cause code looks
+    like a catch-all, which zone and shift do most of them come from, and which were reversed within 48 hours?
+  ref:
+    - {tool: list_inventory_adjustments, args: {site_id: DC1, min_value_gbp: 500, date_from: -100d}}
+  facts: ["other", "night", "mezzanine", "cycle_count_variance", "SKU-102338"]
 
 - id: ims-01:6:Q1
   question: "01:6:Q1"
   prompt: >
-    List the damage and expiry write-offs from the last 90 days. Which single write-off was the highest value,
-    and what was it?
+    Damage and rework write-offs at Northampton DC (DC1) over roughly the last two months. Which single write-off
+    was the highest value, what was it, and what caused the September ones?
   ref:
-    - {tool: list_damage_write_offs, args: {date_from: -90d}}
-  facts: ["495.95", "SKU-103045", "Sage Small Appliance"]
-  notes: "Seeded damage story (LOSS-900002/900003 'September damage and rework') is buried among 20+ generated write-offs; the seeded rows are small (25-150 GBP) so the top item is generated noise. Tool returns no cause/type column, so damage vs expiry cannot be distinguished."
+    - {tool: list_damage_write_offs, args: {site_id: DC1, date_from: -65d}}
+  facts: ["SKU-102338", "1479.6", "rework", ["pallet collapse", "forklift"]]
 
 - id: ims-02:19:Q1
   question: "02:19:Q1"
   prompt: >
-    How many weeks of stock cover does kettle K-1700 have at store ST214, and how many units are available there?
+    Delayed shipment SHP-0000102 is coming in. Which SKUs are on it, and for SKU-103458 which stores are lowest
+    on stock cover and so could run out first?
   ref:
-    - {tool: get_store_stock_cover_by_sku, args: {sku: K-1700, site_id: ST214}}
-  facts: ["0.1", "10"]
-  notes: "calculate_stockout_risk and get_expected_lost_sales (also in this question) take no sku arg; stockout risk for K-1700 cannot be requested. list_skus_on_shipment is hardcoded to K-1700 qty 100 regardless of shipment_id. get_stock_cover_by_sku gives K-1700 ST214 as 0.4 weeks vs 0.1 here, so the two cover tools disagree."
+    - {tool: list_skus_on_shipment, args: {shipment_id: SHP-0000102}}
+    - {tool: get_store_stock_cover_by_sku, args: {sku: SKU-103458}}
+  facts: ["SKU-103458", "SKU-104438", "ST214", "ST150"]
 
-- id: ims-03:22:Q1
+- id: ims-03:22:Q1-a
   question: "03:22:Q1"
   prompt: >
-    Kettle K-1700 kept running out at store ST214 recently. On which dates over the stockout record was it out of stock,
-    and how many sales were lost on each?
+    Style STY-5520 stocked out in about 40 stores for nine days last month even though the forecast looked fine.
+    From the stockout record, which stores were hit, for how many days, how much did we lose in sales, and what
+    cause is recorded?
   ref:
-    - {tool: get_stockout_periods_by_sku, args: {sku: K-1700}}
-  facts: ["2026-09-23", "2026-09-21", "6", "8"]
-  notes: "get_stockout_days_by_store has no sku filter, so store-level stockout days (5 of 10 days, 50%) are not K-1700-specific. Story says 9 days across 40 stores; data shows 2 days at one store."
+    - {tool: get_stockout_days_by_store, args: {style_id: STY-5520}}
+  facts: ["SKU-101904", "9", ["allocation_shortfall", "allocation shortfall", "allocation"], "ST214"]
+
+- id: ims-03:22:Q1-b
+  question: "03:22:Q1"
+  prompt: >
+    Update the safety stock for SKU-101904 at store ST214 to 20 units.
+  ref:
+    - {tool: update_safety_stock_for_sku, args: {sku: SKU-101904, site_id: ST214, safety_stock: 20}}
+  facts: ["20"]
+
+- id: ims-03:22:Q2
+  question: "03:22:Q2"
+  prompt: >
+    What is about to run out across all SKUs over the next four weeks? Rank them by sales at risk and tell me the
+    top three with their days until stockout.
+  ref:
+    - {tool: list_projected_stockouts, args: {days_ahead: 28}}
+  facts: ["SKU-105341", "ST214", "SKU-102338", "ST165", "SKU-101575"]
 
 - id: ims-03:22:Q5
   question: "03:22:Q5"
   prompt: >
-    Over the last 30 days, which stock adjustment causes (picking, receiving, count variance) account for the most
-    incidents and units lost?
+    Our out-of-stock rate has gone up over the last couple of months. Show the weekly trend, split it by supplier,
+    and tell me the root causes and which look one-off versus persistent.
   ref:
-    - {tool: list_stockout_root_causes, args: {date_from: -30d}}
-  facts: ["picking_error", "24", "cycle_count_variance", "13"]
-  notes: "Story says OOS rate rose from 4% to 6.5%; get_out_of_stock_rate_trend shows 98-100% OOS on weekly sampled rows and get_out_of_stock_rate_by_dimension shows 100% for most categories (tracking table only holds OOS-heavy samples). Root-cause tool returns adjustment causes, not supplier delay or forecast miss."
+    - {tool: get_out_of_stock_rate_trend, args: {date_from: -60d}}
+    - {tool: get_out_of_stock_rate_by_dimension, args: {dimension: supplier, date_from: -30d}}
+    - {tool: list_stockout_root_causes, args: {date_from: -60d}}
+  facts: ["6.5", "SUP-0013", ["supplier_late", "supplier late"], ["dc_receiving_delay", "DC receiving delay", "receiving delay"], ["one-off", "one off"]]
+
+- id: ims-03:28:Q2
+  question: "03:28:Q2"
+  prompt: >
+    We hold a lot of cover on Bedding. How many days of cover is that across the network, and which SKUs make up
+    most of the excess?
+  ref:
+    - {tool: get_days_of_cover_by_category, args: {category: Bedding}}
+    - {tool: list_skus_by_excess_contribution, args: {category: Bedding}}
+  facts: ["105", "SKU-103486", "SKU-103472", "SKU-104963"]
 
 - id: ims-03:28:Q5-a
   question: "03:28:Q5"
@@ -61,64 +97,79 @@
     Where is our cash tied up in stock? Show inventory value by category and tell me the three biggest categories.
   ref:
     - {tool: get_inventory_value_by_dimension, args: {dimension: category}}
-  facts: ["Small Appliances", "Smart Home", "Outerwear"]
-  notes: "Story says Bedding at 2.1M vs normal 1.5M; Bedding is not near the top. Values are returned in scientific notation (e.g. 5.25916e+06). Output only shows 20 of 29 rows."
+  facts: ["Small Appliances", "Smart Home", "Knitwear"]
 
 - id: ims-03:28:Q5-b
   question: "03:28:Q5"
   prompt: >
-    Create a stock release plan for Bedding at DC1 to clear the overstock, with a planned release date two weeks from now.
+    Create a stock release plan for Bedding at DC1 to clear overstock, estimated 1500 units, planned release
+    date two weeks from now.
   ref:
-    - {tool: create_stock_release_plan, args: {site_id: DC1, category: Bedding, planned_release_date: +14d, description: Clear overstock}}
-  facts: ["Bedding", "draft", "DC1"]
+    - {tool: create_stock_release_plan, args: {site_id: DC1, category: Bedding, planned_release_date: +14d, description: Clear overstock, estimated_units: 1500}}
+  facts: ["Bedding", "DC1", "1500"]
 
 - id: ims-05:47:Q1-a
   question: "05:47:Q1"
   prompt: >
-    A customer says portable fan PF-220 is overheating. Where is our stock of PF-220 right now, and how many units
-    are on hand at each location?
+    A customer reports the battery in portable fan PF-220 overheating. Batch BATCH-PF220-2509-A is the suspect
+    batch. Where is stock of that batch right now and how many units are there in total?
   ref:
-    - {tool: get_stock_by_location_for_batch, args: {sku: PF-220}}
-  facts: ["DC1", "200", "ST214", "30"]
-  notes: "Tool has no batch argument (stock is by SKU, not batch). Story says 500 units in DCs and 300 in stores; data shows 200 at DC1 and 30 at ST214. No in-transit or customer-held stock."
+    - {tool: get_stock_by_location_for_batch, args: {sku: PF-220, batch_id: BATCH-PF220-2509-A}}
+  facts: ["DC2", "807", "1381", "ST214", "14"]
 
 - id: ims-05:47:Q1-b
   question: "05:47:Q1"
   prompt: >
-    Put a stop-sale hold on 150 units of PF-220 at DC1.
+    Put a stop-sale hold on 150 units of PF-220 at DC2.
   ref:
-    - {tool: update_inventory_hold_status, args: {site_id: DC1, sku: PF-220, hold_qty: 150}}
+    - {tool: update_inventory_hold_status, args: {sku: PF-220, site_id: DC2, hold_qty: 150}}
   facts: ["150"]
-  notes: "Hold tool takes only SKU/site/qty (no batch or reason) and echoes 'Updated inventory_positions PF-220, DC1, None' with a literal None for the missing location."
 
 - id: ims-07:68:Q2
   question: "07:68:Q2"
   prompt: >
-    How did the recent stock counts at DC1 come out? For each count, give the category, system quantity, counted
-    quantity and variance.
+    Are stock counts at our three DCs reliable? Give me the count accuracy for DC1, DC2 and DC3 from the cycle
+    counts of the last 100 days and tell me which DC is weakest.
   ref:
-    - {tool: get_stock_count_results, args: {site_id: DC1}}
-  facts: ["Home", "215", "213", "Dresses", "230"]
-  notes: "Story says DC1 99.2% / DC2 97.8% / DC3 96.5% accuracy, but there are only two counts at DC1 and none at DC2/DC3 with results. avg_variance_pct is 2.25 for Dresses even though total variance is 0, so the percentage contradicts the quantities. Most generated counts have empty quantities."
+    - {tool: get_stock_count_results, args: {date_from: -100d}}
+  facts: ["DC3", "96.5", "97.8", "98.7"]
 
 - id: ims-07:68:Q5
   question: "07:68:Q5"
   prompt: >
-    Shrink at the Leeds store, ST216, looks off. List the stock adjustments posted there in the last 90 days with
-    cause, quantity and value.
+    Shrink at our Leeds High Street store, ST165, tripled recently. List the stock adjustments posted there in the
+    last 90 days with cause, quantity, value and who posted them. What stands out?
   ref:
-    - {tool: list_stock_adjustments_for_store, args: {site_id: ST216, date_from: -90d}}
-  facts: ["K-1700", "shrink", "SKU-104984", "-353.58"]
-  notes: "Story says shrink tripled at ST216; only two adjustments exist (+4 shrink GBP 20.40 and a -9 count variance), so no tripling is visible. get_shrink_rate_by_store shows ST216 total shrink 150 GBP."
+    - {tool: list_stock_adjustments_for_store, args: {site_id: ST165, date_from: -90d}}
+  facts: ["EMP-00488", "theft", "SKU-105159", "-86.9"]
 
-- id: ims-08:71:Q1
-  question: "08:71:Q1"
+- id: ims-08:71:Q2
+  question: "08:71:Q2"
   prompt: >
-    My store is ST214. Look at the stock adjustments over the last 90 days: which causes and categories stand out?
+    Kettle K-1700 has a gap on shelf at store ST214 even though the system says there is stock. How many units
+    does the system show on hand and available there, and how many units and how much in sales did we lose from
+    the availability gaps in the last 30 days?
   ref:
-    - {tool: get_stock_adjustments_for_store, args: {site_id: ST214, date_from: -90d}}
-  facts: ["picking_error", "receiving_error", "shrink", "damage"]
-  notes: "Only five adjustments exist for ST214. compare_shrink_with_peer_stores filters to the one store so it returns no peers. get_shrink_by_category_for_store values jump from tens of GBP (recent weeks) to thousands (older weeks), and category 'Home' does not appear in master categories."
+    - {tool: get_stock_on_hand_by_product_and_location, args: {sku: K-1700, site_id: ST214}}
+    - {tool: calculate_lost_sales_from_availability_gaps, args: {sku: K-1700, site_id: ST214, date_from: -30d}}
+  facts: ["12", "8", "7", "545.93"]
+
+- id: ims-08:74:Q6-a
+  question: "08:74:Q6"
+  prompt: >
+    How many units of kettle K-1700 are currently reserved for each sales channel, and how many units are still
+    free to allocate across the network?
+  ref:
+    - {tool: get_stock_position_for_product_by_channel, args: {sku: K-1700}}
+  facts: ["250", "40", "60", "1858"]
+
+- id: ims-08:74:Q6-b
+  question: "08:74:Q6"
+  prompt: >
+    Reserve 20 units of K-1700 at DC2 for click-and-collect, expiring in three days.
+  ref:
+    - {tool: create_stock_reservation_for_channel, args: {sku: K-1700, site_id: DC2, channel: click_collect, quantity: 20, expiry_date: +3d}}
+  facts: ["20", "K-1700"]
 
 - id: ims-08:79:Q6
   question: "08:79:Q6"
@@ -126,42 +177,12 @@
     What are our three highest-loss products over the last 90 days by value lost?
   ref:
     - {tool: get_highest_loss_products, args: {limit_products: 3, date_from: -90d}}
-  facts: ["SKU-103045", "495.95", "SKU-103444", "470.55", "SKU-100749"]
-  notes: "Seeded losses (LOSS-9000xx for K-1700, SKU-100014) are tiny and never reach the top; ranking is driven by generated noise. Loss types include 'unknown' and 'expiry' for apparel items."
-
-- id: ims-08:74:Q6-a
-  question: "08:74:Q6"
-  prompt: >
-    How many units of kettle K-1700 are currently reserved for each sales channel, and how many of those are active?
-  ref:
-    - {tool: get_stock_position_for_product_by_channel, args: {sku: K-1700}}
-  facts: ["click_collect", "25"]
-  notes: "Returns only a single channel row (click_collect 25) although get_available_stock_for_product shows reserved_for_channel 10/3/0 by site; the two totals do not reconcile (13 vs 25)."
-
-- id: ims-08:74:Q6-b
-  question: "08:74:Q6"
-  prompt: >
-    Reserve 50 units of K-1700 at DC1 for click-and-collect.
-  ref:
-    - {tool: create_stock_reservation_for_channel, args: {sku: K-1700, site_id: DC1, channel: click_collect, quantity: 50}}
-  facts: ["click_collect", "50", "active"]
-
-- id: ims-08:71:Q2
-  question: "08:71:Q2"
-  prompt: >
-    Kettle K-1700 shows a gap on shelf at store ST214 even though the system says there is stock. How many units
-    does the system show on hand and available there, and how much did we lose in sales from the gaps in the last 30 days?
-  ref:
-    - {tool: get_stock_on_hand_by_product_and_location, args: {sku: K-1700, site_id: ST214}}
-    - {tool: calculate_lost_sales_from_availability_gaps, args: {sku: K-1700, site_id: ST214, date_from: -30d}}
-  facts: ["15", "10", "14", "1091.86"]
-  notes: "Story says 40 units on hand with an empty shelf; on_hand is 15 (40 is the stock cover tool's figure). get_store_deliveries_for_product returns only current on-hand, not deliveries."
+  facts: ["SKU-102338", "7545.96", "SKU-101834", "5269.05", "SKU-101085"]
 
 - id: ims-08:73:Q3
   question: "08:73:Q3"
   prompt: >
-    Raise a transfer request to move 100 units of K-1700 from DC1 to store ST214 because the store is short.
+    Raise a transfer request to move 30 units of K-1700 from store ST215 to store ST214 because ST214 is short.
   ref:
-    - {tool: create_store_transfer_request, args: {sku: K-1700, from_site_id: DC1, to_site_id: ST214, quantity: 100, reason: Store short of stock}}
-  facts: ["requested", "100", "ST214"]
-  notes: "get_stock_imbalance_by_store (same question) returns overstocked/out-of-stock SKU counts per site and category, not a store-level coverage percentage; most rows are DCs, not stores."
+    - {tool: create_store_transfer_request, args: {sku: K-1700, from_site_id: ST215, to_site_id: ST214, quantity: 30, reason: Rebalance}}
+  facts: ["30", "ST214", "ST215"]
