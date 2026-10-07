@@ -168,6 +168,8 @@ def generate(g):
                               "certifications": ";".join(r.sample(["BSCI", "SEDEX", "OEKO-TEX", "GOTS", "ISO9001", "WRAP", "ISO14001"], r.randint(1, 3))),
                               "last_audit_date": g.date_between(700, 5), "audit_rating": r.choices("ABCD", [30, 45, 20, 5])[0],
                               "status": r.choices(["approved", "conditional", "suspended", "delisted"], [80, 14, 4, 2])[0]})
+    for s in suppliers:
+        s["supplier_type"] = "product"
     out["suppliers"], out["factories"] = suppliers, factories
     fac_by_sup = {}
     for f in factories:
