@@ -11,43 +11,51 @@ tables:
     cols:
       doc_id: {type: str, desc: "Document id, e.g. DOC-000123"}
       title: {type: str, desc: "Document title"}
-      doc_type: {type: enum, values: [csv, xlsx, pdf, image, txt, archive], desc: "Document type"}
+      doc_type: {type: enum, values: [csv, xlsx, pdf, image, txt, archive, docx], desc: "Document type"}
       path: {type: str, desc: "File path in files/"}
       created_at: {type: timestamp, desc: "Upload or creation timestamp"}
       description: {type: str, desc: "Brief description or notes"}
 
 tools:
   - name: read_document
-    desc: Read the contents of an attached or shared file (CSV, XLSX, PDF or image). Returns text content or structured rows.
-    kind: sql
+    desc: Read an attached file (CSV, XLSX, PDF or text). CSV and spreadsheet files come back as rows with totals; filter, group and sort them to analyse large files.
+    kind: py
+    fn: read_document
+    limit: 400
     args:
-      path: {type: str, required: true, desc: "File path or name, e.g. adj_Q3.csv"}
-    sql: |
-      SELECT filename, content FROM read_text('{files}/' || $path)
-      WHERE TRUE
-    example: {path: "adj_Q3.csv"}
+      path: {type: str, required: true, desc: "File name, e.g. adj_Q3.csv"}
+      where: {type: str, desc: "Keep rows matching column=value or column~text, separated by ;, e.g. status=disputable;carrier_id=CAR-002"}
+      exclude: {type: str, desc: "Drop rows matching column=value pairs separated by ;, e.g. reversed_within_48h=yes"}
+      min_amount: {type: float, desc: "Keep rows whose first _gbp amount column is at least this, e.g. 500"}
+      group_by: {type: str, desc: "Comma-separated columns to total by, e.g. cause_code,location_zone,shift; largest value first"}
+      sort_by: {type: str, desc: "Column to sort by, e.g. stock_value_gbp (add ' asc' for ascending)"}
+      max_rows: {type: int, default: 150, desc: "Maximum rows or groups to return"}
+    example: {path: "adj_Q3.csv", min_amount: 500}
 
   - name: read_document_attachment
-    desc: Read an attached file and return its contents for analysis or parsing.
+    desc: Read an attached text or PDF file in full and return its contents, e.g. a supplier quote with its terms.
     kind: sql
     args:
       filename: {type: str, required: true, desc: "Attached filename, e.g. quote_A.pdf"}
     sql: |
-      SELECT content FROM read_text('{files}/' || $filename)
-      WHERE TRUE
+      SELECT parse_filename(filename) AS filename, content FROM read_text('{files}/' || $filename)
     limit: 1
     example: {filename: "quote_A.pdf"}
 
   - name: read_spreadsheet_document
-    desc: Read spreadsheet document and parse into structured rows. Returns columns and values.
-    kind: sql
+    desc: Read a spreadsheet file into rows with totals. Filter, group or sort and limit them, e.g. the top lines by value.
+    kind: py
+    fn: read_spreadsheet
+    limit: 400
     args:
       filename: {type: str, required: true, desc: "Spreadsheet filename, e.g. aged_lines.xlsx"}
-    sql: |
-      SELECT content FROM read_text('{files}/' || $filename)
-      WHERE TRUE
-    limit: 1
-    example: {filename: "aged_lines.xlsx"}
+      where: {type: str, desc: "Keep rows matching column=value or column~text, separated by ;, e.g. category=Bags"}
+      exclude: {type: str, desc: "Drop rows matching column=value pairs separated by ;"}
+      min_amount: {type: float, desc: "Keep rows whose first _gbp amount column is at least this"}
+      group_by: {type: str, desc: "Comma-separated columns to total by, e.g. category"}
+      sort_by: {type: str, desc: "Column to sort by, e.g. stock_value_gbp; largest first unless ' asc'"}
+      max_rows: {type: int, default: 150, desc: "Maximum rows or groups to return"}
+    example: {filename: "aged_lines.xlsx", sort_by: stock_value_gbp, max_rows: 10}
 
   - name: get_document_contents
     desc: Read an attached or shared file or archive, parse and return structured content.
@@ -61,33 +69,21 @@ tools:
     example: {file_reference: "cmms_export.xlsx"}
 
   - name: extract_quote_line_items
-    desc: Extract line items from supplier quotes including component, quantity, unit price and total.
-    kind: sql
+    desc: Extract the cost lines of a supplier quote (component, quantity, unit price, total, note) plus its key terms such as MOQ, incoterm, material grade and tooling.
+    kind: py
+    fn: extract_quote_lines
+    limit: 60
     args:
       quote_file: {type: str, required: true, desc: "Quote filename, e.g. quote_A.pdf"}
-    sql: |
-      SELECT
-        'Component' as component,
-        'Qty' as qty,
-        'Unit Price' as unit_price,
-        'Total' as total
-      FROM read_text('{files}/' || $quote_file)
-      LIMIT 1
     example: {quote_file: "quote_A.pdf"}
 
   - name: extract_bid_pricing_and_terms
-    desc: Extract prices and terms from bid files including total cost, payment terms and conditions.
-    kind: sql
+    desc: Extract each supplier's total price, payment terms, service and scope from a bid file or archive, cheapest first.
+    kind: py
+    fn: extract_bids
+    limit: 60
     args:
       bid_file: {type: str, required: true, desc: "Bid file or archive path, e.g. bids.zip"}
-    sql: |
-      SELECT
-        'Supplier' as supplier,
-        'Total Price' as total_price_gbp,
-        'Payment Terms' as payment_terms,
-        'Delivery' as delivery_terms
-      FROM read_text('{files}/' || $bid_file)
-      LIMIT 1
     example: {bid_file: "bids.zip"}
 
   - name: extract_label_text_from_images
@@ -113,35 +109,21 @@ tools:
     example: {pack_reference: "dispute_pack.zip"}
 
   - name: get_po_and_payment_data
-    desc: Read purchase order and payment file. Returns PO details, line items, invoice and payment dates.
-    kind: sql
+    desc: Read a purchase order and payment file into rows (PO, supplier, invoice date, payment date, amount) with totals.
+    kind: py
+    fn: get_po_payment
+    limit: 200
     args:
       file_reference: {type: str, required: true, desc: "CSV or Excel with PO and payment data, e.g. po_pay_FY26.csv"}
-    sql: |
-      SELECT
-        'PO ID' as po_id,
-        'Supplier' as supplier_id,
-        'Invoice Date' as invoice_date,
-        'Payment Date' as payment_date,
-        'Amount' as amount_gbp
-      FROM read_text('{files}/' || $file_reference)
-      LIMIT 1
     example: {file_reference: "po_pay_FY26.csv"}
 
   - name: get_pl_extract_from_document
-    desc: Parse the attached P&L extract into structured lines by category, variance and driver.
-    kind: sql
+    desc: Parse the attached P&L extract into rows by line item with planned, actual, variance and driver.
+    kind: py
+    fn: get_pl_extract
+    limit: 50
     args:
       pl_file: {type: str, required: true, desc: "P&L file, e.g. sept_pl.xlsx"}
-    sql: |
-      SELECT
-        'Line Item' as line_item,
-        'Planned' as planned_gbp,
-        'Actual' as actual_gbp,
-        'Variance' as variance_gbp,
-        'Driver' as driver
-      FROM read_text('{files}/' || $pl_file)
-      LIMIT 1
     example: {pl_file: "sept_pl.xlsx"}
 
   - name: list_suppliers_with_missing_documents
@@ -165,11 +147,15 @@ tools:
     example: {market_country: "Ireland", document_type: "compliance"}
 
   - name: draft_recommendation_summary
-    desc: Draft a recommendation summary from supplied findings with options, analysis and conclusion.
+    desc: Draft a one-page recommendation comparing two options on cost, with the saving worked out and the recommendation and rationale stated.
     kind: draft
     args:
-      topic: {type: str, required: true, desc: "Summary topic, e.g. Labour Shift Option"}
-      recommendation: {type: str, default: "Recommended Option A", desc: "Recommendation or conclusion"}
+      topic: {type: str, required: true, desc: "Summary topic, e.g. Peak labour cover"}
+      option_a: {type: str, desc: "First option, e.g. Late shift for eight weeks"}
+      option_a_cost_gbp: {type: float, desc: "Total cost of option A in GBP"}
+      option_b: {type: str, desc: "Second option, e.g. Overtime on existing shifts"}
+      option_b_cost_gbp: {type: float, desc: "Total cost of option B in GBP"}
+      recommendation: {type: str, required: true, desc: "Recommended option and the main reason"}
     sql:
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
@@ -179,125 +165,103 @@ tools:
       Date: {{ calendar[0].date if calendar else 'Current' }}
       Recommendation: {{ recommendation }}
 
-      EXECUTIVE SUMMARY
-      Based on analysis of available options and supporting data, we recommend:
+      {% if option_a and option_b and option_a_cost_gbp is not none and option_b_cost_gbp is not none -%}
+      OPTIONS COMPARED
+      | Option | Total cost |
+      |---|---|
+      | A: {{ option_a }} | {{ option_a_cost_gbp|money }} |
+      | B: {{ option_b }} | {{ option_b_cost_gbp|money }} |
+
+      COST COMPARISON
+      {% if option_a_cost_gbp < option_b_cost_gbp -%}
+      Option A is cheaper by {{ (option_b_cost_gbp - option_a_cost_gbp)|money }} ({{ "%.1f"|format((option_b_cost_gbp - option_a_cost_gbp) / option_b_cost_gbp * 100) }}% below option B).
+      {%- elif option_a_cost_gbp > option_b_cost_gbp -%}
+      Option B is cheaper by {{ (option_a_cost_gbp - option_b_cost_gbp)|money }} ({{ "%.1f"|format((option_a_cost_gbp - option_b_cost_gbp) / option_a_cost_gbp * 100) }}% below option A).
+      {%- else -%}
+      The two options cost the same.
+      {%- endif %}
+
+      {% endif -%}
+
+      RATIONALE
       {{ recommendation }}
 
-      KEY FINDINGS
-      1. Option A Analysis:
-         - Total cost: £X million
-         - Timeline: Y weeks
-         - Risk level: Low
-         - Benefits: Z
-
-      2. Option B Analysis:
-         - Total cost: £X million
-         - Timeline: Y weeks
-         - Risk level: Medium
-         - Benefits: Z
-
-      COMPARISON
-      Metric                 | Option A    | Option B
-      Total Cost            | £X          | £Y
-      Implementation Time   | Y weeks     | Z weeks
-      Risk                  | Low         | Medium
-      Expected Benefit      | £M          | £N
-
-      RECOMMENDATION RATIONALE
-      Option A is recommended because:
-      - Best cost-benefit profile
-      - Lowest implementation risk
-      - Achieves timeline objectives
-      - Minimizes disruption
-
       NEXT STEPS
-      1. Secure approval by [date]
-      2. Initiate implementation planning
-      3. Assign project owner and team
-      4. Commence execution phase
-    example: {topic: "Labour Shift Option", recommendation: "Proceed with late shift option"}
+      1. Confirm the decision with the sponsor
+      2. Raise the requests needed for the chosen option
+      3. Review cost and performance after the first two weeks
+    example: {topic: "Peak labour cover", option_a: "Late shift", option_a_cost_gbp: 412000, option_b: "Overtime", option_b_cost_gbp: 486000, recommendation: "Late shift: cheaper and lower fatigue risk"}
 
   - name: draft_sourcing_recommendation
-    desc: Draft supplier award recommendation covering scoring, analysis and commercial terms.
+    desc: Draft a supplier award recommendation for a category using the winning supplier's master data against the other active suppliers in that category.
     kind: draft
     args:
-      category: {type: str, required: true, desc: "Product category being sourced"}
-      winning_supplier_id: {type: str, required: true, desc: "Supplier ID of the winning bid, e.g. SUP-0042"}
+      category: {type: str, required: true, desc: "Product category being sourced, e.g. Bedding"}
+      winning_supplier_id: {type: str, required: true, desc: "Supplier ID of the winning bid, e.g. SUP-0039"}
+      compare_supplier_ids: {type: str, desc: "Comma-separated supplier ids to compare against, e.g. SUP-0011,SUP-0004. Default all active suppliers in the category"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $winning_supplier_id
-      performance: SELECT COUNT(*) as po_count, AVG(total_value) as avg_value FROM master.purchase_orders WHERE supplier_id = $winning_supplier_id
+      own: |
+        SELECT count(*) AS skus, round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days, min(moq) AS moq
+        FROM master.products WHERE supplier_id = $winning_supplier_id AND lower(category) = lower($category)
+      market: |
+        SELECT round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days
+        FROM master.products WHERE lower(category) = lower($category)
+      fac: |
+        SELECT f.factory_id, f.name, f.country, f.capacity_units_month, f.certifications, f.audit_rating
+        FROM master.factories f
+        WHERE f.supplier_id = $winning_supplier_id
+          AND f.factory_id IN (SELECT factory_id FROM master.products WHERE lower(category) = lower($category))
+        ORDER BY f.factory_id
+      rivals: |
+        SELECT s.supplier_id, s.name, s.otif_pct_12m, s.payment_terms_days, s.risk_rating,
+               round(avg(p.unit_cost_gbp), 2) AS avg_unit_cost, round(avg(p.lead_time_days), 0) AS lead_days
+        FROM master.suppliers s JOIN master.products p ON p.supplier_id = s.supplier_id
+        WHERE lower(p.category) = lower($category) AND s.supplier_id <> $winning_supplier_id AND s.status = 'active'
+          AND ($compare_supplier_ids IS NULL OR list_contains(string_split(replace(upper($compare_supplier_ids), ' ', ''), ','), s.supplier_id))
+        GROUP BY ALL ORDER BY s.otif_pct_12m DESC
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
       SOURCING RECOMMENDATION
 
       Category: {{ category|upper }}
-      Recommended Supplier: {{ supplier[0].name if supplier else 'Unknown' }}
+      Recommended supplier: {{ supplier[0].name if supplier else 'Unknown' }} ({{ winning_supplier_id }})
       Date: {{ calendar[0].date if calendar else 'Current' }}
-      Status: RECOMMEND AWARD
 
-      1. SUPPLIER EVALUATION SUMMARY
-
-      Evaluation Criteria Scoring:
-      | Criteria              | Weight | Score | Weighted |
-      |---|---|---|---|
-      | Price Competitiveness | 35%    | 8/10  | 2.8     |
-      | Lead Time Performance | 20%    | 9/10  | 1.8     |
-      | Quality Record        | 20%    | 9/10  | 1.8     |
-      | Financial Stability   | 15%    | 8/10  | 1.2     |
-      | Sustainability        | 10%    | 8/10  | 0.8     |
-      | TOTAL SCORE          | 100%   |      | 8.4/10  |
-
-      2. BACKGROUND
-      Category requirement: {{ category }}
-      Volume: X,000 units per annum
-      Contract term: 2 years + 1 year options
-      Previous supplier history: [if applicable]
-
-      3. ANALYSIS OF OPTIONS
-      Supplier: {{ supplier[0].name if supplier else 'Unknown' }}
-      - Proposed price: £Y per unit
-      - Lead time: Z weeks (confirmed available)
-      - Capacity: Adequate for volumes required
-      - Quality: Excellent (% acceptable quality)
-      - Financial: Stable with strong balance sheet
-
-      Rationale for Selection:
-      This supplier offers the best overall value considering:
-      - Highly competitive pricing (1st of 3 bidders)
-      - Proven track record with 95%+ OTIF
-      - Capacity to support volume growth
-      - Excellent sustainability credentials
-      - Financial stability and longevity
-
-      4. COMMERCIAL TERMS
-      Price: £Y per unit (fixed for 24 months)
-      Minimum Order Quantity: X,000 units
-      Lead Time: Z weeks
-      Payment Terms: Net 45 days
-      Delivery: CFR [port]
-      Quality: AQL 1.5%, accept on first-article approval
-      Tooling: Amortized over X units
-
-      5. RISKS & MITIGATION
-      Geopolitical: Supply chain diversification plan in place
-      Quality: Audit within 30 days, SPC monitoring
-      Capacity: Escalation clause if demand exceeds forecast
-
-      6. BENEFITS
-      - 5% cost reduction vs incumbent
-      - Improved on-time delivery (97% OTIF target)
-      - Enhanced sustainability score
-      - Growth capacity for category expansion
-
-      7. APPROVAL REQUIRED
-      This recommendation is submitted for approval of:
-      ✓ Award to {{ supplier[0].name if supplier else 'Unknown' }}
-      ✓ Proposed commercial terms
-      ✓ Authority to issue purchase order for volume forecast
-      ✓ Commitment to annual review
-
-      RECOMMENDATION: PROCEED WITH AWARD
-    example: {category: "bedding", winning_supplier_id: SUP-0042}
+      1. WHY THIS SUPPLIER
+      {% if supplier -%}
+      - On-time-in-full, last 12 months: {{ supplier[0].otif_pct_12m }}%
+      - Payment terms: {{ supplier[0].payment_terms_days }} days, incoterm {{ supplier[0].incoterm }}, currency {{ supplier[0].currency }}
+      - Risk rating: {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}
+      {% if own[0].skus -%}
+      - Range in this category: {{ own[0].skus }} SKUs, average unit cost £{{ own[0].avg_unit_cost }} against a category average of £{{ market[0].avg_unit_cost }}
+      {% set d = (own[0].avg_unit_cost - market[0].avg_unit_cost) / market[0].avg_unit_cost * 100 -%}
+      - Unit cost is {{ "%.0f"|format(d|abs) }}% {{ 'above' if d > 0 else 'below' }} the category average
+      - Lead time: {{ own[0].lead_days|int }} days against a category average of {{ market[0].lead_days|int }} days; MOQ {{ own[0].moq }} units
+      {% else -%}
+      - No SKUs in this category yet, so cost and lead time must come from the supplier's quote
+      {% endif -%}
+      {% else -%}
+      - Supplier not found
+      {% endif %}
+      2. COMPARISON WITH OTHER ACTIVE SUPPLIERS IN THE CATEGORY
+      | Supplier | OTIF % | Avg unit cost | Lead days | Payment days | Risk |
+      |---|---|---|---|---|---|
+      {% if supplier and own[0].skus -%}
+      | {{ supplier[0].name }} (recommended) | {{ supplier[0].otif_pct_12m }} | £{{ own[0].avg_unit_cost }} | {{ own[0].lead_days|int }} | {{ supplier[0].payment_terms_days }} | {{ supplier[0].risk_rating }} |
+      {% endif -%}
+      {% for r in rivals -%}
+      | {{ r.name }} | {{ r.otif_pct_12m }} | £{{ r.avg_unit_cost }} | {{ r.lead_days|int }} | {{ r.payment_terms_days }} | {{ r.risk_rating }} |
+      {% endfor %}
+      3. CAPACITY, QUALITY AND COMPLIANCE
+      {% for f in fac -%}
+      - {{ f.name }} ({{ f.factory_id }}, {{ f.country }}): {{ "{:,}".format(f.capacity_units_month|int) }} units a month, audit rating {{ f.audit_rating }}, certifications {{ f.certifications }}
+      {% else -%}
+      - No factory in this category on file for this supplier
+      {% endfor %}
+      4. APPROVAL REQUIRED
+      Award of the {{ category }} volume to {{ supplier[0].name if supplier else 'the supplier' }}, subject to confirming the quoted price and landed cost.
+    example: {category: "Bedding", winning_supplier_id: SUP-0039}
 
   - name: draft_sourcing_calendar
     desc: Draft sourcing calendar from contract expiries showing key dates and tender timelines.
@@ -358,103 +322,54 @@ tools:
     example: {calendar_period: "next 12 months"}
 
   - name: draft_supplier_shortlist_comparison
-    desc: Draft shortlist comparison table ranking suppliers on key criteria and recommendations.
+    desc: Draft a shortlist comparison of approved factories in the given countries with the required certification and season capacity, ranked on category experience, audit rating and capacity.
     kind: draft
     args:
-      category: {type: str, required: true, desc: "Product category, e.g. technical outerwear"}
-      num_suppliers: {type: int, default: 3, desc: "Number of suppliers to compare"}
+      category: {type: str, required: true, desc: "Product type being sourced, e.g. technical outerwear"}
+      countries: {type: str, default: "PT,TR", desc: "Comma-separated country codes, e.g. PT,TR"}
+      certification: {type: str, default: "OEKO-TEX", desc: "Certification the factory must hold"}
+      min_season_capacity: {type: int, default: 30000, desc: "Minimum units per season (three months of capacity)"}
+      product_category: {type: str, default: "Outerwear", desc: "Our product category used as evidence the factory can make it"}
+      num_suppliers: {type: int, default: 3, desc: "Number of factories on the shortlist"}
     sql:
-      suppliers: SELECT supplier_id, name FROM master.suppliers WHERE status = 'active' LIMIT $num_suppliers
+      eligible: |
+        SELECT f.factory_id, f.name AS factory, f.country, f.capacity_units_month * 3 AS season_capacity, f.certifications,
+               f.audit_rating, s.supplier_id, s.name AS supplier, s.otif_pct_12m, s.payment_terms_days, s.risk_rating,
+               (SELECT count(*) FROM master.products p WHERE p.factory_id = f.factory_id AND lower(p.category) = lower($product_category)) AS category_skus
+        FROM master.factories f JOIN master.suppliers s ON s.supplier_id = f.supplier_id
+        WHERE list_contains(string_split(replace(upper($countries), ' ', ''), ','), f.country)
+          AND f.certifications ILIKE '%' || $certification || '%'
+          AND f.capacity_units_month * 3 >= $min_season_capacity AND f.status = 'approved' AND s.status = 'active'
+        ORDER BY category_skus DESC, f.audit_rating ASC, season_capacity DESC
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
       SUPPLIER SHORTLIST COMPARISON
 
       Category: {{ category|upper }}
       Date: {{ calendar[0].date if calendar else 'Current' }}
-      Shortlist Size: {{ suppliers|length }} suppliers
+      Criteria: factories in {{ countries }} holding {{ certification }}, with at least {{ "{:,}".format(min_season_capacity|int) }} units per season
+      Eligible factories found: {{ eligible|length }}; shortlisted: {{ [eligible|length, num_suppliers|int]|min }}
 
-      EVALUATION SUMMARY
+      | Rank | Factory | Supplier | Country | Season capacity | Audit rating | {{ product_category }} SKUs made | OTIF % | Payment days |
+      |---|---|---|---|---|---|---|---|---|
+      {% for r in eligible[:num_suppliers|int] -%}
+      | {{ loop.index }} | {{ r.factory }} ({{ r.factory_id }}) | {{ r.supplier }} ({{ r.supplier_id }}) | {{ r.country }} | {{ "{:,}".format(r.season_capacity|int) }} | {{ r.audit_rating }} | {{ r.category_skus }} | {{ r.otif_pct_12m }} | {{ r.payment_terms_days }} |
+      {% else -%}
+      | none | no factory meets the criteria | | | | | | | |
+      {% endfor %}
+      RANKING BASIS
+      1. Experience: factories already making our {{ product_category }} SKUs rank first
+      2. Latest audit rating (A best), then season capacity
 
-      | # | Supplier Name | Price | Lead Time | Quality | Capacity | Certifications | Sustainability | Overall Score | Recommendation |
-      |---|---|---|---|---|---|---|---|---|---|
-      | 1 | [Supplier A] | 9/10 | 8/10 | 9/10 | 8/10 | OEKO-TEX | 8/10 | 8.4 | PRIORITY |
-      | 2 | [Supplier B] | 7/10 | 9/10 | 8/10 | 9/10 | OEKO-TEX | 7/10 | 8.1 | SECONDARY |
-      | 3 | [Supplier C] | 8/10 | 7/10 | 8/10 | 7/10 | ISO-14001 | 9/10 | 7.9 | BACKUP |
-
-      DETAILED ASSESSMENT
-
-      1. SUPPLIER A - [Name]
-      Location: Portugal
-      Specialization: Technical apparel, seam-sealing capability
-      Price: €XX per unit (competitive)
-      Lead Time: 8-10 weeks (adequate)
-      Quality: Excellent track record
-      Capacity: 40,000 units/season confirmed
-      Certifications: OEKO-TEX certified, ISO 9001
-      Sustainability: Carbon neutral by 2027 commitment
-      Strengths:
-      - Proven seam-sealing expertise
-      - Strong quality record
-      - Good sustainability credentials
-      Weaknesses:
-      - Slightly higher price point
-      - Limited UK market exposure (new relationship)
-
-      2. SUPPLIER B - [Name]
-      Location: Turkey
-      Specialization: Technical outdoor wear
-      Price: €YY per unit
-      Lead Time: 6-8 weeks
-      Quality: Good, some historical issues
-      Capacity: 50,000 units/season
-      Certifications: OEKO-TEX, ISO 9001, SA8000
-      Sustainability: Basic compliance only
-      Strengths:
-      - Faster lead times
-      - Larger available capacity
-      - Strong social compliance
-      Weaknesses:
-      - Quality gaps identified
-      - Sustainability score lower
-
-      3. SUPPLIER C - [Name]
-      Location: Turkey
-      Specialization: Performance fabrics, seaming
-      Price: €ZZ per unit
-      Lead Time: 10-12 weeks
-      Quality: Excellent
-      Capacity: 30,000 units/season
-      Certifications: ISO 14001, GOTS
-      Sustainability: Strong commitment
-      Strengths:
-      - Excellent sustainability program
-      - High-quality output
-      - Strong environmental credentials
-      Weaknesses:
-      - Higher price
-      - Constrained capacity
-      - Longer lead times
-
-      RECOMMENDATION
-      Award shortlist in this order:
-      1. SUPPLIER A - Primary source (80% of volume)
-         Rationale: Best balance of price, quality and sustainability
-         Recommended contract: 18-month framework, 30,000 units minimum
-
-      2. SUPPLIER B - Secondary source (15% of volume)
-         Rationale: Backup supply for peak demand
-         Recommended contract: 12-month annual order, discretionary volumes
-
-      3. SUPPLIER C - Strategic reserve
-         Rationale: Sustainability flagship, niche capability
-         Recommended: Small pilot (5,000 units) in Season 2
-
-      NEXT STEPS
-      - Send RFQ to Supplier A with commercial terms
-      - Schedule facility visit and pre-production meeting
-      - Request first-article sample within 6 weeks
-      - Negotiate final pricing and tooling terms
-    example: {category: "technical outerwear", num_suppliers: 3}
+      OTHER ELIGIBLE FACTORIES
+      {% for r in eligible[num_suppliers|int:] -%}
+      - {{ r.factory }} ({{ r.factory_id }}, {{ r.country }}): audit {{ r.audit_rating }}, season capacity {{ "{:,}".format(r.season_capacity|int) }}
+      {% else -%}
+      - none
+      {% endfor %}
+      CAVEAT
+      Seam-sealing capability is not recorded in our supplier data. Confirm it in the RFQ for every shortlisted factory.
+    example: {category: "technical outerwear"}
 
   - name: draft_supplier_recovery_plan
     desc: Draft supplier recovery plan with root causes, actions and monitoring for underperformance.
@@ -1241,37 +1156,39 @@ tools:
     example: {supplier_id: SUP-0001, improvement_goal: "reduce lead time by 20%"}
 
   - name: draft_incident_summary
-    desc: Draft an incident summary documenting what happened and next steps.
+    desc: Draft an operations incident summary for a site covering what happened, impact, root cause and next steps, from the details supplied.
     kind: draft
     args:
       incident_type: {type: enum, values: [security, operational, quality, safety, financial], required: true, desc: "Incident type"}
-      site_id: {type: str, desc: "Site affected, e.g. DC1"}
+      site_id: {type: str, required: true, desc: "Site affected, e.g. DC1"}
+      what_happened: {type: str, default: "Details being confirmed", desc: "What happened and when it started, e.g. 140 orders stuck in allocation failed since 6am"}
+      impact: {type: str, default: "Under assessment", desc: "Business impact, e.g. 140 orders delayed"}
+      root_cause: {type: str, default: "Under investigation", desc: "Root cause if known"}
+      next_steps: {type: str, default: "Complete root cause analysis and confirm the fix with the owning team", desc: "Actions and owners"}
     sql:
       site: SELECT * FROM master.sites WHERE site_id = $site_id
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
       INCIDENT SUMMARY
 
-      Incident Type: {{ incident_type|upper }}
-      Site: {{ site[0].name if site else 'Unknown' }}
-      Date Detected: {{ calendar[0].date if calendar else 'Current' }}
+      Incident type: {{ incident_type|upper }}
+      Site: {{ site[0].name if site else site_id }} ({{ site_id }})
+      Date: {{ calendar[0].date if calendar else 'Current' }}
 
-      INCIDENT OVERVIEW
-      A {{ incident_type }} incident was identified.
-      Current status: CONTAINED AND UNDER INVESTIGATION
+      WHAT HAPPENED
+      {{ what_happened }}
 
-      TIMELINE
-      06:00 - 06:30 | First detection of allocation failures
-      06:30 - 07:15 | Initial investigation of affected orders
-      07:15 - Present | Ongoing analysis and containment
+      IMPACT
+      {{ impact }}
 
       ROOT CAUSE
-      [To be completed] Investigation underway.
+      {{ root_cause }}
 
       NEXT STEPS
-      1. Complete root cause analysis (Target: 3 Oct)
-      2. Implement permanent corrective action
-    example: {incident_type: operational, site_id: DC1}
+      {{ next_steps }}
+
+      Status: OPEN, under investigation. Updates to ops as the fix progresses.
+    example: {incident_type: operational, site_id: DC1, what_happened: "140 orders stuck in allocation failed since 6am"}
 
   - name: draft_investment_roadmap
     desc: Draft a sequenced roadmap outlining investment priorities and timeline.
@@ -1373,31 +1290,109 @@ tools:
     example: {market_country: Poland, product_category: "home range"}
 
   - name: draft_negotiation_brief
-    desc: Draft negotiation brief covering leverage, benchmarks and strategy.
+    desc: Draft a negotiation brief for a supplier or a carrier covering share of spend, performance, benchmarks against alternatives, likely asks, trade-offs and best alternative.
     kind: draft
     args:
       supplier_id: {}
+      carrier_id: {}
+      category: {type: str, desc: "Product category the brief covers, e.g. Cookware"}
       negotiation_type: {type: enum, values: [price, terms, capacity, quality], default: price, desc: "Focus"}
+      volume_shift_pct: {type: int, default: 0, desc: "Percent of volume we could move to an alternative, e.g. 40"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
-      portfolio: SELECT COUNT(*) as po_count FROM master.purchase_orders WHERE supplier_id = $supplier_id
+      spend: |
+        SELECT count(DISTINCT pur.po_id) AS pos, round(coalesce(sum(l.qty_ordered * l.unit_cost), 0), 0) AS spend_gbp
+        FROM master.purchase_orders pur JOIN master.po_lines l ON l.po_id = pur.po_id JOIN master.products p ON p.sku = l.sku
+        WHERE pur.supplier_id = $supplier_id AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND pur.order_date BETWEEN CAST($as_of AS DATE) - INTERVAL 365 DAY AND CAST($as_of AS DATE)
+      cat_spend: |
+        SELECT round(coalesce(sum(l.qty_ordered * l.unit_cost), 0), 0) AS spend_gbp
+        FROM master.purchase_orders pur JOIN master.po_lines l ON l.po_id = pur.po_id JOIN master.products p ON p.sku = l.sku
+        WHERE ($category IS NULL OR lower(p.category) = lower($category))
+          AND pur.order_date BETWEEN CAST($as_of AS DATE) - INTERVAL 365 DAY AND CAST($as_of AS DATE)
+      own: |
+        SELECT count(*) AS skus, round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days
+        FROM master.products WHERE supplier_id = $supplier_id AND ($category IS NULL OR lower(category) = lower($category))
+      market: |
+        SELECT round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(s.payment_terms_days), 0) AS payment_days, round(avg(s.otif_pct_12m), 1) AS otif
+        FROM master.products p JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+        WHERE s.status = 'active' AND (lower(p.category) = lower($category)
+              OR ($category IS NULL AND p.category IN (SELECT category FROM master.products WHERE supplier_id = $supplier_id)))
+      alts: |
+        SELECT s.supplier_id, s.name, s.country, s.otif_pct_12m, s.payment_terms_days, s.risk_rating, round(avg(p.unit_cost_gbp), 2) AS avg_unit_cost
+        FROM master.suppliers s JOIN master.products p ON p.supplier_id = s.supplier_id
+        WHERE s.status = 'active' AND s.supplier_id <> $supplier_id
+          AND (lower(p.category) = lower($category)
+               OR ($category IS NULL AND p.category IN (SELECT category FROM master.products WHERE supplier_id = $supplier_id)))
+        GROUP BY ALL ORDER BY s.otif_pct_12m DESC LIMIT 5
+      carrier: |
+        SELECT c.*, datediff('month', CAST($as_of AS DATE), c.contract_end) AS months_left FROM master.carriers c WHERE c.carrier_id = $carrier_id
+      carrier_alts: |
+        SELECT a.carrier_id, a.name, a.contract_end FROM master.carriers a, master.carriers c
+        WHERE c.carrier_id = $carrier_id AND a.mode = c.mode AND a.scope = c.scope AND a.carrier_id <> c.carrier_id ORDER BY a.name
     template: |
       NEGOTIATION BRIEF
 
-      Supplier: {{ supplier[0].name if supplier else 'Unknown' }}
-      Type: {{ negotiation_type|upper }} NEGOTIATION
+      {% if supplier -%}
+      Supplier: {{ supplier[0].name }} ({{ supplier[0].supplier_id }}), {{ supplier[0].country }}
+      Focus: {{ negotiation_type|upper }}{% if category %}, category {{ category }}{% endif %}
 
-      1. OUR POSITION
-      Leverage: STRONG
-      Performance Track Record:
-      - OTIF: {{ supplier[0].otif_pct_12m if supplier else 'N/A' }}%
+      1. OUR POSITION AND LEVERAGE
+      - Spend with them in the last 12 months{% if category %} on {{ category }}{% endif %}: {{ "£{:,}".format(spend[0].spend_gbp|int) }} across {{ spend[0].pos }} purchase orders
+      {% if cat_spend[0].spend_gbp and cat_spend[0].spend_gbp > 0 -%}
+      - Share of our {{ category or 'category' }} spend: {{ "%.1f"|format(spend[0].spend_gbp / cat_spend[0].spend_gbp * 100) }}% (total {{ "£{:,}".format(cat_spend[0].spend_gbp|int) }})
+      {% endif -%}
+      - Performance: OTIF {{ supplier[0].otif_pct_12m }}% against a market average of {{ market[0].otif }}%; risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}
+      - Overall annual spend with them: {{ "£{:,}".format(supplier[0].annual_spend_gbp|int) }}
 
-      2. MARKET BENCHMARKS
-      Price Benchmark: £X per unit
+      2. BENCHMARKS
+      - Average unit cost of their SKUs: £{{ own[0].avg_unit_cost }} ({{ own[0].skus }} SKUs) against a market average of £{{ market[0].avg_unit_cost }}
+      - Payment terms: {{ supplier[0].payment_terms_days }} days against a market average of {{ market[0].payment_days|int }} days; incoterm {{ supplier[0].incoterm }}
+
+      3. WHAT THEY ARE LIKELY TO ASK FOR
+      - A price increase citing material, labour and freight costs
+      - Longer volume commitments or a higher MOQ
+      {% if supplier[0].payment_terms_days|int > market[0].payment_days|int -%}
+      - Faster payment (our terms are longer than the market average)
+      {% else -%}
+      - Protection of current payment terms
+      {% endif %}
+      4. WHAT WE COULD TRADE
+      - Multi-season volume commitment and forecast visibility
+      - Earlier payment in return for a price reduction
+      - Joint cost-down work on the {{ category or "product" }} range
 
       5. OUR BEST ALTERNATIVE (BATNA)
-      Switch 30% volume to alternative supplier
+      {% for a in alts -%}
+      - {{ a.name }} ({{ a.supplier_id }}, {{ a.country }}): OTIF {{ a.otif_pct_12m }}%, {{ a.payment_terms_days }} days, average unit cost £{{ a.avg_unit_cost }}, risk {{ a.risk_rating }}
+      {% else -%}
+      - No active alternative supplier found in the master data
+      {% endfor -%}
+      {% if volume_shift_pct %}If talks fail, move {{ volume_shift_pct }}% of volume to the alternatives above.{% endif %}
 
-      6. NEGOTIATION STRATEGY
-      Opening Position: Request price reduction + extended terms
-    example: {supplier_id: SUP-0001, negotiation_type: price}
+      6. STRATEGY
+      Open on {{ negotiation_type }}: ask for a cost-down tied to our volume share and their OTIF record, and keep the alternatives above in reserve.
+      {%- elif carrier %}
+      Carrier: {{ carrier[0].name }} ({{ carrier[0].carrier_id }}), {{ carrier[0].mode }}, {{ carrier[0].scope }}
+      Focus: {{ negotiation_type|upper }}
+
+      1. OUR POSITION AND LEVERAGE
+      - Contract ends {{ carrier[0].contract_end }}, about {{ carrier[0].months_left }} months from now
+      {% if volume_shift_pct %}- Moving {{ volume_shift_pct }}% of volume away reduces their share of our lanes and needs a volume-tolerance or minimum-volume clause to be renegotiated
+      {% endif %}
+      2. TERMS WE WOULD HAVE TO NEGOTIATE
+      - Volume commitment and tolerance if {{ volume_shift_pct }}% of volume moves to another network
+      - Rate card and fuel surcharge cap for the remaining volume
+      - On-time delivery service level and penalties
+      - Notice period and exit terms before {{ carrier[0].contract_end }}
+
+      3. ALTERNATIVES
+      {% for a in carrier_alts -%}
+      - {{ a.name }} ({{ a.carrier_id }}), contract ends {{ a.contract_end }}
+      {% else -%}
+      - No other carrier with the same mode and scope in the master data
+      {% endfor -%}
+      {%- else %}
+      Provide a supplier_id or a carrier_id to build the brief.
+      {%- endif %}
+    example: {supplier_id: SUP-0074, category: Cookware, negotiation_type: price}

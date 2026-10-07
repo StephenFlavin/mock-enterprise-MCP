@@ -181,11 +181,17 @@ def generate(g):
             monday = g.as_of - timedelta(days=g.as_of.weekday()) - timedelta(weeks=wk + 1)
             for cat in cats:
                 v = r.uniform(20, 90) * base
+                rate = round(r.uniform(0.5, 1.1) * base, 2)
+                peer = round(r.uniform(-0.15, 0.15), 2)
+                cause = r.choice(["shrink", "theft", "picking error", "receiving error"])
+                if cat == "Knitwear" and wk < 5:  # story: knitwear theft spike over the last month
+                    v *= 1.45
+                    rate = round(rate + 0.45, 2)
+                    peer = round(peer + 0.4, 2)
+                    cause = "theft" if int(v * 100) % 5 else cause
                 shrink.append({"site_id": s, "category": cat, "analysis_week": monday,
                                "shrink_units": max(int(v / 12), 1), "shrink_value_gbp": round(v, 2),
-                               "shrink_rate_pct": round(r.uniform(0.5, 1.1) * base, 2),
-                               "vs_peer_avg_pct": round(r.uniform(-0.15, 0.15), 2),
-                               "main_cause": r.choice(["shrink", "theft", "picking error", "receiving error"])})
+                               "shrink_rate_pct": rate, "vs_peer_avg_pct": peer, "main_cause": cause})
 
     # ================= availability tracking: weekly panel, quota-driven OOS rate =================
     panel_sites = list(dict.fromkeys(["ST214", "ST215", "ST216", "ST150", "ST159", "ST165", "ST164", "ST181", "ST183"] + store_ids[:30]))
@@ -214,11 +220,11 @@ def generate(g):
     promo_pairs = [p for p in panel_pairs if products[p[0]]["category"] == "Dresses"]
     tracking = {}
 
-    def trow(sku, site, d, oos, days, cause):
+    def trow(sku, site, d, oos, days, cause, scale=1.0):
         p = positions.get((sku, site))
         dem = p["weekly_demand"] if p else 5.0
         qty = 0 if oos else (p["available"] if p else r.randint(5, 40))
-        lost = int(round(dem / 7 * days)) if oos else 0
+        lost = int(round(dem / 7 * days * scale)) if oos else 0
         return {"sku": sku, "site_id": site, "tracking_date": d, "available": not oos, "quantity_available": qty,
                 "demand_units": int(round(dem)), "lost_sales": lost, "forecast_available": True if not oos else (cause != "forecast_under"),
                 "stockout_days": days if oos else 0, "stockout_cause": cause if oos else None}
@@ -269,7 +275,8 @@ def generate(g):
             if key in tracking:
                 continue
             if p in forced:
-                tracking[key] = trow(p[0], p[1], wk, True, r.randint(1, 7), forced[p])
+                tracking[key] = trow(p[0], p[1], wk, True, r.randint(1, 7), forced[p],
+                                     0.1 if p[1].startswith("DC") else 0.2)  # ambient: keep story stockouts dominant
             else:
                 tracking[key] = trow(p[0], p[1], wk, False, 0, None)
     availability = list(tracking.values())
@@ -310,6 +317,88 @@ def generate(g):
             if q > 0:
                 batches.append({"batch_id": bid, "sku": sku, "site_id": site, "location_id": "", "on_hand": q,
                                 "received_date": g.days_ago(age), "status": st})
+
+    # ================= story positions applied after all random draws (deterministic, no rng) =================
+    import hashlib
+
+    def h(*a):
+        return int(hashlib.md5("|".join(map(str, a)).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+
+    region = {s["site_id"]: s["region"] for s in sites}
+
+    def mkrow(sku, site, avail, demand, allocated=0, age=14, loc=""):
+        pr = products[sku]
+        lt = float(pr["lead_time_days"] or 60) / 7
+        ss = int(round(demand * 1.5))
+        return {"sku": sku, "site_id": site, "location_id": loc, "on_hand": int(avail + allocated), "allocated": int(allocated),
+                "available": int(avail), "hold_qty": 0, "reorder_point": int(round(demand * min(lt, 12) + ss)),
+                "safety_stock": ss, "weekly_demand": round(demand, 1), "received_date": g.days_ago(age),
+                "updated_at": g.days_ago(int(h(sku, site) * 5))}
+
+    # (1) seasonal bedding throw SKU-104963: northern stores nearly sold out, southern stores overstocked
+    THROW = "SKU-104963"
+    pos_rows = [p for p in pos_rows if not (p["sku"] == THROW and p["site_id"].startswith("ST"))]
+    north = sorted(x for x in store_ids if region[x] == "UK North")[:6]
+    south = sorted(x for x in store_ids if region[x] == "UK South")[:6]
+    for i, st in enumerate(north):
+        pos_rows.append(mkrow(THROW, st, 9 + int(h(st) * 9), 24 + int(h(st, 1) * 8), 0, 12))
+    for i, st in enumerate(south):
+        pos_rows.append(mkrow(THROW, st, 470 + int(h(st) * 120), 13 + int(h(st, 1) * 6), 0, 40))
+
+    # (2) Tops (athleisure) range: size 14 under-bought, size 10 over-bought, Scottish stores over-allocated
+    TOPS_STYLES = {"STY-4056", "STY-5079", "STY-5130", "STY-8004", "STY-9033"}
+    tops = {p["sku"]: p for p in products.values() if p["style_id"] in TOPS_STYLES}
+    scot = ["ST201", "ST204", "ST207", "ST212", "ST214"]
+    others = ["ST143", "ST147", "ST144", "ST165", "ST164", "ST003", "ST149", "ST004", "ST181", "ST150",
+              "ST148", "ST141", "ST142", "ST145", "ST151"]
+    pos_rows = [p for p in pos_rows if not (p["sku"] in tops and p["site_id"].startswith("ST"))]
+    for sku, pr in tops.items():
+        sz = pr["size"]
+        for st in scot + others:
+            sc = st in scot
+            if sz == "10":
+                avail, dem = (70 + int(h(sku, st) * 20), 2.4) if sc else (34 + int(h(sku, st) * 10), 3.0)
+            elif sz == "12":
+                avail, dem = (55 + int(h(sku, st) * 15), 4.4) if sc else (26 + int(h(sku, st) * 8), 6.0)
+            else:
+                avail, dem = (11 + int(h(sku, st) * 4), 3.6) if sc else ((0 if h(sku, st, "x") < 0.6 else 2 + int(h(sku, st) * 3)), 5.0)
+            pos_rows.append(mkrow(sku, st, avail, dem, 0, 30))
+
+    # (3) policy parameters held in IMS match the inv_opt policy table for the too-low SKUs
+    for p in pos_rows:
+        k = (p["sku"], p["site_id"], p["location_id"])
+        if k == ("SKU-104018", "DC5", ""):
+            p["reorder_point"], p["safety_stock"] = 1733, 180
+        if k == ("SKU-103234", "DC2", ""):
+            p["reorder_point"], p["safety_stock"] = 4944, 560
+
+    # (4) DC1 stock is held in bins: spread each SKU over one or two bins in aisles A-F
+    recent = {"DC1-A-01-01", "DC1-A-02-01"}
+    pool = [l["location_id"] for l in g.master("locations")
+            if l["site_id"] == "DC1" and l["status"] == "active" and l["aisle"] in "ABCDEF"
+            and l["zone"] in ("pick", "reserve", "bulk", "mezzanine") and not l["location_id"].startswith("DC1-C-14")
+            and l["location_id"] not in recent]
+    pool = sorted(pool, key=lambda x: h("pool", x))[:300]
+    out = []
+    for p in pos_rows:
+        if p["site_id"] != "DC1" or p["location_id"]:
+            out.append(p)
+            continue
+        sh = [1.0] if p["on_hand"] < 2000 else [0.6, 0.4]
+        used = set()
+        for j, share in enumerate(sh):
+            idx = int(h(p["sku"], j) * len(pool))
+            while pool[idx] in used:
+                idx = (idx + 1) % len(pool)
+            used.add(pool[idx])
+            row = dict(p)
+            q = int(p["on_hand"] * share) if j == 0 else p["on_hand"] - int(p["on_hand"] * sh[0])
+            al = int(p["allocated"] * share) if j == 0 else p["allocated"] - int(p["allocated"] * sh[0])
+            row.update({"location_id": pool[idx], "on_hand": q, "allocated": al, "available": q - al,
+                        "weekly_demand": round(p["weekly_demand"] * share, 1),
+                        "safety_stock": int(p["safety_stock"] * share), "reorder_point": int(p["reorder_point"] * share)})
+            out.append(row)
+    pos_rows = out
 
     # ================= stock plan (normal value, cover target, closing plan) =================
     from datetime import date

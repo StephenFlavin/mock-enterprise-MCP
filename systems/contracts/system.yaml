@@ -10,15 +10,20 @@ tables:
     key: contract_id
     cols:
       contract_id: {type: str, desc: "Contract id, e.g. CTR-000123"}
-      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency], desc: Contract type}
-      party_type: {type: str, desc: "Type of counterparty: supplier_id, carrier_id, customer_id, partner_id, or employee_id"}
-      party_id: {type: str, desc: "Counterparty id: supplier_id, carrier_id, customer_id, partner_id, or employee_id"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: Contract type}
+      party_type: {type: str, desc: "Type of counterparty: supplier_id, carrier_id, customer_id, partner_id, or service_provider"}
+      party_id: {type: str, desc: "Counterparty id: supplier_id, carrier_id, customer_id or partner_id (blank for a service provider)"}
+      party_name: {type: str, desc: "Counterparty name"}
+      title: {type: str, desc: "Contract title"}
+      category: {type: str, desc: "Product category or service covered"}
+      site_id: {type: str, desc: "Site covered, for site-specific service contracts"}
       owner_id: {type: str, desc: "Business owner (employee_id)"}
       start_date: {type: date, desc: Contract start date}
       end_date: {type: date, desc: Contract end date}
       renewal_notice_days: {type: int, desc: "Days before end_date to give notice"}
       auto_renewal: {type: bool, desc: "Auto-renews on expiry if true"}
       status: {type: enum, values: [draft, active, expired, terminated, archived], desc: Contract status}
+      annual_value_gbp: {type: float, desc: "Approximate annual contract value in GBP"}
       created_at: {type: timestamp, desc: When created}
       updated_at: {type: timestamp, desc: Last updated}
 
@@ -27,9 +32,9 @@ tables:
     cols:
       contract_id: {type: str, desc: "Contract"}
       clause_id: {type: str, desc: "Clause identifier within contract"}
-      clause_type: {type: enum, values: [liability, payment_terms, renewal, price_review, force_majeure, termination, claim_window, short_shipment, chargeback, rate_review, service_level, penalty, ip_protection, other], desc: Clause type}
+      clause_type: {type: enum, values: [liability, payment_terms, renewal, price_review, force_majeure, termination, claim_window, short_shipment, chargeback, rate_review, service_level, penalty, ip_protection, volume_commitment, other], desc: Clause type}
       title: {type: str, desc: "Clause title"}
-      content: {type: text, desc: "Full clause text"}
+      content: {type: text, desc: "Clause terms as JSON, with a plain-English summary field"}
       created_at: {type: timestamp, desc: When added}
 
   contract_breaches:
@@ -72,14 +77,17 @@ tables:
     key: rate_card_id
     cols:
       rate_card_id: {type: str, desc: "Rate card, e.g. RTC-000123"}
-      card_type: {type: enum, values: [carrier, agency, freight_forwarder], desc: Rate card type}
+      card_type: {type: enum, values: [carrier, agency, freight_forwarder, service], desc: Rate card type}
       party_id: {type: str, desc: "Carrier/agency id"}
       contract_id: {type: str, desc: "Related contract"}
+      service_type: {type: str, desc: "Service priced, e.g. pallet, 40ft container, racking inspection"}
+      lane: {type: str, desc: "Lane, region or site covered"}
+      rate_unit: {type: str, desc: "What the base rate is per, e.g. per pallet, per inspector-day"}
       effective_from: {type: date, desc: "Effective from date"}
       effective_to: {type: date, desc: "Effective to date"}
-      base_rate_gbp: {type: float, desc: "Base rate in GBP"}
+      base_rate_gbp: {type: float, desc: "Base rate in GBP per rate_unit"}
       currency: {type: str, desc: "Currency if not GBP"}
-      surcharges_json: {type: text, desc: "Surcharge details as JSON"}
+      surcharges_json: {type: text, desc: "Surcharges and accessorial charges as JSON"}
       notice_period_days: {type: int, desc: "Notice period for changes"}
       status: {type: enum, values: [active, superseded, archived], desc: Rate card status}
       created_at: {type: timestamp, desc: When created}
@@ -105,7 +113,7 @@ tables:
       contract_id: {type: str, desc: "Contract to renew"}
       alert_date: {type: date, desc: "Date to send alert"}
       status: {type: enum, values: [scheduled, triggered, dismissed, completed], desc: Alert status}
-      created_at: {type: timestamp, desc: When created"}
+      created_at: {type: timestamp, desc: When created}
       sent_at: {type: timestamp, desc: When alert was sent}
 
   contract_negotiation_positions:
@@ -123,10 +131,11 @@ tables:
     key: draft_id
     cols:
       draft_id: {type: str, desc: "Draft contract, e.g. DRF-000123"}
-      draft_type: {type: enum, values: [new_supplier, new_carrier, new_customer, renewal, amendment], desc: Draft type}
+      draft_type: {type: enum, values: [new_supplier, new_carrier, new_customer, renewal, amendment, framework], desc: Draft type}
       template_id: {type: str, desc: "Template used"}
       selected_clauses: {type: text, desc: "Clause ids selected as JSON array"}
       counterparty_id: {type: str, desc: "Intended counterparty"}
+      description: {type: str, desc: "What the draft is for"}
       created_at: {type: timestamp, desc: "When created"}
       status: {type: enum, values: [draft, finalized, rejected], desc: Draft status}
 
@@ -134,92 +143,145 @@ tools:
   # Stage 1 tools (20-21 to implement)
 
   - name: get_carrier_contract_rates
-    desc: Contracted carrier rates and accessorials for a lane or service. Use to compare invoices to contract.
+    desc: Contracted carrier rates and accessorial charges by service type and lane. Use to compare invoices to contract.
     kind: sql
     args:
       carrier_id: {required: true}
       contract_id: {}
-      service_type: {type: str, desc: "Service type, e.g. pallet, container (optional)"}
+      service_type: {type: str, desc: "Service type to match, e.g. pallet, container, parcel (optional)"}
+      lane: {type: str, desc: "Lane or region to match, e.g. UK North (optional)"}
     sql: |
-      SELECT rc.rate_card_id, rc.party_id, c.contract_id, c.start_date, c.end_date,
-             rc.base_rate_gbp, rc.surcharges_json, rc.notice_period_days, rc.effective_from, rc.effective_to
+      SELECT rc.rate_card_id, rc.party_id AS carrier_id, rc.contract_id, rc.service_type, rc.lane,
+             rc.rate_unit, rc.base_rate_gbp, rc.surcharges_json AS surcharges_and_accessorials,
+             rc.notice_period_days, rc.effective_from, rc.effective_to
       FROM rate_cards rc
-      LEFT JOIN contracts c ON c.contract_id = rc.contract_id
       WHERE rc.party_id = $carrier_id
-        AND rc.card_type = 'carrier'
-        AND ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND rc.card_type IN ('carrier', 'freight_forwarder')
+        AND ($contract_id IS NULL OR rc.contract_id = $contract_id)
+        AND ($service_type IS NULL OR rc.service_type ILIKE '%' || $service_type || '%')
+        AND ($lane IS NULL OR rc.lane ILIKE '%' || $lane || '%')
         AND rc.status = 'active'
-        AND rc.effective_from <= $as_of
-      ORDER BY rc.effective_from DESC
-    limit: 20
-    example: {carrier_id: CAR-007}
-
-  - name: get_contract_claim_time_limits
-    desc: Claim time window and short-shipment terms from contracts. Use to check if claims are still valid.
-    kind: sql
-    args:
-      contract_id: {required: true}
-    sql: |
-      SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
-        AND cc.clause_type IN ('claim_window', 'short_shipment')
-    limit: 20
-    example: {contract_id: CTR-900001}
-
-  - name: get_contract_coverage_by_category
-    desc: Share of category spend under contract vs off-contract. Use to see coverage gaps.
-    kind: sql
-    args:
-      category: {type: str, desc: "Product category or service type"}
-      contract_id: {}
-    sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.status, c.start_date, c.end_date,
-             count(*) AS items_covered,
-             'coverage analysis by category' AS analysis_type
-      FROM contracts c
-      WHERE ($contract_id IS NULL OR c.contract_id = $contract_id)
-        AND c.status IN ('active', 'draft')
-      GROUP BY c.contract_id, c.party_id, c.contract_type, c.status, c.start_date, c.end_date
-      ORDER BY c.contract_id
-    limit: 20
-    example: {category: "logistics services"}
-
-  - name: get_carrier_liability_terms
-    desc: Carrier liability limits and claim time limits. Use to assess claim value and risk.
-    kind: sql
-    args:
-      carrier_id: {required: true}
-      contract_id: {}
-    sql: |
-      SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content,
-             COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), 0) AS liability_limit_gbp
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.party_id = $carrier_id
-        AND ($contract_id IS NULL OR c.contract_id = $contract_id)
-        AND c.status = 'active'
-        AND cc.clause_type = 'liability'
+        AND CAST(rc.effective_from AS DATE) <= CAST($as_of AS DATE)
+        AND CAST(rc.effective_to AS DATE) >= CAST($as_of AS DATE)
+      ORDER BY rc.service_type, rc.effective_from DESC
     limit: 20
     example: {carrier_id: CAR-002}
 
-  - name: get_carrier_contract_rate_review_clauses
-    desc: Rate review and surcharge clauses in carrier contracts. Use to forecast rate changes.
+  - name: get_contract_claim_time_limits
+    desc: Claim time limits in days (damage, shortage, overcharge) and short-shipment terms per contract. Use to check claims are still valid.
+    kind: sql
+    args:
+      contract_id: {}
+      party_id: {}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: "Filter by contract type (optional)"}
+    sql: |
+      SELECT c.contract_id, c.contract_type, c.party_id, c.status, cc.clause_type, cc.title,
+             CAST(json_extract_string(cc.content, '$.damage_claim_days') AS INT) AS damage_claim_days,
+             CAST(json_extract_string(cc.content, '$.shortage_claim_days') AS INT) AS shortage_claim_days,
+             CAST(json_extract_string(cc.content, '$.overcharge_claim_days') AS INT) AS overcharge_claim_days,
+             CAST(json_extract_string(cc.content, '$.tolerance_pct') AS DOUBLE) AS short_ship_tolerance_pct,
+             json_extract_string(cc.content, '$.summary') AS summary
+      FROM contracts c
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      WHERE ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND ($party_id IS NULL OR c.party_id = $party_id)
+        AND ($contract_type IS NULL OR c.contract_type = $contract_type)
+        AND c.status IN ('active', 'draft', 'expired')
+        AND cc.clause_type IN ('claim_window', 'short_shipment')
+      ORDER BY c.contract_type, c.contract_id, cc.clause_type
+    limit: 30
+    example: {party_id: CAR-002}
+
+  - name: get_contract_coverage_by_category
+    desc: Share of purchase spend with suppliers under contract versus off contract, per category or supplier. Use to find contract gaps.
+    kind: sql
+    args:
+      category: {type: str, desc: "Product category, e.g. Knitwear (all categories if blank)"}
+      group_by: {type: enum, values: [category, supplier], default: category, desc: "One row per category, or per supplier within it"}
+      date_from: {type: date, default: "-365d", desc: Start of the spend period}
+      date_to: {type: date, default: "-0d", desc: End of the spend period}
+    sql: |
+      WITH lines AS (
+        SELECT p.category, pur.supplier_id, CAST(pur.order_date AS DATE) AS order_date,
+               l.qty_ordered * l.unit_cost AS value_gbp
+        FROM master.po_lines l
+        JOIN master.purchase_orders pur ON pur.po_id = l.po_id
+        JOIN master.products p ON p.sku = l.sku
+        WHERE CAST(pur.order_date AS DATE) BETWEEN CAST($date_from AS DATE) AND CAST($date_to AS DATE)
+          AND pur.status <> 'cancelled'
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+      ), tagged AS (
+        SELECT l.*,
+               EXISTS (SELECT 1 FROM contracts c
+                       WHERE c.contract_type = 'supplier' AND c.party_id = l.supplier_id
+                         AND c.status IN ('active', 'expired', 'terminated')
+                         AND l.order_date BETWEEN CAST(c.start_date AS DATE) AND CAST(c.end_date AS DATE)) AS on_contract,
+               COALESCE((SELECT c2.status FROM contracts c2 WHERE c2.contract_type = 'supplier' AND c2.party_id = l.supplier_id
+                         ORDER BY c2.end_date DESC LIMIT 1), 'none') AS latest_contract_status
+        FROM lines l
+      )
+      SELECT t.category,
+             CASE WHEN $group_by = 'supplier' THEN t.supplier_id ELSE 'all suppliers' END AS supplier,
+             CASE WHEN $group_by = 'supplier' THEN t.latest_contract_status ELSE NULL END AS latest_contract_status,
+             round(sum(t.value_gbp)) AS spend_gbp,
+             round(COALESCE(sum(t.value_gbp) FILTER (WHERE t.on_contract), 0)) AS on_contract_gbp,
+             round(COALESCE(sum(t.value_gbp) FILTER (WHERE NOT t.on_contract), 0)) AS off_contract_gbp,
+             round(100.0 * COALESCE(sum(t.value_gbp) FILTER (WHERE t.on_contract), 0) / sum(t.value_gbp), 1) AS on_contract_pct
+      FROM tagged t
+      GROUP BY ALL
+      ORDER BY t.category, off_contract_gbp DESC, spend_gbp DESC
+    limit: 40
+    example: {category: Knitwear}
+
+  - name: get_carrier_liability_terms
+    desc: Carrier liability limit, deductible, excluded packaging and damage claim time limit. Use to assess claim value and risk.
     kind: sql
     args:
       carrier_id: {required: true}
       contract_id: {}
     sql: |
-      SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content
+      SELECT c.contract_id, c.party_id AS carrier_id, c.status, cc.clause_type, cc.title,
+             CAST(json_extract_string(cc.content, '$.limit_gbp') AS DOUBLE) AS liability_limit_gbp,
+             json_extract_string(cc.content, '$.limit_basis') AS limit_basis,
+             CAST(json_extract_string(cc.content, '$.deductible_gbp') AS DOUBLE) AS deductible_gbp,
+             json_extract_string(cc.content, '$.excluded_package_types') AS excluded_package_types,
+             CAST(json_extract_string(cc.content, '$.damage_claim_days') AS INT) AS damage_claim_days,
+             json_extract_string(cc.content, '$.summary') AS summary
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $carrier_id
         AND ($contract_id IS NULL OR c.contract_id = $contract_id)
         AND c.status = 'active'
-        AND cc.clause_type IN ('price_review', 'rate_review')
+        AND cc.clause_type IN ('liability', 'claim_window')
+      ORDER BY c.contract_id, cc.clause_type
     limit: 20
-    example: {carrier_id: CAR-007}
+    example: {carrier_id: CAR-004}
+
+  - name: get_carrier_contract_rate_review_clauses
+    desc: Rate review and surcharge clauses of carrier contracts, with maximum increase and notice. Use to forecast rate rises and who may push hardest.
+    kind: sql
+    args:
+      carrier_id: {}
+      contract_id: {}
+    sql: |
+      SELECT c.contract_id, c.party_id AS carrier_id, car.name AS carrier_name, car.mode,
+             c.end_date, c.auto_renewal, cc.clause_type,
+             CAST(json_extract_string(cc.content, '$.max_increase_pct') AS DOUBLE) AS max_increase_pct,
+             json_extract_string(cc.content, '$.effective_month') AS increase_effective_month,
+             CAST(json_extract_string(cc.content, '$.notice_days') AS INT) AS notice_days,
+             json_extract_string(cc.content, '$.fuel_surcharge') AS fuel_surcharge_basis,
+             json_extract_string(cc.content, '$.summary') AS summary
+      FROM contracts c
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      LEFT JOIN master.carriers car ON car.carrier_id = c.party_id
+      WHERE c.contract_type = 'carrier'
+        AND ($carrier_id IS NULL OR c.party_id = $carrier_id)
+        AND ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND c.status = 'active'
+        AND cc.clause_type IN ('price_review', 'rate_review')
+      ORDER BY max_increase_pct DESC NULLS FIRST, c.party_id
+    limit: 30
+    example: {carrier_id: CAR-011}
 
   - name: get_agency_rate_card
     desc: Agency rates, mark-ups and notice terms from price lists. Use to quote customers or compare options.
@@ -282,29 +344,45 @@ tools:
     example: {contract_id: CTR-900005, volume_units: 100, unit_value_gbp: 1000}
 
   - name: calculate_recoverable_claim_value
-    desc: Claim value recoverable under carrier liability terms. Use to assess claimable damage.
+    desc: Net claim value recoverable under a carrier liability clause after limit, deductible, packaging exclusions and claim time limit. Use before filing a damage claim.
     kind: sql
     args:
-      contract_id: {required: true}
-      damage_value_gbp: {type: float, desc: "Claimed damage value in GBP"}
+      contract_id: {}
+      carrier_id: {desc: "Carrier id, used to find its active contract when contract_id is not given"}
+      damage_value_gbp: {required: true, type: float, desc: "Claimed damage value in GBP"}
+      package_type: {type: str, desc: "Packaging of the damaged goods, e.g. carton, polybag, hanging (optional)"}
+      claim_age_days: {type: int, desc: "Days since delivery when the claim is lodged (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id,
+      WITH target AS (
+        SELECT c.contract_id, c.party_id FROM contracts c
+        WHERE c.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                                                      WHERE c2.party_id = $carrier_id AND c2.status = 'active' LIMIT 1))
+      ), liab AS (
+        SELECT cc.contract_id,
+               CAST(json_extract_string(cc.content, '$.limit_gbp') AS DOUBLE) AS limit_gbp,
+               COALESCE(CAST(json_extract_string(cc.content, '$.deductible_gbp') AS DOUBLE), 0) AS deductible_gbp,
+               COALESCE(json_extract_string(cc.content, '$.excluded_package_types'), '[]') AS excluded
+        FROM contract_clauses cc JOIN target t USING (contract_id) WHERE cc.clause_type = 'liability'
+      ), win AS (
+        SELECT cc.contract_id, CAST(json_extract_string(cc.content, '$.damage_claim_days') AS INT) AS damage_claim_days
+        FROM contract_clauses cc JOIN target t USING (contract_id) WHERE cc.clause_type = 'claim_window'
+      )
+      SELECT t.contract_id, t.party_id AS carrier_id,
              $damage_value_gbp AS claimed_value_gbp,
-             COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), $damage_value_gbp) AS liability_limit_gbp,
-             LEAST($damage_value_gbp, COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), $damage_value_gbp)) AS recoverable_value_gbp,
-             CASE WHEN CAST(json_extract_string(cc.content, 'subject_to_deductible') AS BOOL) THEN
-               GREATEST(LEAST($damage_value_gbp, COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), $damage_value_gbp)) -
-                        COALESCE(CAST(json_extract_string(cc.content, 'deductible_gbp') AS FLOAT), 0), 0)
-             ELSE
-               LEAST($damage_value_gbp, COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), $damage_value_gbp))
-             END AS net_recoverable_gbp,
-             'recoverable = min(claimed, limit) - deductible' AS formula
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
-        AND cc.clause_type = 'liability'
-      LIMIT 1
-    example: {contract_id: CTR-900001, damage_value_gbp: 5000}
+             l.limit_gbp AS liability_limit_gbp,
+             l.deductible_gbp,
+             w.damage_claim_days,
+             CASE WHEN $package_type IS NOT NULL AND l.excluded ILIKE '%"' || $package_type || '"%' THEN 'not recoverable: packaging type excluded'
+                  WHEN $claim_age_days IS NOT NULL AND w.damage_claim_days IS NOT NULL AND $claim_age_days > w.damage_claim_days THEN 'not recoverable: outside claim time limit'
+                  ELSE 'recoverable' END AS claim_status,
+             CASE WHEN ($package_type IS NOT NULL AND l.excluded ILIKE '%"' || $package_type || '"%')
+                    OR ($claim_age_days IS NOT NULL AND w.damage_claim_days IS NOT NULL AND $claim_age_days > w.damage_claim_days) THEN 0
+                  ELSE GREATEST(LEAST($damage_value_gbp, COALESCE(l.limit_gbp, $damage_value_gbp)) - l.deductible_gbp, 0) END AS net_recoverable_gbp,
+             'recoverable = min(claimed, liability limit) - deductible; zero if packaging excluded or claim late' AS formula
+      FROM target t
+      JOIN liab l USING (contract_id)
+      LEFT JOIN win w USING (contract_id)
+    example: {carrier_id: CAR-004, damage_value_gbp: 425}
 
   - name: calculate_short_shipment_penalties
     desc: Calculates short shipment penalties under contract terms. Use to compute claims value.
@@ -348,15 +426,17 @@ tools:
     example: {contract_id: CTR-900004, account_id: CUS-002512}
 
   - name: calculate_commitment_risk_scenarios
-    desc: Downside cost of volume commitments under demand scenarios. Use to assess volume risk.
+    desc: Downside cost of a volume commitment under demand scenarios, using the contract's commitment and take-or-pay terms. Give contract_id or supplier_id.
     kind: py
     fn: calc_commitment_risk
     args:
-      contract_id: {required: true}
-      base_volume_units: {type: int, desc: "Base annual volume in units"}
-      pessimistic_volume_pct: {type: int, desc: "Pessimistic scenario as % of base", default: 70}
-      unit_cost_gbp: {type: float, desc: "Unit cost in GBP"}
-    example: {contract_id: CTR-000001, base_volume_units: 10000, unit_cost_gbp: 5}
+      contract_id: {}
+      supplier_id: {}
+      base_volume_units: {required: true, type: int, desc: "Forecast annual volume in units"}
+      unit_cost_gbp: {required: true, type: float, desc: "Unit cost in GBP"}
+      commitment_pct: {type: float, desc: "Committed share of forecast, in percent (defaults to the contract's commitment)"}
+      pessimistic_volume_pct: {type: int, desc: "Pessimistic demand as % of forecast", default: 70}
+    example: {supplier_id: SUP-0044, base_volume_units: 400000, unit_cost_gbp: 9.5}
 
   - name: calculate_contract_risk_ranking
     desc: Rank contracts by clause-based risk score. Use to prioritize contract review work.
@@ -396,17 +476,18 @@ tools:
   # Write tools for stage 1
 
   - name: create_contract_draft
-    desc: Creates a draft agreement record from a template and chosen clauses. Returns the new draft id.
+    desc: Creates a draft agreement record (e.g. a framework agreement) from a template and chosen clauses. Returns the new draft id.
     kind: insert
     table: contract_drafts
     id_prefix: DRF-
-    defaults: {status: draft}
+    defaults: {status: draft, template_id: TMT-001}
     args:
       draft_type: {required: true}
-      template_id: {required: true}
-      selected_clauses: {type: str, desc: "Clause ids as JSON array"}
       counterparty_id: {required: true}
-    example: {draft_type: new_supplier, template_id: TMT-001, selected_clauses: '["c1", "c2"]', counterparty_id: SUP-0042}
+      selected_clauses: {type: str, desc: "JSON array of clause types to include, e.g. [\"volume_commitment\", \"force_majeure\"]"}
+      template_id: {type: str, desc: "Template id"}
+      description: {type: str, desc: "What the draft is for"}
+    example: {draft_type: new_supplier, template_id: TMT-001, selected_clauses: '["payment_terms", "price_review"]', counterparty_id: SUP-0042, description: "New supply agreement"}
 
   - name: create_contract_breach_record
     desc: Logs a breach or delay event against a contract. Returns the new breach record.
@@ -467,36 +548,92 @@ tools:
     example: {contract_id: CTR-900005}
 
   - name: draft_negotiation_brief
-    desc: Drafts a carrier negotiation brief with terms to seek. Returns formatted text brief.
+    desc: Drafts a negotiation brief for a carrier or supplier contract with current terms, performance, open cases and terms to seek. Give contract_id, carrier_id or supplier_id.
     kind: draft
-    args: [contract_id, carrier_id]
+    args: [contract_id, carrier_id, supplier_id]
     sql:
-      contract: "SELECT * FROM contracts WHERE contract_id = $contract_id LIMIT 1"
-      current_rates: "SELECT * FROM rate_cards WHERE contract_id = $contract_id ORDER BY effective_from DESC LIMIT 5"
-      breaches: "SELECT * FROM contract_breaches WHERE contract_id = $contract_id AND status = 'logged' LIMIT 10"
+      contract: |
+        SELECT c.contract_id, c.contract_type, c.party_id, c.status, c.start_date, c.end_date, c.renewal_notice_days, c.auto_renewal,
+               COALESCE(car.name, sup.name, c.party_name) AS party_label, car.mode AS carrier_mode,
+               sup.tier, sup.otif_pct_12m, sup.annual_spend_gbp, sup.payment_terms_days
+        FROM contracts c
+        LEFT JOIN master.carriers car ON c.party_type = 'carrier_id' AND car.carrier_id = c.party_id
+        LEFT JOIN master.suppliers sup ON c.party_type = 'supplier_id' AND sup.supplier_id = c.party_id
+        WHERE c.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                 WHERE c2.party_id = COALESCE($carrier_id, $supplier_id) AND c2.status IN ('active', 'draft')
+                 ORDER BY c2.end_date DESC LIMIT 1))
+      clauses: |
+        SELECT cc.clause_type, cc.title, json_extract_string(cc.content, '$.summary') AS summary
+        FROM contract_clauses cc
+        WHERE cc.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                 WHERE c2.party_id = COALESCE($carrier_id, $supplier_id) AND c2.status IN ('active', 'draft')
+                 ORDER BY c2.end_date DESC LIMIT 1))
+          AND cc.clause_type IN ('service_level', 'rate_review', 'price_review', 'volume_commitment', 'termination',
+                                 'renewal', 'liability', 'claim_window', 'payment_terms', 'penalty', 'chargeback')
+        ORDER BY cc.clause_type
+      rates: |
+        SELECT rc.service_type, rc.lane, rc.rate_unit, rc.base_rate_gbp
+        FROM rate_cards rc
+        WHERE rc.status = 'active' AND rc.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                 WHERE c2.party_id = COALESCE($carrier_id, $supplier_id) AND c2.status IN ('active', 'draft')
+                 ORDER BY c2.end_date DESC LIMIT 1))
+        ORDER BY rc.service_type
+      breaches: |
+        SELECT b.breach_date, b.description, b.status FROM contract_breaches b
+        WHERE b.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                 WHERE c2.party_id = COALESCE($carrier_id, $supplier_id) AND c2.status IN ('active', 'draft')
+                 ORDER BY c2.end_date DESC LIMIT 1))
+        ORDER BY b.breach_date DESC LIMIT 5
+      cases: |
+        SELECT n.case_id, n.case_type, n.description, n.status FROM negotiation_cases n
+        WHERE n.status IN ('open', 'in_progress') AND n.contract_id = COALESCE($contract_id, (SELECT c2.contract_id FROM contracts c2
+                 WHERE c2.party_id = COALESCE($carrier_id, $supplier_id) AND c2.status IN ('active', 'draft')
+                 ORDER BY c2.end_date DESC LIMIT 1))
     template: |
-      NEGOTIATION BRIEF
+      NEGOTIATION BRIEF - {{ contract[0].party_label }} ({{ contract[0].party_id }})
+      Contract {{ contract[0].contract_id }} ({{ contract[0].contract_type }}, {{ contract[0].status }}), ends {{ contract[0].end_date }}.
+      Notice to end or renegotiate: {{ contract[0].renewal_notice_days }} days before expiry; auto-renewal: {{ contract[0].auto_renewal }}.
+      {% if contract[0].tier %}
+      Supplier profile: {{ contract[0].tier }} tier, annual spend {{ contract[0].annual_spend_gbp | money }}, OTIF 12m {{ contract[0].otif_pct_12m }}%, payment terms {{ contract[0].payment_terms_days }} days.
+      {% endif %}
 
-      Carrier: {{ carrier_id }}
-      Contract: {{ contract[0].contract_id }}
-      Current Status: {{ contract[0].status }}
-      End Date: {{ contract[0].end_date }}
-
-      Current Rates:
-      {% for rate in current_rates %}
-      - {{ rate.rate_card_id }}: £{{ rate.base_rate_gbp }}
+      Current rates:
+      {% for r in rates %}
+      - {{ r.service_type }}{% if r.lane %} ({{ r.lane }}){% endif %}: {{ r.base_rate_gbp }} {{ r.rate_unit }}
       {% endfor %}
 
-      Recent Breaches:
-      {% for breach in breaches %}
-      - {{ breach.breach_date }}: {{ breach.description }}
+      Current contract terms and what to seek:
+      {% set asks = {
+        'service_level': 'Raise the service target and add service credits or an exit right when it is missed',
+        'rate_review': 'Cap annual increases, index fuel to a published benchmark and lengthen notice of changes',
+        'price_review': 'Cap annual increases and tie any rise to a published index with evidence',
+        'volume_commitment': 'Cut the minimum volume or shortfall charge, and allow flex for a trial or volume shift',
+        'termination': 'Shorten our termination notice and add a right to exit for repeated service failure',
+        'renewal': 'Replace automatic renewal with a decision point and shorten the renewal term',
+        'liability': 'Raise the liability limit and reduce exclusions',
+        'claim_window': 'Extend the claim time limits',
+        'payment_terms': 'Hold or extend our payment terms',
+        'penalty': 'Increase late-delivery penalties',
+        'chargeback': 'Widen chargebacks to cover expedite and air freight costs'} %}
+      {% for cl in clauses %}
+      - {{ cl.title }} ({{ cl.clause_type }}): {{ cl.summary }}
+        Seek: {{ asks[cl.clause_type] }}.
       {% endfor %}
 
-      Negotiation Objectives:
-      - Confirm volume commitments
-      - Review accessorial charges
-      - Establish service level targets
-    example: {contract_id: CTR-000001, carrier_id: CAR-007}
+      Logged breaches:
+      {% for b in breaches %}
+      - {{ b.breach_date }}: {{ b.description }} ({{ b.status }})
+      {% else %}
+      - none logged
+      {% endfor %}
+
+      Open negotiation cases:
+      {% for n in cases %}
+      - {{ n.case_id }} {{ n.case_type }}: {{ n.description }} ({{ n.status }})
+      {% else %}
+      - none open
+      {% endfor %}
+    example: {carrier_id: CAR-003}
 
   - name: update_contract_negotiation_position
     desc: Records the current negotiation position on a contract. Returns the position record.
@@ -570,22 +707,26 @@ tools:
     example: {contract_id: CTR-900001}
 
   - name: get_contract_price_for_service
-    desc: Contracted price for a service from rate cards or price lists. Use for quoting.
+    desc: Contracted unit price and surcharges for a service (e.g. racking inspection, maintenance) from rate cards, by site. Use to compare with market prices.
     kind: sql
     args:
-      contract_id: {required: true}
-      service_type: {type: str, desc: "Service type (optional)"}
+      service_type: {type: str, desc: "Service to match, e.g. racking inspection, racking maintenance (optional)"}
+      contract_id: {}
+      site_id: {}
     sql: |
-      SELECT c.contract_id, c.party_id, rc.rate_card_id, rc.base_rate_gbp, rc.currency,
-             rc.surcharges_json, rc.effective_from, rc.effective_to
+      SELECT c.contract_id, c.party_name, c.site_id, rc.rate_card_id, rc.service_type, rc.rate_unit,
+             rc.base_rate_gbp, rc.surcharges_json AS surcharges, rc.effective_from, rc.effective_to, c.end_date AS contract_end
       FROM contracts c
-      LEFT JOIN rate_cards rc ON c.contract_id = rc.contract_id
-      WHERE c.contract_id = $contract_id
-        AND rc.status = 'active'
-        AND rc.effective_from <= $as_of
-      ORDER BY rc.effective_from DESC
-      LIMIT 10
-    example: {contract_id: CTR-900001}
+      JOIN rate_cards rc ON c.contract_id = rc.contract_id
+      WHERE rc.status = 'active'
+        AND ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND ($site_id IS NULL OR c.site_id = $site_id)
+        AND ($service_type IS NULL OR rc.service_type ILIKE '%' || $service_type || '%' OR c.title ILIKE '%' || $service_type || '%')
+        AND CAST(rc.effective_from AS DATE) <= CAST($as_of AS DATE)
+        AND CAST(rc.effective_to AS DATE) >= CAST($as_of AS DATE)
+      ORDER BY rc.service_type, c.site_id
+    limit: 20
+    example: {service_type: racking}
 
   - name: get_contract_remedies_clauses
     desc: Remedies, delay and termination clauses. Use to understand actions available for breach.
@@ -619,40 +760,52 @@ tools:
     example: {contract_id: CTR-900002}
 
   - name: get_contract_terms
-    desc: Key terms and service levels of a contract. Use to understand what's covered.
+    desc: Key terms, service levels and clauses of a contract, found by contract id or by counterparty id (carrier, supplier). Use to see what a contract commits us to.
     kind: sql
     args:
-      contract_id: {required: true}
+      contract_id: {}
+      party_id: {}
+      clause_type: {type: str, desc: "Only this clause type, e.g. service_level, termination (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.start_date, c.end_date,
-             c.status, cc.clause_type, cc.title, cc.content
+      SELECT c.contract_id, c.party_id, c.contract_type, c.status, c.start_date, c.end_date,
+             c.renewal_notice_days, c.auto_renewal, cc.clause_type, cc.title,
+             json_extract_string(cc.content, '$.summary') AS summary, cc.content
       FROM contracts c
       LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
-      ORDER BY cc.clause_type
-    limit: 20
-    example: {contract_id: CTR-900001}
+      WHERE ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND ($party_id IS NULL OR c.party_id = $party_id)
+        AND ($contract_id IS NOT NULL OR $party_id IS NOT NULL)
+        AND ($clause_type IS NULL OR cc.clause_type = $clause_type)
+        AND c.status IN ('active', 'draft', 'expired')
+      ORDER BY c.contract_id, cc.clause_type
+    limit: 40
+    example: {party_id: CAR-003}
 
   - name: get_contract_terms_for_supplier
-    desc: Price, term and review clauses for a supplier. Use to understand supplier obligations.
+    desc: Price list terms (MOQ, tooling, incoterm, lead time) plus price review, renewal and other clauses of a supplier's contract. Use to understand supplier obligations.
     kind: sql
     args:
       supplier_id: {required: true}
+      clause_type: {type: str, desc: "Only this clause type, e.g. price_review (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.status, c.start_date, c.end_date,
-             COALESCE(rc.effective_from, pl.effective_from) AS effective_from,
-             cc.clause_type, cc.title, cc.content,
-             rc.base_rate_gbp, pl.terms_json
+      SELECT c.contract_id, c.party_id AS supplier_id, c.status, c.start_date, c.end_date,
+             'price_list' AS clause_type, 'Price list and commercial terms' AS title, pl.terms_json AS content
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      LEFT JOIN rate_cards rc ON c.contract_id = rc.contract_id
-      LEFT JOIN price_lists pl ON c.contract_id = pl.contract_id
-      WHERE c.party_id = $supplier_id
-        AND c.contract_type = 'supplier'
-        AND c.status IN ('active', 'draft')
-      ORDER BY c.contract_id, cc.clause_type
+      JOIN price_lists pl ON pl.contract_id = c.contract_id AND pl.status = 'active'
+      WHERE c.party_id = $supplier_id AND c.contract_type = 'supplier' AND c.status IN ('active', 'draft', 'expired')
+        AND ($clause_type IS NULL OR $clause_type = 'price_list')
+      UNION ALL
+      SELECT c.contract_id, c.party_id, c.status, c.start_date, c.end_date,
+             cc.clause_type, cc.title, cc.content
+      FROM contracts c
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      WHERE c.party_id = $supplier_id AND c.contract_type = 'supplier' AND c.status IN ('active', 'draft', 'expired')
+        AND ($clause_type IS NULL OR cc.clause_type = $clause_type)
+        AND cc.clause_type IN ('price_review', 'renewal', 'termination', 'payment_terms', 'force_majeure',
+                               'service_level', 'volume_commitment', 'penalty', 'other')
+      ORDER BY 1, 6
     limit: 30
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0004}
 
   - name: get_existing_franchise_agreement_terms
     desc: Retrieves existing franchise agreement terms. Use for franchise renewals.
@@ -699,38 +852,53 @@ tools:
     example: {contract_id: CTR-900001}
 
   - name: get_supplier_chargeback_clauses
-    desc: Chargeback and penalty clauses in supplier contracts. Use for cost recovery.
+    desc: Chargeback and late-delivery penalty clauses of a supplier contract, including air freight recharge. Use for cost recovery.
     kind: sql
     args:
       supplier_id: {required: true}
     sql: |
-      SELECT c.contract_id, c.party_id, c.status,
-             cc.clause_type, cc.title, cc.content
+      SELECT c.contract_id, c.party_id AS supplier_id, c.status, cc.clause_type, cc.title,
+             CAST(json_extract_string(cc.content, '$.air_freight_recharge_pct') AS DOUBLE) AS air_freight_recharge_pct,
+             json_extract_string(cc.content, '$.recharge_trigger') AS recharge_trigger,
+             CAST(json_extract_string(cc.content, '$.late_delivery_pct_per_week') AS DOUBLE) AS late_delivery_pct_per_week,
+             CAST(json_extract_string(cc.content, '$.cap_pct') AS DOUBLE) AS cap_pct,
+             json_extract_string(cc.content, '$.summary') AS summary
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $supplier_id
         AND c.contract_type = 'supplier'
         AND cc.clause_type IN ('chargeback', 'penalty')
       ORDER BY c.contract_id, cc.clause_type
     limit: 20
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0023}
 
   - name: get_supplier_claim_terms
-    desc: Claim window and short-shipment terms from supplier contracts. Use to manage claims.
+    desc: Claim time limits (shortage, damage, quality) and short-shipment tolerance and remedy in a supplier's contract. Pass a receipt date to see if the claim window is still open.
     kind: sql
     args:
       supplier_id: {required: true}
+      receipt_date: {type: date, desc: "Goods receipt date, to test whether a shortage claim is still inside the window (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.status,
-             cc.clause_type, cc.title, cc.content
+      SELECT c.contract_id, c.party_id AS supplier_id, c.status, cc.clause_type, cc.title,
+             CAST(json_extract_string(cc.content, '$.shortage_claim_days') AS INT) AS shortage_claim_days,
+             CAST(json_extract_string(cc.content, '$.damage_claim_days') AS INT) AS damage_claim_days,
+             CAST(json_extract_string(cc.content, '$.quality_claim_days') AS INT) AS quality_claim_days,
+             CAST(json_extract_string(cc.content, '$.tolerance_pct') AS DOUBLE) AS short_ship_tolerance_pct,
+             json_extract_string(cc.content, '$.remedy') AS remedy,
+             CASE WHEN $receipt_date IS NULL OR cc.clause_type <> 'claim_window' THEN NULL
+                  ELSE date_diff('day', CAST($receipt_date AS DATE), CAST($as_of AS DATE)) END AS days_since_receipt,
+             CASE WHEN $receipt_date IS NULL OR cc.clause_type <> 'claim_window' THEN NULL
+                  ELSE date_diff('day', CAST($receipt_date AS DATE), CAST($as_of AS DATE))
+                       <= CAST(json_extract_string(cc.content, '$.shortage_claim_days') AS INT) END AS shortage_claim_window_open,
+             json_extract_string(cc.content, '$.summary') AS summary
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $supplier_id
         AND c.contract_type = 'supplier'
         AND cc.clause_type IN ('claim_window', 'short_shipment')
       ORDER BY c.contract_id, cc.clause_type
     limit: 20
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0013}
 
   - name: get_supplier_contract_terms_on_tariff_risk
     desc: Return supplier contract terms on tariff risk. Use to manage tariff exposure.

@@ -297,14 +297,16 @@ tools:
       style_id: {desc: "Style id, e.g. STY-4056, to see every size"}
       size: {}
       site_id: {}
+      region: {desc: "Site region, e.g. Scotland"}
     sql: |
-      SELECT p.style_id, p.sku, p.size, i.site_id, i.on_hand, i.available,
+      SELECT p.style_id, p.sku, p.size, i.site_id, i.location_id, s.region, i.on_hand, i.available,
              round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover,
              CASE WHEN i.available > 0 THEN 'In Stock' ELSE 'Out of Stock' END AS availability
       FROM inventory_positions i
-      JOIN master.products p USING (sku)
+      JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
       WHERE ($sku IS NULL OR i.sku = $sku) AND ($style_id IS NULL OR p.style_id = $style_id)
         AND ($size IS NULL OR p.size = $size) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($region IS NULL OR s.region = $region)
       ORDER BY i.site_id, p.size
     limit: 200
     example: {style_id: STY-4056}
@@ -513,27 +515,39 @@ tools:
     example: {sku: K-1700, site_id: ST214}
 
   - name: calculate_revenue_and_inventory_impact_of_changes
-    desc: Revenue and inventory impact of a price, availability or stock transfer change for a SKU, from recent sales.
+    desc: Revenue and inventory impact of a price, availability, demand or stock transfer change, for a SKU, a category or the whole network, from recent sales.
     kind: sql
     args:
-      sku: {required: true}
-      change_type: {values: [price_change, availability_change, stock_transfer], required: true, desc: "Type of change"}
-      change_pct: {type: float, default: 10, desc: "Price change % or units moved as % of stock"}
+      sku: {}
+      category: {}
+      change_type: {values: [price_change, availability_change, demand_change, stock_transfer], required: true, desc: "Type of change; demand_change = demand moves by change_pct, e.g. -2.5 for 2.5% lower"}
+      change_pct: {type: float, default: 10, desc: "Price or demand change %, or units moved as % of stock"}
       date_from: {type: date, default: "-30d", desc: "Sales period used as the base"}
     sql: |
-      WITH s AS (SELECT sum(revenue_gbp) AS rev, sum(store_units + online_units) AS units FROM master.sales_weekly
-                 WHERE sku = $sku AND week_start >= CAST($date_from AS DATE)),
-           l AS (SELECT COALESCE(sum(lost_sales), 0) AS lost FROM availability_tracking WHERE sku = $sku AND tracking_date >= CAST($date_from AS DATE)),
-           i AS (SELECT COALESCE(sum(on_hand), 0) AS oh FROM inventory_positions WHERE sku = $sku),
-           p AS (SELECT unit_cost_gbp AS cost, retail_price_gbp AS price FROM master.products WHERE sku = $sku)
-      SELECT $sku AS sku, CAST($change_type AS TEXT) AS change_type, s.rev AS base_revenue_gbp, s.units AS base_units,
+      WITH pr AS (SELECT sku, unit_cost_gbp AS cost, retail_price_gbp AS price FROM master.products
+                  WHERE ($sku IS NULL OR sku = $sku) AND ($category IS NULL OR category = $category)),
+           s AS (SELECT sum(w.revenue_gbp) AS rev, sum(w.store_units + w.online_units) AS units FROM master.sales_weekly w JOIN pr USING (sku)
+                 WHERE w.week_start >= CAST($date_from AS DATE)),
+           l AS (SELECT COALESCE(sum(a.lost_sales), 0) AS lost, COALESCE(sum(a.lost_sales * pr.price), 0) AS lost_rev,
+                        COALESCE(sum(a.lost_sales * pr.cost), 0) AS lost_cost
+                 FROM availability_tracking a JOIN pr USING (sku) WHERE a.tracking_date >= CAST($date_from AS DATE)),
+           i AS (SELECT COALESCE(sum(v.on_hand), 0) AS oh, COALESCE(sum(v.on_hand * pr.cost), 0) AS oh_cost,
+                        COALESCE(sum(v.on_hand * pr.price), 0) AS oh_price, COALESCE(sum(CASE WHEN v.site_id LIKE 'ST%' THEN v.weekly_demand END), 0) AS wd,
+                        COALESCE(sum(CASE WHEN v.site_id LIKE 'ST%' THEN v.weekly_demand * pr.cost END), 0) AS wd_cost
+                 FROM inventory_positions v JOIN pr USING (sku))
+      SELECT COALESCE($sku, $category, 'network') AS scope, CAST($change_type AS TEXT) AS change_type, round(s.rev, 2) AS base_revenue_gbp, s.units AS base_units,
              CASE $change_type WHEN 'price_change' THEN round(s.rev * $change_pct / 100.0, 2)
-                  WHEN 'availability_change' THEN round(l.lost * p.price, 2)
-                  ELSE round(i.oh * $change_pct / 100.0 * p.price * 0.5, 2) END AS revenue_impact_gbp,
-             CASE $change_type WHEN 'availability_change' THEN l.lost ELSE round(i.oh * $change_pct / 100.0) END AS inventory_units_impact,
-             round(CASE $change_type WHEN 'availability_change' THEN l.lost * p.cost ELSE i.oh * $change_pct / 100.0 * p.cost END, 2) AS inventory_value_impact_gbp,
-             'price: revenue*pct; availability: recovered lost units*price; transfer: moved units sell at half rate' AS formula
-      FROM s, l, i, p
+                  WHEN 'demand_change' THEN round(s.rev * $change_pct / 100.0, 2)
+                  WHEN 'availability_change' THEN round(l.lost_rev, 2)
+                  ELSE round(i.oh_price * $change_pct / 100.0 * 0.5, 2) END AS revenue_impact_gbp,
+             CASE $change_type WHEN 'availability_change' THEN l.lost
+                  WHEN 'demand_change' THEN round(-i.wd * $change_pct / 100.0 * 8)
+                  ELSE round(i.oh * $change_pct / 100.0) END AS inventory_units_impact,
+             round(CASE $change_type WHEN 'availability_change' THEN l.lost_cost
+                  WHEN 'demand_change' THEN -i.wd_cost * $change_pct / 100.0 * 8
+                  ELSE i.oh_cost * $change_pct / 100.0 END, 2) AS inventory_value_impact_gbp,
+             'price/demand: base revenue*pct; availability: recovered lost units*price; demand also changes closing stock by -store weekly demand*pct*8 weeks; transfer: moved units sell at half rate' AS formula
+      FROM s, l, i
     example: {sku: K-1700, change_type: availability_change}
 
   - name: calculate_stockout_risk
@@ -679,7 +693,8 @@ tools:
       date_to: {type: date, default: "$as_of", desc: "To this date"}
     sql: |
       SELECT s.category, sum(s.shrink_units) AS shrink_units, round(sum(s.shrink_value_gbp), 2) AS shrink_value_gbp,
-             round(avg(s.shrink_rate_pct), 2) AS avg_shrink_rate_pct, count(DISTINCT s.site_id) AS stores
+             round(avg(s.shrink_rate_pct), 2) AS avg_shrink_rate_pct, round(avg(s.vs_peer_avg_pct), 2) AS avg_vs_peer_pct,
+             mode(s.main_cause) AS main_cause, count(DISTINCT s.site_id) AS stores
       FROM shrink_analysis s
       WHERE s.analysis_week >= CAST($date_from AS DATE) AND s.analysis_week <= CAST($date_to AS DATE)
         AND ($category IS NULL OR s.category = $category) AND ($site_id IS NULL OR s.site_id = $site_id)
@@ -859,19 +874,24 @@ tools:
     example: {site_id: DC1}
 
   - name: get_location_inventory_value
-    desc: Stock value held at standard cost by site and location. Bin-level rows exist where stock is held in specific bins.
+    desc: Stock value at standard cost by bin for a DC (highest first), or one site-level total for a store. Filter by aisle or minimum value to pick locations to count.
     kind: sql
     args:
       site_id: {required: true}
       location_id: {op: like}
+      aisle: {type: str, desc: "DC aisle letter, e.g. D"}
+      min_value_gbp: {type: float, desc: "Only locations holding at least this stock value in GBP"}
     sql: |
-      SELECT i.site_id, COALESCE(NULLIF(i.location_id, ''), '(site level)') AS location_id, l.zone,
+      SELECT i.site_id, COALESCE(NULLIF(i.location_id, ''), '(site level)') AS location_id, l.aisle, l.zone,
              count(DISTINCT i.sku) AS unique_skus, sum(i.on_hand) AS total_units,
              round(sum(i.on_hand * p.unit_cost_gbp), 2) AS total_value_gbp
       FROM inventory_positions i JOIN master.products p USING (sku)
       LEFT JOIN master.locations l ON l.location_id = i.location_id
       WHERE i.site_id = $site_id AND ($location_id IS NULL OR i.location_id ILIKE '%' || $location_id || '%')
-      GROUP BY ALL ORDER BY total_value_gbp DESC
+        AND ($aisle IS NULL OR upper(l.aisle) = upper($aisle))
+      GROUP BY ALL
+      HAVING $min_value_gbp IS NULL OR sum(i.on_hand * p.unit_cost_gbp) >= $min_value_gbp
+      ORDER BY total_value_gbp DESC
     limit: 50
     example: {site_id: DC1, location_id: DC1-C-14}
 
@@ -1231,6 +1251,7 @@ tools:
     args:
       site_id: {}
       category: {}
+      season: {desc: "Product season, e.g. AW26 for the autumn range"}
     sql: |
       SELECT p.category, count(DISTINCT i.sku) AS skus, sum(i.on_hand) AS current_on_hand,
              round(sum(i.weekly_demand * date_diff('day', CAST($as_of AS DATE), pl.period_end) / 7.0)) AS forecast_demand_to_season_end,
@@ -1240,25 +1261,29 @@ tools:
       FROM inventory_positions i JOIN master.products p USING (sku)
       JOIN stock_plan pl ON pl.site_id = i.site_id AND pl.category = p.category
       WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND ($season IS NULL OR p.season = $season)
       GROUP BY p.category ORDER BY projected_close_value_gbp DESC
     limit: 50
     example: {site_id: DC1}
 
   - name: get_remaining_selling_weeks
-    desc: Remaining selling weeks for a SKU by site, from cover and the weeks left in its season.
+    desc: Remaining selling weeks for a SKU by site, from cover and the weeks left in its season. Filter by region or maximum cover to find stores selling out or overstocked.
     kind: sql
     args:
       sku: {required: true}
       site_id: {}
+      region: {desc: "Site region, e.g. UK North"}
+      max_weeks_cover: {type: float, desc: "Only sites with at most this many weeks of cover, e.g. 1"}
     sql: |
       WITH se AS (SELECT min(date) AS season_end FROM master.calendar WHERE date > CAST($as_of AS DATE)
                   AND season <> (SELECT season FROM master.calendar WHERE date = CAST($as_of AS DATE)))
-      SELECT i.sku, i.site_id, i.available, i.weekly_demand,
+      SELECT i.sku, i.site_id, s.region, i.available, i.weekly_demand,
              round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_of_cover,
              round(date_diff('day', CAST($as_of AS DATE), se.season_end) / 7.0, 1) AS selling_weeks_left_in_season,
              greatest(round(i.available - i.weekly_demand * date_diff('day', CAST($as_of AS DATE), se.season_end) / 7.0), 0) AS unsold_units_at_season_end
-      FROM inventory_positions i, se
-      WHERE i.sku = $sku AND ($site_id IS NULL OR i.site_id = $site_id)
+      FROM inventory_positions i JOIN master.sites s ON s.site_id = i.site_id, se
+      WHERE i.sku = $sku AND ($site_id IS NULL OR i.site_id = $site_id) AND ($region IS NULL OR s.region = $region)
+        AND ($max_weeks_cover IS NULL OR i.available / NULLIF(i.weekly_demand, 0) <= $max_weeks_cover)
       ORDER BY weeks_of_cover
     limit: 100
     example: {sku: K-1700}
@@ -1280,16 +1305,20 @@ tools:
     example: {sku: K-1700}
 
   - name: get_stock_cover_by_category_and_store
-    desc: Stock cover in days by category and site. Lowest cover first, so the sites hit first show at the top.
+    desc: Stock cover in days by category and site, lowest first, so the sites hit first show at the top. Set closure_days to see which run out if no stock arrives for that long.
     kind: sql
     args:
       site_id: {}
       category: {}
       region: {desc: "Site region, e.g. EU Central"}
+      closure_days: {type: int, default: 0, desc: "Days with no receipts to test, e.g. 14 for a two-week port closure"}
     sql: |
       SELECT p.category, i.site_id, s.region, sum(i.available) AS available_units,
              round(sum(i.weekly_demand) / 7.0, 2) AS avg_daily_sales,
-             round(7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS days_of_cover
+             round(7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS days_of_cover,
+             CAST($closure_days AS INTEGER) AS closure_days,
+             round(greatest(CAST($closure_days AS DOUBLE) - 7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 0), 1) AS days_out_of_stock_in_closure,
+             CASE WHEN 7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0) < $closure_days THEN 'runs out' ELSE 'holds' END AS closure_outcome
       FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
       WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
         AND ($region IS NULL OR s.region = $region) AND i.weekly_demand > 0
@@ -1336,11 +1365,13 @@ tools:
     args:
       sku: {}
       date_from: {type: date, default: "-90d", desc: "From this date"}
+      date_to: {type: date, default: "$as_of", desc: "To this date"}
     sql: |
       SELECT a.sku, p.name, p.status AS product_status, count(DISTINCT a.site_id) AS sites_hit, sum(a.stockout_days) AS stockout_days,
              sum(a.lost_sales) AS lost_demand_units, min(a.tracking_date) AS first_stockout, max(a.tracking_date) AS last_stockout
       FROM availability_tracking a JOIN master.products p USING (sku)
-      WHERE NOT a.available AND a.tracking_date >= CAST($date_from AS DATE) AND ($sku IS NULL OR a.sku = $sku)
+      WHERE NOT a.available AND a.tracking_date >= CAST($date_from AS DATE) AND a.tracking_date <= CAST($date_to AS DATE)
+        AND ($sku IS NULL OR a.sku = $sku)
       GROUP BY ALL ORDER BY lost_demand_units DESC
     limit: 50
     example: {sku: K-1700}
@@ -1534,16 +1565,19 @@ tools:
     example: {site_id: DC1}
 
   - name: list_highest_value_skus
-    desc: Highest value SKUs by stock value at cost across the network or one site.
+    desc: Highest value SKUs by stock value at cost across the network or one site, with ABC class and current reorder point and safety stock. Up to 500.
     kind: sql
     args:
-      limit_skus: {type: int, default: 20, desc: "Top N SKUs"}
+      limit_skus: {type: int, default: 20, desc: "Top N SKUs, up to 500"}
       site_id: {}
       category: {}
+      abc_class: {}
     sql: |
-      SELECT p.sku, p.name, p.category, p.abc_class, sum(i.on_hand) AS total_units, round(sum(i.on_hand * p.unit_cost_gbp), 2) AS total_value_gbp
+      SELECT p.sku, p.name, p.category, p.abc_class, sum(i.on_hand) AS total_units, round(sum(i.on_hand * p.unit_cost_gbp), 2) AS total_value_gbp,
+             sum(i.reorder_point) AS current_reorder_point, sum(i.safety_stock) AS current_safety_stock
       FROM inventory_positions i JOIN master.products p USING (sku)
       WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND ($abc_class IS NULL OR p.abc_class = $abc_class)
       GROUP BY ALL ORDER BY total_value_gbp DESC LIMIT $limit_skus
     limit: 500
     example: {}
@@ -1554,16 +1588,18 @@ tools:
     args:
       category: {}
       site_id: {}
+      season: {desc: "Product season, e.g. AW26 for the autumn range"}
     sql: |
       WITH se AS (SELECT min(date) AS season_end FROM master.calendar WHERE date > CAST($as_of AS DATE)
                   AND season <> (SELECT season FROM master.calendar WHERE date = CAST($as_of AS DATE)))
-      SELECT p.sku, p.name, p.category, sum(i.on_hand) AS on_hand, round(sum(i.weekly_demand), 1) AS weekly_demand,
+      SELECT p.sku, p.name, p.category, p.season, sum(i.on_hand) AS on_hand, round(sum(i.weekly_demand), 1) AS weekly_demand,
              round(sum(i.on_hand) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover,
              round(sum(i.on_hand) - sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0) AS excess_units_at_season_end,
              round((sum(i.on_hand) - sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0) * p.unit_cost_gbp) AS excess_value_gbp
       FROM inventory_positions i JOIN master.products p USING (sku), se
       WHERE ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
-      GROUP BY p.sku, p.name, p.category, p.unit_cost_gbp
+        AND ($season IS NULL OR p.season = $season)
+      GROUP BY p.sku, p.name, p.category, p.season, p.unit_cost_gbp
       HAVING sum(i.on_hand) > sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0
       ORDER BY excess_value_gbp DESC
     limit: 100
