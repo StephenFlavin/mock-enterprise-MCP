@@ -84,13 +84,14 @@ def generate(g):
     # Configuration changes
     config_changes = []
     change_types_list = ["mapping", "certificate", "endpoint", "schedule", "other"]
+    all_employees = g.master("employees")
     for i in range(r.randint(20, 40)):
         changed_when = g.date_between(60, 0)
         config_changes.append({
             "change_id": f"CFG-{len(config_changes) + 1:06d}",
             "change_type": r.choice(change_types_list),
             "interface_name": r.choice([iface[0] for iface in error_interfaces]),
-            "changed_by": f"EMP-{r.randint(1000, 9999):05d}",
+            "changed_by": r.choice([e["employee_id"] for e in all_employees]),
             "changed_at": changed_when,
             "description": r.choice([
                 "Updated EDI message mapping for ASN segment packing data",
