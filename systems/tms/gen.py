@@ -558,7 +558,7 @@ def generate(g):
             pc += 1
             ok = not (reg in ("Highlands",) or (cid == "CAR-012" and reg in ("Wales", "South West", "Scotland")))
             postcodes.append({"postcode_id": f"PC-{pc:06d}", "postcode": area, "region": reg, "carrier_id": cid,
-                              "next_day_available": ok, "next_day_cost_gbp": round(cost * (1.0 if cid == "CAR-011" else 1.07), 2),
+                              "next_day_available": ok, "next_day_cost_gbp": round(cost * (1.0 if cid == "CAR-011" else 1.07), 2) if ok else None,
                               "standard_cost_gbp": round(cost * 0.62, 2), "coverage_from": g.as_of - timedelta(days=200),
                               "updated_at": g.as_of})
 
