@@ -135,6 +135,7 @@ tables:
       difference_pct: {type: float, desc: "Difference as %"}
       value_gbp: {type: float, desc: "Absolute value of the difference at standard cost"}
       cause: {type: str, desc: "Reason: quarantine, damaged, expired, in_transit_timing or count_variance"}
+      cause_type: {type: str, desc: "status_mapping (held in WMS, counted in ERP), timing (posting in one system only) or real (count variance)"}
       note: {type: text, desc: "Explanation of the difference"}
       created_at: {type: timestamp, desc: "When created"}
       status: {type: enum, values: [new, investigating, resolved, manual_adj], desc: "Status"}
@@ -347,31 +348,38 @@ tools:
     example: {}
 
   - name: compare_erp_and_wms_stock
-    desc: Reconcile ERP and WMS balances by SKU and DC, largest value first, with the cause of each difference and totals by cause. Filter by SKU, DC or cause.
+    desc: Reconcile ERP and WMS balances by SKU and DC, largest value first, with cause of each difference. Use view by_cause for totals per type (status mapping, timing, real) and cause.
     kind: sql
     args:
       sku: {desc: "Only this SKU"}
       site_id: {desc: "Filter to DC, e.g. DC1"}
-      cause: {type: str, desc: "quarantine, damaged, expired, in_transit_timing or count_variance"}
+      cause_type: {type: enum, values: [status_mapping, timing, real], desc: "Only this type of difference"}
       min_difference: {type: int, default: 1, desc: "Only show differences of at least this many units"}
+      view: {type: enum, values: [items, by_cause], default: items, desc: "items = one row per SKU and DC; by_cause = totals per cause with share of the gap"}
     sql: |
       WITH s AS (
         SELECT sr.recon_id, sr.sku, p.name AS product_name, sr.site_id, sr.erp_balance, sr.wms_balance,
-               sr.difference, ROUND(sr.difference_pct, 1) AS difference_pct, sr.value_gbp, sr.cause, sr.note,
-               sr.status, sr.created_at
+               sr.difference, sr.value_gbp, sr.cause_type, sr.cause, sr.note, sr.status
         FROM stock_reconciliation sr JOIN master.products p ON p.sku = sr.sku
         WHERE ($sku IS NULL OR sr.sku = $sku)
           AND ($site_id IS NULL OR sr.site_id = $site_id)
-          AND ($cause IS NULL OR sr.cause LIKE '%' || lower($cause) || '%')
+          AND ($cause_type IS NULL OR sr.cause_type = $cause_type)
           AND ABS(sr.difference) >= $min_difference
-      )
-      SELECT s.*,
-             ROUND(sum(s.value_gbp) OVER (PARTITION BY s.cause), 2) AS cause_total_value_gbp,
-             count(*) OVER (PARTITION BY s.cause) AS cause_item_count,
-             ROUND(sum(s.value_gbp) OVER (), 2) AS total_gap_value_gbp,
-             'difference = WMS available balance - ERP book balance; value at standard cost' AS formula
-      FROM s
-      ORDER BY s.value_gbp DESC, s.recon_id
+      ), tot AS (SELECT sum(value_gbp) AS v FROM s)
+      SELECT 'by_cause' AS row_type, CAST(NULL AS VARCHAR) AS recon_id, CAST(NULL AS VARCHAR) AS sku, CAST(NULL AS VARCHAR) AS product_name,
+             CAST(NULL AS VARCHAR) AS site_id, CAST(NULL AS BIGINT) AS erp_balance, CAST(NULL AS BIGINT) AS wms_balance,
+             -sum(abs(s.difference)) AS difference, s.cause_type, s.cause,
+             ROUND(sum(s.value_gbp), 2) AS value_gbp, count(*) AS items,
+             ROUND(100.0 * sum(s.value_gbp) / (SELECT v FROM tot), 1) AS pct_of_total_gap,
+             ROUND((SELECT v FROM tot), 2) AS total_gap_value_gbp, CAST(NULL AS VARCHAR) AS note,
+             CAST(NULL AS VARCHAR) AS status
+      FROM s WHERE $view = 'by_cause' GROUP BY s.cause_type, s.cause
+      UNION ALL
+      SELECT 'item', s.recon_id, s.sku, s.product_name, s.site_id, s.erp_balance, s.wms_balance, s.difference,
+             s.cause_type, s.cause, s.value_gbp, 1, ROUND(100.0 * s.value_gbp / (SELECT v FROM tot), 1),
+             ROUND((SELECT v FROM tot), 2), s.note, s.status
+      FROM s WHERE $view <> 'by_cause'
+      ORDER BY value_gbp DESC, recon_id
     limit: 50
     example: {sku: SKU-100007, site_id: DC1}
 

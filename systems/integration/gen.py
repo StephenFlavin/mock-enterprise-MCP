@@ -242,7 +242,7 @@ def generate(g):
         stock_reconciliation.append({
             "recon_id": f"REC-{len(stock_reconciliation) + 1:06d}", "sku": d["sku"], "site_id": d["site_id"],
             "erp_balance": erp, "wms_balance": erp + diff, "difference": diff, "difference_pct": round(diff / erp * 100, 2),
-            "value_gbp": round(abs(diff) * cost[d["sku"]], 2), "cause": "count_variance",
+            "value_gbp": round(abs(diff) * cost[d["sku"]], 2), "cause": "count_variance", "cause_type": "real",
             "note": "Cycle count variance after recount", "created_at": at,
             "status": r.choices(["resolved", "manual_adj", "investigating"], [60, 25, 15])[0], "updated_at": at + timedelta(days=1),
         })
