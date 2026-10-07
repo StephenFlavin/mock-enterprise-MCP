@@ -21,7 +21,7 @@ TOASTER = "SKU-101309"      # Small Appliances style STY-4789, 79.99
 COFFEE = "SKU-100532"       # Small Appliances style STY-4301, 99.99
 BOTTLE = "SKU-102590"       # Drinkware style STY-5905, 55.99 (our 750ml insulated bottle)
 JACKET = "SKU-100161"       # Menswear Outerwear style STY-4102, 66.99 (the jacket on 30% markdown)
-LUNCH = "SKU-106314"      # Kitchenware, new insulated lunch box (13.99), the launch in question
+LUNCH = None            # no matched own SKU for lunch boxes
 ATH_TOP = "SKU-100070"      # Womenswear Tops style STY-4056 (athleisure), 63.99
 
 # Promotion tuple: (first_week_ago, last_week_ago, type, pct, description); last_week_ago 0 = still running.
