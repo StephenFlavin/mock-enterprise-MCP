@@ -185,7 +185,7 @@ def generate(g):
         for role in roles:
             for shift in ["early", "late", "night"]:
                 # Skip seeded records
-                if site["site_id"] == "DC2" and role == "Warehouse Operative":
+                if site["site_id"] == "DC2" and role == "Warehouse Operative" and shift == "early":
                     continue
 
                 our_rate = base_rates.get(role, {}).get(shift, 12.50)
@@ -197,6 +197,7 @@ def generate(g):
                 market_rates_list.append({
                     "site_id": site["site_id"],
                     "role": role,
+                    "shift": shift,
                     "our_hourly_gbp": round(our_rate, 2),
                     "market_hourly_gbp": round(market_rate, 2),
                     "market_date": g.as_of - timedelta(days=r.randint(1, 30)),
