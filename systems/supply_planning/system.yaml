@@ -160,15 +160,13 @@ tools:
     kind: sql
     args:
       sku: {required: true}
-      from_week: {type: str, default: "-4w", desc: "Start week (YYYY-WXX) or offset"}
-      to_week: {type: str, default: "+8w", desc: "End week (YYYY-WXX) or offset"}
     sql: |
       SELECT sku, plan_week, forecast_units, confirmed_supply, planned_inbound, gap, stock_on_hand, stock_projected, safety_stock
       FROM supply_plans
       WHERE sku = $sku
       ORDER BY plan_week
     limit: 52
-    example: {sku: "SKU-100234"}
+    example: {sku: "SKU-100007"}
 
   - name: get_order_proposal_calculation_trace
     desc: Retrieve order proposal calculation trace including inputs (demand, lead time, pack size, safety stock settings) that drove the proposed quantity.
@@ -177,7 +175,7 @@ tools:
       proposal_id: {required: true}
     sql: |
       SELECT proposal_id, sku, supplier_id, quantity, demand_period_weeks, planned_order_week, planned_delivery_week, status,
-             issue_detected, conversion_reason
+             issue_detected, conversion_reason, created_at
       FROM order_proposals
       WHERE proposal_id = $proposal_id
     limit: 1
@@ -212,7 +210,7 @@ tools:
     args:
       sku: {required: true}
       supplier_id: {required: true}
-      quantity_units: {type: int, required: true}
+      quantity_units: {type: int, required: true, desc: "Units to expedite"}
       expedite_weeks: {type: int, default: 1, desc: "Weeks to compress lead time"}
     sql: |
       SELECT
@@ -224,16 +222,16 @@ tools:
         ROUND(5.0 + ($expedite_weeks * 2.0), 2) AS cost_per_unit_gbp,
         'cost = base_5_per_unit + 2_per_unit_per_week_expedited' AS formula
     limit: 1
-    example: {sku: "SKU-100234", supplier_id: "SUP-0001", quantity_units: 5000}
+    example: {sku: "SKU-100007", supplier_id: "SUP-0001", quantity_units: 5000}
 
   - name: calculate_split_sourcing_cost
     desc: Calculate split sourcing cost when ordering from two suppliers instead of one. Shows additional cost.
     kind: sql
     args:
       sku: {required: true}
-      total_quantity: {type: int, required: true}
-      primary_supplier_id: {required: true}
-      secondary_supplier_id: {required: true}
+      total_quantity: {type: int, required: true, desc: "Total units to source"}
+      primary_supplier_id: {required: true, desc: "Primary supplier"}
+      secondary_supplier_id: {required: true, desc: "Secondary supplier for split"}
       split_pct: {type: float, default: 50, desc: "% from secondary (50 = 50/50)"}
     sql: |
       SELECT
@@ -247,14 +245,14 @@ tools:
         ROUND($total_quantity * 3.50, 2) AS total_split_cost_gbp,
         'cost = total_qty * 3.50 (supplier coordination overhead)' AS formula
     limit: 1
-    example: {sku: "SKU-100234", total_quantity: 25000, primary_supplier_id: "SUP-0001", secondary_supplier_id: "SUP-0002"}
+    example: {sku: "SKU-100007", total_quantity: 25000, primary_supplier_id: "SUP-0001", secondary_supplier_id: "SUP-0002"}
 
   - name: calculate_buy_ahead_cost
     desc: Calculate buy ahead cost for forward purchasing (working capital and storage).
     kind: sql
     args:
       sku: {required: true}
-      quantity_units: {type: int, required: true}
+      quantity_units: {type: int, required: true, desc: "Units to buy ahead"}
       advance_weeks: {type: int, default: 4, desc: "How many weeks ahead to buy"}
     sql: |
       SELECT
@@ -267,14 +265,14 @@ tools:
         ROUND(CAST($quantity_units AS FLOAT) * $advance_weeks * 0.23 / $quantity_units, 2) AS cost_per_unit_per_week,
         'cost = qty * (0.15 working_capital + 0.08 storage) * weeks' AS formula
     limit: 1
-    example: {sku: "SKU-100234", quantity_units: 10000, advance_weeks: 4}
+    example: {sku: "SKU-100007", quantity_units: 10000, advance_weeks: 4}
 
   - name: calculate_buffer_stock_cost
     desc: Holding cost of a proposed safety stock buffer. Returns annual holding cost.
     kind: sql
     args:
       sku: {required: true}
-      buffer_units: {type: int, required: true}
+      buffer_units: {type: int, required: true, desc: "Safety stock units to hold"}
     sql: |
       SELECT
         $sku AS sku,
@@ -283,7 +281,7 @@ tools:
         8.50 AS cost_per_unit_per_year,
         'cost = buffer_units * 8.50 (holding cost at 25% of £34 unit cost / year)' AS formula
     limit: 1
-    example: {sku: "SKU-100234", buffer_units: 2000}
+    example: {sku: "SKU-100007", buffer_units: 2000}
 
   - name: calculate_lead_time_gap_inventory_impact
     desc: Calculate inventory and service level impact of lead time gaps (difference between quoted and actual lead times).
@@ -296,10 +294,10 @@ tools:
         $supplier_id AS supplier_id,
         $gap_days AS lead_time_gap_days,
         ROUND(CAST($gap_days AS FLOAT) / 7.0, 1) AS gap_weeks,
-        ROUND(CAST($gap_days AS FLOAT) * 145.0, 0) AS additional_stock_units,
-        ROUND(CAST($gap_days AS FLOAT) * 145.0 * 8.50, 0) AS additional_holding_cost_gbp,
+        ROUND(CAST($gap_days AS FLOAT) * 145.0, 0) AS inventory_increase_units,
+        ROUND(CAST($gap_days AS FLOAT) * 145.0 * 8.50, 0) AS inventory_holding_cost_gbp,
         ROUND(CAST($gap_days AS FLOAT) * 0.8, 1) AS service_level_impact_pct,
-        'safety_stock_needed = gap_days * daily_demand (145 units) * 1.5 multiplier' AS formula
+        'inventory_impact = gap_days * daily_demand (145 units) * safety_factor' AS formula
     limit: 1
     example: {supplier_id: "SUP-0001", gap_days: 10}
 
@@ -320,13 +318,13 @@ tools:
     desc: Changes the lead time used in planning for a supplier after analysing actual performance.
     kind: update
     table: supplier_lead_time_actuals
-    set: {}
+    set: {gap_days: "$actual_avg_lead_days - $quoted_lead_days"}
     args:
       supplier_id: {required: true}
       sku: {required: true}
       quoted_lead_days: {type: int}
-      actual_avg_lead_days: {type: float}
-    example: {supplier_id: "SUP-0001", sku: "SKU-100234", actual_avg_lead_days: 35}
+      actual_avg_lead_days: {type: float, required: true, desc: "Actual average lead time in days"}
+    example: {supplier_id: "SUP-0001", sku: "SKU-100007", actual_avg_lead_days: 35}
 
   - name: get_fabric_requirements_by_category
     desc: Retrieve fabric requirements by category. Returns materials at risk of shortage.
@@ -345,13 +343,11 @@ tools:
     kind: sql
     args:
       material_type: {type: str, default: "fabric", desc: "Material type: fabric, zips, trims, etc"}
-      from_month: {type: str, default: "-1m"}
-      to_month: {type: str, default: "+3m"}
     sql: |
       SELECT
         CAST($material_type AS TEXT) AS material_type,
-        DATE_TRUNC('month', $as_of)::DATE AS forecast_month,
-        ROUND(2450.5 * (1 + (EXTRACT(MONTH FROM $as_of) - 1) * 0.08), 0)::INT AS forecast_units,
+        CAST($as_of AS DATE) AS forecast_month,
+        ROUND(2450.5 * (1 + (EXTRACT(MONTH FROM CAST($as_of AS DATE)) - 1) * 0.08), 0)::INT AS forecast_units,
         'forecast = base_2450 * seasonal_index' AS formula
     limit: 36
     example: {material_type: "fabric"}
@@ -377,7 +373,7 @@ tools:
     desc: Revenue, margin and stock-out impact for port closure durations (3/6/12 weeks).
     kind: sql
     args:
-      port_code: {type: str, required: true, desc: "Port affected, e.g. SGSIN"}
+      port_code: {type: str, required: true, desc: "Port affected, e.g. VNSGN"}
       scenario_weeks: {type: int, required: true, desc: "Duration of closure in weeks"}
     sql: |
       SELECT
@@ -389,14 +385,14 @@ tools:
         CASE WHEN $scenario_weeks >= 6 THEN 8 WHEN $scenario_weeks >= 3 THEN 4 ELSE 2 END AS categories_impacted,
         'revenue = weeks * 7 * 2800 units_daily * £28 avg_price; margin = 43% of revenue' AS formula
     limit: 3
-    example: {port_code: "SGSIN", scenario_weeks: 6}
+    example: {port_code: "VNSGN", scenario_weeks: 6}
 
   - name: run_port_closure_scenario
     desc: Runs a port closure scenario on supply plan. Shows impact by category and which stores hit first.
     kind: sql
     args:
       port_code: {type: str, required: true}
-      closure_weeks: {type: int, required: true}
+      closure_weeks: {type: int, required: true, desc: "Duration of port closure in weeks"}
     sql: |
       SELECT
         CAST($port_code AS TEXT) AS port_affected,
@@ -406,7 +402,7 @@ tools:
         ROUND(CAST($closure_weeks AS FLOAT) * 385.0, 0)::INT AS projected_stockouts,
         'stock_cover_by_category: Denim 2.1 weeks, Shirts 3.2 weeks, Accessories 4.8 weeks' AS analysis
     limit: 1
-    example: {port_code: "SGSIN", closure_weeks: 6}
+    example: {port_code: "VNSGN", closure_weeks: 6}
 
   - name: compare_supply_gap_options
     desc: Compare supply gap options (expedite, split sourcing, promotion delay) on cost, service level and risk.
@@ -427,7 +423,7 @@ tools:
       UNION ALL
       SELECT
         $sku AS sku,
-        $gap_units AS sku,
+        $gap_units AS gap_units,
         'Option B: Split 50/50' AS option,
         ROUND(CAST($gap_units AS FLOAT) * 3.5, 0)::INT AS cost_gbp,
         '2-3 weeks' AS lead_time,
@@ -443,7 +439,7 @@ tools:
         'Low' AS service_level,
         'Revenue lost, market timing' AS risks
     limit: 3
-    example: {sku: "SKU-100234", gap_units: 25000, supplier_id: "SUP-0001"}
+    example: {sku: "SKU-100007", gap_units: 25000, supplier_id: "SUP-0001"}
 
   - name: calculate_stock_shortfall_for_promotion
     desc: Calculates stock shortfall for promotion. Returns risk and financial impact if stock runs out.

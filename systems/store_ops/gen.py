@@ -1,14 +1,14 @@
 """Store operations data: KPIs, visits, action plans, tasks, shrink control, take-back pilots."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 
 def generate(g):
     """Generate store operations data."""
     r = g.rng
-
+    
     # Get all store sites
     stores = [s for s in g.master("sites") if s["type"] == "store" and s["status"] == "open"]
-
+    
     store_kpis = []
     store_visits = []
     action_plans = []
@@ -22,7 +22,7 @@ def generate(g):
     backroom_constraints = []
     plan_vs_actual = []
     store_control_results = []
-
+    
     # Shrink control programmes
     shrink_programmes = [
         ("SCP-0001", "RFID Tagging", "Tagging", "RFID tags on high-theft items", 2500, 15),
@@ -40,20 +40,22 @@ def generate(g):
             "annual_cost_gbp": cost,
             "estimated_shrink_reduction_pct": reduction,
         })
-
+    
     # Generate data for each month in the last year + next month
     for month_offset in range(-13, 1):
-        month_date = g.days_ago(-month_offset * 30)
-        month_date = month_date.replace(day=1)  # First day of month
-
+        month_date_val = g.days_ago(-month_offset * 30)
+        if isinstance(month_date_val, datetime):
+            month_date_val = month_date_val.date()
+        month_date = month_date_val.replace(day=1)  # First day of month
+        
         for store in stores:
             store_id = store["site_id"]
-
+            
             # Generate KPIs for each store-month
             base_shrink = r.uniform(0.5, 4.0)
             base_availability = r.uniform(92, 98)
             base_labour = r.uniform(8, 16)
-
+            
             # Add some variance by cluster
             if store["cluster"] == "A":
                 base_shrink -= 0.5
@@ -61,7 +63,7 @@ def generate(g):
             elif store["cluster"] == "D":
                 base_shrink += 0.5
                 base_availability -= 1
-
+            
             store_kpis.append({
                 "site_id": store_id,
                 "month": month_date,
@@ -72,13 +74,13 @@ def generate(g):
                 "sales_gbp": round(r.uniform(8000, 250000), 2),
                 "margin_pct": round(r.uniform(25, 45), 1),
             })
-
+            
             # Plan vs actual for each month
             plan_sales = round(r.uniform(80000, 300000), 2)
             actual_sales = round(plan_sales * r.uniform(0.85, 1.15), 2)
             variance = actual_sales - plan_sales
             variance_pct = round((variance / plan_sales * 100) if plan_sales else 0, 1)
-
+            
             plan_vs_actual.append({
                 "site_id": store_id,
                 "month": month_date,
@@ -89,7 +91,7 @@ def generate(g):
                 "margin_plan_pct": round(r.uniform(28, 42), 1),
                 "margin_actual_pct": round(r.uniform(26, 44), 1),
             })
-
+            
             # Backroom constraints (one per store)
             if month_offset == -1:  # Only generate once
                 total_sqft = 500 + int(int(store["sqft"]) * 0.15)
@@ -103,24 +105,26 @@ def generate(g):
                     "hazmat_compliance": r.choice([True, True, False]),
                     "take_back_space_available": r.choice([True, True, True, False]),
                 })
-
+    
     # Generate visits (recent weeks)
     employees = g.master("employees")
     area_managers = [e for e in employees if e.get("role") in ["Area Manager", "Store Manager"]]
     if not area_managers:
         area_managers = employees[:10]
-
+    
     visit_id = 1
     for store in stores:
         if r.random() < 0.6:  # 60% of stores have a visit in the period
             num_visits = r.randint(1, 3)
             for _ in range(num_visits):
-                visit_date = g.days_ago(r.randint(1, 60))
+                visit_date_val = g.days_ago(r.randint(1, 60))
+                if isinstance(visit_date_val, datetime):
+                    visit_date_val = visit_date_val.date()
                 store_visits.append({
                     "visit_id": f"VIS-{visit_id:06d}",
                     "site_id": store["site_id"],
                     "employee_id": r.choice(area_managers)["employee_id"],
-                    "visit_date": visit_date.date(),
+                    "visit_date": visit_date_val,
                     "visit_purpose": r.choice([
                         "Quarterly performance review",
                         "Shrink investigation",
@@ -132,19 +136,21 @@ def generate(g):
                     "actions_raised": r.randint(0, 5),
                     "duration_hours": round(r.uniform(2, 6), 1),
                     "status": r.choice(["completed", "completed", "planned"]),
-                    "notes": r.fake.sentence(),
-                    "updated_at": datetime.fromisoformat(str(visit_date)),
+                    "notes": g.fake.sentence(),
+                    "updated_at": datetime.now(),
                 })
                 visit_id += 1
-
+    
     # Generate action plans
     api_id = 1
     for store in stores:
         if r.random() < 0.7:  # 70% of stores have action items
             num_actions = r.randint(1, 4)
             for _ in range(num_actions):
-                created_at = g.days_ago(r.randint(5, 90))
-                due_date = created_at + timedelta(days=r.randint(7, 45))
+                created_at_val = g.days_ago(r.randint(5, 90))
+                if isinstance(created_at_val, datetime):
+                    created_at_val = created_at_val.date()
+                due_date = created_at_val + timedelta(days=r.randint(7, 45))
                 action_plans.append({
                     "action_id": f"API-{api_id:06d}",
                     "site_id": store["site_id"],
@@ -158,44 +164,46 @@ def generate(g):
                         "Reorganize high-shrink category layout",
                     ]),
                     "owner": r.choice(area_managers)["employee_id"] if area_managers else "EMP-0001",
-                    "due_date": due_date.date(),
+                    "due_date": due_date,
                     "status": r.choice(["open", "open", "in_progress"]),
                     "priority": r.choice(["low", "medium", "high"]),
                     "category": r.choice(["Shrink", "Availability", "Labour", "Safety"]),
-                    "created_at": datetime.fromisoformat(str(created_at)),
+                    "created_at": datetime.now(),
                     "completed_at": None,
                 })
                 api_id += 1
-
+    
     # Generate weekly tasks for current and next weeks
     task_id = 1
     for store in stores:
         for weeks_offset in range(-2, 2):
-            week_start = g.days_ago(-weeks_offset * 7)
+            week_start_val = g.days_ago(-weeks_offset * 7)
+            if isinstance(week_start_val, datetime):
+                week_start_val = week_start_val.date()
             # Find the Monday of this week
-            week_start = week_start - timedelta(days=week_start.weekday())
-
+            week_start = week_start_val - timedelta(days=week_start_val.weekday())
+            
             # Typically 3-5 tasks per week
             num_tasks = r.randint(2, 5)
             for i in range(num_tasks):
                 task_date = week_start + timedelta(days=r.randint(0, 6))
                 task_type = r.choice(["Delivery", "Cycle Count", "Replenishment", "Maintenance", "Training"])
-
+                
                 week_tasks.append({
                     "task_id": f"TSK-{task_id:06d}",
                     "site_id": store["site_id"],
-                    "week_start": week_start.date(),
+                    "week_start": week_start,
                     "task_name": f"{task_type} task",
                     "task_type": task_type,
                     "assigned_to": r.choice(employees)["employee_id"] if employees else "EMP-0001",
-                    "scheduled_date": task_date.date(),
+                    "scheduled_date": task_date,
                     "scheduled_start_time": f"{r.choice([6, 7, 14, 18]):02d}:00",
                     "scheduled_duration_hours": round(r.uniform(1, 4), 1),
                     "status": r.choice(["scheduled", "completed", "scheduled"]),
-                    "notes": r.fake.sentence() if r.random() < 0.3 else None,
+                    "notes": g.fake.sentence() if r.random() < 0.3 else None,
                 })
                 task_id += 1
-
+    
     # Generate cycle count tasks
     skus = g.master("products")[:50]  # Sample of SKUs
     cyc_id = 1
@@ -204,28 +212,30 @@ def generate(g):
             num_counts = r.randint(1, 3)
             for _ in range(num_counts):
                 sku = r.choice(skus)
-                count_date = g.days_ago(r.randint(-14, 7))
+                count_date_val = g.days_ago(r.randint(-14, 7))
+                if isinstance(count_date_val, datetime):
+                    count_date_val = count_date_val.date()
                 cyc_id_str = f"CYC-{cyc_id:06d}"
-
+                
                 system_qty = r.randint(10, 500)
                 counted_qty = system_qty + r.randint(-20, 30)
-
+                
                 cycle_count_tasks.append({
                     "cycle_id": cyc_id_str,
                     "site_id": store["site_id"],
                     "sku": sku["sku"],
                     "location_id": None,
                     "category": sku.get("category", "General"),
-                    "count_date": count_date.date(),
+                    "count_date": count_date_val,
                     "reason": r.choice(["Shrink investigation", "Stock taking", "Delivery variance", "Ad-hoc check"]),
                     "status": r.choice(["pending", "completed", "pending"]),
                     "system_quantity": system_qty,
                     "counted_quantity": counted_qty if r.random() < 0.6 else None,
                     "variance": counted_qty - system_qty if r.random() < 0.6 else None,
-                    "created_at": datetime.fromisoformat(str(count_date)),
+                    "created_at": datetime.now(),
                 })
                 cyc_id += 1
-
+    
     # Shelf availability exceptions
     sae_id = 1
     for store in stores:
@@ -233,62 +243,71 @@ def generate(g):
             num_exceptions = r.randint(1, 5)
             for _ in range(num_exceptions):
                 sku = r.choice(skus)
-                exc_date = g.days_ago(r.randint(-7, 1))
-
+                exc_date_val = g.days_ago(r.randint(-7, 1))
+                if isinstance(exc_date_val, datetime):
+                    exc_date_val = exc_date_val.date()
+                
                 shelf_availability_exceptions.append({
                     "exc_id": f"SAE-{sae_id:06d}",
                     "site_id": store["site_id"],
                     "sku": sku["sku"],
-                    "exception_date": exc_date.date(),
+                    "exception_date": exc_date_val,
                     "status": r.choice(["open", "resolved"]),
                     "location": f"Aisle {r.randint(1, 12)}" if r.random() < 0.7 else None,
                     "system_stock": r.randint(5, 100),
                     "observed_on_shelf": r.randint(0, 10),
                     "likely_cause": r.choice(["Backroom", "Delivery pending", "Stock audit", "Damage"]),
-                    "created_at": datetime.fromisoformat(str(exc_date)),
+                    "created_at": datetime.now(),
                 })
                 sae_id += 1
-
+    
     # Replenishment priorities
     for _ in range(len(stores) * 3):  # ~3 per store
         store = r.choice(stores)
         sku = r.choice(skus)
+        effective_from_val = g.days_ago(r.randint(1, 30))
+        if isinstance(effective_from_val, datetime):
+            effective_from_val = effective_from_val.date()
         replenishment_priorities.append({
             "site_id": store["site_id"],
             "sku": sku["sku"],
             "priority_level": r.randint(1, 5),
             "reason": r.choice(["High shrink", "High demand", "Low availability", "Customer feedback"]),
-            "effective_from": g.days_ago(r.randint(1, 30)).date(),
+            "effective_from": effective_from_val,
             "updated_at": datetime.now(),
         })
-
+    
     # Click & collect demand
     for _ in range(len(stores) * 10):
         store = r.choice(stores)
         sku = r.choice(skus)
         for days_offset in range(-14, 0):
-            date = g.days_ago(-days_offset)
+            date_val = g.days_ago(-days_offset)
+            if isinstance(date_val, datetime):
+                date_val = date_val.date()
             click_collect_demand.append({
                 "site_id": store["site_id"],
                 "sku": sku["sku"],
-                "date": date.date(),
+                "date": date_val,
                 "forecasted_demand": r.randint(0, 50),
                 "actual_demand": r.randint(0, 60),
                 "reserved_quantity": r.randint(0, 30),
                 "online_allocation": r.randint(0, 100),
             })
-
+    
     # Take-back pilot results
     pilot_stores = r.sample([s["site_id"] for s in stores], min(3, len(stores)))
     tbp_id = 1
     for site_id in pilot_stores:
-        pilot_start = g.days_ago(r.randint(60, 180))
-        pilot_end = pilot_start + timedelta(days=r.randint(30, 120))
+        pilot_start_val = g.days_ago(r.randint(60, 180))
+        if isinstance(pilot_start_val, datetime):
+            pilot_start_val = pilot_start_val.date()
+        pilot_end = pilot_start_val + timedelta(days=r.randint(30, 120))
         take_back_pilot_results.append({
             "pilot_id": f"TBP-{tbp_id:06d}",
             "site_id": site_id,
-            "pilot_start": pilot_start.date(),
-            "pilot_end": pilot_end.date(),
+            "pilot_start": pilot_start_val,
+            "pilot_end": pilot_end,
             "backroom_space_sqft": round(r.uniform(100, 300)),
             "monthly_participation_pct": round(r.uniform(10, 35), 1),
             "items_collected": r.randint(500, 3000),
@@ -297,12 +316,14 @@ def generate(g):
             "customer_satisfaction_score": round(r.uniform(3.5, 4.9), 1),
         })
         tbp_id += 1
-
+    
     # Store control results (one per store per programme per month, recent months)
     for month_offset in range(-3, 0):
-        month_date = g.days_ago(-month_offset * 30)
-        month_date = month_date.replace(day=1)
-
+        month_date_val = g.days_ago(-month_offset * 30)
+        if isinstance(month_date_val, datetime):
+            month_date_val = month_date_val.date()
+        month_date = month_date_val.replace(day=1)
+        
         for store in r.sample(stores, min(20, len(stores))):
             for prog in r.sample(shrink_programmes, min(2, len(shrink_programmes))):
                 prog_id = prog[0]
@@ -315,7 +336,7 @@ def generate(g):
                     "shrink_reduction_gbp": round(r.uniform(100, 5000)),
                     "payback_ratio": round(r.uniform(0.5, 8), 2),
                 })
-
+    
     return {
         "store_kpis": store_kpis,
         "store_visits": store_visits,

@@ -404,3 +404,301 @@ tools:
       ORDER BY qi.inspected_at DESC
     limit: 50
     example: {factory_id: FAC-0001, inspection_type: inline}
+
+  - name: get_factory_defect_rate_trend
+    desc: Defect rate trend by factory over time. Shows weekly defect percentages to identify patterns and improvements.
+    kind: sql
+    args:
+      factory_id: {required: true}
+      weeks: {type: int, default: 12, desc: "Number of weeks of history"}
+    sql: |
+      SELECT factory_id, period, defect_rate_pct, total_units_inspected, defects_found,
+             pass_rate_pct, critical_defects, risk_score
+      FROM factory_quality_scorecards
+      WHERE factory_id = $factory_id
+        AND period >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+      ORDER BY period DESC
+    limit: 52
+    example: {factory_id: FAC-0001, weeks: 12}
+
+  - name: get_factory_process_capability
+    desc: Factory process capability metrics. Shows defect rates, pass rates and trend over 12 weeks.
+    kind: sql
+    args:
+      factory_id: {required: true}
+    sql: |
+      SELECT factory_id,
+             ROUND(AVG(defect_rate_pct), 1) AS avg_defect_rate_pct,
+             ROUND(MIN(defect_rate_pct), 1) AS best_defect_rate_pct,
+             ROUND(MAX(defect_rate_pct), 1) AS worst_defect_rate_pct,
+             ROUND(AVG(pass_rate_pct), 1) AS avg_pass_rate_pct,
+             COUNT(*) AS weeks_tracked,
+             ROUND(AVG(risk_score), 1) AS avg_risk_score
+      FROM factory_quality_scorecards
+      WHERE factory_id = $factory_id
+        AND period >= CAST($as_of AS DATE) - INTERVAL 84 DAY
+      GROUP BY factory_id
+    example: {factory_id: FAC-0001}
+
+  - name: get_inspection_measurements_for_style
+    desc: Inspection measurements for a style. Returns actual vs spec values across all lots and inspections.
+    kind: sql
+    args:
+      style_id: {required: true}
+      measurement_type: {}
+    sql: |
+      SELECT im.measurement_id, im.inspection_id, im.lot_id, pl.sku,
+             im.measurement_type, im.actual_value, im.spec_value,
+             im.tolerance_lower, im.tolerance_upper, im.unit,
+             ROUND(im.actual_value - im.spec_value, 2) AS deviation,
+             im.pass AS within_tolerance, im.created_at
+      FROM inspection_measurements im
+      JOIN production_lots pl ON im.lot_id = pl.lot_id
+      JOIN master.products p ON p.sku = pl.sku
+      WHERE p.style_id = $style_id
+        AND ($measurement_type IS NULL OR im.measurement_type = $measurement_type)
+        AND im.created_at >= CAST($as_of AS DATE) - INTERVAL 60 DAY
+      ORDER BY im.created_at DESC
+    limit: 100
+    example: {style_id: STY-5520}
+
+  - name: get_production_lot_details
+    desc: Production lot details including factory, SKU, status and disposition. Use to trace quality issues back to source.
+    kind: sql
+    args:
+      lot_id: {required: true}
+    sql: |
+      SELECT pl.lot_id, pl.sku, pl.factory_id, pl.po_id, pl.qty_produced,
+             pl.produced_at, pl.status, pl.lot_disposition, pl.created_at, pl.updated_at,
+             COUNT(DISTINCT qi.inspection_id) AS inspections_count,
+             COUNT(DISTINCT im.measurement_id) AS measurements_count
+      FROM production_lots pl
+      LEFT JOIN quality_inspections qi ON qi.lot_id = pl.lot_id
+      LEFT JOIN inspection_measurements im ON im.lot_id = pl.lot_id
+      WHERE pl.lot_id = $lot_id
+      GROUP BY pl.lot_id, pl.sku, pl.factory_id, pl.po_id, pl.qty_produced,
+               pl.produced_at, pl.status, pl.lot_disposition, pl.created_at, pl.updated_at
+    example: {lot_id: LOT-900001}
+
+  - name: get_quality_defects_for_sku
+    desc: Quality defects and issues for a SKU. Lists incidents, holds and defect trends for investigation.
+    kind: sql
+    args:
+      sku: {required: true}
+      weeks: {type: int, default: 12, desc: "Weeks of history to review"}
+    sql: |
+      SELECT qi.incident_id, qi.sku, qi.factory_id, qi.lot_id, qi.issue_description,
+             qi.severity, qi.status, qi.created_at,
+             COUNT(DISTINCT qh.hold_id) AS holds_related
+      FROM quality_incidents qi
+      LEFT JOIN quality_holds qh ON qh.related_incident_id = qi.incident_id
+      WHERE qi.sku = $sku
+        AND qi.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+      GROUP BY qi.incident_id, qi.sku, qi.factory_id, qi.lot_id, qi.issue_description,
+               qi.severity, qi.status, qi.created_at
+      ORDER BY qi.created_at DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_supplier_qa_results_by_style
+    desc: Supplier QA results for a style. Shows inspection results and pass rates across supplier factories.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT DISTINCT f.factory_id, f.supplier_id, s.name AS supplier_name,
+             COUNT(DISTINCT qi.inspection_id) AS total_inspections,
+             ROUND(100.0 * COUNT(CASE WHEN qi.pass_fail = 'pass' THEN 1 END) / NULLIF(COUNT(qi.inspection_id), 0), 1) AS pass_rate_pct,
+             ROUND(AVG(CAST(qi.defects_found AS FLOAT) / NULLIF(qi.units_inspected, 0)) * 100, 1) AS avg_defect_rate_pct
+      FROM quality_inspections qi
+      JOIN production_lots pl ON qi.lot_id = pl.lot_id
+      JOIN master.products p ON p.sku = pl.sku
+      JOIN master.factories f ON f.factory_id = qi.factory_id
+      JOIN master.suppliers s ON s.supplier_id = f.supplier_id
+      WHERE p.style_id = $style_id
+        AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      GROUP BY f.factory_id, f.supplier_id, s.name
+      ORDER BY pass_rate_pct DESC
+    example: {style_id: STY-5520}
+
+  - name: get_supplier_quality_incidents
+    desc: Quality incidents for a supplier. Shows all incidents linked to supplier's factories and products.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      weeks: {type: int, default: 12, desc: "Weeks of history"}
+    sql: |
+      SELECT qi.incident_id, qi.sku, qi.factory_id, f.name AS factory_name,
+             qi.issue_description, qi.severity, qi.status, qi.created_at,
+             COUNT(DISTINCT car.car_id) AS cars_related
+      FROM quality_incidents qi
+      LEFT JOIN master.factories f ON f.factory_id = qi.factory_id
+      LEFT JOIN supplier_corrective_actions car ON car.incident_id = qi.incident_id
+      WHERE f.supplier_id = $supplier_id
+        AND qi.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+      GROUP BY qi.incident_id, qi.sku, qi.factory_id, f.name, qi.issue_description,
+               qi.severity, qi.status, qi.created_at
+      ORDER BY qi.created_at DESC
+    limit: 50
+    example: {supplier_id: SUP-0001}
+
+  - name: get_supplier_quality_record
+    desc: Supplier defect and inspection record. Shows defect rate, pass rate and incident history over 12 weeks.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT s.supplier_id, s.name,
+             COUNT(DISTINCT qi.inspection_id) AS total_inspections,
+             SUM(qi.units_inspected) AS total_units_inspected,
+             SUM(qi.defects_found) AS total_defects,
+             ROUND(100.0 * SUM(qi.defects_found) / NULLIF(SUM(qi.units_inspected), 0), 1) AS defect_rate_pct,
+             COUNT(DISTINCT qi.lot_id) AS lots_inspected,
+             COUNT(DISTINCT inc.incident_id) AS total_incidents,
+             COUNT(DISTINCT qh.hold_id) AS active_holds
+      FROM master.suppliers s
+      JOIN master.factories f ON f.supplier_id = s.supplier_id
+      LEFT JOIN quality_inspections qi ON qi.factory_id = f.factory_id
+                                       AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
+      LEFT JOIN production_lots pl ON qi.lot_id = pl.lot_id
+      LEFT JOIN quality_incidents inc ON inc.factory_id = f.factory_id
+                                      AND inc.created_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
+      LEFT JOIN quality_holds qh ON qh.status = 'active'
+                                 AND qh.created_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
+      WHERE s.supplier_id = $supplier_id
+      GROUP BY s.supplier_id, s.name
+    example: {supplier_id: SUP-0001}
+
+  - name: list_factory_quality_scorecards
+    desc: Quality scorecards by factory. Lists weekly performance data for inspection and risk assessment.
+    kind: select
+    from: factory_quality_scorecards
+    filters:
+      factory_id: {}
+      period_from: {col: period, op: ">=", default: "-90d"}
+    columns: [scorecard_id, factory_id, period, defect_rate_pct, pass_rate_pct, risk_score, total_units_inspected, defects_found]
+    order: period DESC
+    limit: 20
+    example: {factory_id: FAC-0001}
+
+  - name: list_preproduction_sample_acceptance_criteria
+    desc: Preproduction sample acceptance criteria by style. Lists acceptance thresholds for sample testing.
+    kind: draft
+    args:
+      style_id: {required: true}
+    sql:
+      review: SELECT review_id, style_id, review_type, status, findings FROM quality_reviews WHERE style_id = $style_id AND review_type = 'pre_production'
+    template: |
+      PREPRODUCTION SAMPLE ACCEPTANCE CRITERIA
+
+      Style: {{ style_id }}
+      Date: {{ as_of }}
+
+      Sample Requirements:
+      - Minimum sample size: 3 pieces
+      - Test methods: Inspection of fit, finish, material quality, packaging, and labeling
+      - Acceptance criteria: 0 defects of critical nature allowed, maximum 1 minor defect
+
+      Visual Inspection Checklist:
+      - Stitching quality and consistency
+      - Material color and print accuracy
+      - Measurement compliance with tech pack
+      - Packaging presentation and labeling
+
+      Functional Testing (where applicable):
+      - Zip/button functionality
+      - Elastic integrity
+      - Seam strength
+      - Care label legibility
+
+      Quality Standards:
+      - ISO/IEC 17025 accredited testing where required
+      - Test reports must be provided before PO release
+      - Any failures require immediate corrective action discussion
+
+      {% if review %}
+      Previous Reviews:
+      {% for r in review %}
+      - {{ r.review_id }} ({{ r.review_type }}): {{ r.findings }}
+      {% endfor %}
+      {% endif %}
+
+      Contact: Quality Team
+    example: {style_id: STY-5520}
+
+  - name: search_knowledge_base_for_tolerance_standards
+    desc: Search knowledge base for tolerance standards. Returns industry and internal standards for measurement specifications.
+    kind: draft
+    args:
+      search_term: {required: true, desc: "Search term, e.g. 'cotton shrinkage', 'zip strength', 'colour fastness'"}
+      material: {}
+    sql:
+      standards: SELECT 'Standard document' AS title, 'ISO 3759 for knit shrinkage' AS content UNION ALL SELECT 'AATCC Test Method 135', 'Dimensional change in automatic home laundering of fabric specimens'
+    template: |
+      TOLERANCE STANDARDS SEARCH RESULTS
+
+      Query: {{ search_term }}
+      Search Date: {{ as_of }}
+
+      Relevant Industry Standards:
+      1. ISO 3759:2011 - Preparation, marking and measurement of flat knitted fabric and related products for testing dimensions
+      2. AATCC Test Method 135 - Dimensional changes of fabric after laundering
+      3. BS 5441:1988 - Method for assessment of fabric drape
+      4. ASTM D6775-12 - Standard Guide for Care Symbols for Textile Wearing Apparel
+
+      Common Tolerance Ranges by Material:
+      - Cotton wovens: ±2.5% on length and width
+      - Cotton knits: ±3.0% on length and width (post-wash)
+      - Polyester blends: ±2.0% on length and width
+      - Silk: ±1.5% (delicate; minimize washing)
+
+      ZIP/BUTTON STRENGTH STANDARDS:
+      - Zip pull strength: ≥100N minimum
+      - Button shank strength: ≥15N minimum
+      - Snap strength: ≥50N minimum
+
+      FOR COLOUR FASTNESS:
+      - ISO 105-C06:2010 - Color fastness to domestic/commercial laundering
+      - Minimum Grade 3 for most products
+      - Grade 4 minimum for premium ranges
+      - Rub fastness (AATCC 8): Grade 3+ minimum
+
+      Internal Company Guidelines:
+      - Standard tolerance band: ±5% of specification value
+      - Tighter tolerances (±2%) for premium or technical products
+      - Looser tolerances (±7%) only with buyer approval
+
+      Contact: Quality Assurance Team
+    example: {search_term: "cotton shrinkage"}
+
+  - name: send_supplier_corrective_action_request
+    desc: Send a corrective action request to the supplier. Updates status from draft to sent.
+    kind: update
+    table: supplier_corrective_actions
+    set: {status: sent, sent_at: "$as_of"}
+    args:
+      car_id: {required: true}
+    example: {car_id: CAR-900001}
+
+  - name: send_supplier_notification
+    desc: Send a quality notification to a supplier. Records the notification as sent.
+    kind: insert
+    table: supplier_corrective_actions
+    id_prefix: SPN-
+    defaults: {status: sent}
+    args:
+      supplier_id: {required: true}
+      factory_id: {}
+      issue_description: {required: true}
+      requested_action: {required: true, desc: "Action requested from supplier"}
+    example: {supplier_id: SUP-0001, issue_description: "Chromium VI test failure - regulatory notification", requested_action: "Audit leather supplier and provide material batch certificates"}
+
+  - name: update_lot_disposition
+    desc: Set production lot disposition to release, rework or reject. Updates lot status accordingly.
+    kind: update
+    table: production_lots
+    set: {lot_disposition: "$disposition", status: "{release:released,rework:reworked,reject:rejected}[$disposition]", updated_at: "$as_of"}
+    args:
+      lot_id: {required: true}
+      disposition: {required: true, type: enum, values: [release, rework, reject], desc: "QA disposition decision"}
+    example: {lot_id: LOT-900001, disposition: release}

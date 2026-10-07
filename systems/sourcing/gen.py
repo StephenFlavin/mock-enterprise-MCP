@@ -20,7 +20,7 @@ def generate(g):
     # Generate RFQs for products
     for i, prod in enumerate(products[:30]):
         rfq_id = f"RFQ-{i+1:06d}"
-        req_date = g.date_between(g.as_of + timedelta(days=30), g.as_of + timedelta(days=90))
+        req_date = g.as_of + timedelta(days=r.randint(30, 90))
         rfqs.append({
             "rfq_id": rfq_id,
             "sku": prod["sku"],
@@ -72,7 +72,7 @@ def generate(g):
             "criteria_template_id": f"TST-{i+1:06d}",
             "created_at": g.days_ago(r.randint(10, 40)),
             "invitation_sent_at": g.days_ago(r.randint(0, 30)) if r.random() > 0.4 else None,
-            "response_deadline": g.date_between(g.as_of + timedelta(days=10), g.as_of + timedelta(days=45)),
+            "response_deadline": g.as_of + timedelta(days=r.randint(10, 45)),
             "updated_at": g.days_ago(r.randint(0, 20))
         })
 
@@ -155,7 +155,7 @@ def generate(g):
             "volume_split_pct": r.choice([50.0, 60.0, 70.0, 100.0]),
             "unit_cost_gbp": round(r.uniform(5, 25), 2),
             "status": r.choice(["draft", "approved", "active"]),
-            "effective_date": g.date_between(g.as_of + timedelta(days=30), g.as_of + timedelta(days=90)),
+            "effective_date": g.as_of + timedelta(days=r.randint(30, 90)),
             "created_at": g.days_ago(r.randint(10, 40)),
             "updated_at": g.days_ago(r.randint(0, 20))
         })

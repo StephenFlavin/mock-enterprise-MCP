@@ -1,0 +1,360 @@
+id: forwarder
+name: Freight Forwarder Portal
+instructions: >
+  Ocean and air freight bookings, capacity planning and invoice tracking.
+  Ocean booking ids look like OBK-000123, air booking ids like ABK-000123.
+  Use it for shipping lines, booking status, demurrage/detention charges, and air freight invoices.
+
+tables:
+  ocean_bookings:
+    key: booking_id
+    cols:
+      booking_id: {type: str, desc: "Ocean freight booking, e.g. OBK-000123"}
+      po_id: {type: str, desc: "Purchase order"}
+      carrier_id: {type: str, desc: "Carrier or forwarder"}
+      origin_port: {type: str, desc: "Port of loading code, e.g. SGSIN"}
+      dest_port: {type: str, desc: "Port of discharge code, e.g. GBFXT"}
+      booking_date: {type: date, desc: Date booking was made}
+      planned_sailing: {type: date, desc: Planned departure date}
+      cut_off_date: {type: date, desc: Cargo cut-off date}
+      planned_eta: {type: date, desc: Planned arrival date}
+      actual_departure: {type: date, desc: Actual departure date}
+      actual_arrival: {type: date, desc: Actual arrival date}
+      container_count: {type: int, desc: "Number of 40ft containers"}
+      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled], desc: Booking status}
+      roll_reason: {type: str, desc: "If rolled, why"}
+      cost_gbp: {type: float, desc: Freight cost in GBP}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  air_freight_bookings:
+    key: booking_id
+    cols:
+      booking_id: {type: str, desc: "Air freight booking, e.g. ABK-000123"}
+      po_id: {type: str, desc: "Purchase order, if any"}
+      style_id: {type: str, desc: "Style id, if applicable"}
+      carrier_id: {type: str, desc: "Airline"}
+      origin_airport: {type: str, desc: "Departure airport code"}
+      dest_airport: {type: str, desc: "Arrival airport code"}
+      booking_date: {type: date, desc: Date booked}
+      cut_off_date: {type: date, desc: Cargo cut-off date"}
+      planned_departure: {type: date, desc: Planned departure date}
+      planned_arrival: {type: date, desc: Planned arrival date}
+      actual_departure: {type: date, desc: Actual departure date}
+      actual_arrival: {type: date, desc: Actual arrival date}
+      units: {type: int, desc: "Number of units"}
+      booking_status: {type: enum, values: [booked, awaiting_load, departed, arrived, delivered, cancelled], desc: Booking status}
+      cost_gbp: {type: float, desc: Total cost in GBP}
+      cost_per_unit_gbp: {type: float, desc: Cost per unit in GBP}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  air_freight_invoices:
+    key: invoice_id
+    cols:
+      invoice_id: {type: str, desc: "Invoice id, e.g. INV-000123"}
+      carrier_id: {type: str, desc: "Airline"}
+      period_start: {type: date, desc: Invoice period start}
+      period_end: {type: date, desc: Invoice period end}
+      shipment_count: {type: int, desc: "Number of shipments"}
+      total_units: {type: int, desc: Total units shipped}
+      total_cost_gbp: {type: float, desc: Invoice total in GBP}
+      reason_code: {type: str, desc: "Reason for air freight: delayed_factory, late_arrival, promotional_surge, supply_issue, other"}
+      supplier_id: {type: str, desc: "Supplier if the air freight was due to supplier delay"}
+      created_date: {type: date, desc: Invoice created date}
+
+  booking_events:
+    key: event_id
+    cols:
+      event_id: {type: str, desc: "Event id"}
+      booking_id: {type: str, desc: "Ocean booking id"}
+      event_type: {type: enum, values: [expedite_request, sailing_changed, cancelled], desc: Event type}
+      from_sailing: {type: date, desc: "Original sailing date"}
+      to_sailing: {type: date, desc: "New sailing date"}
+      reason: {type: str, desc: "Reason for change"}
+      created_at: {type: timestamp, desc: When event was created}
+
+  demurrage_detention:
+    key: charge_id
+    cols:
+      charge_id: {type: str, desc: "Charge id"}
+      booking_id: {type: str, desc: "Ocean booking"}
+      charge_type: {type: enum, values: [demurrage, detention], desc: "Type of charge"}
+      charge_date: {type: date, desc: Date charge incurred}
+      amount_gbp: {type: float, desc: Charge amount in GBP}
+      days_or_units: {type: int, desc: "Number of days or containers"}
+      port_id: {type: str, desc: "Port where charge occurred"}
+      description: {type: str, desc: Details of the charge}
+
+tools:
+  - name: list_planned_bookings
+    desc: Upcoming planned bookings by sailing date. Use to view all bookings in a period.
+    kind: select
+    from: ocean_bookings
+    filters:
+      booking_status: {default: booked}
+      planned_sailing: {col: planned_sailing, op: ">=", type: date, default: "$as_of"}
+      dest_port: {}
+      carrier_id: {}
+    columns: [booking_id, po_id, carrier_id, origin_port, dest_port, planned_sailing, cut_off_date, planned_eta, container_count, booking_status, cost_gbp]
+    order: planned_sailing
+    limit: 50
+    example: {}
+
+  - name: list_rolled_bookings
+    desc: Ocean freight bookings that were rolled off their sailing. Shows carrier, port, and roll reason.
+    kind: select
+    from: ocean_bookings
+    filters:
+      booking_status: {default: rolled}
+      planned_sailing: {col: planned_sailing, op: ">=", type: date, default: "-90d"}
+    columns: [booking_id, po_id, carrier_id, origin_port, dest_port, planned_sailing, planned_eta, roll_reason, booking_status]
+    order: planned_sailing DESC
+    limit: 50
+    example: {}
+
+  - name: get_booking_lead_time_vs_roll_outcome
+    desc: Compare booking lead time (booking date to sailing) against roll outcome to identify risky booking patterns.
+    kind: sql
+    args:
+      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled], default: "rolled"}
+    sql: |
+      SELECT
+        booking_id, po_id, carrier_id, booking_date, planned_sailing,
+        CAST(planned_sailing AS DATE) - CAST(booking_date AS DATE) AS booking_lead_time_days,
+        booking_status,
+        CASE WHEN booking_status = 'rolled' THEN 'rolled' ELSE 'sailed' END AS outcome
+      FROM ocean_bookings
+      WHERE booking_status IN ('rolled', 'sailed', 'in_transit', 'delivered')
+      ORDER BY booking_lead_time_days ASC
+    limit: 50
+    example: {}
+
+  - name: get_demurrage_and_detention_for_bookings
+    desc: Demurrage and detention charges for ocean bookings. Use to assess port dwell time costs.
+    kind: sql
+    args:
+      booking_id: {desc: "Filter to one booking"}
+      period_start: {type: date, default: "-90d", desc: "Charges from this date"}
+    sql: |
+      SELECT dd.charge_id, dd.booking_id, ob.po_id, dd.charge_type, dd.charge_date,
+             dd.amount_gbp, dd.days_or_units, dd.port_id, dd.description
+      FROM demurrage_detention dd
+      JOIN ocean_bookings ob ON ob.booking_id = dd.booking_id
+      WHERE ($booking_id IS NULL OR dd.booking_id = $booking_id)
+        AND dd.charge_date >= CAST($period_start AS DATE)
+      ORDER BY dd.charge_date DESC
+    limit: 50
+    example: {}
+
+  - name: get_historical_container_volumes_by_route
+    desc: Monthly container volumes by origin-destination port pair. Use to assess typical routing capacity.
+    kind: sql
+    args:
+      origin_port: {}
+      dest_port: {}
+      months_back: {type: int, default: 12, desc: "Look back this many months"}
+    sql: |
+      SELECT origin_port, dest_port,
+             date_trunc('month', booking_date)::DATE AS month,
+             count(*) AS booking_count,
+             sum(container_count) AS total_containers,
+             round(avg(container_count), 1) AS avg_containers_per_booking
+      FROM ocean_bookings
+      WHERE booking_status IN ('sailed', 'in_transit', 'delivered')
+        AND ($origin_port IS NULL OR origin_port = $origin_port)
+        AND ($dest_port IS NULL OR dest_port = $dest_port)
+        AND booking_date >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
+      GROUP BY origin_port, dest_port, month
+      ORDER BY month DESC
+    limit: 50
+    example: {dest_port: GBFXT}
+
+  - name: get_transshipment_options
+    desc: Alternative routing options via transshipment ports with transit time and cost estimates.
+    kind: sql
+    args:
+      origin_port: {required: true}
+      dest_port: {required: true}
+      mode: {type: enum, values: [sea, rail, air], default: "sea"}
+    sql: |
+      SELECT
+        origin_port, dest_port,
+        'direct' AS routing_option,
+        14 + CAST((RANDOM() * 3) AS INT) AS estimated_days,
+        round(5000 + RANDOM() * 2000, 2) AS estimated_cost_gbp,
+        0 AS transship_ports
+      UNION ALL
+      SELECT
+        origin_port, 'DEWCY' AS dest_port,
+        CASE WHEN $mode = 'rail' THEN 'rail_via_mediterranean' ELSE 'transship_rotterdam' END,
+        CASE WHEN $mode = 'rail' THEN 16 + CAST((RANDOM() * 2) AS INT) ELSE 12 + CAST((RANDOM() * 3) AS INT) END,
+        round(4500 + RANDOM() * 1500, 2),
+        1
+    FROM (SELECT $origin_port AS origin_port, $dest_port AS dest_port)
+      ORDER BY estimated_days ASC
+    limit: 10
+    example: {origin_port: SGSIN, dest_port: GBFXT}
+
+  - name: get_booking_cut_off_times
+    desc: Cargo and documentation cut-off times for bookings on a given sailing.
+    kind: sql
+    args:
+      booking_id: {required: true}
+    sql: |
+      SELECT booking_id, po_id, carrier_id, origin_port, dest_port, planned_sailing,
+             cut_off_date,
+             CAST(cut_off_date AS DATE) - CAST($as_of AS DATE) AS days_until_cutoff,
+             round(12 + RANDOM() * 12, 0) AS hours_cargo_cutoff,
+             round(24 + RANDOM() * 24, 0) AS hours_docs_cutoff
+      FROM ocean_bookings
+      WHERE booking_id = $booking_id
+    limit: 1
+    example: {booking_id: OBK-900001}
+
+  - name: calculate_delivery_date_probability
+    desc: Probability of meeting a delivery date per routing option (sea, air, sea-air transship).
+    kind: sql
+    args:
+      origin_port: {required: true}
+      dest_port: {required: true}
+      required_date: {type: date, required: true}
+    sql: |
+      SELECT
+        'sea_direct' AS routing_option,
+        $required_date AS required_delivery_date,
+        CASE
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 8 THEN 0.15
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 12 THEN 0.55
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 16 THEN 0.85
+          ELSE 0.95
+        END AS probability_pct,
+        'Sea transit time typically 14-17 days plus port delays' AS notes
+      UNION ALL
+      SELECT
+        'air_express',
+        $required_date,
+        CASE
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 3 THEN 0.30
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 5 THEN 0.70
+          ELSE 0.95
+        END,
+        'Air transit 2-3 days but premium cost'
+      UNION ALL
+      SELECT
+        'sea_air_transship',
+        $required_date,
+        CASE
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 9 THEN 0.40
+          WHEN CAST($required_date AS DATE) - CAST($as_of AS DATE) < 13 THEN 0.75
+          ELSE 0.90
+        END,
+        'Sea to Mediterranean/Dubai then air: 9-12 days total'
+    limit: 3
+    example: {origin_port: SGSIN, dest_port: GBFXT, required_date: "+21d"}
+
+  - name: list_air_freight_invoices
+    desc: Air freight invoices by period. Filter by reason code to understand avoidable spend.
+    kind: select
+    from: air_freight_invoices
+    filters:
+      period_start: {op: ">=", type: date, default: "-90d"}
+      reason_code: {}
+      supplier_id: {}
+      carrier_id: {}
+    columns: [invoice_id, carrier_id, period_start, period_end, shipment_count, total_units, total_cost_gbp, reason_code, supplier_id]
+    order: period_end DESC
+    limit: 50
+    example: {}
+
+  - name: draft_forwarder_booking_request
+    desc: Drafts a booking request for the forwarder with route and product details.
+    kind: draft
+    args: [po_id]
+    sql:
+      po: SELECT po_id, supplier_id, factory_id, order_date, ship_date, due_date, dest_site_id, total_units, total_value FROM master.purchase_orders WHERE po_id = $po_id
+      sup: SELECT supplier_id, name, country FROM master.suppliers WHERE supplier_id = (SELECT supplier_id FROM master.purchase_orders WHERE po_id = $po_id LIMIT 1)
+    template: |
+      BOOKING REQUEST FOR FREIGHT FORWARDER
+
+      Purchase Order: {{ po[0].po_id }}
+      Supplier: {{ sup[0].name }} ({{ sup[0].country }})
+      Destination: {{ po[0].dest_site_id }}
+
+      Shipment Details:
+      - Quantity: {{ po[0].total_units }} units
+      - Value: GBP {{ "{:,.2f}".format(po[0].total_value) }}
+      - Factory ship date: {{ po[0].ship_date }}
+      - Due date at DC: {{ po[0].due_date }}
+
+      Please confirm:
+      1. Available sailings from {{ sup[0].country }}
+      2. Earliest departure that meets the due date
+      3. Space confirmation and freight rate
+      4. Documentation and cut-off requirements
+    example: {po_id: PO-2026-004512}
+
+  - name: create_air_freight_booking
+    desc: Creates an air freight booking with the airline for a PO or style. Returns the new booking.
+    kind: insert
+    table: air_freight_bookings
+    id_prefix: ABK-
+    defaults: {booking_status: booked}
+    args:
+      po_id: {type: str, desc: "Purchase order, if applicable"}
+      style_id: {type: str, desc: "Style id, if applicable"}
+      carrier_id: {required: true}
+      origin_airport: {required: true, desc: "Airport code"}
+      dest_airport: {required: true, desc: "Airport code"}
+      units: {required: true, type: int}
+      planned_departure: {type: date, required: true}
+      planned_arrival: {type: date, required: true}
+      cost_gbp: {type: float, required: true}
+    example: {po_id: PO-2026-004512, carrier_id: CAR-012, origin_airport: SGN, dest_airport: LHR, units: 500, planned_departure: "+2d", planned_arrival: "+3d", cost_gbp: 24500}
+
+  - name: update_booking_sailing
+    desc: Moves an ocean booking from one sailing to another. Returns the old and new sailing dates.
+    kind: update
+    table: ocean_bookings
+    set: {planned_sailing: "$new_sailing", updated_at: "$as_of"}
+    args:
+      new_sailing: {type: date, required: true, desc: "New sailing date"}
+      reason: {type: str, desc: "Reason for the change"}
+    example: {booking_id: OBK-900001, new_sailing: "+21d", reason: "Avoid surcharge window"}
+
+  - name: cancel_ocean_booking
+    desc: Cancels an ocean freight booking with the carrier. Returns the old and new status.
+    kind: update
+    table: ocean_bookings
+    set: {booking_status: cancelled, updated_at: "$as_of"}
+    args:
+      reason: {type: str, required: true, desc: "Reason for cancellation"}
+    example: {booking_id: OBK-900001, reason: "Order pushed back"}
+
+  - name: cancel_sea_freight_booking
+    desc: Cancels an existing sea freight booking on a PO. Returns old and new status.
+    kind: update
+    table: ocean_bookings
+    set: {booking_status: cancelled, updated_at: "$as_of"}
+    args:
+      reason: {type: str, required: true, desc: "Reason for cancellation"}
+    example: {booking_id: OBK-900002, reason: "PO cancelled"}
+
+  - name: send_expedite_request_to_forwarder
+    desc: Sends the forwarder a request to expedite named shipments. Stores request in booking events.
+    kind: insert
+    table: booking_events
+    id_prefix: EVT-
+    defaults: {event_type: expedite_request}
+    args:
+      booking_id: {required: true}
+      reason: {type: str, required: true, desc: "Why expedite is needed"}
+    example: {booking_id: OBK-900001, reason: "Store stockout risk"}
+
+  - name: update_shipment_priority_for_franchise_order
+    desc: Expedites or changes the priority of a franchise shipment. Updates booking status and priority.
+    kind: update
+    table: ocean_bookings
+    set: {updated_at: "$as_of"}
+    args:
+      priority_level: {type: enum, values: [urgent, high, normal, hold], required: true, desc: "New priority"}
+      reason: {type: str, desc: "Reason for priority change"}
+    example: {booking_id: OBK-900003, priority_level: urgent, reason: "Franchise stockout"}

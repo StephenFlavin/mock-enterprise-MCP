@@ -118,15 +118,17 @@ def generate(g):
             })
 
     # Generate performance reviews
+    review_count = 0
     for i, supplier in enumerate(suppliers[:15]):
         num_reviews = r.randint(1, 3)
         for r_idx in range(num_reviews):
+            review_count += 1
             scheduled = g.as_of + timedelta(days=r.randint(-60, 30))
             completed = scheduled if scheduled < g.as_of else None
             status = "completed" if completed else "scheduled"
 
             performance_reviews.append({
-                "review_id": f"SPR-{i * 2 + r_idx + 1:06d}",
+                "review_id": f"SPR-{review_count:06d}",
                 "supplier_id": supplier["supplier_id"],
                 "review_period": f"Q{(g.as_of.month - 1) // 3 + 1} 2026",
                 "scheduled_date": scheduled,
@@ -139,9 +141,11 @@ def generate(g):
             })
 
     # Generate engagement plans
+    engagement_count = 0
     programmes = ["emissions", "sustainability", "innovation", "quality"]
     for i, supplier in enumerate(suppliers[:12]):
         for prog_type in r.sample(programmes, k=r.randint(1, 3)):
+            engagement_count += 1
             statuses = ["invited", "active", "inactive", "completed"]
             status = r.choice(statuses)
 
@@ -150,6 +154,7 @@ def generate(g):
             start = None if status in ["invited", "inactive"] else acceptance + timedelta(days=r.randint(1, 10))
 
             engagement_plans.append({
+                "engagement_record_id": f"ENG-{engagement_count:06d}",
                 "supplier_id": supplier["supplier_id"],
                 "programme_type": prog_type,
                 "engagement_status": status,
