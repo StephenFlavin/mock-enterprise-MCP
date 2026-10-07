@@ -27,7 +27,7 @@ KPIS = [
 
 # actual / target factor for the four-week periods k = 0 (latest) .. 5
 FACTORS = {
-    "KPI-0001": [0.9466, 0.965, 0.985, 0.995, 0.998, 1.0],
+    "KPI-0001": [0.932, 0.984, 0.985, 0.995, 0.998, 1.0],   # OTIF 94 then 89 last month, as data_warehouse and the 09:81:Q1 question
     "KPI-0002": [1.068, 1.05, 1.03, 1.01, 1.0, 0.99],
     "KPI-0003": [0.996, 0.998, 1.0, 0.999, 1.0, 1.001],
     "KPI-0004": [1.1214, 1.09, 1.06, 1.02, 1.0, 0.99],

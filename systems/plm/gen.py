@@ -220,6 +220,14 @@ def generate(g):
         for sku in sku_list:
             cur = [a for a in json.loads(tp_by_sku[sku]["design_attributes"]) if a not in ("easy-care", "easy-iron")]
             tp_by_sku[sku]["design_attributes"] = json.dumps(cur[:2] + add_attrs)
+    # 06:52:Q2: the apparel among the data_warehouse SS best sellers (top 10) and worst sellers (bottom 10) carry the same split of features
+    DW_TOP_APPAREL = ["SKU-100644", "SKU-100637", "SKU-100651"]
+    DW_BOTTOM_APPAREL = ["SKU-102310", "SKU-102296", "SKU-103283", "SKU-103297", "SKU-105481", "SKU-105761", "SKU-103143", "SKU-106013"]
+    for sku_list, add_attrs in ((DW_TOP_APPAREL, ["pockets", "machine washable"]), (DW_BOTTOM_APPAREL, ["dry clean only", "heavyweight"])):
+        for sku in sku_list:
+            if sku in tp_by_sku:
+                cur = [a for a in json.loads(tp_by_sku[sku]["design_attributes"]) if a not in ("easy-care", "easy-iron", "pockets", "machine washable", "dry clean only", "heavyweight")]
+                tp_by_sku[sku]["design_attributes"] = json.dumps(cur[:2] + add_attrs)
 
     # ======== material_library: seeded ========
     # ======== material_batches and dye_lots (noise) ========

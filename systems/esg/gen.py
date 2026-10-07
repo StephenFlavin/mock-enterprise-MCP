@@ -325,7 +325,7 @@ def generate(g):
         {"module": "Claims substantiation register", "scopes_supported": "n/a", "frameworks": "ASA, CMA", "status": "live",
          "addon_quote_gbp": 0, "notes": "Claims, evidence and review status."},
         {"module": "CSRD / ESRS reporting", "scopes_supported": "Scope 1, 2, 3", "frameworks": "CSRD ESRS E1-E5", "status": "not_licensed",
-         "addon_quote_gbp": 85000, "notes": "Vendor add-on: ESRS data points, double-materiality workflow, audit trail. About 4 months to configure."},
+         "addon_quote_gbp": 85000, "notes": "Vendor add-on licence: ESRS data points, double-materiality workflow, audit trail. Configuration project is costed separately (IPT-900001, about 6 months in total)."},
         {"module": "UK SRS / ISSB reporting", "scopes_supported": "Scope 1, 2, 3", "frameworks": "UK SRS, ISSB S1/S2", "status": "planned",
          "addon_quote_gbp": 40000, "notes": "On vendor roadmap, no committed release date; interim use TCFD template."},
         {"module": "Product LCA footprinting", "scopes_supported": "Scope 3", "frameworks": "EU Green Claims, PEF", "status": "not_available",

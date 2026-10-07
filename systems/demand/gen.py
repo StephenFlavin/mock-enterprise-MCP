@@ -102,7 +102,9 @@ def generate(g):
     for s in must + ranked[:300]:
         if s in weekly and s not in skus:
             skus.append(s)
-    categories = sorted({p["category"] for p in products})
+    # Only categories with sales in master carry demand history and forecasts (new master categories such as Backpacks,
+    # Kitchenware and Toys hold launches without sales yet), so adding master products does not move the random stream.
+    categories = sorted({p["category"] for p in products if p["sku"] in weekly})
 
     # ------------------------------------------------------------------------------------------
     # Demand history: weekly units and revenue from master sales (store + online).
@@ -636,9 +638,8 @@ def generate(g):
                     "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
                     "correction_reason": None, "updated_at": as_of})
 
-    # The seasonal bedding throw (SKU-104963, outside the top 300 sellers) comes straight from master sales. The planning
-    # system proposed an order for SKU-102961 (about 790 a week, matching the supply planning story); master has no sales
-    # for it yet, so its weekly history is a flat, spike-free run of the last 26 weeks. No random numbers are drawn.
+    # The seasonal bedding throw (SKU-104963, outside the top 300 sellers) comes straight from master sales. No random
+    # numbers are drawn.
     for sku in ("SKU-104963",):
         if sku in weekly and sku not in in_history:
             for wk, units, rev in weekly[sku]:
@@ -646,14 +647,6 @@ def generate(g):
                     "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": sku, "category": prod[sku]["category"],
                     "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
                     "correction_reason": None, "updated_at": as_of})
-    if "SKU-102961" in prod and "SKU-102961" not in in_history:
-        for i in range(26):
-            wk = this_monday - timedelta(weeks=26 - i)
-            units = 790 + int(round(28 * math.sin(i * 1.9) + 12 * math.cos(i * 0.7)))
-            demand_history.append({
-                "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": "SKU-102961", "category": prod["SKU-102961"]["category"],
-                "period_date": wk, "units_sold": units, "revenue_gbp": round(units * float(prod["SKU-102961"]["retail_price_gbp"]) * 0.93, 2),
-                "demand_type": "actual", "correction_reason": None, "updated_at": as_of})
 
     winter_cats = {"Outerwear", "Knitwear", "Scarves", "Bedding", "Towels", "Lighting", "Fragrance"}
     summer_cats = {"Dresses", "Blouses", "Shirts", "T-Shirts", "Tops", "Trousers", "Footwear", "Bags", "Jewellery",
@@ -788,6 +781,16 @@ def generate(g):
             base = 276.0 * kettle_curve[off]
             for ftype, mult in (("base", 1.0), ("upside", 1.2), ("downside", 0.8)):
                 add_forecast(throw, wk, ftype, base * mult, this_monday)
+
+    # SKU-102961 (new Shirts line, no master sales yet): the planning system proposed a 12,000 unit order for it. Its
+    # base forecast is flat at about 790 a week, the rate in the supply planning story, so no forecast or history
+    # spike explains the order.
+    if "SKU-102961" in prod:
+        for off in range(0, 12):
+            wk = this_monday + timedelta(weeks=off)
+            base = 790.0 * (1.0 + 0.012 * math.sin(off * 1.4))
+            for ftype, mult in (("base", 1.0), ("upside", 1.2), ("downside", 0.8)):
+                add_forecast("SKU-102961", wk, ftype, base * mult, this_monday)
 
     # Backtests: holdout accuracy per configuration (new-product and slow-mover backtests look better than live).
     fashion = {"Dresses", "Blouses", "Tops", "Shirts", "T-Shirts", "Trousers", "Knitwear", "Outerwear", "Footwear",

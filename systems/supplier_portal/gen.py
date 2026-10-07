@@ -4,6 +4,9 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 
+# master products added after the original build (STY-9501..9510): no supply position (no stock or orders yet)
+ADDED_STYLES = {f"STY-95{n:02d}" for n in range(1, 11)}
+
 def generate(g):
     """Generate supplier portal data."""
     r = g.rng
@@ -183,7 +186,7 @@ def generate(g):
                 age = (len(pcts) - 1 - k) * 28
                 committed = int(total_cap * pct / 100)
                 stock = stock_story.get(sku, r.choice([0, 0, r.randint(200, 8000)])) if age == 0 else r.choice([0, r.randint(200, 8000)])
-                supply_position.append({
+                row = {
                     "position_id": f"SPP-{position_id:06d}",
                     "supplier_id": sup_id,
                     "sku": sku,
@@ -201,7 +204,11 @@ def generate(g):
                     "next_quarter_units": nq,
                     "mto_lead_time_days": mto[0] if mto else None,
                     "mto_moq_units": mto[1] if mto else None,
-                })
+                }
+                # master products added after the original build (STY-9501..9510: no stock or orders yet) get no supply position;
+                # the draws above still run so every other supplier's generated numbers are unchanged
+                if prod["style_id"] not in ADDED_STYLES:
+                    supply_position.append(row)
                 position_id += 1
     # Fabric mills (03:24:Q4): monthly capacity snapshots per material, oldest first; cotton and polyester mills are filling up
     mills = [
