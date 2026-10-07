@@ -417,15 +417,16 @@ tools:
       1. SITUATION ASSESSMENT
       - OTIF over the last 12 months: {{ supplier[0].otif_pct_12m }}% against a target of {{ target_otif_pct|int }}% (gap {{ "%.1f"|format(target_otif_pct - supplier[0].otif_pct_12m) }} points)
       - Last 6 months: {{ orders[0].pos }} purchase orders worth {{ "£{:,}".format(orders[0].value_gbp|int) }}
-      - Deliveries: {{ ships[0].late }} of {{ ships[0].shipments }} shipments arrived after their ETA{% if ships[0].late %}, on average {{ ships[0].avg_days_late }} days late{% endif %}
+      - Deliveries: {{ ships[0].late }} of {{ ships[0].shipments }} shipments arrived after their ETA{{ (', on average ' ~ ships[0].avg_days_late ~ ' days late') if ships[0].late else '' }}
       {% if lines[0].ordered -%}
-      - Quantities: {{ "{:,}".format(lines[0].received|int) }} of {{ "{:,}".format(lines[0].ordered|int) }} units received on completed orders ({{ "%.1f"|format((lines[0].ordered - lines[0].received) / lines[0].ordered * 100) }}% short)
+      - Quantities: {{ "{:,}".format(lines[0].received|int) }} of {{ "{:,}".format(lines[0].ordered|int) }} units received on completed orders{{ (' (' ~ ("%.1f"|format((lines[0].ordered - lines[0].received) / lines[0].ordered * 100)) ~ '% short)') if lines[0].received < lines[0].ordered else ' (no shortfall)' }}
       {% endif %}
+
       2. ROOT CAUSE ANALYSIS (to confirm with the supplier and our own order history)
       {% if ships[0].shipments and ships[0].late / ships[0].shipments > 0.25 -%}
       - Late shipping: {{ "%.0f"|format(ships[0].late / ships[0].shipments * 100) }}% of shipments miss the ETA, so the delivery problem is in production or dispatch rather than a few outliers
       {% endif -%}
-      {% if lines[0].ordered and (lines[0].ordered - lines[0].received) / lines[0].ordered > 0.01 -%}
+      {% if lines[0].ordered and (lines[0].ordered - lines[0].received) / lines[0].ordered > 0.005 -%}
       - Short deliveries: the supplier is not completing order quantities
       {% endif -%}
       - Our own late changes to quantities or dates: check the purchase order change history before assigning blame
@@ -940,12 +941,12 @@ tools:
         SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp, coalesce(sum(total_units), 0) AS units
         FROM master.purchase_orders
         WHERE supplier_id = $supplier_id AND status <> 'cancelled'
-          AND order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 91 DAY AND date_trunc('week', CAST($as_of AS DATE))
+          AND order_date >= CAST(date_trunc('quarter', CAST($as_of AS DATE)) - INTERVAL 3 MONTH AS DATE) AND order_date < CAST(date_trunc('quarter', CAST($as_of AS DATE)) AS DATE)
       ships: |
         SELECT count(*) AS shipments, count(*) FILTER (WHERE sh.ata > sh.eta) AS late
         FROM master.shipments sh JOIN master.purchase_orders pur ON pur.po_id = sh.po_id
         WHERE pur.supplier_id = $supplier_id AND sh.ata IS NOT NULL
-          AND sh.eta BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 91 DAY AND date_trunc('week', CAST($as_of AS DATE))
+          AND sh.eta >= CAST(date_trunc('quarter', CAST($as_of AS DATE)) - INTERVAL 3 MONTH AS DATE) AND sh.eta < CAST(date_trunc('quarter', CAST($as_of AS DATE)) AS DATE)
       products: |
         SELECT count(*) AS skus, count(DISTINCT category) AS categories, string_agg(DISTINCT category, ', ') AS category_list
         FROM master.products WHERE supplier_id = $supplier_id
@@ -954,7 +955,7 @@ tools:
 
       {% if supplier -%}
       Supplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}
-      Review period: last quarter
+      Review period: last completed quarter
 
       1. PERFORMANCE SCORECARD
       - OTIF over 12 months (master record): {{ supplier[0].otif_pct_12m }}%
@@ -966,7 +967,7 @@ tools:
       {% endif -%}
       - Risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}, payment terms {{ supplier[0].payment_terms_days }} days
 
-      2. ORDER PATTERN (last quarter)
+      2. ORDER PATTERN (last completed quarter)
       - {{ orders[0].pos }} purchase orders, {{ "{:,}".format(orders[0].units|int) }} units, {{ "£{:,}".format(orders[0].value_gbp|int) }}
       - {{ ships[0].late }} of {{ ships[0].shipments }} delivered shipments arrived after their ETA
       - Range with us: {{ products[0].skus }} SKUs in {{ products[0].category_list }}
