@@ -117,7 +117,8 @@ def generate(g):
                 claim_id_counter += 1
                 claim_id = f"CLM-{claim_id_counter:06d}"
 
-                sku = r.choice([int(o) for o in order.get("sku", "SKU-100234").split(",")]) if "," in order.get("sku", "") else order.get("sku", "SKU-100234")
+                # Pick a random SKU, preferring glass/appliance items for damage claims
+                sku = r.choice(glass_skus if glass_skus else all_skus)
                 product = sku_to_product.get(sku, {})
 
                 damage_types = ["Broken glass", "Dented packaging", "Water damage", "Torn seams", "Cracked item"]
@@ -140,7 +141,8 @@ def generate(g):
                 complaint_id_counter += 1
                 complaint_id = f"CMP-{complaint_id_counter:06d}"
 
-                sku = order.get("sku", "SKU-100234")
+                # Pick a random SKU for complaints
+                sku = r.choice(all_skus)
                 product = sku_to_product.get(sku, {})
 
                 defect_types = ["Zip strength", "Colour mismatch", "Fit issue", "Material quality", "Stitching defect"]

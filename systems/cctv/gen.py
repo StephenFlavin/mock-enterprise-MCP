@@ -49,7 +49,7 @@ def generate(g):
 
         # Reviewer might be security/loss prevention staff
         reviewed_by = rng.choice([e["employee_id"] for e in employees if "loss" in e.get("role", "").lower() or "security" in e.get("role", "").lower()] or [e["employee_id"] for e in employees[:50]])
-        reviewed_at = occurred_at + g.fake.time_delta(seconds=rng.randint(3600, 86400*7))  # Within a week
+        reviewed_at = occurred_at + timedelta(hours=rng.randint(1, 168))  # Within a week
 
         event_id = f"EXC-{900001 + i:06d}"
 
@@ -101,8 +101,8 @@ def generate(g):
         if incident_type in ["internal_theft", "external_theft", "unauthorized_refund"]:
             suspected_loss_gbp = rng.randint(50, 5000)
 
-        created_at = occurred_at + g.fake.time_delta(seconds=rng.randint(300, 3600))
-        closed_at = created_at + g.fake.time_delta(days=rng.randint(1, 30)) if status in ["closed", "dismissed"] else None
+        created_at = occurred_at + timedelta(minutes=rng.randint(5, 60))
+        closed_at = created_at + timedelta(days=rng.randint(1, 30)) if status in ["closed", "dismissed"] else None
 
         incident_id = f"INC-{900001 + i:06d}"
 
