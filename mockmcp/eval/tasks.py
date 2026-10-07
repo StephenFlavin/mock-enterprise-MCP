@@ -210,11 +210,13 @@ def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, s
         if w and w[0] in WRITE_VERBS:
             verbs |= set(_SYN.get(w[0], [w[0]]))
     pw = {w for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
+    objs = {w[:6] for w in call["tool"].split("_")[1:] if len(w) > 2 and w not in STOP}  # e.g. close, task
     scores = []
     for i, t in enumerate(turns):
         words = set(_WORD.findall(t["text"].lower()))
         stems = {w[:6] for w in words}
-        score = 2 * len(verbs & words) + min(len({w[:6] for w in pw} & stems) * 0.5, 2) + (1 if t["writes_requested"] else 0)
+        score = (2 * len(verbs & words) + min(len({w[:6] for w in pw} & stems) * 0.5, 2) + 1.5 * len(objs & stems)
+                 + (1 if t["writes_requested"] else 0))
         if i == 0:
             score += 0.5  # main turn wins ties and near-ties
         scores.append(score)

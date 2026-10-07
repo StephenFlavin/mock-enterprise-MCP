@@ -1,0 +1,188 @@
+"""Task bank, features/filters and the recipe builder (no model calls; tool sizes faked for speed)."""
+import json
+
+import pytest
+import yaml
+
+from mockmcp import bench
+from mockmcp.eval import features as F
+from mockmcp.eval import recipe as R
+from mockmcp.eval import tasks as T
+
+
+@pytest.fixture(scope="module")
+def bank():
+    return T.build_bank()
+
+
+@pytest.fixture
+def sizes(monkeypatch):
+    from mockmcp import catalog
+    n = {}
+    for r in catalog.load():
+        n[r["system"]] = n.get(r["system"], 0) + 1
+    fake = {s: {"tools": k, "tokens": k * 100, "write_tools": []} for s, k in n.items()}
+    monkeypatch.setattr(R, "measure", lambda out_dir=None: fake)
+    return fake
+
+
+def read(d):
+    return [json.loads(x) for x in (d / "tasks.jsonl").read_text().splitlines()]
+
+
+def test_bank_sizes(bank):
+    cases = [c for f in bench.CASES.glob("*.yaml") for c in yaml.safe_load(f.read_text()) or []]
+    qids = {c["question"] for c in cases} & set(T.questions())
+    assert sum(t["kind"] == "slice" for t in bank) == len(cases) == 1657
+    assert sum(t["kind"] == "scenario" for t in bank) == len(qids)
+    assert len({t["id"] for t in bank}) == len(bank)
+
+
+def test_scenarios_are_complete(bank):
+    for t in (t for t in bank if t["kind"] == "scenario"):
+        assert t["turns"] and t["turns"][0]["source"] == "question"
+        assert t["reference"]["facts"] and t["reference"]["slices"]
+        assert t["persona"]["role"] and t["domain"] and t["question_tags"]["complexity"]
+        assert all(w["turn"] < len(t["turns"]) for w in t["writes"]["expected"])
+        assert t["servers"]["required"] == sorted({s["system"] for s in t["reference"]["slices"]})
+    s = next(t for t in bank if t["id"] == "scn-02:11:Q3")
+    assert [w["turn"] for w in s["writes"]["expected"]] == [3, 3, 3]  # the hold-and-reroute follow-up
+    assert s["turns"][3]["approval_needed"] and s["turns"][3]["writes_requested"]
+
+
+def test_slice_writes_turn_zero(bank):
+    w = [t for t in bank if t["kind"] == "slice" and t["writes"]["expected"]]
+    assert w and all(x["turn"] == 0 for t in w for x in t["writes"]["expected"])
+
+
+def test_turn_flags():
+    assert T.turn("Hold the loads, but check with me first.", "followup")["approval_needed"]
+    assert T.turn("Reassign the two worst-hit loads to the backup carrier.", "followup")["writes_requested"]
+    assert not T.turn("Which lanes lost the most fill rate?", "followup")["writes_requested"]
+    assert not T.turn("Send me a summary.", "followup")["writes_requested"]
+
+
+def test_filters_and_presets(bank):
+    f = {t["id"]: t["features"] for t in bank}
+    p = F.merged_presets()
+    one = next(t for t in bank if t["kind"] == "slice" and p["simple"](t["features"]))
+    assert F.features(one) == one["features"] and one["features"]["calls"] == 1
+    assert F.compile_filter("kind=slice&systems>=1")(f[one["id"]])
+    assert F.compile_filter("domain=01|%s" % one["persona"]["file"])(f[one["id"]])
+    assert not F.compile_filter("kind=scenario or writes>=1")(f[one["id"]]) or one["features"]["writes"] >= 1
+    assert F.compile_filter("simple&!write")(f[one["id"]]) == p["simple"](f[one["id"]])
+    assert F.merged_presets({"short": "prompt_words<=5"})["short"](f[one["id"]]) == (f[one["id"]]["prompt_words"] <= 5)
+    with pytest.raises(KeyError):
+        F.compile_filter("nonsense>=3")(f[one["id"]])
+
+
+def test_deterministic(tmp_path, sizes):
+    rec = {"name": "d", "seed": 3, "kind": "any", "tasks": 20, "mix": {"simple": "30%", "write": "20%"}, "traps": 0,
+           "tools": {"budget": {"tokens": 4000}, "distractors": "random", "position": "random"}}
+    R.build(rec, tmp_path / "a"), R.build(rec, tmp_path / "b"), R.build({**rec, "seed": 4}, tmp_path / "c")
+    a, b, c = (read(tmp_path / x) for x in "abc")
+    assert a == b and a != c and len(a) == 20
+
+
+def test_mix_quotas(tmp_path, sizes):
+    rec = {"seed": 1, "kind": "scenario", "tasks": 20, "mix": {"multi_system": "25%", "write": "25%", "followups": 0.25}}
+    plan = R.build(rec, tmp_path)
+    cnt = plan["counts"]
+    assert [cnt[k]["drawn"] for k in ("multi_system", "write", "followups")] == [5, 5, 5]
+    assert cnt["natural"]["drawn"] == 5 and len(read(tmp_path)) == 20
+    tasks = read(tmp_path)
+    assert sum("multi_system" in t["strata"] for t in tasks) >= 5 and sum("write" in t["strata"] for t in tasks) >= 5
+
+
+def test_short_stratum_warns_or_fails(tmp_path, sizes):
+    rec = {"seed": 1, "kind": "scenario", "tasks": 40, "mix": {"systems>=6": 40}}
+    plan = R.build(rec, tmp_path / "w")
+    assert plan["warnings"] and len(read(tmp_path / "w")) == 40
+    with pytest.raises(ValueError):
+        R.build({**rec, "strict": True}, tmp_path / "s")
+
+
+def test_followups_none(tmp_path, sizes):
+    R.build({"seed": 1, "kind": "scenario", "tasks": 10, "followups": "none"}, tmp_path)
+    assert all(len(t["turns"]) == 1 and t["features"]["followups"] == 0 for t in read(tmp_path))
+    R.build({"seed": 1, "kind": "scenario", "tasks": 10, "followups": "first_n:1"}, tmp_path / "n")
+    assert all(len(t["turns"]) <= 2 for t in read(tmp_path / "n"))
+
+
+@pytest.mark.parametrize("strategy", ["random", "adjacent", "persona"])
+@pytest.mark.parametrize("budget", [{"tokens": 3000}, {"tools": 90}, {"servers": 6}])
+def test_budget_reached_within_one_server(tmp_path, sizes, strategy, budget):
+    R.build({"seed": 2, "kind": "scenario", "tasks": 10,
+             "tools": {"budget": budget, "distractors": strategy, "position": "middle"}}, tmp_path)
+    (unit, limit), = budget.items()
+    for t in read(tmp_path):
+        tb, dist, loaded = t["tool_budget"], t["servers"]["distractors"], t["servers"]["loaded"]
+        assert set(t["servers"]["required"]) <= set(loaded) and tb["target"] == budget
+        if dist:
+            last = 1 if unit == "servers" else sizes[dist[-1]][unit]
+            assert tb[unit] >= limit > tb[unit] - last  # crossed by the last distractor only
+        else:
+            assert tb[unit] >= limit  # the required servers alone already fill it
+
+
+def test_budget_crossing_server_is_last(sizes):
+    req = ["tms"]
+    order = [s for s in sizes if s != "tms"]
+    for lim in (1, sizes["tms"]["tokens"] + 1, 5000, 20000):
+        d = R._select(req, order, {"tokens": lim}, sizes)
+        total = sizes["tms"]["tokens"] + sum(sizes[s]["tokens"] for s in d)
+        assert total >= lim or d == order
+        assert not d or total - sizes[d[-1]]["tokens"] < lim
+
+
+def test_grid_is_nested_and_comparable(tmp_path, sizes):
+    rec = {"seed": 5, "kind": "scenario", "tasks": 8, "tools": {"budget": {"tokens": [2000, 8000, 30000]}, "distractors": "adjacent"}}
+    plan = R.build(rec, tmp_path)
+    assert set(plan["runs"]) == {"tokens-2000", "tokens-8000", "tokens-30000"}
+    runs = {k: read(tmp_path / k) for k in plan["runs"]}
+    ids = [[t["id"] for t in v] for v in runs.values()]
+    assert ids[0] == ids[1] == ids[2]
+    for lo, hi in (("tokens-2000", "tokens-8000"), ("tokens-8000", "tokens-30000")):
+        for a, b in zip(runs[lo], runs[hi]):
+            assert set(a["servers"]["loaded"]) <= set(b["servers"]["loaded"])
+    assert json.loads((tmp_path / "manifest.json").read_text())["subruns"] == list(plan["runs"])
+    assert (tmp_path / "tokens-2000" / "recipe.yaml").exists()
+
+
+def test_position_and_shared(tmp_path, sizes):
+    base = {"seed": 2, "kind": "scenario", "tasks": 6, "tools": {"budget": {"servers": 8}, "distractors": "random"}}
+    for pos in ("first", "last"):
+        R.build({**base, "tools": {**base["tools"], "position": pos}}, tmp_path / pos)
+        for t in read(tmp_path / pos):
+            n, loaded = len(t["servers"]["required"]), t["servers"]["loaded"]
+            assert set(loaded[:n] if pos == "first" else loaded[-n:]) == set(t["servers"]["required"])
+    R.build({**base, "tools": {**base["tools"], "toolset": "shared"}}, tmp_path / "sh")
+    loads = {tuple(t["servers"]["loaded"]) for t in read(tmp_path / "sh")}
+    assert len(loads) == 1
+
+
+def test_distractors_none_and_adjacent_prefers_cousins(sizes):
+    g = R.Graph()
+    import random
+    cands = [s for s in sizes if s != "tms"]
+    assert g.order("none", {"tms"}, "02", cands, random.Random(1)) == []
+    top = g.order("adjacent", {"tms"}, "02", cands, random.Random(1))[:5]
+    assert sum(g.cooc["tms"][s] for s in top) > 0 and g.cooc["tms"][top[0]] >= g.cooc["tms"][top[-1]]
+
+
+def test_traps_drawn_and_missing_server_removed(tmp_path, sizes, monkeypatch):
+    def trap(i, ty, **kw):
+        return {"id": f"trap-{ty}-{i}", "turns": ["What is the status of lane DC9-ST999?"],
+                "trap": {"type": ty, "reason": "r", "missing_servers": kw.get("missing", []), "missing_entities": [],
+                         "unavailable_info": [], "expected_behaviour": "say so", "base_task": None},
+                "servers": {"required": ["tms", "carrier_portal"]}}
+    f = tmp_path / "traps.yaml"
+    f.write_text(yaml.safe_dump([trap(i, ty, missing=["tms"] if ty == "missing_server" else [])
+                                 for i in range(3) for ty in ("missing_server", "out_of_scope")]))
+    monkeypatch.setattr(T, "TRAPS", f)
+    plan = R.build({"seed": 1, "kind": "scenario", "tasks": 10, "traps": "40%", "tools": {"budget": {"servers": 5}}}, tmp_path / "o")
+    got = [t for t in read(tmp_path / "o") if t["kind"] == "trap"]
+    assert len(got) == 4 and {t["trap"]["type"] for t in got} == {"missing_server", "out_of_scope"}
+    assert all("tms" not in t["servers"]["loaded"] for t in got if t["trap"]["type"] == "missing_server")
+    assert all("tms" in t["servers"]["loaded"] for t in got if t["trap"]["type"] == "out_of_scope")
+    assert all("trap" in t["strata"] for t in got) and not plan["warnings"]
