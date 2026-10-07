@@ -56,10 +56,10 @@ CANDIDATES = [
     ("SC-900001", "Daventry Gateway Park", "UK Midlands", 1900000, 400000, 78.0, 84.0, 30.0,
      "Modern big-box on the M1/A5 corridor near existing Daventry operations. Strong labour pool but competes with several 3PLs for agency staff. Planning permission in place; highest rent of the three.",
      "Enterprise zone business rates relief (3 years); local authority recruitment grant of about 1,500 GBP per new hire."),
-    ("SC-900002", "Corby Enterprise Park", "UK Midlands", 1500000, 380000, 62.0, 66.0, 48.0,
+    ("SC-900002", "Corby Enterprise Park", "UK Midlands", 1500000, 380000, 64.0, 70.0, 45.0,
      "Cheaper rent and a ready-built unit, but thinner labour supply and A14/A43 congestion on the way to the M1. Planning needs a change-of-use variation.",
      "Enterprise zone business rates relief (5 years); capital grant up to 250,000 GBP for 150 or more jobs."),
-    ("SC-900003", "Doncaster iPort", "UK North", 1700000, 450000, 70.0, 74.0, 72.0,
+    ("SC-900003", "Doncaster iPort", "UK North", 1700000, 450000, 58.0, 66.0, 78.0,
      "Rail-served site near the M18/A1(M) with good northern coverage. High planning risk: the green-belt boundary is contested and a judicial review is pending. Competes with two large retailers for labour.",
      "Freeport customs and tax benefits; skills fund contribution towards training."),
 ]
@@ -175,7 +175,7 @@ def generate(g):
         woy = period.isocalendar()[1]
         season = 1.0 + (0.35 if 46 <= woy <= 52 else 0.0) - (0.12 if woy in (1, 2, 3, 4, 5) else 0.0) + (0.10 if 22 <= woy <= 30 else 0.0)
         growth = 1.0 - 0.05 * weeks_back / 104.0
-        ecom_share = 0.165 + 0.055 * (1 - weeks_back / 104.0)
+        ecom_share = 0.1825 + 0.05 * (1 - weeks_back / 104.0)
         wholesale_share = 0.15
         total = 92000 * season * growth
         for region, w in REGIONS:

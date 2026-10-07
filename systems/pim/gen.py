@@ -219,14 +219,17 @@ def generate(g):
     # Attribute values: every active/new/other product gets one row per attribute; missing ones are blank rows
     # so they can be corrected in bulk. Exact missing counts follow each attribute's rate.
     rows = {}
+    err_keys = {(sku, name) for sku, name, *_ in DATA_ERRORS}
     for cat in categories:
         prods = by_cat[cat]
+        live = [p for p in prods if p["status"] in ("active", "new")]
         for a in SPECS[cat]:
             aid = attr_by[(cat, a[0])][0]
-            order = prods[:]
+            order = live[:]
             r.shuffle(order)
-            n_missing = round(len(order) * (1 - a[6]))
-            missing = {p["sku"] for p in order[:n_missing]}
+            order.sort(key=lambda p: (p["sku"], a[0]) in err_keys)  # error SKUs keep a (wrong) value
+            missing = {p["sku"] for p in order[:round(len(live) * (1 - a[6]))]}
+            missing |= {p["sku"] for p in prods if p["status"] not in ("active", "new") and r.random() > a[6]}
             for p in prods:
                 upd = g.as_of - timedelta(days=r.randint(1, 90))
                 src = r.choices(["supplier", "internal", "marketplace"], [0.4, 0.4, 0.2])[0]
