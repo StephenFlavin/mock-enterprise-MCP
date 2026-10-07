@@ -182,103 +182,185 @@ tools:
     example: {sku: "K-1700"}
 
   - name: list_top_products_by_sales_for_category
-    desc: Top products by sales for a category. Returns SKU, style, units and revenue, ranked by sales.
+    desc: Top-selling SKUs for a category or department, ranked by sales. Returns units, revenue, markdown and margin rates, origin country and lead time.
     kind: sql
     args:
-      category: {required: true}
-      market: {desc: "Market/country, default all"}
+      category: {desc: "Product category, e.g. Trousers, Knitwear, Dresses"}
+      department: {desc: "Department filter, e.g. Womenswear, Menswear, Home"}
+      market: {desc: "Market/country, e.g. UK, DE, US; default all"}
       period_days: {type: int, default: 90, desc: "Days back from today"}
       limit_rows: {type: int, default: 20, desc: "Number of products to return"}
     sql: |
-      SELECT p.sku, p.style_id, p.category, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp, sum(p.markdown_gbp) AS markdown_gbp
+      SELECT p.sku, p.style_id, pr.name, p.category, pr.country_of_origin, pr.lead_time_days,
+             sum(p.units_sold) AS units_sold, round(sum(p.sales_gbp), 2) AS sales_gbp,
+             round(sum(p.markdown_gbp), 2) AS markdown_gbp,
+             round(100.0 * sum(p.markdown_gbp) / nullif(sum(p.sales_gbp) + sum(p.markdown_gbp), 0), 1) AS markdown_rate_pct,
+             round(100.0 * (sum(p.sales_gbp) - sum(p.cost_gbp)) / nullif(sum(p.sales_gbp), 0), 1) AS margin_pct
       FROM product_sales_fact p
-      WHERE p.category = $category
+      JOIN master.products pr ON pr.sku = p.sku
+      WHERE ($category IS NULL OR p.category = $category)
+        AND ($department IS NULL OR pr.department = $department)
         AND ($market IS NULL OR p.market = $market)
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
-      GROUP BY p.sku, p.style_id, p.category
+        AND p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+      GROUP BY p.sku, p.style_id, pr.name, p.category, pr.country_of_origin, pr.lead_time_days
       ORDER BY sales_gbp DESC
-    limit: 50
-    example: {category: "Dresses"}
+      LIMIT CAST($limit_rows AS INT)
+    limit: 100
+    example: {category: "Trousers", limit_rows: 10}
 
   - name: list_products_ranked_by_sales_for_season
-    desc: Products ranked by sales for a trading season. Returns rank, SKU, units and revenue.
+    desc: Products ranked by sales within one trading season (latest SS or AW by default). Returns rank, SKU, units, revenue and in-stock rate; direction bottom lists the worst sellers.
     kind: sql
     args:
-      season: {required: true, values: [SS, AW], desc: "Trading season"}
-      top_n: {type: int, default: 50, desc: "Top N products"}
+      season: {required: true, values: [SS, AW], desc: "Trading season: SS spring/summer, AW autumn/winter"}
+      fy: {desc: "Financial year of the season, e.g. FY27; default the latest season of that type that has started"}
+      direction: {values: [top, bottom], default: top, desc: "top = best sellers first, bottom = worst sellers first"}
+      top_n: {type: int, default: 50, desc: "Number of products to return"}
+      category: {desc: "Restrict to one category, optional"}
     sql: |
-      SELECT row_number() OVER (ORDER BY sum(p.sales_gbp) DESC) AS rank,
-             p.sku, p.style_id, p.category, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp
-      FROM product_sales_fact p
-      JOIN master.calendar c ON c.date = p.date
-      WHERE c.season = $season
-      GROUP BY p.sku, p.style_id, p.category
-      ORDER BY rank
+      WITH seasons AS (
+        SELECT c.season, c.fy, min(c.date) AS season_start FROM master.calendar c GROUP BY c.season, c.fy
+      ), pick AS (
+        SELECT season, fy FROM seasons
+        WHERE season = $season AND ($fy IS NULL OR fy = $fy) AND season_start <= CAST($as_of AS DATE)
+        ORDER BY season_start DESC LIMIT 1
+      ), agg AS (
+        SELECT p.sku, p.style_id, p.category, k.season, k.fy, sum(p.units_sold) AS units_sold,
+               round(sum(p.sales_gbp), 2) AS sales_gbp
+        FROM product_sales_fact p
+        JOIN master.calendar c ON c.date = p.date
+        JOIN pick k ON k.season = c.season AND k.fy = c.fy
+        WHERE ($category IS NULL OR p.category = $category)
+        GROUP BY p.sku, p.style_id, p.category, k.season, k.fy
+      ), r AS (
+        SELECT *, row_number() OVER (ORDER BY sales_gbp DESC, sku) AS rank,
+               row_number() OVER (ORDER BY sales_gbp ASC, sku) AS rank_from_bottom,
+               count(*) OVER () AS products_ranked
+        FROM agg
+      )
+      SELECT r.rank, r.sku, r.style_id, pr.name, r.category, r.season, r.fy, r.units_sold, r.sales_gbp,
+             pm.in_stock_rate_pct, r.products_ranked
+      FROM r
+      JOIN master.products pr ON pr.sku = r.sku
+      LEFT JOIN product_performance_metrics pm ON pm.sku = r.sku
+      WHERE CASE WHEN $direction = 'bottom' THEN r.rank_from_bottom ELSE r.rank END <= CAST($top_n AS INT)
+      ORDER BY CASE WHEN $direction = 'bottom' THEN r.rank_from_bottom ELSE r.rank END
     limit: 100
-    example: {season: AW}
+    example: {season: SS, top_n: 50}
 
   - name: get_sales_by_category_and_market
-    desc: Total sales by category and market for a period. Returns units, revenue and margin.
+    desc: Sales by category and market for a period, with the same period a year earlier and YoY growth. Returns units, revenue, margin; filter by department or customer segment.
     kind: sql
     args:
       category: {desc: "Category to filter by, optional"}
-      market: {desc: "Market/country to filter by, optional"}
+      department: {desc: "Department filter, e.g. Home, Womenswear; optional"}
+      market: {desc: "Market/country to filter by, e.g. UK, DE, US; optional"}
+      customer_segment: {desc: "Customer segment: Premium, Standard, Budget or VIP; optional"}
+      by_market: {type: bool, default: true, desc: "Split rows by market; false gives one row per category"}
       period_from: {type: date, default: "-90d", desc: "Start date"}
       period_to: {type: date, default: "+0d", desc: "End date"}
     sql: |
-      SELECT p.category, p.market, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
-             round(sum(p.sales_gbp) - sum(p.cost_gbp), 2) AS margin_gbp,
-             round(100.0 * (sum(p.sales_gbp) - sum(p.cost_gbp)) / nullif(sum(p.sales_gbp), 0), 1) AS margin_pct
-      FROM product_sales_fact p
-      WHERE ($category IS NULL OR p.category = $category)
-        AND ($market IS NULL OR p.market = $market)
-        AND p.date >= CAST($period_from AS DATE) AND p.date <= CAST($period_to AS DATE)
-      GROUP BY p.category, p.market
+      WITH f AS (
+        SELECT p.category, CASE WHEN $by_market THEN p.market ELSE 'All' END AS market,
+               p.units_sold, p.sales_gbp, p.cost_gbp,
+               CASE WHEN p.date >= CAST($period_from AS DATE) AND p.date <= CAST($period_to AS DATE) THEN 'cur'
+                    WHEN p.date >= CAST($period_from AS DATE) - INTERVAL 364 DAY
+                     AND p.date <= CAST($period_to AS DATE) - INTERVAL 364 DAY THEN 'ly' END AS win
+        FROM product_sales_fact p
+        JOIN master.products pr ON pr.sku = p.sku
+        WHERE ($category IS NULL OR p.category = $category)
+          AND ($department IS NULL OR pr.department = $department)
+          AND ($market IS NULL OR p.market = $market)
+          AND ($customer_segment IS NULL OR p.customer_segment = $customer_segment)
+      ), a AS (
+        SELECT category, market,
+               coalesce(sum(units_sold) FILTER (WHERE win = 'cur'), 0) AS units_sold,
+               coalesce(sum(sales_gbp) FILTER (WHERE win = 'cur'), 0) AS sales_gbp,
+               coalesce(sum(cost_gbp) FILTER (WHERE win = 'cur'), 0) AS cost_gbp,
+               coalesce(sum(sales_gbp) FILTER (WHERE win = 'ly'), 0) AS sales_gbp_prior_year,
+               coalesce(sum(units_sold) FILTER (WHERE win = 'ly'), 0) AS units_prior_year
+        FROM f WHERE win IS NOT NULL GROUP BY category, market
+      )
+      SELECT category, market, units_sold, round(sales_gbp, 2) AS sales_gbp, round(cost_gbp, 2) AS cost_gbp,
+             round(sales_gbp - cost_gbp, 2) AS margin_gbp,
+             round(100.0 * (sales_gbp - cost_gbp) / nullif(sales_gbp, 0), 1) AS margin_pct,
+             round(sales_gbp_prior_year, 2) AS sales_gbp_prior_year,
+             round(100.0 * (sales_gbp / nullif(sales_gbp_prior_year, 0) - 1), 1) AS yoy_sales_growth_pct,
+             round(100.0 * sales_gbp / nullif(sum(sales_gbp) OVER (), 0), 1) AS pct_of_total_sales
+      FROM a WHERE sales_gbp > 0
       ORDER BY sales_gbp DESC
     limit: 100
-    example: {category: "Dresses", market: UK}
+    example: {category: "Lighting", market: UK}
 
   - name: get_sales_by_size_for_style
-    desc: Sales breakdown by size for a style. Returns units, revenue and return data.
+    desc: Sales by size for a style. Returns units, revenue and each size's share of the style's units over the period.
     kind: sql
     args:
       style_id: {required: true}
       period_days: {type: int, default: 90, desc: "Days back from today"}
+      market: {desc: "Market/country, e.g. UK; default all"}
     sql: |
-      SELECT p.style_id, p.size, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
+      SELECT p.style_id, p.sku, p.size, sum(p.units_sold) AS units_sold,
+             round(sum(p.sales_gbp), 2) AS sales_gbp, round(sum(p.cost_gbp), 2) AS cost_gbp,
              round(100.0 * sum(p.units_sold) / nullif(sum(sum(p.units_sold)) OVER (), 0), 1) AS pct_of_total
       FROM product_sales_fact p
       WHERE p.style_id = $style_id
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
-      GROUP BY p.style_id, p.size
+        AND ($market IS NULL OR p.market = $market)
+        AND p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+      GROUP BY p.style_id, p.sku, p.size
       ORDER BY units_sold DESC
     limit: 50
     example: {style_id: "STY-T-4410"}
 
   - name: get_sales_mix_by_item
-    desc: Sales mix showing each product's contribution to category total and YoY comparison.
+    desc: Sales mix by item for a category, vs the same period a year earlier. Returns share of category, margin %, markdown, supplier and each item's contribution to the margin change; first row is the category total.
     kind: sql
     args:
       category: {required: true}
-      market: {desc: "Market, default all"}
+      market: {desc: "Market/country, e.g. UK; default all"}
+      period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
-      SELECT p.sku, p.style_id, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp,
-             round(100.0 * sum(p.sales_gbp) / sum(sum(p.sales_gbp)) OVER (PARTITION BY p.category), 1) AS pct_of_category,
-             sum(p.markdown_gbp) AS markdown_gbp,
-             round(100.0 * sum(p.markdown_gbp) / nullif(sum(p.sales_gbp), 0), 1) AS markdown_rate_pct
-      FROM product_sales_fact p
-      WHERE p.category = $category
-        AND ($market IS NULL OR p.market = $market)
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-      GROUP BY p.sku, p.style_id, p.category
-      ORDER BY sales_gbp DESC
+      WITH f AS (
+        SELECT p.sku, p.style_id, p.units_sold, p.sales_gbp, p.cost_gbp, p.markdown_gbp,
+               CASE WHEN p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY THEN 'cur'
+                    WHEN p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT) + 364) DAY
+                     AND p.date <= CAST($as_of AS DATE) - INTERVAL 364 DAY THEN 'ly' END AS win
+        FROM product_sales_fact p
+        WHERE p.category = $category AND ($market IS NULL OR p.market = $market)
+      ), a AS (
+        SELECT sku, style_id,
+               coalesce(sum(units_sold) FILTER (WHERE win = 'cur'), 0) AS units,
+               coalesce(sum(sales_gbp) FILTER (WHERE win = 'cur'), 0) AS s_cur,
+               coalesce(sum(cost_gbp) FILTER (WHERE win = 'cur'), 0) AS c_cur,
+               coalesce(sum(markdown_gbp) FILTER (WHERE win = 'cur'), 0) AS m_cur,
+               coalesce(sum(sales_gbp) FILTER (WHERE win = 'ly'), 0) AS s_ly,
+               coalesce(sum(cost_gbp) FILTER (WHERE win = 'ly'), 0) AS c_ly,
+               coalesce(sum(markdown_gbp) FILTER (WHERE win = 'ly'), 0) AS m_ly
+        FROM f WHERE win IS NOT NULL GROUP BY sku, style_id
+      ), t AS (
+        SELECT sum(units) AS units, sum(s_cur) AS s_cur, sum(c_cur) AS c_cur, sum(m_cur) AS m_cur,
+               sum(s_ly) AS s_ly, sum(c_ly) AS c_ly, sum(m_ly) AS m_ly FROM a
+      ), items AS (
+        SELECT 1 AS srt, a.sku, a.style_id, pr.supplier_id, a.units AS units_sold, a.s_cur, a.c_cur, a.m_cur, a.s_ly, a.c_ly, a.m_ly,
+               100.0 * (a.s_cur - a.c_cur) / nullif(t.s_cur, 0) - 100.0 * (a.s_ly - a.c_ly) / nullif(t.s_ly, 0) AS contrib,
+               100.0 * a.s_cur / nullif(t.s_cur, 0) AS share_cur, 100.0 * a.s_ly / nullif(t.s_ly, 0) AS share_ly
+        FROM a CROSS JOIN t LEFT JOIN master.products pr ON pr.sku = a.sku
+        UNION ALL
+        SELECT 0, 'CATEGORY TOTAL', NULL, NULL, units, s_cur, c_cur, m_cur, s_ly, c_ly, m_ly,
+               100.0 * (s_cur - c_cur) / nullif(s_cur, 0) - 100.0 * (s_ly - c_ly) / nullif(s_ly, 0), 100.0, 100.0 FROM t
+      )
+      SELECT sku, style_id, supplier_id, units_sold, round(s_cur, 2) AS sales_gbp,
+             round(share_cur, 1) AS pct_of_category, round(share_ly, 1) AS pct_of_category_prior_year,
+             round(share_cur - share_ly, 1) AS mix_change_pts,
+             round(100.0 * (s_cur - c_cur) / nullif(s_cur, 0), 1) AS margin_pct,
+             round(100.0 * (s_ly - c_ly) / nullif(s_ly, 0), 1) AS margin_pct_prior_year,
+             round(100.0 * m_cur / nullif(s_cur + m_cur, 0), 1) AS markdown_rate_pct,
+             round(100.0 * m_ly / nullif(s_ly + m_ly, 0), 1) AS markdown_rate_pct_prior_year,
+             round(contrib, 2) AS margin_change_contribution_pts
+      FROM items
+      ORDER BY srt, contrib, s_cur DESC
     limit: 100
-    example: {category: "Dresses"}
+    example: {category: "Small Appliances", market: UK}
 
   - name: get_product_sales_rank
     desc: Sales rank for a product. Returns its position among all products and its category.
@@ -301,30 +383,47 @@ tools:
     example: {sku: "K-1700"}
 
   - name: list_product_performance_for_range
-    desc: Product performance metrics for a range review. Returns sales, margin, markdown and strategic role.
+    desc: Product performance for a range review over the last N days. Returns sales, margin %, markdown rate, strategic role and a recommended action (extend, refresh, reprice or delete).
     kind: sql
     args:
       category: {desc: "Filter by category, optional"}
-      period: {type: str, default: "-90d", desc: "Period for metrics"}
-      strategic_role: {desc: "Filter by role: core, growth, strategic, clearance, optional"}
+      department: {desc: "Department filter, e.g. Womenswear; optional"}
+      strategic_role: {values: [core, growth, strategic, clearance], desc: "Filter by strategic role, optional"}
+      period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
-      SELECT p.sku, p.style_id, p.category, sum(p.units_sold) AS units_sold,
-             sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
-             round(sum(p.sales_gbp) - sum(p.cost_gbp), 2) AS margin_gbp,
-             round(100.0 * (sum(p.sales_gbp) - sum(p.cost_gbp)) / nullif(sum(p.sales_gbp), 0), 1) AS margin_pct,
-             round(100.0 * sum(p.markdown_gbp) / nullif(sum(p.sales_gbp), 0), 1) AS markdown_rate_pct,
-             pm.strategic_role, pm.recommend_action
-      FROM product_sales_fact p
-      LEFT JOIN product_performance_metrics pm ON pm.sku = p.sku
-      WHERE ($category IS NULL OR p.category = $category)
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-      GROUP BY p.sku, p.style_id, p.category, pm.strategic_role, pm.recommend_action
+      WITH a AS (
+        SELECT p.sku, p.style_id, p.category, sum(p.units_sold) AS units_sold,
+               round(sum(p.sales_gbp), 2) AS sales_gbp,
+               round(sum(p.sales_gbp) - sum(p.cost_gbp), 2) AS margin_gbp,
+               round(100.0 * (sum(p.sales_gbp) - sum(p.cost_gbp)) / nullif(sum(p.sales_gbp), 0), 1) AS margin_pct,
+               round(100.0 * sum(p.markdown_gbp) / nullif(sum(p.sales_gbp) + sum(p.markdown_gbp), 0), 1) AS markdown_rate_pct
+        FROM product_sales_fact p
+        JOIN master.products pr ON pr.sku = p.sku
+        WHERE ($category IS NULL OR p.category = $category)
+          AND ($department IS NULL OR pr.department = $department)
+          AND p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+        GROUP BY p.sku, p.style_id, p.category
+      ), b AS (
+        SELECT a.*, pm.strategic_role, pm.in_stock_rate_pct, pm.return_rate_pct,
+               ntile(3) OVER (ORDER BY a.sales_gbp DESC) AS sales_third
+        FROM a LEFT JOIN product_performance_metrics pm ON pm.sku = a.sku
+      )
+      SELECT sku, style_id, category, units_sold, sales_gbp, margin_gbp, margin_pct, markdown_rate_pct,
+             in_stock_rate_pct, return_rate_pct, strategic_role,
+             CASE WHEN strategic_role = 'strategic' AND markdown_rate_pct >= 30 THEN 'reprice'
+                  WHEN strategic_role = 'strategic' THEN 'extend'
+                  WHEN strategic_role = 'clearance' OR (markdown_rate_pct >= 30 AND sales_third = 3) THEN 'delete'
+                  WHEN markdown_rate_pct >= 24 THEN 'reprice'
+                  WHEN sales_third = 1 AND margin_pct >= 55 THEN 'extend'
+                  ELSE 'refresh' END AS recommended_action
+      FROM b
+      WHERE $strategic_role IS NULL OR strategic_role = $strategic_role
       ORDER BY sales_gbp DESC
     limit: 200
-    example: {category: "Dresses"}
+    example: {category: "Tops"}
 
   - name: get_product_markdown_rate_history
-    desc: Markdown rate history by product over time. Shows trend and seasonal patterns.
+    desc: Monthly markdown rate history for one product over the last year. Returns rate, units, markdown units and lead time per month, to show trend and seasonality.
     kind: select
     from: product_markdown_rate
     filters:
@@ -333,32 +432,37 @@ tools:
     columns: [sku, style_id, period, markdown_rate_pct, units_sold, markdown_units, lead_time_days]
     order: period
     limit: 52
-    example: {sku: "K-1700"}
+    example: {sku: "SKU-100637"}
 
   - name: get_markdown_rate_by_lead_time
-    desc: Average markdown rate by lead-time band. Shows relationship between lead time and markdown.
+    desc: Markdown rate by lead-time band (0-30, 31-60, 61-90, over 90 days) over the last year. Filter by category, department or origin country to compare nearshore with far-east sourcing.
     kind: sql
     args:
-      category: {desc: "Filter by category, optional"}
+      category: {desc: "Filter by category, e.g. Outerwear, optional"}
+      department: {desc: "Department filter, e.g. Womenswear; optional"}
+      country_of_origin: {desc: "Origin country code, e.g. PT, TR, VN, CN; optional"}
     sql: |
       SELECT CASE WHEN m.lead_time_days <= 30 THEN '0-30 days'
                   WHEN m.lead_time_days <= 60 THEN '31-60 days'
                   WHEN m.lead_time_days <= 90 THEN '61-90 days'
                   ELSE '>90 days' END AS lead_time_band,
              count(distinct m.sku) AS num_products,
-             round(avg(m.markdown_rate_pct), 1) AS avg_markdown_rate_pct,
+             round(100.0 * sum(m.markdown_units) / nullif(sum(m.units_sold), 0), 1) AS avg_markdown_rate_pct,
              round(avg(m.avg_markdown_depth_pct), 1) AS avg_markdown_depth_pct,
              sum(m.units_sold) AS total_units,
-             min(m.lead_time_days) AS min_lead_time
+             min(m.lead_time_days) AS min_lead_time, max(m.lead_time_days) AS max_lead_time,
+             string_agg(DISTINCT pr.country_of_origin, ', ') AS origin_countries
       FROM product_markdown_rate m
-      LEFT JOIN master.products pr ON pr.sku = m.sku
+      JOIN master.products pr ON pr.sku = m.sku
       WHERE ($category IS NULL OR m.category = $category)
+        AND ($department IS NULL OR pr.department = $department)
+        AND ($country_of_origin IS NULL OR pr.country_of_origin = $country_of_origin)
         AND m.period_type = 'monthly'
-        AND m.period >= cast(date_trunc('month', CAST($as_of AS DATE)) - INTERVAL 12 MONTH as varchar)
+        AND m.period >= CAST($as_of AS DATE) - INTERVAL 14 MONTH
       GROUP BY lead_time_band
       ORDER BY min(m.lead_time_days)
     limit: 20
-    example: {category: "Trousers"}
+    example: {category: "Outerwear", department: Womenswear}
 
   - name: get_new_product_launch_history
     desc: Past new-product launches with early-life demand, sell-through and forecast accuracy.
@@ -388,22 +492,25 @@ tools:
     example: {supplier_id: "SUP-0001"}
 
   - name: calculate_units_affected_by_grade_change
-    desc: Calculate total units that would be affected by a grade change for a style size, based on sales history.
+    desc: Units sold of one style size over a period, with its share of the style and weekly run-rate. Use to size a grade-rule change for that size.
     kind: sql
     args:
       style_id: {required: true}
-      size: {required: true}
+      size: {required: true, desc: "Size, e.g. 14"}
       period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
+      WITH s AS (
+        SELECT p.size, p.units_sold, p.date FROM product_sales_fact p
+        WHERE p.style_id = $style_id AND p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+      )
       SELECT $style_id AS style_id, $size AS size,
-             sum(p.units_sold) AS total_units_affected,
-             count(distinct p.date) AS days_with_sales,
-             round(avg(p.units_sold), 1) AS avg_daily_units,
-             max(p.date) AS last_sales_date,
-             'Grade change for ' || $style_id || ' size ' || $size || ' affects units sold' AS explanation
-      FROM product_sales_fact p
-      WHERE p.style_id = $style_id AND p.size = $size
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+             coalesce(sum(units_sold) FILTER (WHERE size = $size), 0) AS total_units_affected,
+             sum(units_sold) AS style_total_units,
+             round(100.0 * coalesce(sum(units_sold) FILTER (WHERE size = $size), 0) / nullif(sum(units_sold), 0), 1) AS pct_of_style_units,
+             round(coalesce(sum(units_sold) FILTER (WHERE size = $size), 0) * 7.0 / CAST($period_days AS INT), 1) AS avg_weekly_units,
+             max(date) FILTER (WHERE size = $size) AS last_sales_date,
+             'units affected = units sold of the size in the period' AS formula
+      FROM s
     limit: 1
     example: {style_id: "STY-T-4410", size: "14"}
 

@@ -13,7 +13,7 @@ def generate(g):
     origin_countries = ["Bangladesh", "China", "India", "Indonesia", "Vietnam", "Turkey", "GB", "USA"]
     destination_countries = ["GB", "US", "DE", "FR", "IE"]
     hs_codes_data = {
-        "6110": {"desc": "Jerseys, pullovers, cardigans (knitted)", "category": "Apparel", "duty": 12.5},
+        "6110": {"desc": "Jerseys, pullovers, cardigans (knitted)", "category": "Apparel", "duty": 12.0},
         "6114": {"desc": "Other garments (knitted)", "category": "Apparel", "duty": 12.0},
         "6204": {"desc": "Women's skirts and trousers", "category": "Apparel", "duty": 12.5},
         "3004": {"desc": "Medicinal preparations", "category": "Pharma", "duty": 0.0},
@@ -23,12 +23,22 @@ def generate(g):
         "8407": {"desc": "Piston engines", "category": "Machinery", "duty": 0.0},
     }
 
+    STORY_HS = {"6109", "6110", "6201", "6202", "6403", "8507", "8414"}  # tariffs, rules, volumes for these are seeded
+    cc = {"CN": "China", "VN": "Vietnam", "BD": "Bangladesh", "TR": "Turkey", "IN": "India", "ID": "Indonesia"}
+    sup_by_id = {s["supplier_id"]: s for s in suppliers}
+    pos_by_sup = {}
+    for po in pos:
+        pos_by_sup.setdefault(po["supplier_id"], []).append(po["po_id"])
+    ship_sups = [s["supplier_id"] for s in suppliers if s["country"] in cc and s["supplier_id"] in pos_by_sup
+                 and s["supplier_id"] not in ("SUP-0008", "SUP-0001", "SUP-0023", "SUP-0053")]
+
     # Generate shipments
     shipments_data = []
     for i, shp in enumerate(shipments[:120]):
         shipment_id = f"SHP-{i+1:06d}"
-        origin = g.pick(origin_countries)
-        destination = g.pick(destination_countries)
+        sup_id = g.pick(ship_sups)
+        origin = cc[sup_by_id[sup_id]["country"]]
+        destination = "GB"
 
         # Random dates
         ship_date = g.days_ago(g.rng.randint(10, 180))
@@ -46,8 +56,8 @@ def generate(g):
 
         shipments_data.append({
             "shipment_id": shipment_id,
-            "po_id": shp.get("po_id", "PO-2026-000001"),
-            "supplier_id": g.pick([s["supplier_id"] for s in suppliers[:15]]),
+            "po_id": g.pick(pos_by_sup[sup_id]),
+            "supplier_id": sup_id,
             "origin_country": origin,
             "destination": "DC1" if g.rng.random() > 0.3 else g.pick(["DC2", "DC3", "DC4", "DC5"]),
             "ship_date": ship_date,
@@ -86,7 +96,7 @@ def generate(g):
             "po_id": shp_rec["po_id"],
             "supplier_id": shp_rec["supplier_id"],
             "origin_country": shp_rec["origin_country"],
-            "destination_country": shp_rec["destination"],
+            "destination_country": "GB",
             "hs_code": hs_code,
             "product_description": hs_codes_data[hs_code]["desc"],
             "quantity": quantity,
@@ -127,6 +137,8 @@ def generate(g):
                 "declaration_id": f"DEC-{i+1:06d}",
                 "supplier_id": shp_rec["supplier_id"],
                 "hold_date": shp_rec["expected_arrival"],
+                "hold_type": "hold",
+                "destination_country": "GB",
                 "hold_reason": g.pick(["classification", "valuation", "origin", "dangerous_goods", "documentation"]),
                 "resolved_at": shp_rec["actual_arrival"] if g.rng.random() > 0.3 else None,
                 "resolution_notes": "Issue resolved" if g.rng.random() > 0.3 else None,
@@ -149,8 +161,10 @@ def generate(g):
     tariffs_data = []
     tariff_id = 1
     for hs_code in hs_codes_data.keys():
+        if hs_code in STORY_HS:
+            continue
         for origin in origin_countries[:6]:
-            for dest in destination_countries:
+            for dest in ["GB", "EU", "US"]:
                 # Base and preferential rates
                 base_rate = hs_codes_data[hs_code]["duty"]
                 pref_rate = base_rate * 0.75 if origin not in ["USA"] else base_rate
@@ -171,7 +185,7 @@ def generate(g):
     # Generate tariff changes
     tariff_changes = []
     change_id = 1
-    for hs_code in ["6110", "3004", "2710"]:
+    for hs_code in ["3004", "2710"]:
         for origin in origin_countries[:3]:
             old_rate = hs_codes_data[hs_code]["duty"]
             new_rate = old_rate * g.rng.uniform(1.05, 1.15)
@@ -179,6 +193,7 @@ def generate(g):
                 "change_id": f"CHG-{change_id:06d}",
                 "hs_code": hs_code,
                 "origin_country": origin,
+                "destination_country": "GB",
                 "old_rate_pct": old_rate,
                 "new_rate_pct": round(new_rate, 2),
                 "change_date": g.days_ago(30),
@@ -190,7 +205,7 @@ def generate(g):
     # Generate additional remedies
     remedies_data = []
     remedy_id = 1
-    for hs_code in ["6110", "2710"]:
+    for hs_code in ["2710"]:
         for origin in ["China", "Vietnam"]:
             remedies_data.append({
                 "remedy_id": f"REM-{remedy_id:06d}",
@@ -209,9 +224,13 @@ def generate(g):
     origin_rules = []
     rule_id = 1
     for hs_code in hs_codes_data.keys():
+        if hs_code.startswith(("61", "62")):
+            continue  # apparel origin rules are seeded at chapter level
         for origin in ["Vietnam", "Bangladesh"]:
             origin_rules.append({
                 "rule_id": f"ORG-{rule_id:06d}",
+                "destination_country": "GB",
+                "how_to_qualify": "Meet the regional value content threshold with originating inputs",
                 "hs_code": hs_code,
                 "origin_country": origin,
                 "trade_agreement": "UK-Vietnam" if origin == "Vietnam" else "GSP",
@@ -224,7 +243,7 @@ def generate(g):
 
     # Generate de minimis thresholds
     de_minimis = []
-    thresholds = {"GB": 135, "US": 800, "DE": 150, "FR": 150, "IE": 150}
+    thresholds = {"GB": 135, "US": 0, "DE": 0, "FR": 0, "IE": 0}
     for country_code, threshold in thresholds.items():
         de_minimis.append({
             "country_code": country_code,
@@ -247,6 +266,7 @@ def generate(g):
                 "destination_country": "GB",
                 "restriction_type": g.pick(["prohibited", "licensed", "limited"]),
                 "description": f"Dangerous goods restrictions for {hs_code} from {origin}",
+                "transport_mode": "all",
                 "updated_at": g.days_ago(0),
             })
             dg_id += 1

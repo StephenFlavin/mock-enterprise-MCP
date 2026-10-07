@@ -57,7 +57,7 @@ def generate(g):
            "T-Shirts": 0.04, "Shirts": 0.0, "Trousers": 0.05, "Small Appliances": 0.0}
     MKT_ADJ = {"UK": 0.0, "DE": -0.08, "US": -0.16}
     PREMIUM_SHARE = {"Knitwear": (0.36, 0.17), "Tops": (0.34, 0.18), "T-Shirts": (0.33, 0.20), "Shirts": (0.30, 0.20)}
-    SA_COST_LY = {"SUP-0013": 0.80}   # last year's landed cost vs today's, small appliances
+    SA_COST_LY = {"SUP-0013": 0.80, "SUP-0062": 0.94}   # last year's landed cost vs today's, small appliances
 
     plan = []   # (product, markets)
     for cat, plist in by_cat.items():
@@ -111,9 +111,11 @@ def generate(g):
         if cat in HOME:
             base *= 2
         base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
+        if launch > g.as_of:
+            continue   # not launched yet
         for d in fort:
-            if d < launch:
-                continue
+            if launch > g.as_of - _td(days=90) and d < launch:
+                continue   # recent launches only sell from launch; older lines carry history (re-colour/carry-over)
             age_y = (g.as_of - d).days / 365.0
             for market in mk:
                 gr = YOY.get(cat, round((_h(cat) - 0.5) * 0.12, 3)) + MKT_ADJ[market]
@@ -223,7 +225,7 @@ def generate(g):
             lead = int(p["lead_time_days"])
             base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
             for mo in months:
-                if mo < _date.fromisoformat(p["launch_date"]):
+                if _date.fromisoformat(p["launch_date"]) > g.as_of - _td(days=90) and mo < _date.fromisoformat(p["launch_date"]):
                     continue
                 season_bump = 0.07 if mo.month in (1, 7) else 0.0
                 rate = min(0.8, max(0.02, base_md + season_bump + g.rng.uniform(-0.03, 0.03)))

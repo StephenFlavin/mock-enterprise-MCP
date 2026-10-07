@@ -21,7 +21,7 @@ FWD_ANNUAL = {"GBP/USD": -0.018, "GBP/EUR": -0.020}   # forward discount per yea
 
 # Next 12 months from the coming month: net exposure GBP m and target hedge cover % (USD month 6 is the planted gap)
 USD_NET = [11.8, 11.2, 12.5, 13.8, 15.2, 17.5, 14.1, 12.2, 11.5, 10.9, 11.4, 12.0]
-USD_COV = [85, 83, 80, 76, 70, 50, 55, 60, 56, 52, 46, 48]
+USD_COV = [82, 80, 76, 72, 66, 45, 52, 56, 54, 50, 46, 48]
 EUR_NET = [2.1, 2.0, 2.4, 2.6, 2.8, 3.0, 2.6, 2.3, 2.1, 2.0, 2.2, 2.3]
 EUR_COV = [84, 82, 80, 78, 74, 70, 66, 62, 58, 54, 50, 46]
 

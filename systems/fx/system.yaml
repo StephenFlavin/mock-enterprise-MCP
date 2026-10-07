@@ -1,7 +1,7 @@
 id: fx
 name: FX & Hedging Platform
 instructions: >
-  FX rates, forwards and hedges for treasury. Currency pairs (GBP/USD, GBP/EUR etc.),
+  FX rates, forwards and hedges for treasury. Currency pairs (GBP/USD, GBP/EUR, GBP/PLN, GBP/TRY, GBP/MAD),
   spot and forward rates, open hedge positions, and hedge effectiveness. Hedge ids look like
   HDG-000123. Use it for exposure forecasts, hedge scenarios, and FX impact analysis.
 
@@ -32,7 +32,7 @@ tables:
       hedge_id: {type: str, desc: "Hedge position, e.g. HDG-000123"}
       currency_pair: {type: str, desc: "Currency pair"}
       exposure_amount: {type: float, desc: "Exposure amount in home currency (GBP)"}
-      hedge_amount: {type: float, desc: "Hedged amount in foreign currency"}
+      hedge_amount: {type: float, desc: "Hedged amount in the foreign currency (notional_gbp x hedge_rate)"}
       instrument_type: {type: enum, values: [forward, option, collar, swap], desc: "Instrument type"}
       hedge_rate: {type: float, desc: "Hedge rate"}
       strike_price: {type: float, desc: "Option strike (options only)"}
@@ -66,8 +66,10 @@ tables:
       market_price: {type: float, desc: "Market price or rate"}
       bid_price: {type: float, desc: "Bid price"}
       ask_price: {type: float, desc: "Ask price"}
-      cost_gbp: {type: float, desc: "Cost or premium in GBP"}
-      protection_level_pct: {type: float, desc: "Protection level %"}
+      cost_pct: {type: float, desc: "Cost or premium as % of notional"}
+      cost_gbp: {type: float, desc: "Cost or premium in GBP per 1,000,000 GBP notional"}
+      protection_level_pct: {type: float, desc: "Share of the hedged amount protected against sterling falling, %"}
+      terms: {type: text, desc: "What the instrument does if sterling strengthens"}
       last_quoted_at: {type: timestamp, desc: "Last quote time"}
 
   hedge_approval_queue:
@@ -78,8 +80,10 @@ tables:
       currency_pair: {type: str, desc: "Currency pair"}
       exposure_gbp: {type: float, desc: "Exposure amount"}
       hedge_ratio_pct: {type: float, desc: "Proposed hedge ratio %"}
-      instrument_type: {type: str, desc: "Instrument type"}
+      instrument_type: {type: enum, values: [forward, option, collar, swap], desc: "Instrument type"}
       cost_gbp: {type: float, desc: "Estimated cost"}
+      hedge_month: {type: date, desc: "Exposure month the trade covers"}
+      rationale: {type: text, desc: "Why the trade is proposed"}
       requested_at: {type: timestamp, desc: "Request timestamp"}
       status: {type: enum, values: [pending, approved, rejected, executed], desc: "Approval status"}
       approved_by: {type: str, desc: "Approver employee id"}
@@ -87,127 +91,149 @@ tables:
 
 tools:
   - name: get_fx_rates_history
-    desc: Historical FX rates for a currency pair, latest first. Use to see rate trends over time.
+    desc: Daily spot rates for a currency pair, latest first, with the move since the period start. Use for rate trends.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
+      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD, GBP/EUR, GBP/PLN, GBP/TRY, GBP/MAD"}
       date_from: {type: date, default: "-90d", desc: "Rates from this date onwards"}
+      date_to: {type: date, desc: "Rates up to this date"}
     sql: |
-      SELECT currency_pair, rate_date, spot_rate, bid_rate, ask_rate, volatility_pct
+      SELECT currency_pair, rate_date, spot_rate, bid_rate, ask_rate, volatility_pct,
+             first_value(spot_rate) OVER (ORDER BY rate_date) AS period_start_rate,
+             round((spot_rate / first_value(spot_rate) OVER (ORDER BY rate_date) - 1) * 100, 2) AS sterling_move_since_start_pct
       FROM fx_rates
       WHERE currency_pair = $currency_pair AND rate_date >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR rate_date <= CAST($date_to AS DATE))
       ORDER BY rate_date DESC
-    limit: 100
+    limit: 300
     example: {currency_pair: "GBP/USD"}
 
   - name: get_fx_rate_history
-    desc: Historical FX rates for a currency pair and period. Use for rate analysis and comparisons.
+    desc: Spot rates for a currency pair over a period, latest first, with rate at period start and change since. Use for costing and margin comparisons.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
+      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD, GBP/EUR"}
       date_from: {type: date, default: "-90d", desc: "Start date"}
       date_to: {type: date, desc: "End date"}
     sql: |
-      SELECT currency_pair, rate_date, spot_rate, bid_rate, ask_rate, volatility_pct
+      SELECT currency_pair, rate_date, spot_rate, bid_rate, ask_rate, volatility_pct,
+             first_value(spot_rate) OVER (ORDER BY rate_date) AS period_start_rate,
+             round((spot_rate / first_value(spot_rate) OVER (ORDER BY rate_date) - 1) * 100, 2) AS sterling_move_since_start_pct,
+             'sterling_move = spot / period_start_rate - 1 (negative = sterling weaker, imports dearer)' AS formula
       FROM fx_rates
       WHERE currency_pair = $currency_pair
         AND rate_date >= CAST($date_from AS DATE)
         AND ($date_to IS NULL OR rate_date <= CAST($date_to AS DATE))
       ORDER BY rate_date DESC
-    limit: 100
+    limit: 300
     example: {currency_pair: "GBP/USD"}
 
   - name: get_fx_rates_for_period
-    desc: Historical FX rates for a currency pair and period. Use for rate analysis and impact calculations.
+    desc: Spot and mid rates for a currency pair between two dates, with move since start. Use to value transactions by posting date.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
+      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/PLN, GBP/EUR, GBP/USD"}
       date_from: {type: date, default: "-90d", desc: "Period start"}
       date_to: {type: date, desc: "Period end"}
     sql: |
-      SELECT currency_pair, rate_date, spot_rate, volatility_pct,
-             round(spot_rate * 100.0, 2) AS spot_points,
-             'rate = bid/ask mid' AS formula
+      SELECT currency_pair, rate_date, spot_rate, round((bid_rate + ask_rate) / 2, 4) AS mid_rate, volatility_pct,
+             first_value(spot_rate) OVER (ORDER BY rate_date) AS period_start_rate,
+             round((spot_rate / first_value(spot_rate) OVER (ORDER BY rate_date) - 1) * 100, 2) AS sterling_move_since_start_pct,
+             'mid_rate = (bid + ask) / 2; move = spot / period_start_rate - 1' AS formula
       FROM fx_rates
       WHERE currency_pair = $currency_pair
         AND rate_date >= CAST($date_from AS DATE)
         AND ($date_to IS NULL OR rate_date <= CAST($date_to AS DATE))
       ORDER BY rate_date DESC
-    limit: 100
-    example: {currency_pair: "GBP/USD"}
+    limit: 300
+    example: {currency_pair: "GBP/PLN"}
 
   - name: get_fx_forward_rates
-    desc: Forward FX rates for a currency pair and maturity. Use for hedging decisions and cost analysis.
+    desc: Forward rates by settlement date for a currency pair (GBP/USD or GBP/EUR) with spot and forward discount. Use for costing and hedging.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
-      forward_date: {type: date, desc: "Forward settlement date (default next 90 days)"}
+      currency_pair: {required: true, desc: "Currency pair, GBP/USD or GBP/EUR"}
+      forward_to: {type: date, default: "+180d", desc: "Latest settlement date"}
     sql: |
-      SELECT currency_pair, forward_date, forward_rate, points, bid_rate, ask_rate
-      FROM fx_forward_rates
-      WHERE currency_pair = $currency_pair
-        AND forward_date >= CAST($as_of AS DATE)
-        AND ($forward_date IS NULL OR forward_date <= CAST($forward_date AS DATE) + INTERVAL 30 DAY)
-      ORDER BY forward_date ASC
-    limit: 50
+      SELECT f.currency_pair, f.forward_date, f.forward_rate, f.points, f.bid_rate, f.ask_rate,
+             (SELECT s.spot_rate FROM fx_rates s WHERE s.currency_pair = f.currency_pair AND s.rate_date <= CAST($as_of AS DATE)
+              ORDER BY s.rate_date DESC LIMIT 1) AS spot_rate,
+             round((f.forward_rate / (SELECT s.spot_rate FROM fx_rates s WHERE s.currency_pair = f.currency_pair AND s.rate_date <= CAST($as_of AS DATE)
+              ORDER BY s.rate_date DESC LIMIT 1) - 1) * 100, 2) AS forward_vs_spot_pct
+      FROM fx_forward_rates f
+      WHERE f.currency_pair = $currency_pair
+        AND f.forward_date >= CAST($as_of AS DATE)
+        AND f.forward_date <= CAST($forward_to AS DATE)
+      ORDER BY f.forward_date ASC
+    limit: 24
     example: {currency_pair: "GBP/USD"}
 
   - name: get_fx_forward_curve
-    desc: Forward FX rate curve for a currency pair. Shows rates for next 12 months used for forecasting.
+    desc: Forward curve for the next 12 months for one currency pair, or all pairs, with spot and forward discount. Use for margin scenarios.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
+      currency_pair: {desc: "Currency pair, e.g. GBP/USD or GBP/EUR; omit for both"}
     sql: |
-      SELECT currency_pair, forward_date, forward_rate, points,
-             round((forward_rate - (SELECT spot_rate FROM fx_rates WHERE currency_pair = $currency_pair ORDER BY rate_date DESC LIMIT 1)) * 10000, 2) AS forward_points
-      FROM fx_forward_rates
-      WHERE currency_pair = $currency_pair
-        AND forward_date >= CAST($as_of AS DATE)
-        AND forward_date <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
-      ORDER BY forward_date ASC
-    limit: 12
+      SELECT f.currency_pair, f.forward_date, f.forward_rate, f.points,
+             (SELECT s.spot_rate FROM fx_rates s WHERE s.currency_pair = f.currency_pair AND s.rate_date <= CAST($as_of AS DATE)
+              ORDER BY s.rate_date DESC LIMIT 1) AS spot_rate,
+             round((f.forward_rate / (SELECT s.spot_rate FROM fx_rates s WHERE s.currency_pair = f.currency_pair AND s.rate_date <= CAST($as_of AS DATE)
+              ORDER BY s.rate_date DESC LIMIT 1) - 1) * 100, 2) AS forward_vs_spot_pct
+      FROM fx_forward_rates f
+      WHERE ($currency_pair IS NULL OR f.currency_pair = $currency_pair)
+        AND f.forward_date >= CAST($as_of AS DATE)
+        AND f.forward_date <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
+      ORDER BY f.currency_pair, f.forward_date ASC
+    limit: 48
     example: {currency_pair: "GBP/USD"}
 
   - name: get_fx_hedge_book
-    desc: Open FX hedge positions by currency and instrument. Returns rate, notional and mark-to-market.
+    desc: Open FX hedges by currency pair, instrument, rate and maturity with notional and mark-to-market, plus total notional per pair.
     kind: sql
     args:
-      currency_pair: {desc: "Filter by currency pair"}
+      currency_pair: {desc: "Currency pair, e.g. GBP/USD"}
       status: {type: enum, values: [open, closed, matured, unwound], default: open, desc: "Position status"}
       maturity_from: {type: date, desc: "Maturity on or after"}
     sql: |
-      SELECT hedge_id, currency_pair, exposure_amount, hedge_amount, instrument_type,
-             hedge_rate, maturity_date, effectiveness_pct, status, notional_gbp, mark_to_market_gbp
+      SELECT hedge_id, currency_pair, instrument_type, hedge_rate, strike_price, maturity_date, notional_gbp,
+             hedge_amount, mark_to_market_gbp, effectiveness_pct, status,
+             sum(notional_gbp) OVER (PARTITION BY currency_pair) AS pair_total_notional_gbp,
+             sum(mark_to_market_gbp) OVER (PARTITION BY currency_pair) AS pair_total_mtm_gbp
       FROM hedge_positions
       WHERE ($currency_pair IS NULL OR currency_pair = $currency_pair)
         AND status = $status
         AND ($maturity_from IS NULL OR maturity_date >= CAST($maturity_from AS DATE))
-      ORDER BY maturity_date ASC, currency_pair
+      ORDER BY currency_pair, maturity_date ASC
     limit: 100
-    example: {status: open}
+    example: {currency_pair: "GBP/USD"}
 
   - name: get_fx_hedge_cover_by_currency
-    desc: Hedge cover by currency and month, showing exposed and hedged amounts.
+    desc: One row per currency with 12-month net exposure, hedged and unhedged amounts and overall cover %. Use for a quick cover summary.
     kind: sql
     args:
       currency: {desc: "Currency, e.g. USD"}
     sql: |
-      SELECT currency, exposure_month, net_exposure_gbp, hedge_coverage_pct,
-             round(net_exposure_gbp * hedge_coverage_pct / 100.0, 2) AS hedged_amount_gbp,
-             round(net_exposure_gbp * (100.0 - hedge_coverage_pct) / 100.0, 2) AS unhedged_amount_gbp,
-             base_rate
+      SELECT currency, count(*) AS months, round(sum(net_exposure_gbp), 2) AS net_exposure_gbp,
+             round(sum(net_exposure_gbp * hedge_coverage_pct / 100.0), 2) AS hedged_gbp,
+             round(sum(net_exposure_gbp * (100.0 - hedge_coverage_pct) / 100.0), 2) AS unhedged_gbp,
+             round(100.0 * sum(net_exposure_gbp * hedge_coverage_pct / 100.0) / sum(net_exposure_gbp), 1) AS cover_pct,
+             min(hedge_coverage_pct) AS lowest_month_cover_pct,
+             arg_min(exposure_month, hedge_coverage_pct) AS lowest_cover_month,
+             'cover_pct = hedged / net exposure over the next 12 months' AS formula
       FROM currency_exposure
       WHERE ($currency IS NULL OR currency = $currency)
         AND exposure_month >= CAST($as_of AS DATE)
-      ORDER BY exposure_month ASC
-    limit: 12
+        AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
+      GROUP BY currency
+      ORDER BY currency
+    limit: 10
     example: {currency: USD}
 
   - name: get_currency_exposure_forecast
-    desc: Net currency exposure by month for 12 months. Use to identify hedging gaps and plan hedges.
+    desc: Net currency exposure by currency and month for the next 12 months, with payables, receivables and cover. Use to find exposed months.
     kind: sql
     args:
-      currency: {desc: "Currency, e.g. USD"}
+      currency: {desc: "Currency, e.g. USD; omit for all currencies"}
     sql: |
       SELECT currency, exposure_month, payable_exposure_gbp, receivable_exposure_gbp,
              net_exposure_gbp, hedge_coverage_pct, base_rate, forecast_status
@@ -215,155 +241,181 @@ tools:
       WHERE ($currency IS NULL OR currency = $currency)
         AND exposure_month >= CAST($as_of AS DATE)
         AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
-      ORDER BY exposure_month ASC
-    limit: 12
+      ORDER BY currency, exposure_month ASC
+    limit: 60
     example: {}
 
   - name: get_hedge_cover_ratio
-    desc: Hedged percentage by currency and month. Use to assess hedge programme progress and gaps.
+    desc: Hedged percentage by currency and month with hedged and unhedged amounts and the 12-month weighted cover. Use for gaps by month.
     kind: sql
     args:
-      currency: {desc: "Currency"}
+      currency: {desc: "Currency, e.g. USD; omit for all currencies"}
     sql: |
       SELECT currency, exposure_month, net_exposure_gbp, hedge_coverage_pct,
              round(net_exposure_gbp * hedge_coverage_pct / 100.0, 2) AS hedged_gbp,
              round(net_exposure_gbp * (100.0 - hedge_coverage_pct) / 100.0, 2) AS unhedged_gbp,
+             round(100.0 * sum(net_exposure_gbp * hedge_coverage_pct / 100.0) OVER (PARTITION BY currency)
+                   / sum(net_exposure_gbp) OVER (PARTITION BY currency), 1) AS weighted_cover_12m_pct,
              'cover_ratio = hedged / net_exposure' AS formula
       FROM currency_exposure
       WHERE ($currency IS NULL OR currency = $currency)
         AND exposure_month >= CAST($as_of AS DATE)
-      ORDER BY exposure_month ASC
-    limit: 12
+        AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
+      ORDER BY currency, exposure_month ASC
+    limit: 60
     example: {currency: USD}
 
   - name: get_hedge_instrument_pricing
-    desc: Forward, option and collar pricing and terms for a currency pair and maturity.
+    desc: Forward, option, collar and swap pricing and terms by maturity for a currency pair; cost per 1m GBP. Use to compare instruments.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair"}
-      maturity_months: {type: int, default: 3, desc: "Forward settlement in months"}
+      currency_pair: {required: true, desc: "Currency pair, GBP/USD or GBP/EUR"}
+      maturity_months: {type: int, desc: "Maturity in months: 1, 3, 6 or 12; omit for all"}
     sql: |
       SELECT instrument_id, instrument_type, currency_pair, maturity_months, market_price,
-             bid_price, ask_price, cost_gbp, protection_level_pct, last_quoted_at
+             cost_pct, cost_gbp AS cost_gbp_per_1m_notional, protection_level_pct, terms, last_quoted_at
       FROM hedge_instruments
       WHERE currency_pair = $currency_pair
         AND ($maturity_months IS NULL OR maturity_months = CAST($maturity_months AS INT))
-      ORDER BY instrument_type, cost_gbp
-    limit: 20
-    example: {currency_pair: "GBP/USD", maturity_months: 3}
+      ORDER BY maturity_months, cost_pct
+    limit: 40
+    example: {currency_pair: "GBP/USD", maturity_months: 12}
 
   - name: get_hedging_instrument_quotes
-    desc: Quotes for forwards and options. Use to compare costs and choose hedging instruments.
+    desc: Dealer bid/ask quotes and cost for forwards and options by maturity, cheapest first. Use to price a hedge before trading.
     kind: sql
     args:
-      currency_pair: {required: true, desc: "Currency pair"}
-      maturity_months: {type: int, default: 3, desc: "Maturity months"}
+      currency_pair: {required: true, desc: "Currency pair, GBP/USD or GBP/EUR"}
+      maturity_months: {type: int, default: 3, desc: "Maturity in months: 1, 3, 6 or 12"}
+      instrument_type: {type: enum, values: [forward, option, collar, swap], desc: "Only this instrument"}
     sql: |
-      SELECT instrument_id, instrument_type, market_price, bid_price, ask_price,
-             cost_gbp, protection_level_pct, last_quoted_at
+      SELECT instrument_id, instrument_type, maturity_months, market_price, bid_price, ask_price,
+             cost_pct, cost_gbp AS cost_gbp_per_1m_notional, protection_level_pct, last_quoted_at
       FROM hedge_instruments
       WHERE currency_pair = $currency_pair
-        AND maturity_months >= $maturity_months - 1
-        AND maturity_months <= $maturity_months + 1
-      ORDER BY cost_gbp ASC
+        AND maturity_months = CAST($maturity_months AS INT)
+        AND ($instrument_type IS NULL OR instrument_type = $instrument_type)
+      ORDER BY cost_pct ASC
     limit: 20
-    example: {currency_pair: "GBP/USD", maturity_months: 3}
+    example: {currency_pair: "GBP/USD", maturity_months: 12}
 
   - name: calculate_fx_sensitivity
-    desc: P&L impact of an FX move against hedge cover. Returns impact by currency and scenario.
+    desc: P&L impact by month of a sterling move against hedge cover, before and after hedges, with totals per currency.
     kind: sql
     args:
-      currency: {required: true, desc: "Currency, e.g. USD"}
-      fx_move_pct: {type: float, default: 5, desc: "FX move %, e.g. 5 or -10"}
+      currency: {desc: "Currency, e.g. USD; omit for all currencies"}
+      fx_move_pct: {type: float, default: -10, desc: "Sterling move against the currency in %: -10 = sterling falls 10%, 5 = rises 5%"}
       months_ahead: {type: int, default: 12, desc: "Forecast months ahead"}
     sql: |
-      SELECT c.currency, c.exposure_month,
-             c.net_exposure_gbp,
-             c.hedge_coverage_pct,
-             round(c.net_exposure_gbp * (100.0 - c.hedge_coverage_pct) / 100.0 * $fx_move_pct / 100.0, 2) AS pl_impact_unhedged_gbp,
-             round(c.net_exposure_gbp * c.hedge_coverage_pct / 100.0 * $fx_move_pct / 100.0 * -1, 2) AS pl_impact_hedged_gbp,
-             round(c.net_exposure_gbp * (100.0 - c.hedge_coverage_pct) / 100.0 * $fx_move_pct / 100.0 +
-                   c.net_exposure_gbp * c.hedge_coverage_pct / 100.0 * $fx_move_pct / 100.0 * -1, 2) AS total_pl_impact_gbp,
-             'unhedged_impact = exposure * (1 - coverage) * fx_move' AS formula
+      SELECT c.currency, c.exposure_month, c.net_exposure_gbp, c.hedge_coverage_pct,
+             round(c.net_exposure_gbp * $fx_move_pct / 100.0, 2) AS pl_before_hedges_gbp,
+             round(-c.net_exposure_gbp * c.hedge_coverage_pct / 100.0 * $fx_move_pct / 100.0, 2) AS hedge_gain_gbp,
+             round(c.net_exposure_gbp * (100.0 - c.hedge_coverage_pct) / 100.0 * $fx_move_pct / 100.0, 2) AS net_pl_impact_gbp,
+             round(sum(c.net_exposure_gbp * $fx_move_pct / 100.0) OVER (PARTITION BY c.currency), 2) AS total_before_hedges_gbp,
+             round(sum(c.net_exposure_gbp * (100.0 - c.hedge_coverage_pct) / 100.0 * $fx_move_pct / 100.0) OVER (PARTITION BY c.currency), 2) AS total_net_pl_impact_gbp,
+             'net P&L = net exposure * (1 - cover) * sterling move; negative = loss (payables cost more when sterling falls)' AS formula
       FROM currency_exposure c
-      WHERE c.currency = $currency
+      WHERE ($currency IS NULL OR c.currency = $currency)
         AND c.exposure_month >= CAST($as_of AS DATE)
         AND c.exposure_month <= CAST($as_of AS DATE) + INTERVAL ($months_ahead) MONTH
-      ORDER BY c.exposure_month ASC
-    limit: 12
-    example: {currency: USD, fx_move_pct: 5}
+      ORDER BY c.currency, c.exposure_month ASC
+    limit: 60
+    example: {currency: USD, fx_move_pct: -5}
 
   - name: calculate_hedge_gap
-    desc: Under- or over-hedged position by currency and month. Returns gap amounts and recommendations.
+    desc: Under- or over-hedged amount by currency and month against a target ratio, biggest gap first, with the month's rank.
     kind: sql
     args:
-      currency: {required: true, desc: "Currency, e.g. USD"}
+      currency: {desc: "Currency, e.g. USD; omit for all currencies"}
       target_hedge_ratio_pct: {type: int, default: 75, desc: "Target hedge ratio %"}
     sql: |
       SELECT currency, exposure_month, net_exposure_gbp, hedge_coverage_pct,
              round(net_exposure_gbp * $target_hedge_ratio_pct / 100.0, 2) AS target_hedged_gbp,
              round(net_exposure_gbp * hedge_coverage_pct / 100.0, 2) AS current_hedged_gbp,
-             round(net_exposure_gbp * $target_hedge_ratio_pct / 100.0 - net_exposure_gbp * hedge_coverage_pct / 100.0, 2) AS gap_gbp,
-             CASE WHEN ($target_hedge_ratio_pct - hedge_coverage_pct) > 0 THEN 'under-hedged'
-                  WHEN ($target_hedge_ratio_pct - hedge_coverage_pct) < 0 THEN 'over-hedged'
+             round(net_exposure_gbp * ($target_hedge_ratio_pct - hedge_coverage_pct) / 100.0, 2) AS gap_gbp,
+             CASE WHEN hedge_coverage_pct < $target_hedge_ratio_pct THEN 'under-hedged'
+                  WHEN hedge_coverage_pct > $target_hedge_ratio_pct THEN 'over-hedged'
                   ELSE 'on-target' END AS gap_status,
-             'gap = (target - current) hedged' AS formula
+             rank() OVER (ORDER BY net_exposure_gbp * ($target_hedge_ratio_pct - hedge_coverage_pct) DESC) AS gap_rank,
+             'gap = net exposure * (target - current cover); positive = hedge more' AS formula
       FROM currency_exposure
-      WHERE currency = $currency
+      WHERE ($currency IS NULL OR currency = $currency)
         AND exposure_month >= CAST($as_of AS DATE)
-      ORDER BY exposure_month ASC
-    limit: 12
+        AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
+      ORDER BY gap_gbp DESC
+    limit: 60
     example: {currency: USD, target_hedge_ratio_pct: 75}
 
   - name: calculate_hedge_scenarios
-    desc: Cost and protection under alternative hedge ratios (50%, 75%, 100%). Returns instrument mix and outcomes.
+    desc: Cost and protection of hedging a GBP notional at 50%, 75%, 100% and your current and proposed ratios with one instrument.
     kind: sql
     args:
       currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
-      notional_gbp: {required: true, type: float, desc: "Exposure amount in GBP"}
-      maturity_months: {type: int, default: 3, desc: "Hedge maturity in months"}
+      notional_gbp: {type: float, desc: "Exposure to hedge in GBP; omit to use the next 12 months' net exposure for the currency"}
+      maturity_months: {type: int, default: 12, desc: "Hedge maturity in months: 1, 3, 6 or 12"}
+      instrument_type: {type: enum, values: [forward, option, collar, swap], default: forward, desc: "Instrument to price"}
+      current_ratio_pct: {type: int, default: 60, desc: "Current hedge ratio %"}
+      proposed_ratio_pct: {type: int, default: 80, desc: "Proposed hedge ratio %"}
     sql: |
-      SELECT 'scenario 50% hedge' AS scenario, CAST(50 AS INT) AS ratio_pct,
-             round($notional_gbp * 50 / 100.0, 2) AS hedged_amount_gbp,
-             (SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months) AS avg_cost_per_unit,
-             round((SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months) * 50 / 100.0, 2) AS total_cost_gbp,
-             (SELECT avg(protection_level_pct) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months) AS protection_pct
-      UNION ALL
-      SELECT 'scenario 75% hedge', CAST(75 AS INT),
-             round($notional_gbp * 75 / 100.0, 2),
-             (SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months),
-             round((SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months) * 75 / 100.0, 2),
-             (SELECT avg(protection_level_pct) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months)
-      UNION ALL
-      SELECT 'scenario 100% hedge', CAST(100 AS INT),
-             round($notional_gbp * 100 / 100.0, 2),
-             (SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months),
-             round((SELECT avg(cost_gbp) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months) * 100 / 100.0, 2),
-             (SELECT avg(protection_level_pct) FROM hedge_instruments WHERE currency_pair = $currency_pair AND maturity_months = $maturity_months)
-      ORDER BY ratio_pct ASC
-    limit: 3
-    example: {currency_pair: "GBP/USD", notional_gbp: 5000000, maturity_months: 3}
+      WITH n AS (
+        SELECT COALESCE($notional_gbp, (SELECT sum(net_exposure_gbp) FROM currency_exposure
+                 WHERE currency = substr($currency_pair, 5) AND exposure_month >= CAST($as_of AS DATE)
+                   AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH)) AS notional
+      ), i AS (
+        SELECT cost_pct, protection_level_pct FROM hedge_instruments
+        WHERE currency_pair = $currency_pair AND maturity_months = CAST($maturity_months AS INT) AND instrument_type = $instrument_type
+      ), r AS (
+        SELECT DISTINCT x AS ratio_pct FROM (VALUES (50), (75), (100), (CAST($current_ratio_pct AS INT)), (CAST($proposed_ratio_pct AS INT))) t(x)
+      )
+      SELECT $currency_pair AS currency_pair, $instrument_type AS instrument_type, CAST($maturity_months AS INT) AS maturity_months,
+             r.ratio_pct,
+             CASE WHEN r.ratio_pct = $current_ratio_pct THEN 'current' WHEN r.ratio_pct = $proposed_ratio_pct THEN 'proposed' ELSE '' END AS label,
+             round(n.notional, 2) AS notional_gbp,
+             round(n.notional * r.ratio_pct / 100.0, 2) AS hedged_gbp,
+             i.cost_pct,
+             round(n.notional * r.ratio_pct / 100.0 * i.cost_pct / 100.0, 2) AS hedging_cost_gbp,
+             round(n.notional * (100 - r.ratio_pct) / 100.0 * 0.10, 2) AS loss_if_sterling_falls_10pct_gbp,
+             CASE WHEN $instrument_type = 'option' THEN 0.0
+                  WHEN $instrument_type = 'collar' THEN round(n.notional * r.ratio_pct / 100.0 * 0.05, 2)
+                  ELSE round(n.notional * r.ratio_pct / 100.0 * 0.10, 2) END AS forgone_gain_if_sterling_rises_10pct_gbp,
+             i.protection_level_pct,
+             'cost = hedged * cost_pct; unhedged loss = notional * (1 - ratio) * 10%; forgone gain = hedged * 10% (none for options, above a 5% band for collars)' AS formula
+      FROM r CROSS JOIN n CROSS JOIN i
+      ORDER BY r.ratio_pct
+    limit: 10
+    example: {currency_pair: "GBP/USD", notional_gbp: 5000000}
 
   - name: get_fx_impact_on_cogs
-    desc: COGS impact of FX movements net of hedges. Use to understand P&L sensitivity to FX.
+    desc: COGS impact by currency of a sterling move over the last year, or a given move, gross and net of hedges on the next 12 months.
     kind: sql
     args:
-      currency: {required: true, desc: "Currency"}
-      fx_move_pct: {type: float, default: 5, desc: "FX move percentage"}
+      currency: {desc: "Currency, e.g. USD; omit for all currencies"}
+      fx_move_pct: {type: float, desc: "Sterling move in %, e.g. -10; omit to use the actual move since period_from"}
+      period_from: {type: date, default: "-365d", desc: "Start of the period over which the actual sterling move is measured"}
     sql: |
-      SELECT c.currency, c.exposure_month,
-             round(c.net_exposure_gbp * $fx_move_pct / 100.0, 2) AS unhedged_cogs_impact_gbp,
-             round(c.hedge_coverage_pct / 100.0, 4) AS hedge_ratio,
-             round(c.net_exposure_gbp * $fx_move_pct / 100.0 * (1.0 - c.hedge_coverage_pct / 100.0), 2) AS net_cogs_impact_gbp,
-             round(c.net_exposure_gbp * c.hedge_coverage_pct / 100.0, 2) AS hedged_amount_gbp,
-             'net_impact = unhedged_impact * (1 - hedge_ratio)' AS formula
-      FROM currency_exposure c
-      WHERE c.currency = $currency
-        AND c.exposure_month >= CAST($as_of AS DATE)
-        AND c.exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
-      ORDER BY c.exposure_month ASC
-    limit: 12
-    example: {currency: USD, fx_move_pct: 5}
+      WITH r AS (
+        SELECT currency_pair, arg_min(spot_rate, rate_date) AS start_rate, arg_max(spot_rate, rate_date) AS end_rate
+        FROM fx_rates WHERE rate_date >= CAST($period_from AS DATE) AND rate_date <= CAST($as_of AS DATE) GROUP BY currency_pair
+      ), e AS (
+        SELECT currency, sum(net_exposure_gbp) AS net, sum(net_exposure_gbp * hedge_coverage_pct / 100.0) AS hedged
+        FROM currency_exposure
+        WHERE ($currency IS NULL OR currency = $currency) AND exposure_month >= CAST($as_of AS DATE)
+          AND exposure_month <= CAST($as_of AS DATE) + INTERVAL 12 MONTH
+        GROUP BY currency
+      )
+      SELECT e.currency, r.start_rate, r.end_rate,
+             round((r.end_rate / r.start_rate - 1) * 100, 2) AS actual_sterling_move_pct,
+             COALESCE($fx_move_pct, round((r.end_rate / r.start_rate - 1) * 100, 2)) AS move_used_pct,
+             round(e.net, 2) AS annual_net_exposure_gbp,
+             round(e.hedged / e.net, 4) AS hedge_ratio,
+             round(-e.net * COALESCE($fx_move_pct, (r.end_rate / r.start_rate - 1) * 100) / 100.0, 2) AS gross_cogs_impact_gbp,
+             round(e.hedged * COALESCE($fx_move_pct, (r.end_rate / r.start_rate - 1) * 100) / 100.0, 2) AS hedge_offset_gbp,
+             round(-(e.net - e.hedged) * COALESCE($fx_move_pct, (r.end_rate / r.start_rate - 1) * 100) / 100.0, 2) AS net_cogs_impact_gbp,
+             'net COGS impact = -(exposure - hedged) * sterling move; positive = COGS up' AS formula
+      FROM e JOIN r ON r.currency_pair = 'GBP/' || e.currency
+      ORDER BY e.currency
+    limit: 10
+    example: {currency: USD}
 
   - name: get_hedge_effectiveness_report
     desc: Hedge accounting effectiveness. Returns realised and unrealised P&L and hedge efficiency ratio.
@@ -392,11 +444,13 @@ tools:
     kind: insert
     table: hedge_approval_queue
     id_prefix: APR-
-    defaults: {status: pending}
+    defaults: {status: pending, requested_at: "$as_of"}
     args:
       currency_pair: {required: true, desc: "Currency pair, e.g. GBP/USD"}
       exposure_gbp: {required: true, type: float, desc: "Exposure amount in GBP"}
       hedge_ratio_pct: {required: true, type: int, desc: "Proposed hedge ratio %"}
-      instrument_type: {required: true, desc: "Instrument type: forward, option, collar, swap"}
+      instrument_type: {required: true, type: enum, values: [forward, option, collar, swap], desc: "Instrument type"}
       cost_gbp: {required: true, type: float, desc: "Estimated cost in GBP"}
+      hedge_month: {type: date, desc: "Exposure month the trade covers"}
+      rationale: {type: str, desc: "Why the trade is proposed"}
     example: {currency_pair: "GBP/USD", exposure_gbp: 5000000, hedge_ratio_pct: 75, instrument_type: forward, cost_gbp: 12500}
