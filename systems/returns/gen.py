@@ -158,7 +158,7 @@ def generate(g):
             "return_id": f"RET-{len(returns_list) + 1:06d}",
             "order_id": order["order_id"],
             "sku": sku,
-            "style_id": prod.get("style_id", "STY-0000"),
+            "style_id": prod.get("style_id", products[0]["style_id"]),
             "return_date": return_date.date(),
             "return_reason_code": reason_code,
             "pack_type": prod.get("pack_type", "carton"),

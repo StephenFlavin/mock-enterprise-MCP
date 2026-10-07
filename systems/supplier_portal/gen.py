@@ -12,6 +12,7 @@ def generate(g):
     po_lines = g.master("po_lines")
     purchase_orders = g.master("purchase_orders")
     shipments = g.master("shipments")
+    employees = g.master("employees")
 
     # Build map of PO ID -> Shipment ID for quick lookup
     po_to_shipment = {}
@@ -73,7 +74,7 @@ def generate(g):
                 "submitted_at": var["received_at"] + timedelta(days=r.randint(1, 5)),
                 "settled_amount_gbp": var["variance_value_gbp"] * r.uniform(0.7, 1.0),
                 "notes": "Variance from ASN",
-                "created_by": "EMP-01234",
+                "created_by": r.choice(employees)["employee_id"] if employees else "EMP-00001",
                 "updated_at": datetime.now(),
             }
             supplier_claims.append(claim)
@@ -107,7 +108,7 @@ def generate(g):
                 "raised_at": raised,
                 "due_date": raised + timedelta(days=14),
                 "closed_at": raised + timedelta(days=r.randint(15, 30)) if r.random() < 0.4 else None,
-                "created_by": "EMP-01234",
+                "created_by": r.choice(employees)["employee_id"] if employees else "EMP-00001",
                 "updated_at": datetime.now(),
             }
             corrective_actions.append(car)

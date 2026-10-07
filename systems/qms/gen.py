@@ -275,7 +275,7 @@ def generate(g):
             scorecards.append({
                 "scorecard_id": scorecard_id,
                 "factory_id": factory["factory_id"],
-                "period": week_start.date(),
+                "period": week_start_date,
                 "total_units_inspected": total_units,
                 "defects_found": total_defects,
                 "defect_rate_pct": round(defect_rate, 1),
@@ -291,7 +291,8 @@ def generate(g):
         pack_types = ["polybag", "carton", "rigid_box", "hanging", "blister"]
 
         for week_offset in range(-12, 1):
-            week_start = g.weeks(1)[0] + timedelta(weeks=week_offset)
+            week_start_dt = g.weeks(1)[0] + timedelta(weeks=week_offset)
+            week_start_date = week_start_dt if isinstance(week_start_dt, date) else week_start_dt.date()
 
             for pack_type in r.sample(pack_types, r.randint(1, 3)):
                 damage_num = len(pack_damage)
@@ -307,12 +308,12 @@ def generate(g):
                     "damage_id": damage_id,
                     "sku": product["sku"],
                     "pack_type": pack_type,
-                    "period": week_start.date(),
+                    "period": week_start_date,
                     "units_shipped": units_shipped,
                     "units_damaged": units_damaged,
                     "damage_rate_pct": round(damage_rate, 2),
                     "damage_type": r.choice(["crushed", "water_damaged", "punctured", "torn", "leaking"]),
-                    "created_at": week_start + timedelta(days=7)
+                    "created_at": datetime.combine(week_start_date, datetime.min.time()) + timedelta(days=7)
                 })
 
     # Generate quality reviews

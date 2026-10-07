@@ -160,7 +160,12 @@ def generate(g):
 
     # 4. Generate cost variance drivers
     variance_id_ctr = 1
+    category_products_map = {}
+    for category in categories:
+        category_products_map[category] = [p for p in products_with_suppliers if p.get("category") == category]
+
     for category in list(categories)[:10]:
+        category_products = category_products_map.get(category, products_with_suppliers[:5])
         for week in range(6):
             period = g.days_ago(week * 7).strftime("%Y-%m")
 
@@ -172,9 +177,12 @@ def generate(g):
 
             total_var = cost_var + fx_var + mix_var + supplier_var + markdown_var
 
+            # Use real style_id from category products
+            style_id = category_products[0].get("style_id") if category_products else "STY-4012"
+
             cost_variance_drivers.append({
                 "variance_id": f"VAR-{variance_id_ctr:06d}",
-                "style_id": f"STY-{r.randint(1000, 9999)}",
+                "style_id": style_id,
                 "category": category,
                 "period": period,
                 "total_variance_pct": round(total_var, 2),
@@ -236,6 +244,8 @@ def generate(g):
     # 7. Generate scenario analyses
     scenario_id_ctr = 1
     scenario_types = ["freight_mode", "volume", "material_cost", "supplier", "markdown", "lead_time"]
+    employees = g.master("employees")
+    employee_ids = [e["employee_id"] for e in employees[:20]] if employees else ["EMP-00001"]
 
     for costing in product_costings[:20]:
         for scenario_type in scenario_types[:3]:
@@ -262,7 +272,7 @@ def generate(g):
                 "margin_impact_pct": round(margin_impact / costing["retail_price_gbp"] * 100, 1),
                 "volume_impact": r.randint(-500, 2000),
                 "financial_impact_gbp": round(cost_impact * costing["quantity_units"], 2),
-                "created_by": f"EMP-{r.randint(100, 999):05d}",
+                "created_by": r.choice(employee_ids),
                 "created_at": g.as_of - timedelta(days=r.randint(0, 30)),
             })
             scenario_id_ctr += 1
