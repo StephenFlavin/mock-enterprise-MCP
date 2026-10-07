@@ -68,6 +68,8 @@ def generate(g):
             "cleared_at": actual_arrival if clearance_status in ["cleared", "released"] else None,
             "lead_time_days": lead_time_days,
             "updated_at": g.days_ago(0),
+            "destination_country": "GB",
+            "partner_id": None,
         })
 
     # Generate customs declarations
@@ -337,9 +339,9 @@ def generate(g):
             "position_id": position_id,
             "sku": sku["sku"],
             "hs_code": g.pick(list(hs_codes_data.keys())),
-            "status": g.rng.choices(["active", "review", "weakest"], [0.7, 0.2, 0.1])[0],
+            "status": g.rng.choices(["active", "review"], [0.8, 0.2])[0],  # weakest/high-risk positions are seeded
             "valuation_method": g.pick(["transaction_value", "identical_goods", "similar_goods", "deductive", "computed", "fallback"]),
-            "risk_rating": g.rng.choices(["low", "medium", "high"], [0.6, 0.3, 0.1])[0],
+            "risk_rating": g.rng.choices(["low", "medium"], [0.7, 0.3])[0],
             "created_date": g.days_ago(g.rng.randint(90, 365)),
             "last_reviewed_date": g.days_ago(g.rng.randint(0, 30)),
             "notes": "Position under review",

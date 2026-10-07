@@ -43,6 +43,8 @@ tables:
       cleared_at: {type: timestamp, desc: "When cleared by customs"}
       lead_time_days: {type: int, desc: "Actual lead time in days"}
       updated_at: {type: timestamp, desc: "Last updated"}
+      destination_country: {type: str, desc: "Country the goods are cleared into, e.g. GB or UAE"}
+      partner_id: {type: str, desc: "Franchise partner receiving the shipment, if any"}
 
   customs_queries:
     key: query_id
@@ -386,6 +388,7 @@ tools:
     defaults: {status: draft}
     args:
       declaration_id: {required: true}
+      po_id: {desc: "Purchase order of the declaration claimed"}
       claim_amount_gbp: {required: true}
       reason: {required: true}
     example: {declaration_id: DEC-900001, claim_amount_gbp: 2500.00, reason: "Goods re-exported"}
@@ -486,18 +489,24 @@ tools:
     example: {auth_type: bonded_warehouse}
 
   - name: get_customs_clearance_status_for_shipments
-    desc: Retrieves customs clearance status for shipments by purchase order or date range.
+    desc: Retrieves customs clearance status for shipments by purchase order, franchise partner or destination country, with days from arrival to clearance. Shows whether goods are held.
     kind: sql
     args:
       po_id: {}
-      date_from: {type: date, default: "-30d", desc: "From this date"}
+      partner_id: {desc: "Franchise partner, e.g. PTN-011"}
+      destination_country: {type: str, desc: "Country cleared into, e.g. GB or UAE. Blank returns all"}
+      date_from: {type: date, default: "-30d", desc: "Shipped from this date"}
     sql: |
-      SELECT shipment_id, po_id, supplier_id, clearance_status, hold_reason,
-             actual_arrival, cleared_at, lead_time_days
+      SELECT shipment_id, po_id, partner_id, supplier_id, destination_country, clearance_status, hold_reason,
+             ship_date, actual_arrival, cleared_at,
+             date_diff('day', actual_arrival, CAST(cleared_at AS DATE)) AS days_to_clear,
+             lead_time_days
       FROM shipments
       WHERE ($po_id IS NULL OR po_id = $po_id)
+        AND ($partner_id IS NULL OR partner_id = $partner_id)
+        AND ($destination_country IS NULL OR destination_country = $destination_country)
         AND ship_date >= CAST($date_from AS DATE)
-      ORDER BY actual_arrival DESC
+      ORDER BY ship_date DESC
     limit: 50
     example: {date_from: "-14d"}
 
@@ -552,7 +561,10 @@ tools:
       date_from: {type: date, default: "-180d", desc: "From this date"}
     sql: |
       SELECT transaction_id, po_id, sku, supplier_id, price_gbp, transaction_date,
-             first_sale_purchase_price_gbp, our_purchase_price_gbp, eligible_for_first_sale, evidence_held
+             first_sale_purchase_price_gbp, our_purchase_price_gbp,
+             round(our_purchase_price_gbp - first_sale_purchase_price_gbp, 2) AS value_reduction_per_unit_gbp,
+             round(100.0 * (our_purchase_price_gbp - first_sale_purchase_price_gbp) / our_purchase_price_gbp, 1) AS value_reduction_pct,
+             eligible_for_first_sale, evidence_held
       FROM first_sale_transactions
       WHERE ($po_id IS NULL OR po_id = $po_id)
         AND transaction_date >= CAST($date_from AS DATE)
@@ -719,14 +731,14 @@ tools:
     args:
       trade_agreement: {}
       origin_country: {}
-      hs_code: {}
+      hs_code: {desc: "HS code, e.g. 6110. Chapter-level rules (e.g. 61) also match"}
     sql: |
       SELECT rule_id, trade_agreement, origin_country, hs_code, rule_description,
              value_content_threshold_pct, required_documents, eligibility_criteria
       FROM origin_rules
       WHERE ($trade_agreement IS NULL OR trade_agreement = $trade_agreement)
         AND ($origin_country IS NULL OR origin_country = $origin_country)
-        AND ($hs_code IS NULL OR hs_code = $hs_code)
+        AND ($hs_code IS NULL OR $hs_code LIKE hs_code || '%')
       ORDER BY trade_agreement, origin_country
     limit: 30
     example: {trade_agreement: "UK-Vietnam"}
@@ -766,7 +778,8 @@ tools:
       WHERE ($sku IS NULL OR sku = $sku)
         AND ($risk_rating IS NULL OR risk_rating = $risk_rating)
         AND ($status IS NULL OR status = $status)
-      ORDER BY risk_rating DESC, last_reviewed_date DESC
+      ORDER BY CASE status WHEN 'weakest' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
+               CASE risk_rating WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, last_reviewed_date DESC
     limit: 50
     example: {risk_rating: high}
 
@@ -850,14 +863,16 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: list_affected_customs_declarations
-    desc: Declarations affected by a retrospective price adjustment. Returns impacted declarations needing amendment.
+    desc: Declarations affected by a retrospective price adjustment on a PO. Returns impacted declarations with the amendment deadline (3 years from declaration) and whether each is still inside it.
     kind: sql
     args:
       po_id: {required: true}
       date_from: {type: date, default: "-6m", desc: "Declarations from this date"}
     sql: |
       SELECT declaration_id, shipment_id, po_id, supplier_id, hs_code,
-             declared_value_gbp, duty_amount_gbp, status, declared_at
+             declared_value_gbp, duty_amount_gbp, status, declared_at,
+             CAST(CAST(declared_at AS DATE) + INTERVAL 3 YEAR AS DATE) AS amend_by,
+             CAST(CAST(declared_at AS DATE) + INTERVAL 3 YEAR AS DATE) >= CAST($as_of AS DATE) AS inside_time_limit
       FROM customs_declarations
       WHERE po_id = $po_id
         AND declared_at >= CAST($date_from AS DATE)
