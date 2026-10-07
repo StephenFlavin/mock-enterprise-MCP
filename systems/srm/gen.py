@@ -45,6 +45,7 @@ def generate(g):
         "SUP-0001": (0.30, 10), "SUP-0008": (0.35, 8), "SUP-0016": (0.25, 7), "SUP-0013": (0.45, 11),
     }
     RAMP = {"SUP-0053", "SUP-0070"}               # getting worse over time: later POs overrun more
+    WINDOW_SAFE = {"SUP-0039", "SUP-0004", "SUP-0011", "SUP-0046", "SUP-0044", "SUP-0001"}
     STAGE_SHARE = {"SUP-0046": (0.62, 0.08, 0.30)}
     DELAY_STAGE = {"SUP-0053": (0.85, 0.05, 0.10), "SUP-0046": (0.45, 0.20, 0.35)}
     STAGES = ["order_to_factory", "factory_to_port", "port_to_dc"]
@@ -66,6 +67,9 @@ def generate(g):
         if sid not in by_id:
             continue
         plist.sort(key=lambda p: p["order_date"])
+        if sid in WINDOW_SAFE or by_id[sid]["country"] == "TR":     # keep story POs clear of the 6 / 12 month rolling-window edges
+            plist = [p for p in plist if not (170 <= (as_of - date.fromisoformat(p["order_date"])).days <= 195
+                                              or 345 <= (as_of - date.fromisoformat(p["order_date"])).days <= 375)]
         otif = float(by_id[sid]["otif_pct_12m"])
         frac, over = LATE.get(sid, (min(0.6, (100 - otif) / 100 * 2.2), 4))
         shares = STAGE_SHARE.get(sid, (0.50, 0.12, 0.38))

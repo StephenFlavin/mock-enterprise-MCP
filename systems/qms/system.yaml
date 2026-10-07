@@ -150,6 +150,16 @@ tables:
       damage_type: {type: str, desc: "E.g. crushed, water_damaged, leaking"}
       created_at: {type: timestamp, desc: "When recorded"}
 
+  sample_acceptance_criteria:
+    key: criterion_id
+    cols:
+      criterion_id: {type: str, desc: "Acceptance criterion, e.g. SAC-000001"}
+      product_type: {type: str, desc: "Product type the test applies to, e.g. insulated lunch box, or general for all products"}
+      test_name: {type: str, desc: "Test or inspection a preproduction sample must pass"}
+      requirement: {type: text, desc: "Threshold the sample must meet"}
+      method: {type: str, desc: "Test method or standard"}
+      severity: {type: enum, values: [critical, major, minor], desc: "Failure severity; a critical failure blocks PO release"}
+
   quality_reviews:
     key: review_id
     cols:
@@ -415,8 +425,8 @@ tools:
     args:
       incident_id: {required: true, desc: "Quality incident requiring supplier notification"}
     sql:
-      incident: SELECT incident_id, sku, factory_id, issue_description, severity FROM quality_incidents WHERE incident_id = $incident_id
-      factory: SELECT name, supplier_id FROM master.factories WHERE factory_id = (SELECT factory_id FROM quality_incidents WHERE incident_id = $incident_id LIMIT 1)
+      incident: SELECT incident_id, sku, factory_id, lot_id, issue_description, severity FROM quality_incidents WHERE incident_id = $incident_id
+      factory: SELECT factory_id, name, supplier_id FROM master.factories WHERE factory_id = (SELECT factory_id FROM quality_incidents WHERE incident_id = $incident_id LIMIT 1)
     template: |
       QUALITY NOTIFICATION
 
@@ -424,11 +434,14 @@ tools:
       Reference: {{ incident[0].incident_id }}
       Severity: {{ incident[0].severity }}
 
+      To: {{ factory[0].name }} ({{ factory[0].factory_id }}), supplier {{ factory[0].supplier_id }}
+
       Dear Supplier,
 
       We are notifying you of a quality issue that may affect products you supply:
 
       SKU: {{ incident[0].sku }}
+      Lot: {{ incident[0].lot_id }}
       Issue: {{ incident[0].issue_description }}
 
       This notification is issued to alert you to:
@@ -708,39 +721,30 @@ tools:
     example: {factory_id: FAC-0087}
 
   - name: list_preproduction_sample_acceptance_criteria
-    desc: Preproduction sample acceptance criteria by style. Lists acceptance thresholds for sample testing.
+    desc: Preproduction sample acceptance criteria by style or product type. Lists the tests, thresholds and severity a sample must meet before a PO is released, plus any earlier pre-production reviews of the style.
     kind: draft
     args:
-      style_id: {required: true}
+      style_id: {desc: "Style id, e.g. STY-5520, to include its earlier pre-production reviews"}
+      product_type: {desc: "Product type for type-specific tests, e.g. insulated lunch box; general criteria always apply"}
     sql:
-      review: SELECT review_id, style_id, review_type, status, findings FROM quality_reviews WHERE style_id = $style_id AND review_type = 'pre_production'
+      criteria: |
+        SELECT criterion_id, product_type, test_name, requirement, method, severity FROM sample_acceptance_criteria
+        WHERE product_type = 'general' OR ($product_type IS NOT NULL AND lower(product_type) = lower($product_type))
+        ORDER BY CASE WHEN product_type = 'general' THEN 1 ELSE 0 END, criterion_id
+      review: SELECT review_id, style_id, review_type, status, findings FROM quality_reviews WHERE $style_id IS NOT NULL AND style_id = $style_id AND review_type = 'pre_production'
     template: |
       PREPRODUCTION SAMPLE ACCEPTANCE CRITERIA
 
-      Style: {{ style_id }}
+      Style: {{ style_id or '-' }}
+      Product type: {{ product_type or 'general' }}
       Date: {{ as_of }}
 
-      Sample Requirements:
-      - Minimum sample size: 3 pieces
-      - Test methods: Inspection of fit, finish, material quality, packaging, and labeling
-      - Acceptance criteria: 0 defects of critical nature allowed, maximum 1 minor defect
+      Release rule: the PO is released only when every critical test below passes on the preproduction sample (minimum 3 pieces);
+      any critical failure needs a corrective action discussion and a resubmitted sample.
 
-      Visual Inspection Checklist:
-      - Stitching quality and consistency
-      - Material color and print accuracy
-      - Measurement compliance with tech pack
-      - Packaging presentation and labeling
-
-      Functional Testing (where applicable):
-      - Zip/button functionality
-      - Elastic integrity
-      - Seam strength
-      - Care label legibility
-
-      Quality Standards:
-      - ISO/IEC 17025 accredited testing where required
-      - Test reports must be provided before PO release
-      - Any failures require immediate corrective action discussion
+      {% for c in criteria %}
+      - [{{ c.severity }}] {{ c.test_name }} ({{ c.product_type }}): {{ c.requirement }} Method: {{ c.method }}.
+      {% endfor %}
 
       {% if review %}
       Previous Reviews:

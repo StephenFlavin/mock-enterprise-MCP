@@ -1029,7 +1029,7 @@ tools:
     ), ops AS (SELECT site_id, sum(stock_value_gbp) AS v FROM master.dc_stock GROUP BY site_id),
     tot AS (
       SELECT 'ALL' AS site_id, sum(units), sum(skus), sum(gross), sum(prov), sum(net), sum(aged_value), sum(policy_prov), sum(below_policy)
-      FROM per
+      FROM per WHERE $site_id IS NULL HAVING count(*) > 0
     )
     SELECT p.site_id, coalesce(st.name, 'All sites') AS site_name, CAST(p.units AS BIGINT) AS total_units, CAST(p.skus AS INTEGER) AS sku_count,
            round(p.gross, 2) AS gross_value_gbp, round(p.prov, 2) AS provision_gbp, round(p.net, 2) AS net_value_gbp,
@@ -1048,7 +1048,7 @@ tools:
   example:
     site_id: DC1
 - name: compare_wms_to_ledger
-  desc: Reconcile WMS stock value to the ledger by SKU, or by cause with group_by cause. Shows the difference and whether it is timing, valuation or an error.
+  desc: Reconcile WMS stock value to the ledger by SKU, or totalled by cause. Shows each difference as timing, valuation or error.
   kind: sql
   args:
     site_id:
@@ -1525,7 +1525,7 @@ tools:
   example:
     site_id: DC1
 - name: get_inventory_value_movement
-  desc: 'Inventory value movement by month: opening, volume, mix, cost update, FX and adjustment effects, closing value and units, with finance notes. Group by category for drivers.'
+  desc: 'Inventory value movement by month: volume, mix, cost update, FX and adjustment effects, closing value and units, with finance notes. Group by category for drivers.'
   kind: sql
   args:
     site_id:
@@ -1599,7 +1599,7 @@ tools:
   example:
     period: FY27-08
 - name: get_payment_history_by_supplier
-  desc: 'Supplier payment terms and actual payment timing: invoices paid, average days to pay, days beyond terms, share paid late and overdue open invoices. Worst payers first.'
+  desc: 'Payment terms and actual payment timing by supplier: days to pay, days beyond terms, share paid late, overdue invoices. Latest-paid first.'
   kind: sql
   args:
     supplier_id:
@@ -1782,9 +1782,10 @@ tools:
     ), pe AS (
       SELECT cur, (SELECT max(month_end) FROM inventory_monthly WHERE month_end <= cur - INTERVAL 360 DAY) AS prior FROM ends
     ), c AS (
-      SELECT m.category, sum(m.gross_value_gbp) AS gross, sum(m.provision_gbp) AS prov
-      FROM inventory_monthly m JOIN pe ON m.month_end = pe.cur
-      WHERE ($site_id IS NULL OR m.site_id = $site_id) AND ($category IS NULL OR m.category = $category) GROUP BY m.category
+      SELECT pr.category, sum(i.total_value_gbp) AS gross, sum(i.provision_gbp) AS prov
+      FROM inventory_by_site i JOIN master.products pr ON pr.sku = i.sku
+      WHERE i.as_of_date = (SELECT max(as_of_date) FROM inventory_by_site WHERE as_of_date <= CAST($as_of_date AS DATE))
+        AND ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR pr.category = $category) GROUP BY pr.category
     ), p AS (
       SELECT m.category, sum(m.gross_value_gbp) AS gross, sum(m.provision_gbp) AS prov
       FROM inventory_monthly m JOIN pe ON m.month_end = pe.prior

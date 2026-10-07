@@ -180,7 +180,16 @@ def generate(g):
     program("FAC-0072", ["SKU-100637", "SKU-100644", "SKU-100651"], 5, 2.8, 80, 12, 4)
     program("FAC-0027", ["PF-220"], 4, 5.0, 80, 12, 3)
     program("FAC-0027", ["K-1700"], 4, 4.2, 78, 10, 0)
-    program("FAC-0081", ["SKU-100301", "SKU-100308", "SKU-100315"], 3, 2.6, 75, 14, 1)
+    # ---- 05:42:Q5 shoe sole separation (SKU-100301 at FAC-0081): lots from the new sole batches fail increasingly ----------
+    for batch, d, (iu, idf), (fu, fdf), st, disp in (
+            ("BATCH-SHOE-001", 108, (80, 2), (150, 3), "released", "release"),
+            ("BATCH-SHOE-002", 77, (80, 4), (150, 7), "reworked", "rework"),
+            ("BATCH-SHOE-003", 63, (80, 6), (150, 10), "rejected", "reject"),
+            ("BATCH-SHOE-004", 49, (80, 7), (150, 12), "rejected", "reject")):
+        lot = new_lot("SKU-100301", "FAC-0081", d, qty=1800 + 10 * d, batch=batch)
+        add_inspection(lot, "inline", iu, idf, d - 1)
+        add_inspection(lot, "final", fu, fdf, d - 3)
+        lot["status"], lot["lot_disposition"] = st, disp
 
     # ---- 05:42:Q1 earlier pink lots on the old recipe passed (the seven failing lots are in seed/) -------------------------
     for i, (batch, sku, d, grade) in enumerate([("BATCH-POL-PINK-P01", "SKU-100007", 84, 4.0), ("BATCH-POL-PINK-P02", "SKU-100014", 77, 5.0)]):
