@@ -59,6 +59,7 @@ OPTIONS = {
 OPTION_TWEAKS = {
     ("Footwear", "outlet"): (52, 85, 9, "outlet stores", 1.10, 1.5),
     ("Footwear", "markdown"): (60, 66, 8, "stores and online", 0.60, 5.8),
+    ("Footwear", "bundle"): (68, 45, 6, "online", 0.80, 3.0),
     ("Drinkware", "bundle"): (72, 78, 5, "online", 0.80, 3.0),
     ("Drinkware", "markdown"): (60, 70, 8, "stores and online", 0.60, 5.0),
 }
