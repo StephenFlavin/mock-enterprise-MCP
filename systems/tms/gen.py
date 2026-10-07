@@ -733,6 +733,10 @@ def generate(g):
             dist[ln] = PORT_KM[o_]
     lane_distances = [{"distance_lane": k, "distance_km": v} for k, v in sorted(dist.items())]
 
+    for inc in carrier_incidents:   # incidents drawn against a dropped peak load simply have no shipment
+        if inc["shipment_id"] in peak_dropped:
+            inc["shipment_id"] = None
+
     return {
         "lane_distances": lane_distances,
         "shipment_lines": shipment_lines, "lane_buffers": lane_buffers, "node_dwell": node_dwell, "freight_invoices": freight_invoices,

@@ -648,6 +648,19 @@ def generate(g):
             p["safety_stock"] = int(p["safety_stock"] * f)
             p["reorder_point"] = int(p["reorder_point"] * f)
 
+    # 03:28:Q4 make-to-order candidates (inventory optimisation, supplier portal, supply planning): all five must be on the long-tail list.
+    # SKU-103038 sells 142.6 a week on the last eight master weeks but 138.6 on inventory optimisation's longer window, so its network
+    # demand is set to 138.6 (just under the 140 cut-off).
+    for sku in ("SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", "SKU-103038"):
+        rows = [p for p in pos_rows if p["sku"] == sku]
+        tot_d = sum(p["weekly_demand"] for p in rows)
+        if tot_d > LONG_TAIL_UNITS:
+            f = 138.6 / tot_d
+            for p in rows:
+                p["weekly_demand"] = round(p["weekly_demand"] * f, 1)
+                p["safety_stock"] = int(p["safety_stock"] * f)
+                p["reorder_point"] = int(p["reorder_point"] * f)
+
     # (7b) 08:78:Q2 haircare promotion (SKU-104599): network stock (DC3 + stores) of 42,000 units covers the base demand of the
     # 13 weeks to the January promotion and the four promotion weeks at base rate (41,676 units); only the promotion uplift is
     # unmet. Network demand equals the demand system's weekly forecast (about 2,630 units before the promotion).
