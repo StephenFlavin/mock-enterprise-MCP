@@ -120,7 +120,7 @@ def generate(g):
                 "delivery_service": delivery_service,
                 "delivery_option": delivery_option,
                 "attempt_number": attempt_num,
-                "promised_delivery_date": promised_delivery_date.date(),
+                "promised_delivery_date": promised_delivery_date,
                 "actual_delivery_date": delivery_time.date() if delivery_time else None,
                 "attempt_time": attempt_date,
                 "delivery_time": delivery_time,
@@ -133,7 +133,7 @@ def generate(g):
                 "has_tracking_scans": has_tracking_scans,
                 "cost_gbp": cost_gbp,
                 "region": "UK North" if postcode_area in ["M1", "L1"] else "UK South" if postcode_area in ["SW1", "SE1"] else "London",
-                "updated_at": __import__("datetime").datetime.combine(attempt_date.date(), __import__("datetime").time(12, 0)),
+                "updated_at": attempt_date,
             }
 
             delivery_attempts.append(attempt)
