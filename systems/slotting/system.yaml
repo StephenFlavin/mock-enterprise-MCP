@@ -14,7 +14,7 @@ tables:
       zone_name: {type: str, desc: "Zone name, e.g. Pick zone A"}
       zone_type: {type: enum, values: [pick, reserve, bulk, mezzanine, hazmat, returns], desc: Zone type}
       aisle_count: {type: int, desc: Number of aisles in the zone}
-      aisle_letters: {type: str, desc: "Comma-separated aisle letters, e.g. A,B,C,D"}
+      aisles: {type: str, desc: "Comma-separated aisle numbers in the zone, e.g. 1,2,3,4"}
       total_locations: {type: int, desc: Total bin locations in zone}
       active_locations: {type: int, desc: Active locations currently used}
       avg_travel_distance_m: {type: float, desc: Average travel distance from dispatch to zone in metres}
@@ -27,7 +27,7 @@ tables:
       site_id: {type: str, desc: DC}
       change_type: {type: enum, values: [aisle_relayout, zone_merge, zone_split, product_consolidation, automation_install], desc: Type of layout change}
       affected_zones: {type: str, desc: "Comma-separated zone ids affected, e.g. DC1-PICK-A,DC1-PICK-B"}
-      affected_aisles: {type: str, desc: "Comma-separated aisles affected, e.g. A,B,C"}
+      affected_aisles: {type: str, desc: "Comma-separated aisle numbers affected, e.g. 5,6"}
       description: {type: str, desc: "Change description, e.g. Relocated clearance stock from reserve to bulk"}
       effective_date: {type: date, desc: "Date layout change went live"}
       planned_date: {type: date, desc: "Planned effective date"}
@@ -57,97 +57,163 @@ tables:
   crossing_points:
     key: crossing_id
     cols:
-      crossing_id: {type: str, desc: "Crossing point identifier, e.g. XPT-DC1-001"}
+      crossing_id: {type: str, desc: "Crossing point id, e.g. XPT-DC1-001"}
       site_id: {type: str, desc: DC}
-      location_description: {type: str, desc: "Where it is, e.g. Aisle C/D intersection"}
-      aisle_a: {type: str, desc: "Aisle letter on one side, e.g. C"}
-      aisle_b: {type: str, desc: "Aisle letter on other side, e.g. D"}
+      location_description: {type: str, desc: "Where it is, e.g. Crossing point A1, aisle 3/4 junction"}
+      aisle_a: {type: str, desc: "Aisle number on one side, e.g. 3"}
+      aisle_b: {type: str, desc: "Aisle number on other side, e.g. 4"}
       zone_id: {type: str, desc: "Zone containing this crossing, e.g. DC1-PICK-A"}
       fk_pedestrian_crossing: {type: bool, desc: True if forklift and pedestrian cross here}
       incidents_q3: {type: int, desc: "Near misses or incidents in Q3"}
       incidents_q2: {type: int, desc: "Near misses or incidents in Q2"}
-      traffic_score: {type: float, desc: "Estimated daily traffic count, high/medium/low"}
+      traffic_score: {type: enum, values: [low, medium, high], desc: Forklift and pedestrian traffic level}
       has_proximity_sensor: {type: bool, desc: "Whether proximity sensor is installed"}
       has_speed_limiter: {type: bool, desc: "Whether speed limiter zone is active"}
       visibility_rating: {type: enum, values: [excellent, good, fair, poor], desc: Sight lines rating}
 
 tools:
   - name: list_layout_changes
-    desc: Layout and zone changes with effective dates. Filter by site, zone or date range.
+    desc: Layout and zone changes with effective dates, zones, aisles and status, newest first. Filter by site, zone, aisle or date range.
     kind: select
     from: layout_changes
     filters:
       site_id: {}
       change_type: {}
-      affected_zones: {op: like, desc: "Zone id or aisle, e.g. DC1-PICK-A or aisle C"}
-      status: {default: completed}
+      status: {}
+      affected_zones: {op: like, desc: "Zone id, e.g. DC1-PICK-B"}
+      affected_aisles: {op: like, desc: "Aisle number, e.g. 7"}
       effective_from: {col: effective_date, op: ">=", type: date, default: "-90d", desc: "Effective on or after"}
-    columns: [layout_change_id, site_id, change_type, affected_zones, affected_aisles, description, effective_date, estimated_moves, actual_moves]
-    order: effective_date
+      effective_to: {col: effective_date, op: "<=", type: date, desc: "Effective on or before"}
+    columns: [layout_change_id, site_id, change_type, affected_zones, affected_aisles, description, effective_date, status, completion_pct, estimated_moves, actual_moves, notes]
+    order: effective_date DESC
     limit: 30
     example: {site_id: DC1}
 
   - name: get_site_layout_summary
-    desc: Site layout with zones, aisles, crossing-point locations. Shows layout structure and safety hotspots.
+    desc: Per-zone layout for a site (aisles, locations, crossing points, forklift-pedestrian crossings, sensor and limiter coverage, Q3 incidents) with site size and totals.
     kind: sql
     args:
-      site_id: {required: true, desc: "DC, e.g. DC1"}
+      site_id: {required: true}
     sql: |
-      SELECT z.site_id, z.zone_id, z.zone_name, z.zone_type, z.aisle_count, z.aisle_letters,
-             z.total_locations, z.active_locations, z.avg_travel_distance_m,
-             count(DISTINCT cp.crossing_id) AS zone_count,
-             sum(CASE WHEN cp.fk_pedestrian_crossing THEN 1 ELSE 0 END) AS fk_ped_crossings,
-             string_agg(DISTINCT cp.visibility_rating, ',') AS visibility,
-             sum(cp.incidents_q3) AS total_incidents_q3
+      WITH cp AS (
+        SELECT zone_id,
+               count(*) AS crossing_points,
+               count(*) FILTER (WHERE fk_pedestrian_crossing) AS fk_ped_crossings,
+               count(*) FILTER (WHERE has_proximity_sensor) AS with_proximity_sensor,
+               count(*) FILTER (WHERE has_speed_limiter) AS with_speed_limiter,
+               sum(incidents_q3) AS incidents_q3,
+               sum(incidents_q2) AS incidents_q2,
+               string_agg(crossing_id || ' ' || location_description || ' (' || incidents_q3 || ' in Q3)', '; ' ORDER BY incidents_q3 DESC) AS crossings
+        FROM crossing_points WHERE site_id = $site_id GROUP BY zone_id
+      ), tot AS (
+        SELECT sum(aisle_count) AS site_aisles, sum(total_locations) AS site_locations, count(*) AS site_zones
+        FROM layout_zones WHERE site_id = $site_id
+      ), tcp AS (
+        SELECT count(*) AS site_crossing_points,
+               count(*) FILTER (WHERE fk_pedestrian_crossing) AS site_fk_ped_crossings,
+               count(*) FILTER (WHERE has_proximity_sensor) AS site_with_proximity_sensor,
+               count(*) FILTER (WHERE has_speed_limiter) AS site_with_speed_limiter,
+               sum(incidents_q3) AS site_incidents_q3, sum(incidents_q2) AS site_incidents_q2
+        FROM crossing_points WHERE site_id = $site_id
+      )
+      SELECT z.site_id, s.name AS site_name, s.sqft AS site_sqft, z.zone_id, z.zone_name, z.zone_type,
+             z.aisle_count, z.aisles, z.total_locations, z.active_locations,
+             coalesce(cp.crossing_points, 0) AS crossing_points,
+             coalesce(cp.fk_ped_crossings, 0) AS fk_ped_crossings,
+             coalesce(cp.with_proximity_sensor, 0) AS with_proximity_sensor,
+             coalesce(cp.with_speed_limiter, 0) AS with_speed_limiter,
+             coalesce(cp.incidents_q3, 0) AS incidents_q3, coalesce(cp.incidents_q2, 0) AS incidents_q2,
+             cp.crossings,
+             tot.site_zones, tot.site_aisles, tot.site_locations,
+             tcp.site_crossing_points, tcp.site_fk_ped_crossings, tcp.site_with_proximity_sensor,
+             tcp.site_with_speed_limiter, tcp.site_incidents_q3, tcp.site_incidents_q2
       FROM layout_zones z
-      LEFT JOIN crossing_points cp ON cp.zone_id = z.zone_id AND cp.site_id = z.site_id
+      JOIN master.sites s ON s.site_id = z.site_id
+      LEFT JOIN cp ON cp.zone_id = z.zone_id
+      CROSS JOIN tot CROSS JOIN tcp
       WHERE z.site_id = $site_id
-      GROUP BY z.zone_id, z.site_id, z.zone_name, z.zone_type, z.aisle_count, z.aisle_letters,
-               z.total_locations, z.active_locations, z.avg_travel_distance_m
-      ORDER BY z.zone_type, z.zone_id
+      ORDER BY incidents_q3 DESC, z.zone_id
     limit: 20
     example: {site_id: DC1}
 
   - name: get_dc_layout_utilisation
-    desc: Space utilisation and travel distance by zone for a site. Shows efficiency and congestion.
+    desc: Space utilisation, travel distance, picks per hour and congestion by zone for a site, against the all-DC average for the same zone type. For site layout structure use get_site_layout_summary.
     kind: sql
     args:
-      site_id: {required: true, desc: "DC, e.g. DC1"}
-      measured_from: {col: measured_date, op: ">=", type: date, default: "-30d", desc: "Metrics on or after"}
+      site_id: {required: true}
+      measured_from: {type: date, default: "-30d", desc: "Metrics measured on or after"}
     sql: |
+      WITH net AS (
+        SELECT z.zone_type,
+               avg(m.utilisation_pct) AS util, avg(m.avg_travel_distance_m) AS travel,
+               avg(m.picks_per_hour) AS pph, avg(m.congestion_score) AS cong
+        FROM zone_metrics m JOIN layout_zones z ON z.zone_id = m.zone_id
+        WHERE m.measured_date >= CAST($measured_from AS DATE)
+        GROUP BY z.zone_type
+      ), mine AS (
+        SELECT m.zone_id,
+               avg(m.utilisation_pct) AS util, avg(m.avg_travel_distance_m) AS travel,
+               avg(m.picks_per_hour) AS pph, avg(m.congestion_score) AS cong,
+               max(m.sku_count) AS sku_count, max(m.total_on_hand) AS total_units_on_hand,
+               count(*) AS measurements
+        FROM zone_metrics m
+        WHERE m.site_id = $site_id AND m.measured_date >= CAST($measured_from AS DATE)
+        GROUP BY m.zone_id
+      )
       SELECT z.site_id, z.zone_id, z.zone_name, z.zone_type,
-             round(avg(m.utilisation_pct), 1) AS avg_utilisation_pct,
-             round(avg(m.avg_travel_distance_m), 1) AS avg_travel_distance_m,
-             round(avg(m.picks_per_hour), 1) AS avg_picks_per_hour,
-             round(avg(m.congestion_score), 1) AS avg_congestion_score,
-             max(m.sku_count) AS sku_count,
-             max(m.total_on_hand) AS total_units_on_hand
+             round(mine.util, 1) AS avg_utilisation_pct, round(net.util, 1) AS network_utilisation_pct,
+             round(mine.travel, 1) AS avg_travel_distance_m, round(net.travel, 1) AS network_travel_distance_m,
+             round(mine.pph, 1) AS avg_picks_per_hour, round(net.pph, 1) AS network_picks_per_hour,
+             round(mine.cong, 1) AS avg_congestion_score, round(net.cong, 1) AS network_congestion_score,
+             mine.sku_count, mine.total_units_on_hand, mine.measurements
       FROM layout_zones z
-      LEFT JOIN zone_metrics m ON m.zone_id = z.zone_id AND m.site_id = z.site_id
-      WHERE z.site_id = $site_id
-        AND ($measured_from IS NULL OR m.measured_date >= CAST($measured_from AS DATE))
-      GROUP BY z.zone_id, z.site_id, z.zone_name, z.zone_type
-      ORDER BY z.zone_type, avg_utilisation_pct DESC
+      JOIN mine ON mine.zone_id = z.zone_id
+      JOIN net ON net.zone_type = z.zone_type
+      ORDER BY z.zone_type, z.zone_id
     limit: 20
     example: {site_id: DC1}
 
   - name: calculate_reslotting_effort
-    desc: Estimate moves and labour for re-slotting, phased by zone. Helps plan layout change impact.
+    desc: Estimate moves, labour hours and working days to re-slot a site, phased zone by zone from historic move rates. Use for how long re-slotting takes.
     kind: sql
     args:
-      site_id: {required: true, desc: "DC, e.g. DC1"}
-      phase_days: {type: int, desc: "Replan across N-day phases (default 7)", default: 7}
+      site_id: {required: true}
+      zone_id: {desc: "Limit to one zone, e.g. DC1-PICK-A"}
+      move_pct: {type: float, default: 30, desc: "Share of active locations to move, %"}
+      crew_size: {type: int, default: 6, desc: "People working the re-slot each day"}
+      hourly_rate_gbp: {type: float, default: 17, desc: "Loaded labour cost per hour, GBP"}
     sql: |
-      SELECT z.site_id, z.zone_id, z.zone_name,
-             z.total_locations,
-             round(z.total_locations * 0.35, 0) AS estimated_moves,
-             round(z.avg_travel_distance_m * z.aisle_count * 1.5, 0) AS total_distance_metres,
-             round((z.total_locations * 0.35) / (z.aisle_count * 8), 1) AS estimated_effort_hours,
-             round((z.total_locations * 0.35) / (z.aisle_count * 8) / $phase_days, 1) AS hours_per_day_phased,
-             round((z.total_locations * 0.35) * 12, 0) AS estimated_cost_gbp,
-             'effort = (moves * distance) / (aisles * 8) / phase_days' AS formula
-      FROM layout_zones z
-      WHERE z.site_id = $site_id
-      ORDER BY estimated_effort_hours DESC
+      WITH hist AS (
+        SELECT coalesce(
+                 (SELECT sum(actual_moves) / sum(actual_effort_hours) FROM layout_changes
+                  WHERE site_id = $site_id AND status = 'completed' AND actual_effort_hours > 0),
+                 (SELECT sum(actual_moves) / sum(actual_effort_hours) FROM layout_changes
+                  WHERE status = 'completed' AND actual_effort_hours > 0)) AS moves_per_hour
+      ), zs AS (
+        SELECT z.*, z.active_locations * $move_pct / 100.0 AS moves, h.moves_per_hour
+        FROM layout_zones z CROSS JOIN hist h
+        WHERE z.site_id = $site_id AND ($zone_id IS NULL OR z.zone_id = $zone_id)
+      ), ph AS (
+        SELECT *, moves / moves_per_hour AS hours,
+               row_number() OVER (ORDER BY CASE zone_type WHEN 'pick' THEN 1 WHEN 'reserve' THEN 2 WHEN 'bulk' THEN 3 ELSE 4 END, zone_id) AS phase
+        FROM zs
+      ), cal AS (
+        SELECT *, hours / ($crew_size * 7.5) AS days,
+               sum(hours / ($crew_size * 7.5)) OVER (ORDER BY phase) AS end_day_raw
+        FROM ph
+      )
+      SELECT site_id, phase, zone_id, zone_name, zone_type, active_locations,
+             $move_pct AS move_pct, round(moves) AS estimated_moves,
+             round(moves_per_hour, 1) AS historic_moves_per_labour_hour,
+             round(hours, 1) AS labour_hours, round(days, 1) AS working_days,
+             round(end_day_raw - days, 1) AS start_day, round(end_day_raw, 1) AS end_day,
+             round(hours * $hourly_rate_gbp) AS labour_cost_gbp,
+             round(sum(moves) OVER ()) AS total_moves_all_phases,
+             round(sum(hours) OVER (), 1) AS total_hours_all_phases,
+             round(sum(days) OVER (), 1) AS total_days_all_phases,
+             round(sum(hours) OVER () * $hourly_rate_gbp) AS total_cost_gbp,
+             'moves = active_locations * move_pct; hours = moves / historic moves per labour hour; days = hours / (crew_size * 7.5)' AS formula
+      FROM cal
+      ORDER BY phase
     limit: 20
     example: {site_id: DC1}
