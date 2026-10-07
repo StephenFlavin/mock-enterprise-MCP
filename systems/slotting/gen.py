@@ -37,16 +37,37 @@ def generate(g):
     }
 
     zones, changes, metrics, crossings = [], [], [], []
-    zone_id_counter = 0
     change_counter = 0
     crossing_counter = 0
+    site_zone_ids = {}  # Map (site, type_idx) -> zone_id
 
     for site in ['DC1', 'DC2', 'DC3', 'DC4', 'DC5']:
         site_zones = dc_zones.get(site, [])
+        type_counters = {}  # Track counter per zone type
 
         for zone_config in site_zones:
-            zone_id_counter += 1
-            zone_id = f"{site}-{zone_config['zone_type'].upper()[:1]}-{chr(ord('A') + zone_id_counter % 26)}"
+            zone_type = zone_config['zone_type']
+            if zone_type not in type_counters:
+                type_counters[zone_type] = 0
+
+            type_counters[zone_type] += 1
+            letter_idx = type_counters[zone_type] - 1
+
+            # Create zone_id with full type name
+            if zone_type == 'pick':
+                zone_id = f"{site}-PICK-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'reserve':
+                zone_id = f"{site}-RESERVE-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'bulk':
+                zone_id = f"{site}-BULK-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'hazmat':
+                zone_id = f"{site}-HAZMAT-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'returns':
+                zone_id = f"{site}-RETURNS-{chr(ord('A') + letter_idx)}"
+            else:
+                zone_id = f"{site}-{zone_type.upper()}-{chr(ord('A') + letter_idx)}"
+
+            site_zone_ids[(site, len(zones))] = zone_id
 
             active_locs = int(zone_config['locations'] * r.uniform(0.75, 0.95))
             zones.append({
@@ -112,7 +133,6 @@ def generate(g):
             # Metrics for last 30 days
             for days_ago in [30, 23, 16, 9, 2]:
                 measured_date = g.as_of - timedelta(days=days_ago)
-                metric_date_obj = datetime.fromisoformat(str(measured_date))
 
                 # Higher utilisation for DC1, lower for DC2
                 if site == 'DC1':
@@ -137,12 +157,33 @@ def generate(g):
                     'congestion_score': round(r.uniform(20, 75), 1),
                 })
 
-        # Crossing points - one per 2 zones roughly
-        for i in range(len(site_zones) // 2 + 1):
+        # Crossing points - one per zone roughly, reference the actual zone_ids
+        type_idx_map = {}  # Track index per type for this site
+        for i, zone_config in enumerate(site_zones):
             crossing_counter += 1
-            aisles = site_zones[i]['aisles'].split(',')
+            aisles = zone_config['aisles'].split(',')
             aisle_a = aisles[0]
-            aisle_b = aisles[-1]
+            aisle_b = aisles[-1] if len(aisles) > 1 else aisles[0]
+
+            zone_type = zone_config['zone_type']
+            if zone_type not in type_idx_map:
+                type_idx_map[zone_type] = 0
+            else:
+                type_idx_map[zone_type] += 1
+
+            letter_idx = type_idx_map[zone_type]
+
+            zone_id = f"{site}-{zone_type.upper()}-{chr(ord('A') + letter_idx)}"
+            if zone_type == 'pick':
+                zone_id = f"{site}-PICK-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'reserve':
+                zone_id = f"{site}-RESERVE-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'bulk':
+                zone_id = f"{site}-BULK-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'hazmat':
+                zone_id = f"{site}-HAZMAT-{chr(ord('A') + letter_idx)}"
+            elif zone_type == 'returns':
+                zone_id = f"{site}-RETURNS-{chr(ord('A') + letter_idx)}"
 
             # More incidents in Q3 for DC1 after layout change
             q3_incidents = 0
@@ -157,10 +198,10 @@ def generate(g):
             crossings.append({
                 'crossing_id': f"XPT-{site}-{crossing_counter:03d}",
                 'site_id': site,
-                'location_description': f"Aisle {aisle_a}/{aisle_b} intersection, {site_zones[i]['zone_name']}",
+                'location_description': f"Aisle {aisle_a}/{aisle_b} intersection, {zone_config['zone_name']}",
                 'aisle_a': aisle_a,
                 'aisle_b': aisle_b,
-                'zone_id': f"{site}-{site_zones[i]['zone_type'].upper()[:1]}-{chr(ord('A') + i)}",
+                'zone_id': zone_id,
                 'fk_pedestrian_crossing': True if r.random() > 0.3 else False,
                 'incidents_q3': q3_incidents,
                 'incidents_q2': q2_incidents,

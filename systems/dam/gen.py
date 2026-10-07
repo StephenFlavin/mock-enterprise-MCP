@@ -68,7 +68,7 @@ def generate(g):
             board_items.append({
                 "board_id": board["board_id"],
                 "item_no": item_no,
-                "asset_id": asset["asset_id"],
+                "dam_asset_id": asset["dam_asset_id"],
                 "added_at": board["created_at"] + timedelta(days=r.randint(0, 5)),
                 "added_by": board["created_by"]
             })
