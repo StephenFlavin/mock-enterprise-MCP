@@ -1,9 +1,9 @@
 id: web_analytics
 name: Web Analytics Platform
 instructions: >
-  Website traffic analysis, conversion rates, search trends, marketing campaign
-  performance, and customer funnel metrics for resale and new product launches.
-  Trend ids like ST-000001, traffic and conversion data by day/channel/device.
+  Website analytics for the UK web shop: daily sessions, orders and conversion by channel and device, conversion
+  by delivery option and postcode area, search trends, campaign and creative performance, the resale programme
+  funnel and the peak-season traffic forecast. Ranges are style ids (STY-4056) or SKUs. Postcode areas look like M1, LS1.
 
 tables:
   search_trends:
@@ -11,7 +11,7 @@ tables:
     cols:
       trend_id: {type: str, desc: "Search trend, e.g. ST-000001"}
       search_term: {type: str, desc: "Search term or keyword"}
-      date: {type: date, desc: "Date of trend measurement"}
+      date: {type: date, desc: "Week-start Monday of the weekly search volume measurement"}
       volume: {type: int, desc: "Search volume for the term"}
       trend_direction: {type: enum, values: [up, stable, down], desc: "Trend direction"}
       category: {type: str, desc: "Product category, if relevant"}
@@ -23,19 +23,18 @@ tables:
       channel: {type: enum, values: [organic, paid, direct, social, email, referral], desc: "Traffic channel"}
       device: {type: enum, values: [mobile, desktop, tablet], desc: "Device type"}
       sessions: {type: int, desc: "Number of sessions"}
-      conversions: {type: int, desc: "Number of conversions"}
+      conversions: {type: int, desc: "Orders (conversions)"}
       revenue_gbp: {type: float, desc: "Revenue in GBP"}
 
   conversion_metrics:
-    key: [date, channel, device, delivery_option]
+    key: [date, postcode_area, delivery_option]
     cols:
       date: {type: date, desc: "Date of measurement"}
-      channel: {type: enum, values: [organic, paid, direct, social, email, referral], desc: "Traffic channel"}
-      device: {type: enum, values: [mobile, desktop, tablet], desc: "Device type"}
-      delivery_option: {type: str, desc: "Delivery option, e.g. standard, next_day"}
-      conversion_rate: {type: float, desc: "Conversion rate percentage"}
-      conversions: {type: int, desc: "Number of conversions"}
-      orders: {type: int, desc: "Number of orders"}
+      postcode_area: {type: str, desc: "UK postcode area, e.g. M1, LS1"}
+      delivery_option: {type: enum, values: [standard, next_day], desc: "Delivery promise shown to the shopper. next_day also covers pilot cells in areas where next-day is not yet live"}
+      sessions: {type: int, desc: "Sessions shown this delivery promise"}
+      orders: {type: int, desc: "Orders placed from those sessions"}
+      conversion_rate: {type: float, desc: "Conversion rate percentage (orders / sessions)"}
       revenue_gbp: {type: float, desc: "Revenue in GBP for this segment"}
 
   marketing_activities:
@@ -51,6 +50,8 @@ tables:
       clicks: {type: int, desc: "Number of clicks"}
       conversions: {type: int, desc: "Number of conversions"}
       revenue_gbp: {type: float, desc: "Campaign revenue in GBP"}
+      spend_gbp: {type: float, desc: "Media and send cost in GBP"}
+      status: {type: enum, values: [live, completed, ended_early], desc: "Campaign status; ended_early = cut before its planned end"}
 
   campaign_creatives:
     key: creative_id
@@ -59,6 +60,8 @@ tables:
       campaign_name: {type: str, desc: "Campaign name"}
       creative_type: {type: enum, values: [image, video, text, carousel], desc: "Creative asset type"}
       test_variant: {type: str, desc: "Test variant identifier"}
+      start_date: {type: date, desc: "First day the creative ran"}
+      end_date: {type: date, desc: "Last day the creative ran"}
       impressions: {type: int, desc: "Number of impressions"}
       clicks: {type: int, desc: "Number of clicks"}
       conversions: {type: int, desc: "Number of conversions"}
@@ -68,195 +71,317 @@ tables:
   resale_funnel:
     key: [date, funnel_stage]
     cols:
-      date: {type: date, desc: "Date of measurement"}
+      date: {type: date, desc: "Week-start Monday of the weekly funnel measurement"}
       funnel_stage: {type: enum, values: [views, item_added, checkout, purchase], desc: "Funnel stage"}
       user_count: {type: int, desc: "Number of users at this stage"}
       transaction_count: {type: int, desc: "Number of transactions"}
-      items_listed: {type: int, desc: "Items listed for resale"}
-      items_sold: {type: int, desc: "Items sold through resale"}
-      gmv_gbp: {type: float, desc: "Gross merchandise value in GBP"}
+      items_listed: {type: int, desc: "Active resale listings that week (purchase row only)"}
+      items_sold: {type: int, desc: "Items sold through resale that week (purchase row only)"}
+      gmv_gbp: {type: float, desc: "Gross merchandise value in GBP (purchase row only)"}
 
   traffic_forecast:
     key: [date, channel]
     cols:
       date: {type: date, desc: "Forecast date"}
       channel: {type: enum, values: [organic, paid, direct, social, email, referral], desc: "Traffic channel"}
-      forecast_volume: {type: int, desc: "Forecasted traffic volume"}
+      forecast_volume: {type: int, desc: "Forecast sessions"}
+      forecast_orders: {type: int, desc: "Forecast web orders"}
       forecast_revenue_gbp: {type: float, desc: "Forecasted revenue in GBP"}
       confidence_pct: {type: float, desc: "Forecast confidence percentage"}
 
+
 tools:
   - name: get_search_trend_data
-    desc: Retrieve search trend data for keywords over a date range, showing volume and direction.
+    desc: Weekly search volume, direction and week-on-week change for keywords containing the search term. Use for demand signals and launch forecasts.
     kind: sql
     args:
-      search_term: {type: str, desc: "Search term to analyze, e.g. backpack"}
+      search_term: {required: true, type: str, desc: "Word(s) to match inside the keyword, e.g. backpack or recycled polyester"}
+      category: {type: str, desc: "Product category, e.g. Bags, Home, Womenswear"}
       date_from: {type: date, default: "-90d", desc: "Search trends from this date"}
       date_to: {type: date, default: "today", desc: "Search trends until this date"}
     sql: |
-      SELECT trend_id, search_term, date, volume, trend_direction, category
-      FROM search_trends
+      WITH t AS (
+        SELECT *, lag(volume) OVER (PARTITION BY search_term ORDER BY date) AS prev_volume
+        FROM search_trends
+      )
+      SELECT trend_id, search_term, date, volume, trend_direction, category,
+             round(100.0 * (volume - prev_volume) / NULLIF(prev_volume, 0), 1) AS wow_change_pct
+      FROM t
       WHERE search_term ILIKE '%' || $search_term || '%'
+        AND ($category IS NULL OR category = $category)
         AND date >= CAST($date_from AS DATE)
         AND date <= CAST($date_to AS DATE)
-      ORDER BY date ASC
-    limit: 100
+      ORDER BY search_term, date
+    limit: 200
     example: {search_term: "backpack"}
 
   - name: get_traffic_mix_by_channel
-    desc: Traffic volume and conversion by channel and device for a date range.
+    desc: Sessions, share of traffic and conversion by channel for a period, compared with the previous period of equal length. Use to spot traffic mix shifts.
     kind: sql
     args:
-      date_from: {type: date, default: "-14d", desc: "Traffic from this date"}
-      date_to: {type: date, default: "today", desc: "Traffic until this date"}
-      channel: {type: str, desc: "Filter to one channel (default all)"}
+      date_from: {type: date, default: "-7d", desc: "Period start"}
+      date_to: {type: date, default: "today", desc: "Period end"}
+      channel: {}
+      device: {}
     sql: |
-      SELECT date, channel, device, sessions, conversions,
-             ROUND(100.0 * conversions / NULLIF(sessions, 0), 2) AS conversion_pct,
-             revenue_gbp
-      FROM traffic_by_channel
-      WHERE date >= CAST($date_from AS DATE)
-        AND date <= CAST($date_to AS DATE)
-        AND ($channel IS NULL OR channel = $channel)
-      ORDER BY date DESC, channel, device
-    limit: 100
+      WITH p AS (
+        SELECT CAST($date_from AS DATE) AS f, CAST($date_to AS DATE) AS t,
+               CAST($date_to AS DATE) - CAST($date_from AS DATE) + 1 AS n
+      ),
+      cur AS (
+        SELECT coalesce(channel, 'ALL') AS channel, sum(sessions) AS s, sum(conversions) AS c, sum(revenue_gbp) AS r
+        FROM traffic_by_channel, p
+        WHERE date >= p.f AND date <= p.t AND ($device IS NULL OR device = $device)
+        GROUP BY GROUPING SETS ((channel), ())
+      ),
+      prv AS (
+        SELECT coalesce(channel, 'ALL') AS channel, sum(sessions) AS s, sum(conversions) AS c
+        FROM traffic_by_channel, p
+        WHERE date >= p.f - to_days(CAST(p.n AS INTEGER)) AND date < p.f AND ($device IS NULL OR device = $device)
+        GROUP BY GROUPING SETS ((channel), ())
+      )
+      SELECT c.channel, c.s AS sessions,
+             round(100.0 * c.s / ta.s, 1) AS share_pct,
+             round(100.0 * pr.s / pt.s, 1) AS prev_share_pct,
+             round(100.0 * c.s / ta.s - 100.0 * pr.s / pt.s, 1) AS share_change_pts,
+             round(100.0 * c.c / NULLIF(c.s, 0), 2) AS conversion_pct,
+             round(100.0 * pr.c / NULLIF(pr.s, 0), 2) AS prev_conversion_pct,
+             round(100.0 * c.c / NULLIF(c.s, 0) - 100.0 * pr.c / NULLIF(pr.s, 0), 2) AS conversion_change_pts,
+             c.c AS orders, round(c.r, 0) AS revenue_gbp, pr.s AS prev_sessions
+      FROM cur c
+      JOIN cur ta ON ta.channel = 'ALL'
+      LEFT JOIN prv pr ON pr.channel = c.channel
+      LEFT JOIN prv pt ON pt.channel = 'ALL'
+      WHERE $channel IS NULL OR c.channel IN ($channel, 'ALL')
+      ORDER BY CASE WHEN c.channel = 'ALL' THEN 1 ELSE 0 END, c.s DESC
+    limit: 20
     example: {}
 
   - name: get_conversion_rate_by_device_and_day
-    desc: Daily conversion rates by device (mobile/desktop) with volumes, for trend analysis.
+    desc: Daily sessions, orders and conversion rate for each device plus an all-device total, for trend analysis. Use to see when and where conversion moved.
     kind: sql
     args:
       date_from: {type: date, default: "-21d", desc: "Data from this date"}
       date_to: {type: date, default: "today", desc: "Data until this date"}
-      device: {type: str, desc: "Filter to device type (default all)"}
+      device: {}
+      channel: {}
     sql: |
-      SELECT date, device, channel,
-             ROUND(conversion_rate, 2) AS conversion_rate_pct,
-             conversions, orders,
-             ROUND(100.0 * conversions / NULLIF(orders, 0), 2) AS order_conversion_pct
-      FROM conversion_metrics
+      SELECT date, strftime(date, '%a') AS weekday, coalesce(device, 'all') AS device,
+             sum(sessions) AS sessions, sum(conversions) AS orders,
+             round(100.0 * sum(conversions) / NULLIF(sum(sessions), 0), 2) AS conversion_rate_pct,
+             round(sum(revenue_gbp), 0) AS revenue_gbp,
+             round(sum(revenue_gbp) / NULLIF(sum(conversions), 0), 2) AS aov_gbp
+      FROM traffic_by_channel
       WHERE date >= CAST($date_from AS DATE)
         AND date <= CAST($date_to AS DATE)
         AND ($device IS NULL OR device = $device)
-      ORDER BY date DESC, device, channel
-    limit: 100
+        AND ($channel IS NULL OR channel = $channel)
+      GROUP BY GROUPING SETS ((date, device), (date))
+      HAVING $device IS NULL OR device IS NOT NULL
+      ORDER BY date DESC, CASE WHEN device IS NULL THEN 0 ELSE 1 END, device
+    limit: 200
     example: {}
 
   - name: get_conversion_by_delivery_option
-    desc: Conversion rate and revenue by delivery option (standard, next-day), showing impact of delivery speed.
+    desc: Conversion rate by postcode area for standard versus next-day delivery promise, with next-day lift in points, best lift first. Filter to one area if needed.
     kind: sql
     args:
+      postcode_area: {type: str, desc: "UK postcode area to filter to, e.g. LS1 or M1"}
       date_from: {type: date, default: "-60d", desc: "Data from this date"}
       date_to: {type: date, default: "today", desc: "Data until this date"}
-      postcode_area: {type: str, desc: "Filter to postcode area (optional)"}
     sql: |
-      SELECT date, delivery_option, channel,
-             ROUND(conversion_rate, 2) AS conversion_rate_pct,
-             conversions, orders,
-             ROUND(100.0 * conversions / NULLIF(orders, 0), 2) AS order_conversion_pct
-      FROM conversion_metrics
-      WHERE date >= CAST($date_from AS DATE)
-        AND date <= CAST($date_to AS DATE)
-      GROUP BY date, delivery_option, channel, conversion_rate, conversions, orders
-      ORDER BY date DESC, delivery_option
-    limit: 100
+      WITH a AS (
+        SELECT postcode_area,
+               sum(sessions) FILTER (WHERE delivery_option = 'standard') AS std_sessions,
+               sum(orders) FILTER (WHERE delivery_option = 'standard') AS std_orders,
+               sum(revenue_gbp) FILTER (WHERE delivery_option = 'standard') AS std_rev,
+               sum(sessions) FILTER (WHERE delivery_option = 'next_day') AS nd_sessions,
+               sum(orders) FILTER (WHERE delivery_option = 'next_day') AS nd_orders,
+               sum(revenue_gbp) FILTER (WHERE delivery_option = 'next_day') AS nd_rev
+        FROM conversion_metrics
+        WHERE date >= CAST($date_from AS DATE)
+          AND date <= CAST($date_to AS DATE)
+          AND ($postcode_area IS NULL OR upper(postcode_area) = upper($postcode_area))
+        GROUP BY postcode_area
+      )
+      SELECT row_number() OVER (ORDER BY (100.0 * nd_orders / nd_sessions - 100.0 * std_orders / std_sessions) DESC) AS rank_by_lift,
+             postcode_area,
+             std_sessions AS standard_sessions,
+             round(100.0 * std_orders / NULLIF(std_sessions, 0), 2) AS standard_conversion_pct,
+             nd_sessions AS next_day_sessions,
+             round(100.0 * nd_orders / NULLIF(nd_sessions, 0), 2) AS next_day_conversion_pct,
+             round(100.0 * nd_orders / NULLIF(nd_sessions, 0) - 100.0 * std_orders / NULLIF(std_sessions, 0), 2) AS lift_pts,
+             round(100.0 * ((1.0 * nd_orders / nd_sessions) / (1.0 * std_orders / std_sessions) - 1), 1) AS lift_pct,
+             round(std_rev / NULLIF(std_orders, 0), 2) AS standard_aov_gbp,
+             round(nd_rev / NULLIF(nd_orders, 0), 2) AS next_day_aov_gbp
+      FROM a
+      ORDER BY lift_pts DESC
+    limit: 30
     example: {}
 
   - name: get_marketing_activity_for_range
-    desc: Marketing activity for a product range showing impressions, clicks, conversions and revenue by channel.
+    desc: Marketing campaigns for a style or SKU with dates, spend, impressions, clicks, conversions, revenue and return on spend. Use to check range support.
     kind: sql
     args:
-      range_id: {required: true, type: str, desc: "Product range id (style or SKU)"}
-      date_from: {type: date, default: "-90d", desc: "Activity from this date"}
+      range_id: {required: true, type: str, desc: "Style id or SKU for the range, e.g. STY-4056"}
+      date_from: {type: date, default: "-90d", desc: "Campaigns still running or ending on or after this date"}
+      channel: {}
     sql: |
-      SELECT activity_id, campaign_name, channel, start_date, end_date,
-             impressions, clicks,
-             ROUND(100.0 * clicks / NULLIF(impressions, 0), 2) AS ctr_pct,
-             conversions,
-             ROUND(100.0 * conversions / NULLIF(clicks, 0), 2) AS conversion_from_clicks_pct,
-             revenue_gbp,
-             ROUND(revenue_gbp / NULLIF(conversions, 0), 2) AS revenue_per_conversion_gbp
-      FROM marketing_activities
-      WHERE range_id = $range_id
-        AND start_date >= CAST($date_from AS DATE)
-      ORDER BY start_date DESC
+      SELECT m.activity_id, m.campaign_name, m.channel, m.start_date, m.end_date, m.status,
+             m.spend_gbp, m.impressions, m.clicks,
+             round(100.0 * m.clicks / NULLIF(m.impressions, 0), 2) AS ctr_pct,
+             m.conversions,
+             round(100.0 * m.conversions / NULLIF(m.clicks, 0), 2) AS conversion_from_clicks_pct,
+             m.revenue_gbp,
+             round(m.revenue_gbp / NULLIF(m.spend_gbp, 0), 2) AS revenue_per_gbp_spend
+      FROM marketing_activities m
+      WHERE (m.range_id = $range_id OR m.range_id IN (SELECT style_id FROM master.products WHERE sku = $range_id))
+        AND m.end_date >= CAST($date_from AS DATE)
+        AND ($channel IS NULL OR m.channel = $channel)
+      ORDER BY m.start_date DESC, m.activity_id
     limit: 50
-    example: {range_id: "STY-5520"}
+    example: {range_id: "STY-4056"}
 
   - name: get_campaign_creative_performance
-    desc: Campaign creative performance by test variant, showing impressions, clicks, conversions and engagement.
+    desc: Creative variants for a campaign or event with impressions, clicks, conversions and engagement, plus the event totals. Use to compare creatives and past events.
     kind: sql
     args:
-      campaign_name: {required: true, type: str, desc: "Campaign name"}
-      date_from: {type: date, default: "-60d", desc: "Activity from this date"}
+      campaign_name: {type: str, desc: "Words in the campaign or event name, e.g. Weekend Home Event"}
+      date_from: {type: date, default: "-365d", desc: "Creatives that ran on or after this date"}
     sql: |
-      SELECT creative_id, campaign_name, creative_type, test_variant,
+      WITH c AS (
+        SELECT *, sum(impressions) OVER (PARTITION BY campaign_name) AS ev_imp,
+               sum(clicks) OVER (PARTITION BY campaign_name) AS ev_clk,
+               sum(conversions) OVER (PARTITION BY campaign_name) AS ev_conv
+        FROM campaign_creatives
+        WHERE ($campaign_name IS NULL OR campaign_name ILIKE '%' || $campaign_name || '%')
+          AND end_date >= CAST($date_from AS DATE)
+      )
+      SELECT creative_id, campaign_name, start_date, end_date, creative_type, test_variant,
              impressions, clicks,
-             ROUND(100.0 * clicks / NULLIF(impressions, 0), 2) AS ctr_pct,
+             round(100.0 * clicks / NULLIF(impressions, 0), 2) AS ctr_pct,
              conversions,
-             ROUND(100.0 * conversions / NULLIF(clicks, 0), 2) AS conversion_pct,
-             revenue_gbp,
-             ROUND(revenue_gbp / NULLIF(conversions, 0), 2) AS revenue_per_conversion_gbp,
-             engagement_rate_pct
-      FROM campaign_creatives
-      WHERE campaign_name = $campaign_name
-      ORDER BY conversions DESC, revenue_gbp DESC
-    limit: 50
-    example: {campaign_name: "Home Event 20pct off"}
+             round(100.0 * conversions / NULLIF(clicks, 0), 2) AS conversion_pct,
+             revenue_gbp, engagement_rate_pct,
+             round(100.0 * ev_clk / NULLIF(ev_imp, 0), 2) AS event_ctr_pct,
+             round(100.0 * ev_conv / NULLIF(ev_clk, 0), 2) AS event_conversion_pct
+      FROM c
+      ORDER BY start_date DESC, campaign_name, conversions DESC
+    limit: 60
+    example: {campaign_name: "Weekend Home Event"}
 
   - name: get_resale_programme_funnel_metrics
-    desc: Resale programme funnel metrics (views, cart adds, checkouts, purchases) over time, showing conversion drop-off.
+    desc: Weekly resale programme funnel with views, cart adds, checkouts, purchases, step conversion, listings sold and GMV. Use to find where customers drop out.
     kind: sql
     args:
       date_from: {type: date, default: "-90d", desc: "Funnel data from this date"}
       date_to: {type: date, default: "today", desc: "Funnel data until this date"}
     sql: |
-      SELECT date, funnel_stage, user_count, transaction_count,
-             items_listed, items_sold,
-             ROUND(100.0 * items_sold / NULLIF(items_listed, 0), 2) AS sell_through_pct,
-             gmv_gbp,
-             ROUND(gmv_gbp / NULLIF(items_sold, 0), 2) AS aov_gbp
-      FROM resale_funnel
-      WHERE date >= CAST($date_from AS DATE)
-        AND date <= CAST($date_to AS DATE)
-      ORDER BY date DESC, funnel_stage
-    limit: 100
+      WITH w AS (
+        SELECT date,
+               sum(user_count) FILTER (WHERE funnel_stage = 'views') AS views,
+               sum(user_count) FILTER (WHERE funnel_stage = 'item_added') AS cart_adds,
+               sum(user_count) FILTER (WHERE funnel_stage = 'checkout') AS checkouts,
+               sum(user_count) FILTER (WHERE funnel_stage = 'purchase') AS purchases,
+               sum(items_listed) AS active_listings, sum(items_sold) AS items_sold, sum(gmv_gbp) AS gmv_gbp
+        FROM resale_funnel
+        GROUP BY date
+      ),
+      s AS (
+        SELECT w.date, sum(t1.sessions) AS site_sessions, count(DISTINCT t1.date) AS days
+        FROM w JOIN traffic_by_channel t1 ON t1.date >= w.date AND t1.date < w.date + INTERVAL 7 DAY
+        GROUP BY w.date
+      )
+      SELECT w.date AS week_starting, w.views, w.cart_adds, w.checkouts, w.purchases,
+             round(100.0 * w.cart_adds / NULLIF(w.views, 0), 1) AS view_to_cart_pct,
+             round(100.0 * w.checkouts / NULLIF(w.cart_adds, 0), 1) AS cart_to_checkout_pct,
+             round(100.0 * w.purchases / NULLIF(w.checkouts, 0), 1) AS checkout_to_purchase_pct,
+             round(100.0 * w.purchases / NULLIF(w.views, 0), 1) AS view_to_purchase_pct,
+             round(100.0 * (w.views - lag(w.views) OVER (ORDER BY w.date)) / NULLIF(lag(w.views) OVER (ORDER BY w.date), 0), 1) AS views_change_wow_pct,
+             w.active_listings, w.items_sold,
+             round(100.0 * w.items_sold / NULLIF(w.active_listings, 0), 1) AS sell_through_pct,
+             round(w.gmv_gbp, 0) AS gmv_gbp,
+             CASE WHEN s.days = 7 THEN round(100.0 * w.views / s.site_sessions, 2) END AS views_as_pct_of_site_sessions
+      FROM w LEFT JOIN s ON s.date = w.date
+      WHERE w.date >= CAST($date_from AS DATE) AND w.date <= CAST($date_to AS DATE)
+      ORDER BY w.date DESC
+    limit: 60
     example: {}
 
   - name: get_traffic_forecast_for_peak
-    desc: Traffic forecast by channel for peak season (Black Friday to Christmas), with revenue forecast and confidence.
+    desc: Daily traffic forecast for peak season (Black Friday to Christmas Eve) with sessions, orders, revenue and confidence. Optional traffic uplift for what-if.
     kind: sql
     args:
-      date_from: {type: date, default: "+30d", desc: "Forecast from this date (typically Black Friday)"}
-      date_to: {type: date, default: "+80d", desc: "Forecast until this date (typically Christmas Eve)"}
-      channel: {type: str, desc: "Filter to one channel (default all)"}
+      date_from: {type: date, default: "+30d", desc: "Forecast from this date (Black Friday onwards)"}
+      date_to: {type: date, default: "+120d", desc: "Forecast until this date (Christmas Eve)"}
+      by: {type: enum, values: [day, channel], default: day, desc: "day = one row per date; channel = per date and channel"}
+      channel: {}
+      traffic_uplift_pct: {type: float, default: 0, desc: "What-if: traffic this many percent above forecast, e.g. 15 (orders and revenue scale with it)"}
     sql: |
-      SELECT date, channel, forecast_volume, forecast_revenue_gbp, confidence_pct
+      SELECT date, strftime(date, '%a') AS weekday,
+             CASE WHEN $by = 'channel' THEN channel ELSE 'all channels' END AS channel,
+             CAST(round(sum(forecast_volume) * (1 + $traffic_uplift_pct / 100.0), 0) AS BIGINT) AS forecast_sessions,
+             CAST(round(sum(forecast_orders) * (1 + $traffic_uplift_pct / 100.0), 0) AS BIGINT) AS forecast_orders,
+             round(sum(forecast_revenue_gbp) * (1 + $traffic_uplift_pct / 100.0), 0) AS forecast_revenue_gbp,
+             round(avg(confidence_pct), 1) AS confidence_pct,
+             $traffic_uplift_pct AS traffic_uplift_pct
       FROM traffic_forecast
       WHERE date >= CAST($date_from AS DATE)
         AND date <= CAST($date_to AS DATE)
         AND ($channel IS NULL OR channel = $channel)
-      ORDER BY date ASC, channel
+      GROUP BY date, CASE WHEN $by = 'channel' THEN channel ELSE 'all channels' END
+      ORDER BY date ASC, 3
     limit: 200
     example: {}
 
   - name: calculate_lost_revenue_from_conversion_drop
-    desc: Calculate lost revenue from a conversion rate drop, using baseline rates and actual volumes.
+    desc: Lost orders and revenue from a conversion drop, by device and overall, versus the previous period of equal length or a baseline rate you give.
     kind: sql
     args:
-      date_from: {type: date, default: "-7d", desc: "Period with dropped conversion"}
-      date_to: {type: date, default: "today", desc: "End of period"}
-      baseline_conversion_rate: {type: float, default: 2.5, desc: "Baseline conversion rate percentage"}
+      date_from: {type: date, default: "-7d", desc: "Start of the period with the dropped conversion"}
+      date_to: {type: date, default: "today", desc: "End of the period"}
+      baseline_from: {type: date, desc: "Start of the baseline period; default is the same-length period just before date_from"}
+      baseline_to: {type: date, desc: "End of the baseline period; default is the day before date_from"}
+      baseline_conversion_rate_pct: {type: float, desc: "Override: use this overall conversion rate percentage as the baseline instead of a baseline period"}
     sql: |
-      SELECT ROUND(SUM(orders), 0) AS actual_orders,
-             ROUND(AVG(conversion_rate), 2) AS actual_conversion_rate,
-             ROUND(SUM(revenue_gbp), 2) AS actual_revenue_gbp,
-             $baseline_conversion_rate AS baseline_conversion_rate_pct,
-             ROUND(AVG(revenue_gbp / NULLIF(orders, 0)), 2) AS aov_gbp,
-             ROUND(SUM(revenue_gbp) * ($baseline_conversion_rate / AVG(conversion_rate) - 1), 2) AS lost_revenue_gbp,
-             'lost_revenue = actual_revenue * (baseline_rate / actual_rate - 1)' AS formula
-      FROM conversion_metrics
-      WHERE date >= CAST($date_from AS DATE)
-        AND date <= CAST($date_to AS DATE)
-    limit: 1
+      WITH p AS (
+        SELECT CAST($date_from AS DATE) AS f, CAST($date_to AS DATE) AS t,
+               CAST($date_to AS DATE) - CAST($date_from AS DATE) + 1 AS n
+      ),
+      q AS (
+        SELECT f, t, coalesce(CAST($baseline_from AS DATE), f - to_days(CAST(n AS INTEGER))) AS bf,
+               coalesce(CAST($baseline_to AS DATE), f - to_days(1)) AS bt
+        FROM p
+      ),
+      cur AS (
+        SELECT device, sum(sessions) AS s, sum(conversions) AS o, sum(revenue_gbp) AS r
+        FROM traffic_by_channel, q WHERE date >= q.f AND date <= q.t GROUP BY device
+      ),
+      base AS (
+        SELECT device, sum(sessions) AS s, sum(conversions) AS o
+        FROM traffic_by_channel, q WHERE date >= q.bf AND date <= q.bt GROUP BY device
+      ),
+      dev AS (
+        SELECT c.device AS scope, c.s AS sessions, c.o AS orders, c.r AS revenue,
+               100.0 * c.o / c.s AS actual_pct,
+               coalesce($baseline_conversion_rate_pct, 100.0 * b.o / b.s) AS base_pct
+        FROM cur c LEFT JOIN base b ON b.device = c.device
+      ),
+      tot AS (
+        SELECT 'all devices' AS scope, sum(c.s) AS sessions, sum(c.o) AS orders, sum(c.r) AS revenue,
+               100.0 * sum(c.o) / sum(c.s) AS actual_pct,
+               coalesce($baseline_conversion_rate_pct, (SELECT 100.0 * sum(o) / sum(s) FROM base)) AS base_pct
+        FROM cur c
+      )
+      SELECT scope, sessions, orders AS actual_orders,
+             round(actual_pct, 2) AS actual_conversion_pct,
+             round(base_pct, 2) AS baseline_conversion_pct,
+             round(actual_pct - base_pct, 2) AS change_pts,
+             round(sessions * (base_pct - actual_pct) / 100.0, 0) AS lost_orders,
+             round(revenue / orders, 2) AS aov_gbp,
+             round(sessions * (base_pct - actual_pct) / 100.0 * revenue / orders, 0) AS lost_revenue_gbp,
+             'lost_revenue = sessions * (baseline_rate - actual_rate) * average_order_value; all-device row uses overall rates so it includes traffic mix' AS formula
+      FROM (SELECT * FROM dev UNION ALL SELECT * FROM tot)
+      ORDER BY CASE WHEN scope = 'all devices' THEN 1 ELSE 0 END, scope
+    limit: 10
     example: {}
