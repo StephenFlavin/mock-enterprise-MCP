@@ -30,6 +30,9 @@ ISSUE_RATE_DC1 = {'pick': [4.8, 4.4, 4.8, 4.5], 'reserve': [4.6, 4.9, 4.4, 4.8],
                   'hazmat': [5.0, 5.2, 4.8, 5.1], 'mezzanine': [14.5, 10.5, 7.5, 6.0]}
 
 BAY_C14 = 'DC1-C-14'
+QUARANTINE_TARGET_GBP = 1_050_000   # stock held in quarantine at DC1 and DC3 (status-mapping part of the ERP-WMS gap)
+PACK_STORY_SKU = 'SKU-100532'     # Denim Small Appliance: corrugated vs moulded pulp vs recycled plastic pack comparison
+MATERIAL_OF = {'carton': 'corrugated', 'polybag': 'plastic_film', 'hanging': 'hanger', 'tray': 'moulded_pulp', 'pouch': 'recycled_plastic'}
 
 
 def generate(g):
@@ -107,7 +110,24 @@ def generate(g):
                     'units_per_pallet': 400 if p['sku'] in ('PF-220', 'K-1700') else max(1, upp // 4) * 4, 'updated_at': T(D(1), 21, 30)}
             if p['sku'] == 'PF-220':
                 row |= {'pallet_height_cm': 160, 'pallet_weight_kg': 800}
+        row['material'] = MATERIAL_OF.get(row['pack_type'], 'other')
         pack_specs.append(row)
+    # packaging comparison story (small appliances, SKU-100532): same product in three pack materials, pallet fill as in packaging design
+    base = next(x for x in pack_specs if x['sku'] == PACK_STORY_SKU)
+    unit_kg = float(prod[PACK_STORY_SKU]['weight_kg'] or 1)
+    alt = [  # (pack_spec_id, pack_type, material, units_per_pack, packs_per_pallet, height_cm, pack_kg)
+        (base['pack_spec_id'], 'carton', 'corrugated', 5, 50, 150, 0.12),
+        ('PKS-900101', 'tray', 'moulded_pulp', 4, 50, 165, 0.15),
+        ('PKS-900102', 'pouch', 'recycled_plastic', 10, 40, 120, 0.05)]
+    for spec_id, ptype, mat, upk, ppp, h, pk in alt:
+        row = dict(base)
+        row |= {'pack_spec_id': spec_id, 'pack_type': ptype, 'material': mat, 'units_per_pack': upk, 'packs_per_pallet': ppp,
+                'units_per_pallet': upk * ppp, 'pallet_height_cm': h,
+                'pallet_weight_kg': round(upk * ppp * (unit_kg + pk / upk) + 25, 1), 'updated_at': T(D(30), 10)}
+        if spec_id == base['pack_spec_id']:
+            base.update(row)
+        else:
+            pack_specs.append(row)
 
     # ------------------------------------------------------------------ location inventory (from master dc_stock)
     story_inv = [  # (location, sku, fraction of the SKU's on-hand held in that bin, or explicit qty)
@@ -215,6 +235,27 @@ def generate(g):
         location_inventory.append({'stock_id': f'LI-{i + 1:06d}', 'location_id': row['location_id'], 'site_id': row['site_id'], 'sku': row['sku'],
                                    'lot_number': f'LOT-{r.randint(1000, 9999)}' if r.random() < 0.4 else '', 'status': row['status'],
                                    'qty': row['qty'], 'updated_at': T(D(r.randint(0, 20)), r.randint(6, 20), r.randint(0, 59))})
+    # status story (01:8:Q4): a quality hold put about £1.05m of DC1 and DC3 stock into quarantine; WMS leaves it out of
+    # available stock but ERP still counts it. Uses its own random stream so nothing else in the data moves.
+    qr = random.Random(8044)
+    q_by_site = [sorted([x for x in location_inventory if x['status'] == 'on-hand' and x['location_id'] not in story_locs
+                         and x['site_id'] == site and x['qty'] >= 200 and prod[x['sku']]['hazmat'] == 'none'],
+                        key=lambda x: (-x['qty'] * cost[x['sku']], x['stock_id'])) for site in ('DC1', 'DC3')]
+    q_cands = [x for pair in zip(*q_by_site) for x in pair]      # alternate DC1 and DC3, biggest first
+    q_seen, q_value = set(), 0.0
+    for x in q_cands:
+        if q_value >= QUARANTINE_TARGET_GBP:
+            break
+        if x['sku'] in q_seen:
+            continue
+        unit = cost[x['sku']]
+        move = min(int(x['qty'] * 0.5), int(math.ceil((QUARANTINE_TARGET_GBP - q_value) / unit)))
+        q_seen.add(x['sku'])
+        q_value += move * unit
+        x['qty'] -= move
+        location_inventory.append({'stock_id': f'LI-{len(location_inventory) + 1:06d}', 'location_id': x['location_id'], 'site_id': x['site_id'],
+                                   'sku': x['sku'], 'lot_number': f'LOT-QH-{qr.randint(100, 999)}', 'status': 'quarantine', 'qty': move,
+                                   'updated_at': T(D(qr.randint(2, 4)), qr.randint(8, 17), qr.randint(0, 59))})
     inv_by_loc = {}
     for row in location_inventory:
         inv_by_loc.setdefault(row['location_id'], []).append(row)
