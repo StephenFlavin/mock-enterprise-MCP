@@ -298,7 +298,7 @@ A small model fails mainly in five ways: it picks the wrong tool among similar o
 ### 6.3 Forgiving input (in `args.py`, applied to every tool)
 
 - **Case and spacing.** IDs and enums are case-insensitive and whitespace-trimmed: `dc1-c-14` and `C-14` resolve when they are unambiguous.
-- **`ref: true` columns accept an ID or a name.** "Acme Textiles" resolves to `SUP-0042`. If nothing matches exactly, `difflib.get_close_matches` finds the nearest values. One strong match is used, and the output says so (`note: matched "Acme Textile Ltd" (SUP-0042)`). Several matches produce an error listing the top 3.
+- **Master-data references take ids only.** sku, supplier_id, site_id and the other master keys must be exact ids (case-insensitive). A name gets an error pointing to the id format, as a real IMS or POS would. Name-to-id lookup belongs to the owning systems' search tools (`search_products` in mdm/pim, `search_suppliers` in srm, and so on). A system's own entities still accept a name: one strong match is used and noted, several give an error listing them, and no match suggests the closest values.
 - **Dates.** `2026-08`, `2026-08-14`, `Q3`, `FY26 P7`, `last 30 days` and `yesterday` are normalised against `AS_OF` by one small parser.
 - **Numbers.** `"£500"` and `"1,200"` are coerced to numbers.
 

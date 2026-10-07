@@ -198,7 +198,8 @@ def ref_table(name: str, system: System, master: System):
 
 
 def resolve(db, system_id: str, name: str, value: str, ref) -> tuple[str, str | None]:
-    """Resolve an id or name to a key. Returns (key, note)."""
+    """Resolve an id to a key. Names resolve only for this system's own entities: master data
+    (products, suppliers, sites…) is referenced by id, and only its owning systems offer search tools."""
     sid, tn, nc = ref
     cols = f'"{name}"' + (f', "{nc}"' if nc else ", NULL")
     rows = db.query(system_id, f'SELECT {cols} FROM "{sid}"."{tn}"')[1]
@@ -206,6 +207,9 @@ def resolve(db, system_id: str, name: str, value: str, ref) -> tuple[str, str | 
     for k, n in rows:
         if str(k).lower() == v:
             return k, None
+    if sid == "master":
+        raise ArgError(f"Unknown {name} '{value}'. This system takes {name} ids, e.g. {rows[0][0]}." if rows
+                       else f"Unknown {name} '{value}'.")
     for k, n in rows:
         if n and str(n).lower() == v:
             return k, f'matched "{n}" ({k})'
