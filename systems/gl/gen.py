@@ -30,7 +30,7 @@ def generate(g):
     recon_id = 0
 
     # Master data
-    entities = ['LE-UK', 'LE-EU', 'LE-APAC']
+    entities = ['LE-UK', 'LE-IE', 'LE-NL', 'LE-DE', 'LE-US', 'LE-HK']
     sites = ['DC1', 'DC2', 'DC3', 'DC4', 'DC5', 'ST001', 'ST002', 'ST003']
     cost_centres = ['CC-2101', 'CC-2102', 'CC-2103', 'CC-2104', 'CC-2105']
     employees = [f'EMP-{i:05d}' for i in range(100, 120)]
@@ -50,7 +50,7 @@ def generate(g):
         je_id += 1
         je_id_str = f'JE-{je_id:06d}'
         entity_id = g.pick(entities)
-        posting_date = g.date_between(g.days_ago(90), g.days_ago(0))
+        posting_date = g.date_between(90, 0)
         status = g.pick(statuses)
         je_type = g.pick(je_types)
 
@@ -161,9 +161,9 @@ def generate(g):
     # ===== Intercompany Transactions =====
     intercompany_transactions = []
     entity_pairs = [
-        ('LE-UK', 'LE-EU'),
-        ('LE-UK', 'LE-APAC'),
-        ('LE-EU', 'LE-APAC'),
+        ('LE-UK', 'LE-IE'),
+        ('LE-UK', 'LE-US'),
+        ('LE-HK', 'LE-NL'),
     ]
 
     for from_entity, to_entity in entity_pairs:
@@ -177,7 +177,7 @@ def generate(g):
                 'from_entity_id': from_entity,
                 'to_entity_id': to_entity,
                 'je_id': f'JE-{g.rng.randint(1, 150):06d}',
-                'posting_date': g.date_between(g.days_ago(30), g.days_ago(0)),
+                'posting_date': g.date_between(30, 0),
                 'amount_gbp': round(amount, 2),
                 'currency': 'GBP',
                 'amount_local': round(amount * fx_rate, 2),
@@ -209,7 +209,7 @@ def generate(g):
             'period': f'FY27-{g.rng.randint(7, 9):02d}',
             'description': g.pick(accrual_descriptions),
             'amount_gbp': round(amount, 2),
-            'accrual_date': g.date_between(g.days_ago(30), g.days_ago(0)),
+            'accrual_date': g.date_between(30, 0),
             'reversal_date': g.days_ago(-30),
             'status': g.pick(['open', 'open', 'reversed']),
         })
@@ -229,7 +229,7 @@ def generate(g):
         fx_gains_losses.append({
             'fx_txn_id': f'FX-{fx_id:06d}',
             'je_id': f'JE-{g.rng.randint(1, 150):06d}',
-            'posting_date': g.date_between(g.days_ago(90), g.days_ago(0)),
+            'posting_date': g.date_between(90, 0),
             'currency': currency,
             'gbp_amount': round(gbp_amount, 2),
             'local_amount': round(gbp_amount / opening_rate, 2),
@@ -249,7 +249,7 @@ def generate(g):
         freight_costs.append({
             'freight_id': f'FRT-{freight_id:06d}',
             'je_id': f'JE-{g.rng.randint(1, 150):06d}',
-            'posting_date': g.date_between(g.days_ago(30), g.days_ago(0)),
+            'posting_date': g.date_between(30, 0),
             'account_code': f'{6000 + g.rng.randint(0, 99):05d}',
             'shipment_id': f'SHP-{g.rng.randint(1000, 9999)}' if g.rng.random() > 0.3 else '',
             'supplier_id': g.pick(suppliers)['supplier_id'] if suppliers else 'SUP-0001',
@@ -270,7 +270,7 @@ def generate(g):
         handling_costs.append({
             'handling_id': f'HDL-{handling_id:06d}',
             'je_id': f'JE-{g.rng.randint(1, 150):06d}',
-            'posting_date': g.date_between(g.days_ago(30), g.days_ago(0)),
+            'posting_date': g.date_between(30, 0),
             'channel': g.pick(channels),
             'cost_gbp': round(total_cost, 2),
             'units_handled': units,
@@ -283,15 +283,16 @@ def generate(g):
     orders = g.master('orders')
 
     for order in g.pick(orders, k=100):
+        order_value = float(order['value_gbp'])
         order_charges.append({
             'order_id': order['order_id'],
             'entity_id': g.pick(entities),
             'posting_date': order['order_date'],
-            'revenue_gbp': round(order['value_gbp'], 2),
+            'revenue_gbp': round(order_value, 2),
             'freight_charge_gbp': round(g.rng.uniform(3.0, 15.0), 2),
             'handling_charge_gbp': round(g.rng.uniform(1.0, 5.0), 2),
-            'discount_gbp': round(g.rng.uniform(0, order['value_gbp'] * 0.1), 2),
-            'total_charges_gbp': round(order['value_gbp'] + g.rng.uniform(3.0, 15.0) + g.rng.uniform(1.0, 5.0), 2),
+            'discount_gbp': round(g.rng.uniform(0, order_value * 0.1), 2),
+            'total_charges_gbp': round(order_value + g.rng.uniform(3.0, 15.0) + g.rng.uniform(1.0, 5.0), 2),
             'je_id': '',
         })
 
@@ -326,7 +327,7 @@ def generate(g):
             'status': g.pick(['open', 'open', 'signed_off', 'disputed']),
             'assigned_to': g.pick(employees),
             'reviewer': g.pick(employees),
-            'opened_date': g.date_between(g.days_ago(60), g.days_ago(0)),
+            'opened_date': g.date_between(60, 0),
             'signed_off_date': '',
             'notes': f'Reconciliation for account {i+1}',
         })

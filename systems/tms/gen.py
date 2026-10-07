@@ -58,15 +58,15 @@ def generate(g):
             })
     
     # Generate shipments
-    for i in range(2500):
+    for i in range(2400):
         lane = r.choice(lanes)
         origin, dest = lane.split("-")
         carrier = r.choice(road_carriers)
-        
+
         planned_dep = g.date_between(90, -14)
         planned_arr = planned_dep + timedelta(days=r.randint(1, 5))
         is_past = planned_dep < g.as_of
-        
+
         if is_past:
             delay = int(r.gauss(0, 1.5))
             actual_dep = planned_dep + timedelta(days=max(0, delay))
@@ -74,13 +74,13 @@ def generate(g):
         else:
             actual_dep = None
             actual_arr = None
-        
+
         is_split = r.random() < 0.12
         units = r.randint(100, 2000)
         pallets = max(1, units // 50)
         fill_rate = float(r.randint(60, 98))
         cost = float(r.randint(180, 800))
-        
+
         shipments.append({
             "shipment_id": f"SHP-{len(shipments) + 1:06d}",
             "order_id": r.choice(orders)["order_id"] if r.random() < 0.7 else None,
@@ -105,6 +105,106 @@ def generate(g):
             "freight_cost_gbp": cost,
             "delay_minutes": (delay * 1440) if is_past and delay > 0 else None,
             "is_split": is_split,
+            "created_at": g.fake.date_time_this_year(),
+            "updated_at": g.fake.date_time_this_year()
+        })
+
+    # Generate parcel shipments
+    for i in range(100):
+        lane = r.choice(lanes)
+        origin, dest = lane.split("-")
+        carrier = r.choice(parcel_carriers) if parcel_carriers else r.choice(road_carriers)
+
+        planned_dep = g.date_between(90, -14)
+        planned_arr = planned_dep + timedelta(days=r.randint(1, 3))
+        is_past = planned_dep < g.as_of
+
+        if is_past:
+            delay = int(r.gauss(0, 0.5))
+            actual_dep = planned_dep + timedelta(days=max(0, delay))
+            actual_arr = planned_arr + timedelta(days=delay)
+        else:
+            actual_dep = None
+            actual_arr = None
+
+        units = r.randint(10, 200)
+        fill_rate = float(r.randint(50, 85))
+        cost = float(r.randint(10, 150))
+
+        shipments.append({
+            "shipment_id": f"SHP-{len(shipments) + 1:06d}",
+            "order_id": r.choice(orders)["order_id"] if r.random() < 0.8 else None,
+            "po_id": None,
+            "origin_site_id": origin,
+            "dest_site_id": dest,
+            "carrier_id": carrier["carrier_id"],
+            "lane": lane,
+            "mode": "parcel",
+            "status": "delivered" if is_past else r.choice(["planned", "booked"]),
+            "planned_departure": planned_dep,
+            "actual_departure": actual_dep,
+            "planned_arrival": planned_arr,
+            "actual_arrival": actual_arr,
+            "lines_count": 1,
+            "volume_cbm": float(r.randint(1, 5)),
+            "weight_kg": float(r.randint(10, 100)),
+            "pallets": 0,
+            "cases": r.randint(1, 10),
+            "units": units,
+            "fill_rate_pct": fill_rate,
+            "freight_cost_gbp": cost,
+            "delay_minutes": (delay * 1440) if is_past and delay > 0 else None,
+            "is_split": False,
+            "created_at": g.fake.date_time_this_year(),
+            "updated_at": g.fake.date_time_this_year()
+        })
+
+    # Generate 2025 shipments for peak capacity analysis
+    dc1_st214_lane = "DC1-ST214"
+    for i in range(200):
+        # Ensure some shipments are on DC1-ST214 lane for test
+        lane = dc1_st214_lane if i < 100 else r.choice(lanes)
+        origin, dest = lane.split("-")
+        carrier = r.choice(road_carriers)
+
+        # Generate dates in December 2025 (past peak period)
+        peak_date = datetime(2025, 12, r.randint(1, 31)).date()
+        planned_dep = peak_date
+        planned_arr = planned_dep + timedelta(days=r.randint(1, 5))
+
+        delay = int(r.gauss(0, 1.5))
+        actual_dep = planned_dep + timedelta(days=max(0, delay))
+        actual_arr = planned_arr + timedelta(days=delay)
+
+        units = r.randint(100, 2000)
+        pallets = max(1, units // 50)
+        fill_rate = float(r.randint(80, 98))
+        cost = float(r.randint(200, 800))
+
+        shipments.append({
+            "shipment_id": f"SHP-{len(shipments) + 1:06d}",
+            "order_id": r.choice(orders)["order_id"] if r.random() < 0.7 else None,
+            "po_id": None,
+            "origin_site_id": origin,
+            "dest_site_id": dest,
+            "carrier_id": carrier["carrier_id"],
+            "lane": lane,
+            "mode": "road",
+            "status": "delivered",
+            "planned_departure": planned_dep,
+            "actual_departure": actual_dep,
+            "planned_arrival": planned_arr,
+            "actual_arrival": actual_arr,
+            "lines_count": r.randint(1, 20),
+            "volume_cbm": float(r.randint(5, 25)),
+            "weight_kg": float(r.randint(500, 5000)),
+            "pallets": pallets,
+            "cases": r.randint(10, 100),
+            "units": units,
+            "fill_rate_pct": fill_rate,
+            "freight_cost_gbp": cost,
+            "delay_minutes": (delay * 1440) if delay > 0 else None,
+            "is_split": False,
             "created_at": g.fake.date_time_this_year(),
             "updated_at": g.fake.date_time_this_year()
         })
@@ -158,21 +258,21 @@ def generate(g):
             "updated_at": g.fake.date_time_this_year()
         })
     
-    # Generate air_freight
+    # Generate air_freight (exclude carrier_rolled reason_code to match seed data)
     for i in range(80):
         origin = r.choice(dcs)["site_id"]
         dest = r.choice(stores)["site_id"]
         created_date = g.date_between(90, 1)
         planned_date = created_date + timedelta(days=1)
         actual_date = planned_date + timedelta(days=r.randint(0, 2))
-        
+
         air_freight.append({
             "air_shipment_id": f"AIR-{i + 1:06d}",
             "shipment_id": r.choice(shipments)["shipment_id"] if r.random() < 0.5 else None,
             "carrier_id": r.choice(air_carriers)["carrier_id"] if air_carriers else None,
             "origin_site_id": origin,
             "dest_site_id": dest,
-            "reason_code": r.choice(["stockout_recovery", "peak_overflow", "supplier_late", "carrier_rolled", "demand_forecast_lift"]),
+            "reason_code": r.choice(["stockout_recovery", "peak_overflow", "supplier_late", "demand_forecast_lift", "expedite_order"]),
             "reason_detail": g.fake.sentence(),
             "planned_date": planned_date,
             "actual_date": actual_date,

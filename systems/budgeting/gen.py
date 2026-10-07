@@ -22,13 +22,19 @@ def generate(g):
 
     # Generate budget lines and actuals for last 6 months + current month
     categories = ['air freight', 'road transport', 'staff', 'utilities', 'systems', 'packaging']
-    periods = g.weeks(26)  # 26 weeks of history
 
-    for period_date in periods:
+    # Get unique month periods from last 26 weeks
+    seen_periods = set()
+    for period_date in g.weeks(26):
         period_str = period_date.strftime('%Y-%m')
-        if period_str not in [p for p, _ in [(pd.strftime('%Y-%m'), i) for i, pd in enumerate(periods)]]:
-            continue
+        seen_periods.add(period_str)
 
+    periods = sorted(list(seen_periods))
+
+    # Track generated actual costs to avoid duplicates
+    actual_costs_keys = set()
+
+    for period_str in periods:
         for cc in cost_centres[:20]:  # Sample of cost centres
             cc_id = cc['cost_centre_id']
             for category in categories:
@@ -42,11 +48,12 @@ def generate(g):
                     'period': period_str,
                     'value_gbp': base_budget,
                     'notes': f"{category} for {cc_id}",
-                    'updated_at': period_date + timedelta(days=1)
+                    'updated_at': as_of - timedelta(days=30)
                 })
 
                 # Actual costs (75% of periods have actuals)
-                if r.random() < 0.75:
+                key = (cc_id, category, period_str)
+                if key not in actual_costs_keys and r.random() < 0.75:
                     actual = base_budget * r.gauss(1.0, 0.15)  # ±15% variance
                     one_off = actual * r.choice([0, 0, 0, 0.1, 0.2, 0.3])  # Some have one-off component
                     actual_costs.append({
@@ -55,8 +62,9 @@ def generate(g):
                         'period': period_str,
                         'actual_gbp': round(actual, 2),
                         'one_off_gbp': round(one_off, 2),
-                        'updated_at': period_date + timedelta(days=5)
+                        'updated_at': as_of - timedelta(days=25)
                     })
+                    actual_costs_keys.add(key)
 
     # Generate forecast versions and scenarios
     base_scenarios = [
@@ -124,19 +132,23 @@ def generate(g):
             'type': ptype
         })
 
-        # Programme costs by period
+        # Programme costs by period (track keys to avoid duplicates)
+        prog_cost_keys = set()
         for week in g.weeks(24):
             period_str = week.strftime('%Y-%m')
-            forecast = budget / 24 * r.gauss(1.0, 0.2)
-            actual = forecast * r.gauss(1.0, 0.15) if week < as_of else 0
-            programme_costs.append({
-                'programme_id': prog_id,
-                'period': period_str,
-                'forecast_gbp': round(forecast, 2),
-                'actual_gbp': round(max(0, actual), 2),
-                'burn_rate_pct': round(actual / forecast * 100 if forecast > 0 else 0, 1),
-                'updated_at': week + timedelta(days=5)
-            })
+            key = (prog_id, period_str)
+            if key not in prog_cost_keys:
+                forecast = budget / 24 * r.gauss(1.0, 0.2)
+                actual = forecast * r.gauss(1.0, 0.15) if week < as_of else 0
+                programme_costs.append({
+                    'programme_id': prog_id,
+                    'period': period_str,
+                    'forecast_gbp': round(forecast, 2),
+                    'actual_gbp': round(max(0, actual), 2),
+                    'burn_rate_pct': round(actual / forecast * 100 if forecast > 0 else 0, 1),
+                    'updated_at': as_of - timedelta(days=5)
+                })
+                prog_cost_keys.add(key)
 
     # Generate investment cases
     for i in range(10):
