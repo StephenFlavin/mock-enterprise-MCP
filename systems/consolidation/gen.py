@@ -75,8 +75,8 @@ def generate(g):
                 "inventory_value_gbp": inv, "inventory_turn": turn, "ebitda_gbp": round(op + dep, -3),
                 "gross_margin_prior_year_pct": round(e["py_gm"] + noise(0.15), 1),
                 "inventory_turn_prior_year": round(e["py_turn"] + noise(0.05), 1),
-                "notes": ("Gross margin down on freight and markdowns; inventory turn slower than last year"
-                          if i == 0 and gm < e["py_gm"] else None),
+                "notes": ("Gross margin 1.2pts below last year on freight and markdowns; inventory turn slower than last year"
+                          if i == 0 and ent == "LE-UK" else None),
             })
             monthly.append({
                 "period": period, "entity_id": ent, "revenue_gbp": rev, "revenue_vs_budget_gbp": rev_var,

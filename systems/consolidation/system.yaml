@@ -1,8 +1,8 @@
 id: consolidation
 name: Consolidation & Reporting Tool
 instructions: >
-  Financial consolidation, reporting and close management. Month-end close tasks, company KPIs, guidance
-  and outlook, intercompany reconciliation. Use for financial analysis, performance summaries and close coordination.
+  Financial consolidation and reporting: month-end close tasks (CT-), group and entity KPIs by month (period 2026-09),
+  guidance and outlook, unmatched intercompany items (ICI-). Entities are LE-UK, LE-IE, LE-NL, LE-DE, LE-US, LE-HK, LE-PL.
 
 tables:
   close_tasks:
@@ -31,7 +31,10 @@ tables:
       operating_margin_pct: {type: float, desc: Operating margin percentage}
       revenue_growth_pct: {type: float, desc: YoY revenue growth %}
       inventory_value_gbp: {type: float, desc: Inventory value in GBP}
-      inventory_turn: {type: float, desc: Annual inventory turn (times per year)"}
+      inventory_turn: {type: float, desc: Annual inventory turn (times per year)}
+      gross_margin_prior_year_pct: {type: float, desc: Gross margin % in the same month last year}
+      inventory_turn_prior_year: {type: float, desc: Inventory turn in the same month last year}
+      notes: {type: text, desc: Commentary on the KPIs}
       ebitda_gbp: {type: float, desc: EBITDA in GBP}
 
   guidance_and_outlook:
@@ -46,6 +49,8 @@ tables:
       guidance_ebitda_high_gbp: {type: float, desc: High end guidance for EBITDA}
       guidance_status: {type: enum, values: [current, superseded], desc: Current or previous guidance}
       outlook_summary: {type: text, desc: Qualitative outlook commentary}
+      key_assumptions: {type: text, desc: Assumptions the guidance depends on}
+      update_policy: {type: text, desc: When guidance would be updated}
 
   inventory_supply_chain_kpis:
     key: [period, entity_id]
@@ -67,13 +72,13 @@ tables:
       period: {type: str, desc: "Period, e.g. 2026-09"}
       entity_id: {type: str, desc: "Legal entity"}
       revenue_gbp: {type: float, desc: Revenue in GBP}
-      revenue_vs_budget_gbp: {type: float, desc: Variance from budget (positive = favorable)"}
-      revenue_vs_budget_pct: {type: float, desc: Variance %"}
+      revenue_vs_budget_gbp: {type: float, desc: Variance from budget (positive = favorable)}
+      revenue_vs_budget_pct: {type: float, desc: Variance %}
       gross_profit_gbp: {type: float, desc: Gross profit in GBP}
-      gp_pct: {type: float, desc: Gross margin %"}
+      gp_pct: {type: float, desc: Gross margin %}
       operating_profit_gbp: {type: float, desc: Operating profit in GBP}
       op_vs_budget_gbp: {type: float, desc: Operating profit variance from budget}
-      operating_margin_pct: {type: float, desc: Operating margin %"}
+      operating_margin_pct: {type: float, desc: Operating margin %}
       notes: {type: str, desc: Key commentary or exceptions}
 
   intercompany_items:
@@ -104,15 +109,25 @@ tables:
 
 tools:
   - name: list_open_close_tasks
-    desc: Open items on the month-end close checklist by entity. Shows task owner, due date and status.
-    kind: select
-    from: close_tasks
-    filters:
+    desc: Month-end close tasks not yet completed, oldest first, with owner, status and age in days. Filter by entity, owner or min_age_days.
+    kind: sql
+    args:
       entity_id: {}
-      status: {default: open}
-      priority: {}
-    columns: [task_id, task_name, owner_id, due_date, status, priority, created_at]
-    order: due_date
+      owner_id: {type: str, desc: "Task owner, e.g. EMP-00086"}
+      status: {type: enum, values: [open, in_progress, blocked], desc: "Only this status; leave empty for every task not completed"}
+      priority: {type: enum, values: [low, medium, high, urgent], desc: Priority}
+      min_age_days: {type: int, desc: "Only tasks open at least this many days, e.g. 60 for more than two months"}
+    sql: |
+      SELECT task_id, task_name, entity_id, owner_id, status, priority, due_date,
+             date_diff('day', CAST(created_at AS DATE), CAST($as_of AS DATE)) AS age_days, notes
+      FROM close_tasks
+      WHERE status <> 'completed'
+        AND ($entity_id IS NULL OR entity_id = $entity_id)
+        AND ($owner_id IS NULL OR owner_id = $owner_id)
+        AND ($status IS NULL OR status = $status)
+        AND ($priority IS NULL OR priority = $priority)
+        AND ($min_age_days IS NULL OR date_diff('day', CAST(created_at AS DATE), CAST($as_of AS DATE)) >= $min_age_days)
+      ORDER BY created_at, task_id
     limit: 50
     example: {entity_id: LE-UK}
 
@@ -121,100 +136,168 @@ tools:
     kind: insert
     table: close_tasks
     id_prefix: CT-
-    defaults: {status: open}
+    defaults: {status: open, priority: medium}
     args:
       task_name: {required: true, desc: "Task description, e.g. Review sales accruals"}
-      owner_id: {required: true, desc: "Employee responsible"}
+      owner_id: {required: true, desc: "Employee responsible, e.g. EMP-00087"}
       due_date: {required: true, type: date, desc: "Task due date"}
-      entity_id: {required: true, desc: "Legal entity"}
+      entity_id: {required: true}
       priority: {type: enum, values: [low, medium, high, urgent], desc: "Priority level"}
       notes: {type: str, desc: Additional context}
-    example: {task_name: "Review revenue accruals", owner_id: EMP-01234, due_date: "+5d", entity_id: LE-UK}
+    example: {task_name: "Review revenue accruals", owner_id: EMP-00087, due_date: "+5d", entity_id: LE-UK}
 
   - name: send_close_task_reminder
-    desc: Send a reminder to the owner of an open close task. Stores the reminder notification.
+    desc: Send a reminder to the owner of an open close task. Stores the reminder; use list_open_close_tasks first to get task_id and owner_id.
     kind: insert
     table: close_task_reminders
     id_prefix: CTR-
     args:
-      task_id: {required: true, desc: "Close task to remind about"}
+      task_id: {required: true, desc: "Close task to remind about, e.g. CT-900102"}
+      recipient_id: {required: true, desc: "Task owner to remind (owner_id from the task), e.g. EMP-00086"}
       notes: {type: str, desc: "Reminder message"}
-    example: {task_id: CT-900001, notes: "Reminder: revenue accruals due by end of day"}
+    example: {task_id: CT-900102, recipient_id: EMP-00086, notes: "Reminder: GRNI reconciliation overdue"}
 
   - name: get_company_financial_kpis
-    desc: Own margin, growth and inventory turn KPIs by entity for the current period. Use for peer comparison.
+    desc: Own gross margin, operating margin, revenue growth and inventory turn for the group and each entity, with last year's comparison. Use for peer comparison.
     kind: sql
     args:
       entity_id: {}
+      period_from: {type: str, desc: "First month, e.g. 2026-06 (YYYY-MM). Default: latest month"}
+      period_to: {type: str, desc: "Last month, e.g. 2026-09 (YYYY-MM). Default: latest month"}
+      view: {type: enum, values: [group, entity, all], default: all, desc: "group = one consolidated row per month, entity = per legal entity"}
     sql: |
-      SELECT entity_id, period, revenue_gbp, gross_margin_pct, operating_margin_pct,
-             revenue_growth_pct, inventory_turn, inventory_value_gbp, ebitda_gbp
-      FROM financial_kpis
-      WHERE ($entity_id IS NULL OR entity_id = $entity_id)
-      ORDER BY period DESC, entity_id
-    limit: 20
-    example: {entity_id: LE-UK}
+      WITH lim AS (SELECT max(period) AS latest FROM financial_kpis),
+      b AS (
+        SELECT k.* FROM financial_kpis k, lim
+        WHERE k.period BETWEEN coalesce($period_from, $period_to, lim.latest) AND coalesce($period_to, $period_from, lim.latest)
+      ),
+      grp AS (
+        SELECT 'group' AS level, 'GROUP' AS entity_id, period, sum(revenue_gbp) AS revenue_gbp,
+               round(sum(gross_profit_gbp) / sum(revenue_gbp) * 100, 1) AS gross_margin_pct,
+               round(sum(gross_margin_prior_year_pct * revenue_gbp) / sum(revenue_gbp), 1) AS gross_margin_prior_year_pct,
+               round(sum(operating_profit_gbp) / sum(revenue_gbp) * 100, 1) AS operating_margin_pct,
+               round((sum(revenue_gbp) / sum(revenue_gbp / (1 + revenue_growth_pct / 100)) - 1) * 100, 1) AS revenue_growth_pct,
+               round(sum((revenue_gbp - gross_profit_gbp) * 12) / sum(inventory_value_gbp), 1) AS inventory_turn,
+               round(sum(inventory_turn_prior_year * inventory_value_gbp) / sum(inventory_value_gbp), 1) AS inventory_turn_prior_year,
+               sum(inventory_value_gbp) AS inventory_value_gbp, sum(ebitda_gbp) AS ebitda_gbp, NULL AS notes
+        FROM b GROUP BY period
+      ),
+      ent AS (
+        SELECT 'entity' AS level, entity_id, period, revenue_gbp, gross_margin_pct, gross_margin_prior_year_pct,
+               operating_margin_pct, revenue_growth_pct, inventory_turn, inventory_turn_prior_year,
+               inventory_value_gbp, ebitda_gbp, notes
+        FROM b
+      )
+      SELECT * EXCLUDE (level) FROM (SELECT * FROM grp UNION ALL SELECT * FROM ent) t1
+      WHERE ($view = 'all' OR level = $view)
+        AND ($entity_id IS NULL OR entity_id = $entity_id)
+      ORDER BY period DESC, (entity_id <> 'GROUP'), entity_id
+    limit: 40
+    example: {view: group}
 
   - name: get_guidance_and_outlook
-    desc: Current guidance and outlook. Use for financial targets and strategic direction.
+    desc: Current guidance by period (revenue and EBITDA ranges), outlook, key assumptions and what would trigger an update. Set guidance_status superseded for earlier guidance.
     kind: sql
-    args: {}
+    args:
+      guidance_status: {type: enum, values: [current, superseded], default: current, desc: "current = live guidance, superseded = earlier guidance it replaced"}
+      period: {type: str, desc: "Guidance period, e.g. 2026-Q4"}
     sql: |
       SELECT id, period, guidance_date, guidance_revenue_low_gbp, guidance_revenue_high_gbp,
-             guidance_ebitda_low_gbp, guidance_ebitda_high_gbp, guidance_status, outlook_summary
+             guidance_ebitda_low_gbp, guidance_ebitda_high_gbp, guidance_status, outlook_summary,
+             key_assumptions, update_policy
       FROM guidance_and_outlook
-      WHERE guidance_status = 'current'
-      ORDER BY guidance_date DESC
-    limit: 5
+      WHERE ($guidance_status IS NULL OR guidance_status = $guidance_status)
+        AND ($period IS NULL OR period = $period)
+      ORDER BY period, guidance_date DESC
+    limit: 10
     example: {}
 
   - name: get_inventory_and_supply_chain_cost_kpis
-    desc: Inventory and supply chain cost KPIs including turns, costs and carrier/supplier performance.
+    desc: Inventory turn, DC, freight and total supply chain cost as % of revenue, carrier and supplier OTIF and DPO by month, for the group and each entity. Defaults to the last six months.
     kind: sql
     args:
       entity_id: {}
+      period_from: {type: str, desc: "First month, e.g. 2026-04 (YYYY-MM). Default: six months to the latest"}
+      period_to: {type: str, desc: "Last month, e.g. 2026-09 (YYYY-MM). Default: latest month"}
+      view: {type: enum, values: [group, entity, all], default: group, desc: "group = one consolidated row per month, entity = per legal entity"}
     sql: |
-      SELECT entity_id, period, average_inventory_gbp, inventory_turn,
-             dc_operating_cost_pct, freight_cost_pct, supply_chain_cost_pct,
-             carrier_otif_pct, supplier_otif_pct, days_payable_outstanding
-      FROM inventory_supply_chain_kpis
-      WHERE ($entity_id IS NULL OR entity_id = $entity_id)
-      ORDER BY period DESC, entity_id
-    limit: 20
-    example: {entity_id: LE-UK}
+      WITH lim AS (SELECT max(period) AS latest FROM inventory_supply_chain_kpis),
+      b AS (
+        SELECT s.*, f.revenue_gbp, f.gross_profit_gbp FROM inventory_supply_chain_kpis s
+        JOIN financial_kpis f USING (period, entity_id), lim
+        WHERE s.period <= coalesce($period_to, lim.latest)
+          AND s.period >= coalesce($period_from, strftime(CAST(coalesce($period_to, lim.latest) || '-01' AS DATE) - INTERVAL 5 MONTH, '%Y-%m'))
+      ),
+      grp AS (
+        SELECT 'group' AS level, 'GROUP' AS entity_id, period,
+               round(sum((revenue_gbp - gross_profit_gbp) * 12) / sum(average_inventory_gbp), 1) AS inventory_turn,
+               sum(average_inventory_gbp) AS average_inventory_gbp,
+               round(sum(dc_operating_cost_pct * revenue_gbp) / sum(revenue_gbp), 2) AS dc_operating_cost_pct,
+               round(sum(freight_cost_pct * revenue_gbp) / sum(revenue_gbp), 2) AS freight_cost_pct,
+               round(sum(supply_chain_cost_pct * revenue_gbp) / sum(revenue_gbp), 2) AS supply_chain_cost_pct,
+               round(sum(carrier_otif_pct * revenue_gbp) / sum(revenue_gbp), 1) AS carrier_otif_pct,
+               round(sum(supplier_otif_pct * revenue_gbp) / sum(revenue_gbp), 1) AS supplier_otif_pct,
+               round(sum(days_payable_outstanding * revenue_gbp) / sum(revenue_gbp)) AS days_payable_outstanding
+        FROM b GROUP BY period
+      ),
+      ent AS (
+        SELECT 'entity' AS level, entity_id, period, inventory_turn, average_inventory_gbp, dc_operating_cost_pct,
+               freight_cost_pct, supply_chain_cost_pct, carrier_otif_pct, supplier_otif_pct, days_payable_outstanding
+        FROM b
+      )
+      SELECT * EXCLUDE (level) FROM (SELECT * FROM grp UNION ALL SELECT * FROM ent) t1
+      WHERE ($view = 'all' OR level = $view)
+        AND ($entity_id IS NULL OR entity_id = $entity_id)
+      ORDER BY period DESC, (entity_id <> 'GROUP'), entity_id
+    limit: 40
+    example: {view: group}
 
   - name: get_monthly_performance_summary
-    desc: Monthly KPIs and P&L headlines by entity. Revenue, profit, variances to budget and key commentary.
+    desc: Revenue, gross profit and operating profit with variance to budget and commentary for each entity plus a group total. Defaults to the latest closed month.
     kind: sql
     args:
       entity_id: {}
+      period: {type: str, desc: "Month, e.g. 2026-08 (YYYY-MM). Default: latest month"}
     sql: |
-      SELECT entity_id, period, revenue_gbp, revenue_vs_budget_gbp, revenue_vs_budget_pct,
-             gross_profit_gbp, gp_pct, operating_profit_gbp, op_vs_budget_gbp,
-             operating_margin_pct, notes
-      FROM monthly_performance
+      WITH lim AS (SELECT max(period) AS latest FROM monthly_performance),
+      b AS (SELECT m.* FROM monthly_performance m, lim WHERE m.period = coalesce($period, lim.latest)),
+      ent AS (
+        SELECT entity_id, period, revenue_gbp, revenue_vs_budget_gbp, revenue_vs_budget_pct, gross_profit_gbp, gp_pct,
+               operating_profit_gbp, op_vs_budget_gbp, operating_margin_pct, notes
+        FROM b
+      ),
+      grp AS (
+        SELECT 'GROUP' AS entity_id, period, sum(revenue_gbp) AS revenue_gbp, sum(revenue_vs_budget_gbp) AS revenue_vs_budget_gbp,
+               round(sum(revenue_vs_budget_gbp) / (sum(revenue_gbp) - sum(revenue_vs_budget_gbp)) * 100, 1) AS revenue_vs_budget_pct,
+               sum(gross_profit_gbp) AS gross_profit_gbp, round(sum(gross_profit_gbp) / sum(revenue_gbp) * 100, 1) AS gp_pct,
+               sum(operating_profit_gbp) AS operating_profit_gbp, sum(op_vs_budget_gbp) AS op_vs_budget_gbp,
+               round(sum(operating_profit_gbp) / sum(revenue_gbp) * 100, 1) AS operating_margin_pct, 'Group total of the entities' AS notes
+        FROM b GROUP BY period
+      )
+      SELECT * FROM (SELECT * FROM grp UNION ALL SELECT * FROM ent) t1
       WHERE ($entity_id IS NULL OR entity_id = $entity_id)
-      ORDER BY period DESC, entity_id
+      ORDER BY (entity_id <> 'GROUP'), op_vs_budget_gbp
     limit: 20
     example: {}
 
   - name: search_unmatched_intercompany_items
-    desc: Unmatched or one-sided intercompany items by entity pair, amount and period. For reconciliation.
+    desc: Unmatched or one-sided intercompany items with amount, currency, posting date, variance and reason, for an entity pair. Use to trace reconciliation differences.
     kind: sql
     args:
-      entity_from_id: {}
-      entity_to_id: {}
-      match_status: {type: enum, values: [unmatched, matched, partial], default: unmatched}
-      date_from: {col: posting_date, op: ">=", type: date, default: "-90d"}
+      entity_id: {desc: "Either side of the item, e.g. LE-UK"}
+      entity_from_id: {type: str, desc: "Sending entity, e.g. LE-UK"}
+      entity_to_id: {type: str, desc: "Receiving entity, e.g. LE-PL"}
+      match_status: {type: enum, values: [unmatched, matched, partial], default: unmatched, desc: "Matching status"}
+      date_from: {type: date, default: "-90d", desc: "Earliest posting date"}
     sql: |
-      SELECT item_id, entity_from_id, entity_to_id, transaction_amount_gbp,
-             transaction_currency, transaction_date, posting_date, invoice_no,
-             match_status, variance_gbp, variance_reason
+      SELECT item_id, entity_from_id, entity_to_id, transaction_amount_gbp, transaction_currency,
+             transaction_date, posting_date, invoice_no, match_status, variance_gbp, variance_reason
       FROM intercompany_items
-      WHERE ($entity_from_id IS NULL OR entity_from_id = $entity_from_id)
+      WHERE ($entity_id IS NULL OR entity_from_id = $entity_id OR entity_to_id = $entity_id)
+        AND ($entity_from_id IS NULL OR entity_from_id = $entity_from_id)
         AND ($entity_to_id IS NULL OR entity_to_id = $entity_to_id)
         AND ($match_status IS NULL OR match_status = $match_status)
         AND posting_date >= CAST($date_from AS DATE)
-      ORDER BY posting_date DESC, transaction_amount_gbp DESC
+      ORDER BY posting_date DESC, abs(variance_gbp) DESC
     limit: 50
-    example: {match_status: unmatched}
+    example: {entity_id: LE-UK}

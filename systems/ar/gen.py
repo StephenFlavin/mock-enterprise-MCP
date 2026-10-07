@@ -60,7 +60,7 @@ def generate(g):
             status = "paid" if frac >= 1 else "part_paid"
         else:
             status = "open" if due >= A else "overdue"
-        inv = dict(invoice_id=inv_id, customer_id=cid, order_id=order_id, invoice_date=inv_date, due_date=due,
+        inv = dict(invoice_id=inv_id, customer_id=cid, sales_order_ref=order_id, invoice_date=inv_date, due_date=due,
                    amount_gbp=amount, paid_amount_gbp=paid, status=status, dispute_status=dispute,
                    dispute_reason=reason, created_at=datetime.combine(inv_date, datetime.min.time()) + timedelta(hours=10),
                    updated_at=datetime.combine(d(paid_days_ago) if paid_days_ago is not None else inv_date,
