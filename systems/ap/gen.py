@@ -17,15 +17,14 @@ def generate(g):
     goods_receipt_invoice_variance = []
     air_freight_invoices = []
 
-    # Create vendor master from suppliers
-    suppliers = g.master("suppliers")
+    # Create vendor master from first 50 suppliers
+    suppliers = g.master("suppliers")[:50]
     pos = g.master("purchase_orders")
-    carriers = [c for c in g.master("carriers") if c["mode"] in ["air", "forwarder"]]
 
     vendor_id = 1
     vendor_by_supplier = {}
 
-    for supplier in suppliers[:50]:  # First 50 suppliers
+    for supplier in suppliers:
         vendor_id_str = f"VND-{vendor_id:06d}"
         fraud_score = r.randint(5, 75)
         fraud_indicators = []
@@ -47,7 +46,7 @@ def generate(g):
             "country": supplier["country"],
             "bank_country": supplier["country"] if r.random() < 0.9 else r.choice(["NL", "IE", "DE", "US"]),
             "tax_id": f"TAX-{r.randint(100000, 999999)}",
-            "payment_terms_days": supplier.get("payment_terms_days", 30),
+            "payment_terms_days": int(supplier.get("payment_terms_days", 30)),
             "on_payment_hold": r.choice([False, False, False, True]),  # 25% on hold
             "hold_reason": r.choice(["fraud_investigation", "payment_dispute", "audit_hold", None]) if r.choice([False, False, False, True]) else None,
             "fraud_risk_score": fraud_score,
@@ -59,9 +58,9 @@ def generate(g):
         vendor_by_supplier[supplier["supplier_id"]] = vendor_id_str
         vendor_id += 1
 
-    # Generate bank detail changes
+    # Generate bank detail changes for 10% of vendors
     change_id = 1
-    for vendor in vendors[:10]:  # 10% of vendors had bank changes
+    for vendor in vendors[:5]:
         change = {
             "change_id": f"BDC-{change_id:06d}",
             "vendor_id": vendor["vendor_id"],
@@ -81,7 +80,6 @@ def generate(g):
 
     # Generate invoices and invoice lines
     invoice_id = 1
-    line_payment_runs = {}  # Track which payment run each invoice is in
 
     # 1. Supplier invoices (linked to POs)
     for po in pos[:40]:  # Create invoices for first 40 POs
@@ -102,7 +100,7 @@ def generate(g):
             "po_id": po["po_id"],
             "three_way_match_status": r.choices(["matched", "variance"], [85, 15])[0],
             "gl_account": "5000",
-            "cost_centre_id": r.choice([c["cost_centre_id"] for c in g.master("cost_centres")]),
+            "cost_centre_id": r.choice([c["cost_centre_id"] for c in g.master("cost_centres")] if g.master("cost_centres") else ["CC-2101"]),
             "accrued": True,
             "accrual_date": inv_date + timedelta(days=2),
             "payment_status": r.choices(["paid", "scheduled"], [70, 30])[0],
@@ -137,16 +135,16 @@ def generate(g):
 
         invoice_id += 1
 
-    # 2. Carrier invoices with rate variances
-    for carrier in carriers[:5]:
-        for _ in range(r.randint(2, 5)):
+    # 2. Carrier/freight invoices with rate variances - use suppliers 10-20
+    for supplier in suppliers[10:20]:
+        for _ in range(r.randint(2, 4)):
             inv_date = g.date_between(180, 0)
-            line_count = r.randint(2, 8)
+            line_count = r.randint(2, 6)
 
             inv = {
                 "invoice_id": f"INV-{invoice_id:06d}",
-                "vendor_id": vendor_by_supplier.get(carrier["carrier_id"], f"VND-{r.randint(1, 100):06d}"),
-                "supplier_id": carrier["carrier_id"],
+                "vendor_id": vendor_by_supplier.get(supplier["supplier_id"], f"VND-{r.randint(1, 50):06d}"),
+                "supplier_id": supplier["supplier_id"],
                 "invoice_type": "carrier",
                 "invoice_number": f"CAR-{r.randint(10000, 99999)}",
                 "invoice_date": inv_date,
@@ -155,7 +153,7 @@ def generate(g):
                 "po_id": None,
                 "three_way_match_status": "pending",
                 "gl_account": "5102",
-                "cost_centre_id": r.choice([c["cost_centre_id"] for c in g.master("cost_centres")] if g.master("cost_centres") else ["CC-2201"]),
+                "cost_centre_id": r.choice([c["cost_centre_id"] for c in g.master("cost_centres")] if g.master("cost_centres") else ["CC-2101"]),
                 "accrued": r.choice([True, True, False]),
                 "accrual_date": inv_date + timedelta(days=3) if r.random() < 0.8 else None,
                 "payment_status": r.choices(["open", "scheduled", "paid", "disputed"], [30, 20, 40, 10])[0],
@@ -188,32 +186,33 @@ def generate(g):
 
             invoice_id += 1
 
-    # 3. Air freight invoices
+    # 3. Air freight invoices - use suppliers 20-25
     air_inv_id = 1
-    for _ in range(15):
-        inv_date = g.date_between(120, 0)
-        total_amount = r.uniform(5000, 50000)
+    for supplier in suppliers[20:25]:
+        for _ in range(r.randint(2, 4)):
+            inv_date = g.date_between(120, 0)
+            total_amount = r.uniform(5000, 50000)
 
-        air_inv = {
-            "invoice_id": f"FRT-{air_inv_id:06d}",
-            "supplier_id": r.choice([c["carrier_id"] for c in carriers]),
-            "invoice_date": inv_date,
-            "amount_gbp": total_amount,
-            "shipment_count": r.randint(1, 5),
-            "air_reason": r.choices(
-                ["demand_spike", "store_emergency", "supplier_late", "quality_issue", "cancelled_order"],
-                [20, 25, 20, 20, 15]
-            )[0],
-            "avoidable": r.choice([True, True, False]),
-            "avoidable_pct": r.randint(30, 100) if r.random() < 0.6 else 0,
-            "chargeability": r.choices(["chargeable_to_supplier", "no_chargeable_position"], [60, 40])[0],
-            "contract_rate_gbp": total_amount * 0.85 if r.random() < 0.7 else None,
-            "overcharge_gbp": max(0, total_amount - (total_amount * 0.85)) if r.random() < 0.7 else 0,
-            "status": r.choices(["open", "chargeable_drafted", "chargeback_sent"], [40, 35, 25])[0],
-            "created_date": inv_date
-        }
-        air_freight_invoices.append(air_inv)
-        air_inv_id += 1
+            air_inv = {
+                "invoice_id": f"FRT-{air_inv_id:06d}",
+                "supplier_id": supplier["supplier_id"],
+                "invoice_date": inv_date,
+                "amount_gbp": total_amount,
+                "shipment_count": r.randint(1, 5),
+                "air_reason": r.choices(
+                    ["demand_spike", "store_emergency", "supplier_late", "quality_issue", "cancelled_order"],
+                    [20, 25, 20, 20, 15]
+                )[0],
+                "avoidable": r.choice([True, True, False]),
+                "avoidable_pct": r.randint(30, 100) if r.random() < 0.6 else 0,
+                "chargeability": r.choices(["chargeable_to_supplier", "no_chargeable_position"], [60, 40])[0],
+                "contract_rate_gbp": total_amount * 0.85 if r.random() < 0.7 else None,
+                "overcharge_gbp": max(0, total_amount - (total_amount * 0.85)) if r.random() < 0.7 else 0,
+                "status": r.choices(["open", "chargeable_drafted", "chargeback_sent"], [40, 35, 25])[0],
+                "created_date": inv_date
+            }
+            air_freight_invoices.append(air_inv)
+            air_inv_id += 1
 
     # Generate rebate agreements
     rebate_id = 1

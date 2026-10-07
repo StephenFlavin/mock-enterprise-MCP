@@ -30,6 +30,8 @@ def generate(g):
     adverse_media = []
     sanctions = []
     litigation = []
+    supplier_doc_requirements = []
+    company_registry = []
 
     # Country risk indices
     countries = ["IN", "BD", "CN", "PK", "VN", "TH", "KH", "MX", "TN", "ET"]
@@ -340,88 +342,180 @@ def generate(g):
         })
         gap_id += 1
 
-    # Generate at least one row for stage-2 tables so they're not empty
-    if not audit_findings:
-        audit_findings.append({
-            "finding_id": "FND-000001",
-            "factory_id": None,
-            "supplier_id": None,
-            "audit_date": g.as_of - timedelta(days=30),
-            "category": "forced_labour",
-            "severity": "major",
-            "description": "Placeholder for stage 2 implementation",
-            "remediation_required": True,
-            "corrective_action_id": None,
-            "updated_at": g.as_of,
-        })
+    # Generate realistic audit findings
+    finding_id = 1
+    for factory in factories[:15]:
+        for _ in range(r.randint(0, 2)):
+            audit_findings.append({
+                "finding_id": f"FND-{finding_id:06d}",
+                "factory_id": factory["factory_id"],
+                "supplier_id": factory["supplier_id"],
+                "audit_date": g.date_between(365, 30),
+                "category": r.choice(["forced_labour", "child_labour", "wages", "hours", "safety", "health"]),
+                "severity": r.choices(["observation", "minor", "major", "critical"], [20, 30, 35, 15])[0],
+                "description": r.choice([
+                    "Absence of freely chosen employment agreements signed by workers",
+                    "Incomplete wage records and undisclosed deductions",
+                    "Excessive overtime exceeding legal limits without compensation",
+                    "Poor ventilation and lack of PPE in dye house",
+                    "Limited grievance mechanism access for migrant workers"
+                ]),
+                "remediation_required": r.choice([True, True, False]),
+                "corrective_action_id": None,
+                "updated_at": g.as_of - timedelta(days=r.randint(1, 60)),
+            })
+            finding_id += 1
 
-    if not corrective_actions:
-        corrective_actions.append({
-            "action_id": "ACT-000001",
-            "factory_id": None,
-            "audit_finding_id": None,
-            "issue_description": "Placeholder for stage 2 implementation",
-            "action_plan": "To be filled in stage 2",
-            "responsible_party": None,
-            "target_date": g.as_of + timedelta(days=30),
-            "status": "not_started",
-            "verification_date": None,
-            "updated_at": g.as_of,
-        })
+    # Generate realistic corrective action plans
+    action_id = 1
+    for finding in audit_findings[:20]:
+        if finding["remediation_required"]:
+            corrective_actions.append({
+                "action_id": f"ACT-{action_id:06d}",
+                "factory_id": finding["factory_id"],
+                "audit_finding_id": finding["finding_id"],
+                "issue_description": finding["description"],
+                "action_plan": r.choice([
+                    "Implement transparent wage structure and provide worker training",
+                    "Install air quality monitoring and upgrade ventilation systems",
+                    "Establish independent grievance committee with worker representation",
+                    "Conduct legal audit of employment contracts and overtime policies"
+                ]),
+                "responsible_party": r.choice([e["employee_id"] for e in employees]) if employees else "EMP-0001",
+                "target_date": g.as_of + timedelta(days=r.randint(30, 180)),
+                "status": r.choices(["not_started", "in_progress", "completed", "verification_pending"], [10, 40, 30, 20])[0],
+                "verification_date": g.date_between(60, 0) if r.choice([True, False]) else None,
+                "updated_at": g.as_of - timedelta(days=r.randint(1, 60)),
+            })
+            action_id += 1
 
-    if not regulatory:
-        regulatory.append({
-            "regulation_id": "REG-000001",
-            "jurisdiction": "UK",
-            "regulation_name": "Placeholder regulation for stage 2",
-            "topic": "forced_labour",
-            "description": "To be filled in stage 2",
-            "effective_date": g.as_of,
-            "affected_scope": "All companies",
-            "updated_at": g.as_of,
-        })
+    # Generate realistic regulatory database entries
+    reg_id = 1
+    for jurisdiction in ["UK", "EU", "US", "CA", "AU"]:
+        regulations_by_jur = {
+            "UK": ["Modern Slavery Act 2015", "Environment Act 2021", "Procurement Act 2023"],
+            "EU": ["Corporate Sustainability Due Diligence Directive (CSDDD)", "Digital Product Passport Regulation", "Deforestation Regulation"],
+            "US": ["Uyghur Forced Labor Prevention Act (UFLPA)", "Dodd-Frank 1502", "California SB-657"],
+            "CA": ["Canadian Supply Chain Act", "Conflict Minerals Regulation"],
+            "AU": ["Modern Slavery Act 2018"]
+        }
+        for reg_name in regulations_by_jur.get(jurisdiction, []):
+            regulatory.append({
+                "regulation_id": f"REG-{reg_id:06d}",
+                "jurisdiction": jurisdiction,
+                "regulation_name": reg_name,
+                "topic": r.choice(["forced_labour", "due_diligence", "transparency", "environmental"]),
+                "description": f"Comprehensive due diligence and reporting requirement for {reg_name}",
+                "effective_date": g.as_of - timedelta(days=r.randint(30, 365)),
+                "affected_scope": "Companies with turnover > £36M or 250+ employees" if jurisdiction == "UK" else "Large enterprises",
+                "updated_at": g.as_of - timedelta(days=r.randint(1, 30)),
+            })
+            reg_id += 1
 
-    if not adverse_media:
-        adverse_media.append({
-            "entity_id": None,
-            "record_id": "MED-000001",
-            "entity_type": "supplier",
-            "headline": "Placeholder adverse media for stage 2",
-            "source": "TBD",
-            "content": "To be filled in stage 2",
-            "published_date": g.as_of - timedelta(days=7),
-            "severity": "low",
-            "verified": False,
-            "found_at": g.as_of,
-            "updated_at": g.as_of,
-        })
+    # Generate realistic adverse media records
+    media_id = 1
+    for supplier in suppliers[:10]:
+        for _ in range(r.randint(0, 2)):
+            adverse_media.append({
+                "entity_id": supplier["supplier_id"],
+                "record_id": f"MED-{media_id:06d}",
+                "entity_type": "supplier",
+                "headline": r.choice([
+                    f"Allegations of forced labour at {supplier['name']} facilities",
+                    f"NGO report: wage theft at {supplier['name']} mills",
+                    f"Environmental violations reported at {supplier['name']}",
+                    f"Workers' rights concerns raised at {supplier['name']}"
+                ]),
+                "source": r.choice(["Reuters", "BBC", "NGO Watch", "Fair Labor Association", "Worker Rights Consortium", "Local news"]),
+                "content": r.choice([
+                    "Investigation found evidence of debt bondage arrangements for migrant workers",
+                    "Audit revealed systematic underpayment and excessive overtime",
+                    "Environmental discharges affecting nearby water sources",
+                    "Workers report union harassment and restricted communication"
+                ]),
+                "published_date": g.date_between(180, 1),
+                "severity": r.choices(["low", "medium", "high", "critical"], [15, 25, 40, 20])[0],
+                "verified": r.choice([True, False]),
+                "found_at": g.as_of - timedelta(days=r.randint(1, 30)),
+                "updated_at": g.as_of - timedelta(days=r.randint(1, 30)),
+            })
+            media_id += 1
 
-    if not sanctions:
+    # Generate realistic sanctions screening records
+    screen_id = 1
+    for entity in suppliers[:15]:
+        screening_date = g.date_between(90, 1)
         sanctions.append({
-            "entity_id": None,
-            "screening_id": "SCR-000001",
-            "entity_name": "Placeholder entity for stage 2",
-            "screening_date": g.as_of,
-            "sanctions_list": "TBD",
-            "match_status": "no_match",
-            "description": "To be filled in stage 2",
-            "action_taken": "None",
-            "updated_at": g.as_of,
+            "entity_id": entity["supplier_id"],
+            "screening_id": f"SCR-{screen_id:06d}",
+            "entity_name": entity["name"],
+            "screening_date": screening_date,
+            "sanctions_list": r.choice(["OFAC", "UN", "UK", "EU", "Multiple"]),
+            "match_status": r.choices(["no_match", "possible_match", "confirmed_match"], [90, 8, 2])[0],
+            "description": "No sanctions matches found" if r.choice([True, True, True]) else "Entity appears on watchlist; requires escalation",
+            "action_taken": "None" if r.choice([True, True, True]) else "Investigation initiated; payments suspended",
+            "updated_at": g.as_of - timedelta(days=r.randint(1, 30)),
         })
+        screen_id += 1
 
-    # Create placeholder litigation record using existing case IDs from due_diligence_cases
-    if not litigation and cases:
-        litigation.append({
-            "entity_id": cases[0]["supplier_id"],  # Use supplier_id from the case
-            "case_id": cases[0]["case_id"],  # Use existing case_id to pass consistency check
-            "entity_name": cases[0].get("description", "Case entity"),
-            "case_type": "employment",
-            "jurisdiction": "UK",
-            "case_status": "dismissed",
-            "description": "Placeholder for stage 2 implementation",
-            "outcome": "TBD",
-            "case_date": g.as_of - timedelta(days=365),
-            "updated_at": g.as_of,
+    # Generate realistic litigation records
+    lit_id = 1
+    for supplier in suppliers[:8]:
+        for _ in range(r.randint(0, 2)):
+            litigation.append({
+                "entity_id": supplier["supplier_id"],
+                "case_id": f"LIT-{lit_id:06d}",
+                "entity_name": supplier["name"],
+                "case_type": r.choice(["employment", "labour", "environmental", "commercial"]),
+                "jurisdiction": r.choice(["India", "Bangladesh", "China", "Vietnam", "UK"]),
+                "case_status": r.choices(["active", "settled", "dismissed", "appealed"], [30, 40, 20, 10])[0],
+                "description": r.choice([
+                    "Claim by workers for unpaid overtime and wage theft; amount sought £50,000",
+                    "Environmental violation suit by local community; seeking remediation and damages",
+                    "Wrongful termination claim by former employee union representative",
+                    "Trade dispute and breach of contract claim from customer"
+                ]),
+                "outcome": "Settlement agreed; supplier to pay £25,000 and implement wage improvements" if r.choice([True, False]) else None,
+                "case_date": g.date_between(365, 30),
+                "updated_at": g.as_of - timedelta(days=r.randint(1, 60)),
+            })
+            lit_id += 1
+
+    # Generate supplier document requirements
+    doc_req_id = 1
+    doc_types = ["Forced Labour Policy", "Audit Report", "Compliance Certificate", "Factory Registration", "Ownership Disclosure"]
+    for supplier in suppliers[:20]:
+        for jurisdiction in ["UK", "EU"]:
+            for doc_type in r.sample(doc_types, min(2, len(doc_types))):
+                due_date = g.as_of + timedelta(days=r.randint(7, 90))
+                if g.rng.random() < 0.3:
+                    due_date = g.as_of - timedelta(days=r.randint(1, 30))
+                supplier_doc_requirements.append({
+                    "requirement_id": f"DREQ-{doc_req_id:06d}",
+                    "supplier_id": supplier["supplier_id"],
+                    "jurisdiction": jurisdiction,
+                    "document_type": doc_type,
+                    "description": f"Required evidence of {doc_type.lower()} for due diligence compliance",
+                    "required_by_date": due_date,
+                    "status": "received" if due_date < g.as_of else r.choices(["pending", "verified"], [70, 30])[0],
+                    "updated_at": g.as_of - timedelta(days=r.randint(1, 30)),
+                })
+                doc_req_id += 1
+
+    # Generate company registry data
+    for idx, entity in enumerate(suppliers[:20]):
+        company_registry.append({
+            "entity_id": entity["supplier_id"],
+            "entity_name": entity["name"],
+            "country": entity.get("country", r.choice(["IN", "BD", "CN", "VN", "TH"])),
+            "registration_number": f"REG-{entity['supplier_id'][-4:]}-{g.rng.randint(1000, 9999)}",
+            "registry_source": r.choice(["National Company Registry", "Local Trade Office", "Chamber of Commerce"]),
+            "legal_form": r.choice(["Private Limited Company", "Partnership", "Sole Proprietor", "Manufacturing Co-operative"]),
+            "registration_date": g.date_between(3650, 365),
+            "status": r.choices(["active", "active", "inactive", "suspended"], [85, 10, 3, 2])[0],
+            "directors_info": f"Directors on file; beneficial owner verification status: {r.choice(['pending', 'verified', 'escalated'])}",
+            "verified_date": g.date_between(365, 1) if r.choice([True, False]) else None,
+            "updated_at": g.as_of - timedelta(days=r.randint(1, 30)),
         })
 
     return {
@@ -447,4 +541,6 @@ def generate(g):
         "adverse_media_records": adverse_media,
         "sanctions_screening_records": sanctions,
         "litigation_records": litigation,
+        "supplier_document_requirements": supplier_doc_requirements,
+        "company_registry": company_registry,
     }

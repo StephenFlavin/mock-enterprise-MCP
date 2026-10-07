@@ -1,10 +1,12 @@
+import datetime
+
+
 def generate(g):
     """Generate last-mile delivery data."""
 
     # Get reference data
     couriers = g.master("carriers")
     orders = g.master("orders")
-    products = g.master("products")
 
     # Filter to parcel couriers
     parcel_couriers = [c for c in couriers if c.get("mode") == "parcel"][:5]
@@ -20,6 +22,11 @@ def generate(g):
     attempt_counter = 1
     issue_counter = 1
     complaint_counter = 1
+
+    # Ensure as_of is a datetime
+    as_of = g.as_of
+    if isinstance(as_of, datetime.date) and not isinstance(as_of, datetime.datetime):
+        as_of = datetime.datetime.combine(as_of, datetime.time(12, 0))
 
     # Generate delivery attempts from orders
     selected_orders = g.pick(orders, k=300)
@@ -53,12 +60,12 @@ def generate(g):
 
             # Date from 8 weeks ago to now
             weeks_back = g.rng.randint(0, 8)
-            attempt_date = g.as_of - __import__("datetime").timedelta(weeks=weeks_back)
+            attempt_date = as_of - datetime.timedelta(weeks=weeks_back)
 
             # Promised delivery
             delivery_service = g.pick(["standard", "next_day", "same_day"])
             promised_offset = {"standard": 5, "next_day": 1, "same_day": 0}[delivery_service]
-            promised_delivery_date = attempt_date + __import__("datetime").timedelta(days=promised_offset)
+            promised_delivery_date = (attempt_date + datetime.timedelta(days=promised_offset)).date()
 
             # Delivery option
             delivery_option = g.pick(["door", "safe_place", "locker", "collect_point"])
@@ -105,11 +112,13 @@ def generate(g):
 
             # Delivery time (if delivered)
             delivery_time = None
+            actual_delivery_date = None
             if status == "delivered":
-                delivery_time = attempt_date + __import__("datetime").timedelta(
+                delivery_time = attempt_date + datetime.timedelta(
                     hours=g.rng.randint(2, 36),
                     minutes=g.rng.randint(0, 59)
                 )
+                actual_delivery_date = delivery_time.date()
 
             attempt = {
                 "attempt_id": attempt_id,
@@ -121,7 +130,7 @@ def generate(g):
                 "delivery_option": delivery_option,
                 "attempt_number": attempt_num,
                 "promised_delivery_date": promised_delivery_date,
-                "actual_delivery_date": delivery_time.date() if delivery_time else None,
+                "actual_delivery_date": actual_delivery_date,
                 "attempt_time": attempt_date,
                 "delivery_time": delivery_time,
                 "status": status,
@@ -141,7 +150,7 @@ def generate(g):
             # Generate tracking scans
             if has_tracking_scans > 0:
                 for scan_num in range(1, has_tracking_scans + 1):
-                    scan_time = attempt_date + __import__("datetime").timedelta(
+                    scan_time = attempt_date + datetime.timedelta(
                         hours=scan_num * 8,
                         minutes=g.rng.randint(0, 59)
                     )
@@ -201,7 +210,7 @@ def generate(g):
             "region": g.pick(["London", "UK North", "UK South", "Midlands"]),
             "peak_capacity_units_month": g.rng.randint(50000, 200000),
             "rating": round(g.rng.uniform(3.5, 4.9), 1),
-            "contract_end": g.as_of + __import__("datetime").timedelta(days=g.rng.randint(30, 365)),
+            "contract_end": (as_of + datetime.timedelta(days=g.rng.randint(30, 365))).date(),
         }
         couriers_data.append(courier_record)
 
@@ -216,9 +225,9 @@ def generate(g):
             "volume_share_pct": round(g.rng.uniform(10.0, 50.0), 1),
             "region": g.pick(["London", "UK North", "UK South"]),
             "status": g.pick(["active", "trial", "archived"]),
-            "created_at": g.as_of - __import__("datetime").timedelta(days=g.rng.randint(30, 180)),
-            "updated_at": g.as_of - __import__("datetime").timedelta(days=g.rng.randint(0, 30)),
-            "trial_end_date": g.as_of + __import__("datetime").timedelta(days=g.rng.randint(7, 42)) if g.rng.random() < 0.3 else None,
+            "created_at": as_of - datetime.timedelta(days=g.rng.randint(30, 180)),
+            "updated_at": as_of - datetime.timedelta(days=g.rng.randint(0, 30)),
+            "trial_end_date": (as_of + datetime.timedelta(days=g.rng.randint(7, 42))).date() if g.rng.random() < 0.3 else None,
         }
         allocation_rules.append(rule)
 

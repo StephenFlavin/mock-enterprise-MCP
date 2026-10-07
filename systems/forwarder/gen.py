@@ -1,5 +1,5 @@
 """Background freight forwarder data: ocean and air bookings, invoices, demurrage/detention charges."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 
 def generate(g):
@@ -10,19 +10,6 @@ def generate(g):
     all_carriers = g.master("carriers")
     ocean_carriers = [c for c in all_carriers if c["mode"] in ["ocean", "forwarder"]]
     air_carriers = [c for c in all_carriers if c["mode"] == "air"]
-
-    # Common ports
-    ports = {
-        "SGSIN": "Singapore",
-        "CNSHA": "Shanghai",
-        "HKHKG": "Hong Kong",
-        "JPTYO": "Tokyo",
-        "THBKK": "Bangkok",
-        "GBFXT": "Felixstowe",
-        "NLRTM": "Rotterdam",
-        "FRPAR": "Paris",
-        "DEWCY": "Cyprus"
-    }
 
     ocean_bookings = []
     air_freight_bookings = []
@@ -43,8 +30,13 @@ def generate(g):
         if po["status"] in ("cancelled", "draft"):
             continue
 
-        due = datetime.fromisoformat(po["due_date"])
-        days_to_due = (due.date() - g.as_of).days
+        # Parse the due date
+        if isinstance(po["due_date"], str):
+            due = datetime.fromisoformat(po["due_date"]).date()
+        else:
+            due = po["due_date"]
+
+        days_to_due = (due - g.as_of).days
 
         # Create ocean bookings for POs due in the next 120 days
         if -30 <= days_to_due <= 120:
@@ -84,17 +76,18 @@ def generate(g):
 
             # Add demurrage/detention charges for some bookings
             if status == "delivered" and r.random() < 0.1:  # 10% have charges
-                charge_date = datetime.fromisoformat(booking["actual_arrival"]).date() + timedelta(days=r.randint(1, 3))
-                demurrage_detention.append({
-                    "charge_id": f"CHG-{len(demurrage_detention) + 1:06d}",
-                    "booking_id": booking["booking_id"],
-                    "charge_type": r.choice(["demurrage", "detention"]),
-                    "charge_date": charge_date,
-                    "amount_gbp": r.uniform(500, 3000),
-                    "days_or_units": r.randint(1, 7),
-                    "port_id": booking["dest_port"],
-                    "description": r.choice(["Dwell time at discharge", "Storage beyond free period", "Port congestion delay"])
-                })
+                charge_date = booking["actual_arrival"] + timedelta(days=r.randint(1, 3)) if booking["actual_arrival"] else None
+                if charge_date:
+                    demurrage_detention.append({
+                        "charge_id": f"CHG-{len(demurrage_detention) + 1:06d}",
+                        "booking_id": booking["booking_id"],
+                        "charge_type": r.choice(["demurrage", "detention"]),
+                        "charge_date": charge_date,
+                        "amount_gbp": r.uniform(500, 3000),
+                        "days_or_units": r.randint(1, 7),
+                        "port_id": booking["dest_port"],
+                        "description": r.choice(["Dwell time at discharge", "Storage beyond free period", "Port congestion delay"])
+                    })
 
             # Add expedite events for some bookings (5%)
             if r.random() < 0.05 and status in ["booked", "sailed", "in_transit"]:
