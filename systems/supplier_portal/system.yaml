@@ -80,6 +80,9 @@ tables:
       price_gbp_per_unit: {type: float, desc: Unit price}
       currency: {type: str, desc: Invoice currency}
       updated_at: {type: timestamp, desc: When position was last updated}
+      next_quarter_units: {type: int, desc: "Units we plan to buy from this supplier next quarter"}
+      mto_lead_time_days: {type: int, desc: "Make-to-order lead time in days, blank if supplier cannot make this to order"}
+      mto_moq_units: {type: int, desc: "Make-to-order minimum order quantity, blank if not offered"}
 
   supplier_delays:
     key: delay_notice_id
@@ -98,6 +101,9 @@ tables:
       contingency_plan: {type: str, desc: What we are doing about it}
       status: {type: enum, values: [active, mitigated, expired], desc: Status}
       created_at: {type: timestamp, desc: Created}
+      material_type: {type: enum, values: [finished_goods, fabric, zip, trim, button, other], desc: "What is delayed: finished goods order, fabric, zips, trims, buttons"}
+      material_id: {type: str, desc: "Material or component delayed, if not finished goods"}
+      units_delayed: {type: int, desc: "Units delayed (finished units for finished goods, components otherwise)"}
 
   factory_operations:
     key: operation_id
@@ -169,7 +175,7 @@ tables:
       supplier_id: {type: str, desc: Supplier}
       sku: {type: str, desc: "SKU or order, if specific"}
       po_id: {type: str, desc: "PO, if related"}
-      communication_type: {type: enum, values: [sample_comment, milestone_update, response_log, portal_access, fit_comment, message], desc: Type}
+      communication_type: {type: enum, values: [sample_comment, milestone_update, response_log, portal_access, fit_comment, message, price_increase_notice, chargeback_notice, document_request, expedite_request, price_query, variance_note], desc: Type}
       title: {type: str, desc: Subject or title}
       content: {type: text, desc: Message content or comment}
       from_party: {type: enum, values: [hv_to_supplier, supplier_to_hv], desc: Direction}
@@ -181,78 +187,154 @@ tables:
       overdue: {type: bool, desc: Whether deadline passed}
       created_at: {type: timestamp, desc: Created}
       updated_at: {type: timestamp, desc: Last updated}
+      amount_gbp: {type: float, desc: "Amount the message is about, e.g. chargeback value"}
+      quantity_units: {type: int, desc: "Units the message is about, e.g. units to expedite"}
+
+  part_supply:
+    key: part_id
+    cols:
+      part_id: {type: str, desc: "Spare part id, e.g. SPR-900016"}
+      part_name: {type: str, desc: "Part name, e.g. Conveyor drive motor (spare)"}
+      asset_class: {type: str, desc: "Equipment class the part fits: conveyor, sorter, shuttle, motor, gearbox, sensor, forklift, reach_truck"}
+      supplier_id: {type: str, desc: Supplier of the part}
+      lead_time_days: {type: int, desc: Quoted supplier lead time in days}
+      moq_units: {type: int, desc: Minimum order quantity}
+      price_gbp_per_unit: {type: float, desc: Quoted unit price}
+      stock_units_available: {type: int, desc: Units the supplier holds now}
+      quoted_at: {type: date, desc: Date of the quote}
+
+  ship_date_history:
+    key: po_id
+    cols:
+      po_id: {type: str, desc: Purchase order}
+      supplier_id: {type: str, desc: Supplier}
+      factory_id: {type: str, desc: Factory that made the order}
+      order_date: {type: date, desc: Date the order was placed}
+      confirmed_ship_date: {type: date, desc: Ship date the supplier confirmed}
+      actual_ship_date: {type: date, desc: Date the order actually left the factory}
+      days_late: {type: int, desc: "Actual minus confirmed ship date, in days (0 = on time)"}
 
 tools:
   - name: get_supplier_available_capacity
-    desc: Retrieve supplier available capacity by material or product. Use to check if expediting is feasible.
+    desc: Spare production capacity by supplier and product category, largest first. Use to find who can take extra volume now.
     kind: sql
     args:
-      supplier_id: {required: true}
-      sku: {type: str, desc: "SKU (optional): restrict to specific product"}
-      from_date: {type: date, default: "-30d", desc: "Available from date"}
-      to_date: {type: date, default: "+90d", desc: "Available through date"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      category: {type: str, desc: "Product category, e.g. Trousers (optional)"}
+      sku: {type: str, desc: "Product SKU (optional)"}
+      min_available_units: {type: int, default: 0, desc: "Only suppliers with at least this much spare capacity"}
     sql: |
-      SELECT supplier_id, sku, available_capacity_units, committed_capacity_units, total_capacity_units,
-             round(available_capacity_units * 100.0 / NULLIF(total_capacity_units, 0), 1) AS available_pct,
-             lead_time_days, moq_units, price_gbp_per_unit
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND ($sku IS NULL OR sku = $sku)
-        AND position_date >= CAST($from_date AS DATE)
-      ORDER BY position_date, sku
+      WITH latest AS (
+        SELECT sp.*, p.category
+        FROM supply_position sp JOIN master.products p ON p.sku = sp.sku
+        WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND ($sku IS NULL OR sp.sku = $sku)
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      )
+      SELECT l.supplier_id, s.name AS supplier_name, s.country, l.category, count(*) AS skus,
+             sum(l.total_capacity_units) AS total_capacity_units,
+             sum(l.committed_capacity_units) AS committed_capacity_units,
+             sum(l.available_capacity_units) AS available_capacity_units,
+             round(100.0 * sum(l.available_capacity_units) / NULLIF(sum(l.total_capacity_units), 0), 1) AS available_pct,
+             round(avg(l.lead_time_days)) AS lead_time_days, max(l.position_date) AS position_date
+      FROM latest l JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      GROUP BY l.supplier_id, s.name, s.country, l.category
+      HAVING sum(l.available_capacity_units) >= $min_available_units
+      ORDER BY available_capacity_units DESC
     limit: 50
-    example: {supplier_id: SUP-0001}
+    example: {category: Trousers}
 
   - name: get_supplier_available_stock
-    desc: Retrieve supplier available stock. Use to check if stock can be expedited.
+    desc: Latest finished stock a supplier holds per SKU, with lead time and MOQ. Use to check whether an order can be expedited from stock.
     kind: sql
     args:
-      supplier_id: {required: true}
-      sku: {type: str, desc: "Product (optional)"}
+      supplier_id: {type: str, desc: "Supplier id (optional if sku is given)"}
+      sku: {type: str, desc: "Product SKU (optional if supplier_id is given)"}
+      min_stock_units: {type: int, default: 0, desc: "Only SKUs with at least this many units in stock"}
     sql: |
-      SELECT supplier_id, sku, available_stock_units, lead_time_days, moq_units,
-             price_gbp_per_unit, position_date
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND ($sku IS NULL OR sku = $sku)
-        AND available_stock_units > 0
-      ORDER BY position_date DESC, sku
+      SELECT * FROM (
+        SELECT sp.supplier_id, s.name AS supplier_name, sp.sku, sp.available_stock_units,
+               sp.lead_time_days, sp.moq_units, sp.price_gbp_per_unit, sp.position_date
+        FROM supply_position sp
+        JOIN master.suppliers s ON s.supplier_id = sp.supplier_id
+        WHERE sp.sku IS NOT NULL
+          AND ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND ($sku IS NULL OR sp.sku = $sku)
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      ) t
+      WHERE available_stock_units >= $min_stock_units
+      ORDER BY available_stock_units DESC, sku
     limit: 50
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0034, sku: SKU-101260}
 
   - name: get_supplier_capacity_report
-    desc: Retrieve supplier capacity report including utilisation and commitment levels.
+    desc: Capacity utilisation per supplier with change over the look-back period. Filter by supplier or material type such as fabric; highest utilisation first.
     kind: sql
     args:
-      supplier_id: {required: true}
-      lookback_months: {type: int, default: 6, desc: "How many months to look back"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      material_type: {type: enum, values: [fabric, trim, zip, button, other], desc: "Report on materials of this type (mills and component makers) instead of finished goods"}
+      lookback_months: {type: int, default: 6, desc: "How many months of capacity snapshots to compare"}
     sql: |
-      SELECT supplier_id, sku, position_date, total_capacity_units, available_capacity_units,
-             committed_capacity_units, round(100 * available_capacity_units / NULLIF(total_capacity_units, 0), 1) AS available_pct,
-             lead_time_days, moq_units
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND position_date >= CAST($as_of AS DATE) - INTERVAL ($lookback_months) MONTH
-      ORDER BY position_date DESC, sku
+      WITH snap AS (
+        SELECT sp.supplier_id, COALESCE(sp.material_id, 'finished goods') AS item,
+               max(m.material_name) AS item_name, max(m.material_type) AS material_type, sp.position_date,
+               sum(sp.total_capacity_units) AS total, sum(sp.committed_capacity_units) AS committed,
+               sum(sp.available_capacity_units) AS available, round(avg(sp.lead_time_days)) AS lead_time_days
+        FROM supply_position sp LEFT JOIN material_supply m ON m.material_id = sp.material_id
+        WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND ($material_type IS NULL OR m.material_type = $material_type)
+          AND sp.position_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
+        GROUP BY sp.supplier_id, item, sp.position_date
+      ), r AS (
+        SELECT *, row_number() OVER (PARTITION BY supplier_id, item ORDER BY position_date DESC) AS rn_new,
+                  row_number() OVER (PARTITION BY supplier_id, item ORDER BY position_date) AS rn_old
+        FROM snap
+      )
+      SELECT n.supplier_id, s.name AS supplier_name, n.item, n.item_name, n.material_type, n.position_date,
+             n.total AS total_capacity_units, n.committed AS committed_capacity_units, n.available AS available_capacity_units,
+             round(100.0 * n.committed / NULLIF(n.total, 0), 1) AS utilisation_pct,
+             round(100.0 * o.committed / NULLIF(o.total, 0), 1) AS utilisation_pct_at_start,
+             round(100.0 * n.committed / NULLIF(n.total, 0) - 100.0 * o.committed / NULLIF(o.total, 0), 1) AS change_pts,
+             CASE WHEN 100.0 * n.committed / NULLIF(n.total, 0) - 100.0 * o.committed / NULLIF(o.total, 0) >= 5 THEN 'rising'
+                  WHEN 100.0 * n.committed / NULLIF(n.total, 0) - 100.0 * o.committed / NULLIF(o.total, 0) <= -5 THEN 'falling'
+                  ELSE 'flat' END AS utilisation_trend,
+             n.lead_time_days
+      FROM r n JOIN r o ON o.supplier_id = n.supplier_id AND o.item = n.item AND o.rn_old = 1
+      JOIN master.suppliers s ON s.supplier_id = n.supplier_id
+      WHERE n.rn_new = 1
+      ORDER BY utilisation_pct DESC
     limit: 100
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0070}
 
   - name: get_supplier_capacity_commitments
-    desc: Supplier capacity and commitments for a season or product. Use for sourcing decisions.
+    desc: Supplier capacity committed versus still available, by product category, with next-quarter planned volume. Use to compare suppliers for sourcing awards.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      category: {type: str, desc: "Product category, e.g. Bedding (optional)"}
+      sku: {type: str, desc: "Product SKU (optional)"}
     sql: |
-      SELECT supplier_id, sku, position_date,
-             total_capacity_units, committed_capacity_units, available_capacity_units,
-             round(100 * committed_capacity_units / NULLIF(total_capacity_units, 0), 1) AS committed_pct,
-             moq_units, lead_time_days
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND position_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
-      ORDER BY position_date, sku
+      WITH latest AS (
+        SELECT sp.*, p.category
+        FROM supply_position sp JOIN master.products p ON p.sku = sp.sku
+        WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND ($sku IS NULL OR sp.sku = $sku)
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      )
+      SELECT l.supplier_id, s.name AS supplier_name, l.category, count(*) AS skus,
+             sum(l.total_capacity_units) AS total_capacity_units,
+             sum(l.committed_capacity_units) AS committed_capacity_units,
+             sum(l.available_capacity_units) AS available_capacity_units,
+             round(100.0 * sum(l.committed_capacity_units) / NULLIF(sum(l.total_capacity_units), 0), 1) AS committed_pct,
+             sum(l.next_quarter_units) AS next_quarter_units_planned,
+             round(avg(l.lead_time_days)) AS lead_time_days, max(l.moq_units) AS moq_units, max(l.position_date) AS position_date
+      FROM latest l JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      GROUP BY l.supplier_id, s.name, l.category
+      ORDER BY l.category, committed_pct
     limit: 50
-    example: {supplier_id: "SUP-0013"}
+    example: {category: Bedding}
 
   - name: get_supplier_base_profile_by_country
     desc: Supplier base profile by country and tier. Use to understand supply chain structure.
@@ -268,40 +350,44 @@ tools:
     example: {country: "BD", tier: "approved"}
 
   - name: get_part_lead_time
-    desc: Supplier lead time and price for a part or material. Use for ordering and planning.
-    kind: sql
-    args:
-      supplier_id: {required: true}
-      sku: {type: str, desc: "SKU or material"}
-    sql: |
-      SELECT supplier_id, sku, lead_time_days, moq_units, price_gbp_per_unit,
-             available_stock_units, position_date
-      FROM supply_position
-      WHERE supplier_id = $supplier_id AND sku = $sku
-      ORDER BY position_date DESC LIMIT 1
-    limit: 10
-    example: {supplier_id: "SUP-0013", sku: "PF-220"}
+    desc: Supplier lead time, MOQ, price and stock for spare parts such as motors, gearboxes and sensors, longest lead time first.
+    kind: select
+    from: part_supply
+    filters:
+      asset_class: {}
+      part_name: {op: like, desc: "Words in the part name, e.g. drive motor"}
+      supplier_id: {}
+      max_lead_time_days: {col: lead_time_days, op: "<=", desc: "Only parts quoted at this many days or fewer"}
+    columns: [part_id, part_name, asset_class, supplier_id, lead_time_days, moq_units, price_gbp_per_unit, stock_units_available, quoted_at]
+    order: lead_time_days DESC
+    limit: 50
+    example: {asset_class: motor}
 
   - name: get_supplier_delay_notices
-    desc: Retrieve supplier delay notices. Use to identify at-risk orders and plan mitigations.
+    desc: Delay notices suppliers have raised, with new ship dates and reasons. Filter by supplier or material type such as zip or fabric.
     kind: sql
     args:
-      supplier_id: {type: str, desc: "Supplier (optional)"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      material_type: {type: enum, values: [finished_goods, fabric, zip, trim, button, other], desc: "What is delayed (optional)"}
       status: {type: enum, values: [active, mitigated, expired], desc: "Delay status (optional)", default: active}
-      min_delay_days: {type: int, default: 1, desc: "Only delays at least this many days"}
+      min_delay_days: {type: int, default: 1, desc: "Only delays of at least this many days"}
+      from_date: {type: date, default: "-60d", desc: "Notices received on or after this date"}
     sql: |
-      SELECT delay_notice_id, supplier_id, po_id, original_ship_date, new_ship_date,
-             delay_days, reason, impact_assessment, contingency_plan, status
-      FROM supplier_delays
-      WHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)
-        AND ($status IS NULL OR status = $status)
-        AND delay_days >= $min_delay_days
-      ORDER BY new_ship_date, supplier_id
+      SELECT d.delay_notice_id, d.supplier_id, s.name AS supplier_name, d.material_type, d.material_id, d.po_id, d.sku,
+             d.units_delayed, d.original_ship_date, d.new_ship_date, d.delay_days, d.reason, d.impact_assessment,
+             d.contingency_plan, d.status, d.notice_received_at
+      FROM supplier_delays d JOIN master.suppliers s ON s.supplier_id = d.supplier_id
+      WHERE ($supplier_id IS NULL OR d.supplier_id = $supplier_id)
+        AND ($material_type IS NULL OR d.material_type = $material_type)
+        AND ($status IS NULL OR d.status = $status)
+        AND d.delay_days >= $min_delay_days
+        AND d.notice_received_at >= CAST($from_date AS DATE)
+      ORDER BY d.delay_days DESC, d.supplier_id
     limit: 50
-    example: {}
+    example: {material_type: zip}
 
   - name: get_factory_production_reports
-    desc: Factory production reports including status and output. Use to understand production progress.
+    desc: Weekly factory production reports with capacity, output, utilisation, orders in progress and material inbound status. Use to see why a factory runs late.
     kind: sql
     args:
       factory_id: {required: true}
@@ -309,13 +395,13 @@ tools:
     sql: |
       SELECT factory_id, period_start, period_end, capacity_units, production_units,
              round(100 * production_units / NULLIF(capacity_units, 0), 1) AS output_pct,
-             orders_in_progress, moq_units, sample_lead_time_days
+             utilisation_pct, orders_in_progress, material_inbound_status, material_inbound_notes, moq_units, sample_lead_time_days
       FROM factory_operations
       WHERE factory_id = $factory_id
         AND period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
       ORDER BY period_start DESC
     limit: 52
-    example: {factory_id: "FAC-0107"}
+    example: {factory_id: "FAC-0121"}
 
   - name: get_factory_capacity_utilisation
     desc: Factory capacity utilisation by month. Use to identify overbooking or underutilisation.
@@ -334,19 +420,19 @@ tools:
     example: {factory_id: "FAC-0107"}
 
   - name: get_factory_material_inbound_status
-    desc: Material inbound status at a factory (delays, shortages). Use for production risk assessment.
+    desc: Weekly material inbound status at a factory with delay and shortage notes. Use for production risk assessment.
     kind: sql
     args:
       factory_id: {required: true}
+      lookback_days: {type: int, default: 90, desc: "Historical period"}
     sql: |
-      SELECT factory_id, period_start, material_inbound_status, material_inbound_notes,
-             orders_in_progress
+      SELECT factory_id, period_start, material_inbound_status, material_inbound_notes, orders_in_progress
       FROM factory_operations
       WHERE factory_id = $factory_id
-        AND period_start >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+        AND period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
       ORDER BY period_start DESC
     limit: 30
-    example: {factory_id: "FAC-0107"}
+    example: {factory_id: "FAC-0121"}
 
   - name: get_factory_moq_terms
     desc: Factory MOQ and commitment terms. Use for order sizing decisions.
@@ -410,19 +496,19 @@ tools:
     example: {material_id: "MAT-900001"}
 
   - name: create_supplier_claim
-    desc: Raise a short-shipment or damage claim against a supplier. Returns the new claim.
+    desc: Raise a short-shipment or damage claim against a supplier for a PO. Returns the new claim.
     kind: insert
     table: supplier_claims
     id_prefix: CLM-
-    defaults: {status: draft}
+    defaults: {status: submitted}
     args:
       po_id: {required: true}
       supplier_id: {required: true}
       claim_type: {required: true, desc: "short_ship, damage, quality, or other"}
       claim_amount_gbp: {required: true}
+      variance_id: {type: str, desc: "Variance record the claim is for, e.g. VAR-900001"}
       notes: {type: str, desc: "Claim details"}
-      variance_id: {type: str, desc: "Related variance record"}
-    example: {po_id: "PO-2026-004003", supplier_id: "SUP-0012", claim_type: short_ship, claim_amount_gbp: 1250.50, notes: "Short by 100 units"}
+    example: {po_id: "PO-2026-005301", supplier_id: "SUP-0013", claim_type: short_ship, claim_amount_gbp: 1233.5, variance_id: "VAR-900001", notes: "Short by 50 units"}
 
   - name: create_supplier_corrective_action_request
     desc: Creates a corrective action request against a supplier for a failed sample or test.
@@ -440,34 +526,47 @@ tools:
     example: {supplier_id: "SUP-0001", sku: "SKU-101904", issue_type: quality, severity: high, description: "Seam strength below spec", due_date: "+14d"}
 
   - name: draft_supplier_variance_note
-    desc: Draft a note to a supplier explaining receipt-versus-ASN variances. Returns formatted note.
+    desc: Draft a note to a supplier listing its receipt-versus-ASN variances with claimable value and claim deadlines. Read-only, nothing is sent.
     kind: draft
     args:
       supplier_id: {required: true}
-      lookback_days: {type: int, default: 56, desc: "Review period"}
+      lookback_days: {type: int, default: 56, desc: "Review period in days"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
-      variances: SELECT * FROM supplier_variances WHERE supplier_id = $supplier_id
-                 AND received_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
-                 ORDER BY received_at DESC
+      variances: SELECT v.variance_id, v.po_id, v.sku, v.asn_quantity, v.receipt_quantity, v.variance_units, v.variance_reason,
+                        round(v.variance_value_gbp, 2) AS variance_value_gbp, v.received_at, v.is_claimable,
+                        CAST(v.received_at AS DATE) + v.claim_window_days AS claim_deadline,
+                        (CAST(v.received_at AS DATE) + v.claim_window_days) - CAST($as_of AS DATE) AS days_left,
+                        (v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)) AS inside_window
+                 FROM supplier_variances v
+                 WHERE v.supplier_id = $supplier_id AND v.variance_units <> 0
+                   AND v.received_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
+                 ORDER BY v.received_at DESC, v.po_id
+      totals: SELECT count(*) FILTER (WHERE v.variance_units < 0) AS short_lines,
+                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.variance_units < 0), 0) AS short_value_gbp,
+                     count(*) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)) AS open_claim_lines,
+                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)), 0) AS open_claim_value_gbp,
+                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) < CAST($as_of AS DATE)), 0) AS expired_claim_value_gbp
+              FROM supplier_variances v
+              WHERE v.supplier_id = $supplier_id AND v.variance_units <> 0
+                AND v.received_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
     template: |
-      To: {{ supplier[0].name }}
-      Ref: {{ supplier[0].supplier_id }}
+      To: Supplier manager, {{ supplier[0].name }} ({{ supplier[0].supplier_id }})
+      Subject: Receipt variances against your ASNs, last {{ lookback_days }} days
 
-      Variance Summary - Last {{ lookback_days }} Days
-
-      We have reviewed receipts against your ASNs and identified the following variances:
+      We have compared goods received against your advance shipping notices and found these variances:
       {% for v in variances %}
-      - {{ v.po_id }}: {{ v.variance_units }} units ({{ v.variance_reason }})
+      - {{ v.po_id }} / {{ v.sku }}: ASN {{ v.asn_quantity }}, received {{ v.receipt_quantity }} ({{ v.variance_units }} units, {{ v.variance_reason }}), value £{{ "{:,.2f}".format(v.variance_value_gbp) }}, received {{ v.received_at }}.{% if v.is_claimable and v.inside_window %} Claim window open until {{ v.claim_deadline }} ({{ v.days_left }} days left).{% elif v.is_claimable %} Claim window closed on {{ v.claim_deadline }}.{% else %} Not claimable.{% endif %}
+
       {% endfor %}
+      Short-shipped value in the period: £{{ "{:,.2f}".format(totals[0].short_value_gbp) }} over {{ totals[0].short_lines }} lines.
+      Claimable inside the window: £{{ "{:,.2f}".format(totals[0].open_claim_value_gbp) }} over {{ totals[0].open_claim_lines }} lines; claims already outside the window: £{{ "{:,.2f}".format(totals[0].expired_claim_value_gbp) }}.
 
-      Total variance value: £{{ variances | map(attribute='variance_value_gbp') | sum | money }}
-
-      Please review and confirm corrective actions to prevent future issues.
+      Please confirm the cause of each shortfall and the corrective action to prevent a repeat. We will raise claims for the lines still inside the window.
 
       Regards,
       Harbour & Vale Supply Chain
-    example: {supplier_id: "SUP-0013"}
+    example: {supplier_id: SUP-0013}
 
   - name: draft_supplier_chaser_email
     desc: Draft chaser emails for missing or poor ESG data. Returns email text.
@@ -565,22 +664,52 @@ tools:
     example: {factory_id: "FAC-0107"}
 
   - name: calculate_expected_air_requirement
-    desc: Expected air freight requirement from delays and OTD. Use for air freight budgeting.
+    desc: Expected air freight requirement and cost from suppliers' active delays and their on-time shipping record, by supplier. Supports a what-if on delay improvement.
     kind: sql
     args:
-      supplier_id: {type: str, desc: "Supplier (optional)"}
-      lookback_days: {type: int, default: 90, desc: "Historical period for OTD"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      delay_improvement_pct: {type: float, default: 0, desc: "What-if: percentage by which current delays shorten, e.g. 20"}
+      peak_horizon_days: {type: int, default: 90, desc: "Days ahead in which open orders still to ship are counted"}
+      air_rate_per_kg_gbp: {type: float, default: 6.5, desc: "Air freight cost per kg in GBP"}
+      avg_unit_weight_kg: {type: float, default: 0.6, desc: "Average shipped weight per unit in kg"}
     sql: |
-      SELECT supplier_id, COUNT(*) AS delayed_orders, AVG(delay_days) AS avg_delay_days,
-             SUM(delay_days) AS total_delay_days,
-             CASE WHEN AVG(delay_days) > 7 THEN 'high'
-                  WHEN AVG(delay_days) > 3 THEN 'medium'
-                  ELSE 'low' END AS air_freight_risk,
-             'Air freight requirement = delayed_orders * avg_delay_days / lead_time' AS formula
-      FROM supplier_delays
-      WHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)
-        AND status IN ('active', 'mitigated')
-      GROUP BY supplier_id
+      WITH otd AS (
+        SELECT supplier_id, count(*) AS shipped_orders, count(*) FILTER (WHERE days_late <= 2) AS on_time_orders
+        FROM ship_date_history
+        WHERE actual_ship_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        GROUP BY supplier_id
+      ), d AS (
+        SELECT supplier_id, count(*) AS delayed_orders, sum(units_delayed) AS delayed_units,
+               round(avg(delay_days), 1) AS avg_delay_days,
+               sum(units_delayed * least(1.0, delay_days * (1 - $delay_improvement_pct / 100.0) / 28.0)) AS air_units_from_delays
+        FROM supplier_delays
+        WHERE status = 'active' AND material_type = 'finished_goods'
+          AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+        GROUP BY supplier_id
+      ), u AS (
+        SELECT supplier_id, sum(total_units) AS open_units
+        FROM master.purchase_orders
+        WHERE status IN ('open', 'confirmed')
+          AND ship_date >= CAST($as_of AS DATE)
+          AND ship_date <= CAST($as_of AS DATE) + INTERVAL (CAST($peak_horizon_days AS INT)) DAY
+        GROUP BY supplier_id
+      ), x AS (
+        SELECT d.supplier_id, d.delayed_orders, d.delayed_units, d.avg_delay_days,
+               round(100.0 * o.on_time_orders / NULLIF(o.shipped_orders, 0), 1) AS otd_pct,
+               d.air_units_from_delays,
+               greatest(coalesce(u.open_units, 0) - d.delayed_units, 0)
+                 * (1 - coalesce(1.0 * o.on_time_orders / NULLIF(o.shipped_orders, 0), 1)) * 0.3 AS air_units_from_otd_risk
+        FROM d LEFT JOIN otd o ON o.supplier_id = d.supplier_id LEFT JOIN u ON u.supplier_id = d.supplier_id
+      )
+      SELECT x.supplier_id, s.name AS supplier_name, x.delayed_orders, x.delayed_units, x.avg_delay_days, x.otd_pct,
+             round(x.air_units_from_delays) AS air_units_from_delays,
+             round(x.air_units_from_otd_risk) AS air_units_from_otd_risk,
+             round(x.air_units_from_delays + x.air_units_from_otd_risk) AS expected_air_units,
+             round((x.air_units_from_delays + x.air_units_from_otd_risk) * $avg_unit_weight_kg * $air_rate_per_kg_gbp) AS expected_air_cost_gbp,
+             round(sum((x.air_units_from_delays + x.air_units_from_otd_risk) * $avg_unit_weight_kg * $air_rate_per_kg_gbp) OVER ()) AS total_expected_air_cost_gbp,
+             'air units = delayed units x min(1, delay days / 28) + open units still to ship x (1 - on-time rate) x 30%; cost = air units x unit weight kg x rate per kg' AS formula
+      FROM x JOIN master.suppliers s ON s.supplier_id = x.supplier_id
+      ORDER BY expected_air_cost_gbp DESC
     limit: 50
     example: {}
 
@@ -631,20 +760,27 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_make_to_order_lead_times
-    desc: Retrieve supplier make to order lead times and terms. Use for MTO sourcing decisions.
+    desc: Whether a supplier can make a SKU to order, with make-to-order lead time and MOQ against its normal stock-order terms. Filter by supplier, SKU or category.
     kind: sql
     args:
-      supplier_id: {required: true}
-      sku: {type: str, desc: "Product (optional)"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      sku: {type: str, desc: "Product SKU (optional)"}
+      category: {type: str, desc: "Product category, e.g. Knitwear (optional)"}
     sql: |
-      SELECT supplier_id, sku, lead_time_days, moq_units, available_capacity_units,
-             price_gbp_per_unit
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND ($sku IS NULL OR sku = $sku)
-      ORDER BY lead_time_days, sku
+      SELECT sp.supplier_id, s.name AS supplier_name, sp.sku, p.name AS product_name, p.category,
+             CASE WHEN sp.mto_lead_time_days IS NULL THEN 'no' ELSE 'yes' END AS make_to_order_available,
+             sp.mto_lead_time_days, sp.mto_moq_units,
+             sp.lead_time_days AS stock_order_lead_time_days, sp.moq_units AS stock_order_moq_units, sp.price_gbp_per_unit
+      FROM supply_position sp
+      JOIN master.products p ON p.sku = sp.sku
+      JOIN master.suppliers s ON s.supplier_id = sp.supplier_id
+      WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+        AND ($sku IS NULL OR sp.sku = $sku)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+      QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      ORDER BY make_to_order_available DESC, sp.mto_lead_time_days, sp.sku
     limit: 50
-    example: {supplier_id: "SUP-0013"}
+    example: {sku: SKU-102898}
 
   - name: get_supplier_material_origin_mix
     desc: Origin mix of supplier materials (e.g. cotton sourcing by country). Use for supply chain transparency.
@@ -725,21 +861,34 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_ship_date_performance
-    desc: Retrieve supplier ship date performance (OTD history). Use to assess delivery reliability.
+    desc: How often a supplier missed its confirmed ship date in its latest orders versus the orders before, with on-time rate and trend. Use to assess delivery reliability.
     kind: sql
     args:
       supplier_id: {required: true}
-      lookback_months: {type: int, default: 6, desc: "Historical period"}
+      last_n_orders: {type: int, default: 10, desc: "Orders per comparison window"}
+      grace_days: {type: int, default: 2, desc: "Days after the confirmed ship date still counted as on time"}
     sql: |
-      SELECT supplier_id, COUNT(*) AS total_orders,
-             COUNT(*) FILTER (WHERE delay_days = 0) AS on_time_orders,
-             round(100 * COUNT(*) FILTER (WHERE delay_days = 0) / NULLIF(COUNT(*), 0), 1) AS otd_pct,
-             AVG(delay_days) AS avg_delay_days
-      FROM supplier_delays
-      WHERE supplier_id = $supplier_id
-      GROUP BY supplier_id
+      WITH h AS (
+        SELECT *, row_number() OVER (ORDER BY order_date DESC, po_id) AS rn
+        FROM ship_date_history
+        WHERE supplier_id = $supplier_id AND actual_ship_date IS NOT NULL
+      ), w AS (
+        SELECT *, CASE WHEN rn <= $last_n_orders THEN 'latest' WHEN rn <= 2 * $last_n_orders THEN 'previous' END AS period FROM h
+      ), a AS (
+        SELECT supplier_id, period, count(*) AS orders,
+               count(*) FILTER (WHERE days_late > $grace_days) AS missed_ship_date,
+               round(100.0 * count(*) FILTER (WHERE days_late > $grace_days) / count(*), 1) AS missed_pct,
+               round(100.0 * count(*) FILTER (WHERE days_late <= $grace_days) / count(*), 1) AS on_time_pct,
+               round(avg(days_late), 1) AS avg_days_late, max(days_late) AS worst_days_late,
+               min(order_date) AS first_order_date, max(order_date) AS last_order_date
+        FROM w WHERE period IS NOT NULL GROUP BY supplier_id, period
+      )
+      SELECT a.*, CASE WHEN a.period = 'latest' AND p.missed_pct IS NOT NULL THEN
+                        CASE WHEN a.missed_pct > p.missed_pct THEN 'worsening' WHEN a.missed_pct < p.missed_pct THEN 'improving' ELSE 'stable' END END AS trend
+      FROM a LEFT JOIN a p ON p.period = 'previous'
+      ORDER BY a.period = 'previous'
     limit: 10
-    example: {supplier_id: "SUP-0013"}
+    example: {supplier_id: SUP-0070}
 
   - name: get_supplier_data_evidence_status
     desc: Evidence status for supplier-supplied data (emissions, renewable energy). Use for assurance and audit.
@@ -756,19 +905,30 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supply_dependency_for_supplier
-    desc: Retrieve supply dependency for supplier (volume and criticality). Use for supply risk assessment.
+    desc: Next quarter's planned volume with a supplier by department, as a share of all planned supply in that department and overall. Use for supply risk.
     kind: sql
     args:
       supplier_id: {required: true}
     sql: |
-      SELECT supplier_id, sku, SUM(committed_capacity_units) AS committed_volume,
-             AVG(price_gbp_per_unit) AS avg_price, COUNT(DISTINCT position_date) AS position_count
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-      GROUP BY supplier_id, sku
-      ORDER BY committed_volume DESC
-    limit: 50
-    example: {supplier_id: "SUP-0013"}
+      WITH latest AS (
+        SELECT sp.supplier_id, sp.sku, sp.next_quarter_units, sp.price_gbp_per_unit, p.department
+        FROM supply_position sp JOIN master.products p ON p.sku = sp.sku
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      ), dept AS (
+        SELECT department, sum(next_quarter_units) AS dept_total FROM latest GROUP BY department
+      ), mine AS (
+        SELECT supplier_id, department, count(*) AS skus, sum(next_quarter_units) AS units,
+               round(sum(next_quarter_units * price_gbp_per_unit)) AS value_gbp
+        FROM latest WHERE supplier_id = $supplier_id GROUP BY supplier_id, department
+      )
+      SELECT m.supplier_id, m.department, m.skus, m.units AS next_quarter_units, m.value_gbp AS next_quarter_value_gbp,
+             d.dept_total AS department_total_units,
+             round(100.0 * m.units / NULLIF(d.dept_total, 0), 1) AS share_of_department_pct,
+             round(100.0 * m.units / (SELECT sum(next_quarter_units) FROM latest), 1) AS share_of_all_supply_pct
+      FROM mine m JOIN dept d ON d.department = m.department
+      ORDER BY m.units DESC
+    limit: 20
+    example: {supplier_id: SUP-0070}
 
   - name: list_supplier_esg_submissions
     desc: ESG submissions by supplier and status. Use to track ESG data collection and quality.
@@ -787,18 +947,32 @@ tools:
     example: {}
 
   - name: search_alternative_suppliers
-    desc: Search public sources for alternative suppliers by capability and location. Use for supply diversification.
-    kind: select
-    from: master.suppliers
-    filters:
-      country: {}
-      category_focus: {op: like, desc: "Category, e.g. Womenswear"}
-      tier: {}
-      status: {}
-    columns: [supplier_id, name, country, category_focus, tier, annual_spend_gbp]
-    order: annual_spend_gbp
+    desc: Alternative suppliers by category, country and tier with OTIF, risk rating and typical lead time. Use to find backups for a failing supplier.
+    kind: sql
+    args:
+      category_focus: {type: str, desc: "Supplier category focus, e.g. Accessories"}
+      country: {type: str, desc: "Country code, e.g. TR"}
+      tier: {type: enum, values: [strategic, preferred, approved], desc: "Supplier tier (optional)"}
+      status: {type: str, default: active, desc: "Supplier status"}
+      exclude_supplier_id: {type: str, desc: "Supplier to leave out, e.g. the one being replaced"}
+    sql: |
+      WITH lt AS (
+        SELECT supplier_id, round(avg(lead_time_days)) AS typical_lead_time_days, sum(available_capacity_units) AS available_capacity_units
+        FROM (SELECT * FROM supply_position WHERE sku IS NOT NULL
+              QUALIFY row_number() OVER (PARTITION BY supplier_id, sku ORDER BY position_date DESC) = 1) x
+        GROUP BY supplier_id
+      )
+      SELECT s.supplier_id, s.name, s.country, s.category_focus, s.tier, s.status, s.otif_pct_12m, s.risk_rating,
+             lt.typical_lead_time_days, lt.available_capacity_units
+      FROM master.suppliers s LEFT JOIN lt ON lt.supplier_id = s.supplier_id
+      WHERE ($category_focus IS NULL OR s.category_focus ILIKE '%' || $category_focus || '%')
+        AND ($country IS NULL OR upper(s.country) = upper($country))
+        AND ($tier IS NULL OR s.tier = $tier)
+        AND ($status IS NULL OR s.status = $status)
+        AND ($exclude_supplier_id IS NULL OR s.supplier_id <> $exclude_supplier_id)
+      ORDER BY s.otif_pct_12m DESC, s.supplier_id
     limit: 50
-    example: {country: "CN", category_focus: "Womenswear"}
+    example: {category_focus: Accessories, exclude_supplier_id: SUP-0070}
 
   - name: search_approved_material_suppliers
     desc: Search for approved material suppliers by material type and certification. Use for material sourcing.
@@ -859,10 +1033,11 @@ tools:
     defaults: {status: sent, from_party: hv_to_supplier, communication_type: chargeback_notice}
     args:
       supplier_id: {required: true}
-      po_id: {type: str, desc: "PO affected (optional)"}
+      amount_gbp: {required: true, desc: "Chargeback amount in GBP"}
       title: {required: true}
       content: {required: true}
-    example: {supplier_id: "SUP-0013", po_id: "PO-2026-004003", title: "Chargeback for air freight", content: "Air freight cost of £5,000 due to delay last week"}
+      po_id: {type: str, desc: "PO affected (optional)"}
+    example: {supplier_id: "SUP-0023", amount_gbp: 39056.83, title: "Chargeback for air freight", content: "Air freight cost caused by late production, avoidable under the contract"}
 
   - name: send_supplier_document_request
     desc: Sends a request to a supplier for missing compliance documents. Returns the request record.
@@ -929,20 +1104,21 @@ tools:
       supplier_id: {required: true}
       title: {required: true}
       content: {required: true}
-    example: {supplier_id: "SUP-0013", title: "Receipt variance summary - last 8 weeks", content: "Your variance record shows consistent short-shipping. Please implement corrective actions"}
+      amount_gbp: {type: float, desc: "Claimable variance value the note covers"}
+    example: {supplier_id: "SUP-0013", title: "Receipt variance summary - last 8 weeks", content: "Your variance record shows consistent short-shipping. Please implement corrective actions", amount_gbp: 63031.85}
 
   - name: submit_expedite_request
-    desc: Sends a request to a supplier to bring forward delivery of open order lines. Returns the request record.
+    desc: Sends a request to a supplier to bring forward delivery of a SKU or open order lines. Returns the request record.
     kind: insert
     table: supplier_communications
     id_prefix: COM-
     defaults: {status: sent, from_party: hv_to_supplier, communication_type: expedite_request}
     args:
       supplier_id: {required: true}
-      po_id: {type: str, desc: "PO to expedite (optional)"}
-      sku: {type: str, desc: "SKU (optional)"}
+      sku: {required: true}
+      quantity_units: {required: true, desc: "Units to bring forward"}
       title: {required: true}
       content: {required: true}
+      po_id: {type: str, desc: "PO to expedite (optional)"}
       deadline: {type: date, desc: "Requested ship date"}
-    example: {supplier_id: "SUP-0013", sku: "PF-220", title: "Expedite request", content: "Can you bring forward delivery by 2 weeks?"}
-
+    example: {supplier_id: "SUP-0034", sku: "SKU-101260", quantity_units: 6000, title: "Expedite request", content: "Please ship from stock this week", deadline: "+7d"}
