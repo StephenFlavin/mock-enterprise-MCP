@@ -57,7 +57,7 @@ def generate(g):
 
     pos = {p["po_id"]: p for p in g.master("purchase_orders")}
     sup = {s["supplier_id"]: s for s in g.master("suppliers")}
-    seed_pos = {"PO-2026-004122", "PO-2026-004066", "PO-2026-005728", "PO-2026-005511", "PO-2026-005784", "PO-2026-005024"}
+    seed_pos = {"PO-2026-004155", "PO-2026-004352", "PO-2026-004122", "PO-2026-004066", "PO-2026-005728", "PO-2026-005511", "PO-2026-005784", "PO-2026-005024"}
 
     def containers(po):
         return max(1, min(6, round(int(po["total_units"]) / 3500)))
@@ -159,7 +159,7 @@ def generate(g):
         # a few expedite requests on delayed cargo
         if s["status"] == "delayed" and r.random() < 0.3:
             events.append({
-                "event_id": f"EVT-{len(events) + 1:06d}", "booking_id": row["booking_id"], "shipment_id": s["shipment_id"],
+                "event_id": f"EVT-{len(events) + 1:06d}", "booking_id": row["booking_id"],
                 "event_type": "expedite_request", "reason": r.choice(["Store stockout risk", "Promotional window closing"]),
                 "status": "acknowledged", "created_at": datetime.combine(A, datetime.min.time()) - timedelta(days=r.randint(6, 12), hours=-10)})
 

@@ -95,7 +95,7 @@ def generate(g):
     base_skus = [p["sku"] for p in products if p["sku"].startswith("SKU-") and p["status"] == "active"]
     skus = ["PF-220", "K-1700"] + storage + lighting + g.rng.sample(base_skus, 24)
     sku_w = [14, 8] + [5] * 4 + [3] * 24
-    sku_extra = {"PF-220": 0.11}  # lithium-battery fan: signature at the door, customer often out
+    sku_extra = {"PF-220": 0.20}  # lithium-battery fan: signature at the door, customer often out
     for s in storage:
         sku_extra[s] = 0.06
     assert all(s in by_sku for s in skus)

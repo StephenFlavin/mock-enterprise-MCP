@@ -72,7 +72,6 @@ tables:
     cols:
       event_id: {type: str, desc: "Event id, e.g. EVT-000123"}
       booking_id: {type: str, desc: "Ocean booking id, if known"}
-      shipment_id: {type: str, desc: "Inbound shipment the event is about"}
       event_type: {type: enum, values: [expedite_request, sailing_changed, cancelled], desc: Event type}
       from_sailing: {type: date, desc: "Original sailing date"}
       to_sailing: {type: date, desc: "New sailing date"}
@@ -113,7 +112,7 @@ tools:
     desc: Ocean bookings with cut-off and ETA, soonest sailing first; defaults to booked (not yet sailed). Filter by carrier, port, PO, shipment, franchise partner or sailing dates.
     kind: sql
     args:
-      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled, any], default: booked, desc: "Booking status, or any for all"}
+      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled, any], desc: "Booking status or any. Defaults to booked, or any when a PO, shipment or partner is given"}
       carrier_id: {}
       origin_port: {}
       dest_port: {}
@@ -128,7 +127,8 @@ tools:
              CAST(planned_sailing AS DATE) + CAST(transit_days AS INTEGER) AS planned_eta,
              container_count, booking_status, priority, partner_id, franchise_order_id, cargo_range, cost_gbp
       FROM ocean_bookings
-      WHERE ($booking_status = 'any' OR booking_status = $booking_status)
+      WHERE (CASE WHEN $booking_status IS NOT NULL THEN ($booking_status = 'any' OR booking_status = $booking_status)
+                  ELSE (booking_status = 'booked' OR $po_id IS NOT NULL OR $shipment_id IS NOT NULL OR $partner_id IS NOT NULL) END)
         AND ($carrier_id IS NULL OR carrier_id = $carrier_id)
         AND ($origin_port IS NULL OR origin_port = upper($origin_port))
         AND ($dest_port IS NULL OR dest_port = upper($dest_port))
@@ -432,16 +432,15 @@ tools:
     example: {booking_id: OBK-900104, cancel_reason: "Switched to air"}
 
   - name: send_expedite_request_to_forwarder
-    desc: Sends the forwarder a request to expedite a named shipment, with the reason. Stores the request in booking events.
+    desc: Sends the forwarder a request to expedite an ocean booking's shipment, with the reason. Stores the request in booking events.
     kind: insert
     table: booking_events
     id_prefix: EVT-
     defaults: {event_type: expedite_request, status: sent}
     args:
-      shipment_id: {required: true}
-      booking_id: {desc: "Ocean booking, if known"}
+      booking_id: {required: true, desc: "Ocean booking to expedite, e.g. OBK-000123"}
       reason: {type: str, required: true, desc: "Why expedite is needed"}
-    example: {shipment_id: SHP-0000866, reason: "Store stockout risk"}
+    example: {booking_id: OBK-900201, reason: "Store stockout risk"}
 
   - name: update_shipment_priority_for_franchise_order
     desc: Sets the priority of the booking carrying a franchise order's goods (urgent to expedite, hold to pause). Find the booking by partner or order.

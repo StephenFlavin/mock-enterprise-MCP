@@ -430,16 +430,24 @@ tools:
       region: {desc: "Limit to one region, e.g. London (optional)"}
       months: {type: int, default: 6, desc: "Months of history"}
     sql: |
+      WITH m AS (
+        SELECT c.courier_id, mode(c.issue_type) AS main_type
+        FROM delivery_complaints c
+        JOIN (SELECT DISTINCT order_id, region FROM delivery_attempts) o ON o.order_id = c.order_id
+        WHERE c.complaint_date > CAST($as_of AS TIMESTAMP) - INTERVAL ($months * 30) DAY
+          AND ($region IS NULL OR o.region = $region)
+        GROUP BY c.courier_id
+      )
       SELECT
         d.courier_id,
         c.name AS courier_name,
         COUNT(*) FILTER (WHERE d.status = 'delivered') AS deliveries,
         COUNT(*) FILTER (WHERE d.complaint_raised) AS complaints,
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.complaint_raised) / NULLIF(COUNT(*) FILTER (WHERE d.status = 'delivered'), 0), 2) AS complaint_rate_pct,
-        mode(m.issue_type) AS main_complaint_type
+        ANY_VALUE(m.main_type) AS main_complaint_type
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      LEFT JOIN delivery_complaints m ON m.order_id = d.order_id AND m.courier_id = d.courier_id AND d.complaint_raised
+      LEFT JOIN m ON m.courier_id = d.courier_id
       WHERE d.attempt_time > CAST($as_of AS TIMESTAMP) - INTERVAL ($months * 30) DAY
         AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
@@ -470,7 +478,7 @@ tools:
         AND ($country IS NULL OR d.country = $country)
       GROUP BY d.city, d.country
       ORDER BY orders DESC
-    limit: 10
+    limit: 30
     example: {}
 
   - name: get_delivery_promise_accuracy
@@ -645,7 +653,8 @@ tools:
     sql: |
       WITH vol AS (
         SELECT city, country, COUNT(*) FILTER (WHERE status = 'delivered') AS drops_6m,
-               AVG(cost_gbp) FILTER (WHERE status = 'delivered') AS base_cost
+               AVG(cost_gbp) FILTER (WHERE status = 'delivered') AS base_cost,
+               GREATEST(date_diff('day', MIN(MIN(CAST(attempt_time AS DATE))) OVER (), MAX(MAX(CAST(attempt_time AS DATE))) OVER ()) + 1, 1) AS span_days
         FROM delivery_attempts
         WHERE attempt_time > CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY AND attempt_time <= CAST($as_of AS TIMESTAMP)
         GROUP BY city, country
@@ -659,14 +668,14 @@ tools:
       )
       SELECT
         v.city, v.country,
-        v.drops_6m * 2 AS annual_drops,
+        CAST(ROUND(v.drops_6m * 365.0 / v.span_days, 0) AS INT) AS annual_drops,
         ROUND(v.base_cost, 2) AS current_cost_per_drop_gbp,
         r.rules AS new_rules,
         r.rule_list AS rules,
         ROUND(r.extra, 2) AS extra_cost_per_drop_gbp,
         ROUND(v.base_cost + r.extra, 2) AS new_cost_per_drop_gbp,
         ROUND(100.0 * r.extra / v.base_cost, 1) AS uplift_pct,
-        ROUND(v.drops_6m * 2 * r.extra, 0) AS annual_cost_impact_gbp,
+        ROUND(v.drops_6m * 365.0 / v.span_days * r.extra, 0) AS annual_cost_impact_gbp,
         'annual impact = annual_drops * sum of extra cost per drop of rules starting within the window' AS formula
       FROM vol v JOIN r ON lower(r.city) = lower(v.city)
       WHERE ($city IS NULL OR lower(v.city) = lower($city))
