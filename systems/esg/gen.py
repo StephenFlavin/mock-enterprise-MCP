@@ -67,7 +67,7 @@ def generate(g):
            "IEA / DEFRA", 1, "A", 700, -280, "UK" if cc == "GB" else ("EU" if cc in ("NL", "PL", "DE") else "Global"), 5)
         ef(f"grid_{cc}_26", f"{nm} grid electricity, location-based (2026 factor set)", "electricity", None, f26, "kg CO2e per kWh",
            "IEA / DEFRA", 2, "A", 280, 450, "UK" if cc == "GB" else ("EU" if cc in ("NL", "PL", "DE") else "Global"), 5)
-    ef("mkt_gb_26", "UK supplier-specific electricity, market-based (REGO-backed, partial)", "electricity", None, 0.185, "kg CO2e per kWh",
+    ef("mkt_gb_26", "UK supplier-specific electricity, market-based (REGO-backed, partial)", "electricity", None, 0.1825, "kg CO2e per kWh",
        "supplier_data", 1, "B", 280, 450, "UK", 15)
     emission_factors = [F[k] for k in order]
 
@@ -89,7 +89,7 @@ def generate(g):
             bnd = "operational_control"
             note = ""
             if yr == 2026 and s in ("DC1", "DC2", "DC3"):
-                method, fac, fid, src = "market_based", 0.185, F["mkt_gb_26"]["factor_id"], "supplier_data (REGO-backed contract)"
+                method, fac, fid, src = "market_based", 0.1825, F["mkt_gb_26"]["factor_id"], "supplier_data (REGO-backed contract)"
                 note = ("Switched from location-based to market-based this year after the REGO-backed supply contract "
                         "started; the location-based grid factor is shown alongside for comparison.")
             if yr == 2026 and s == "DC6":
