@@ -128,6 +128,7 @@ def generate(g):
                 })
 
     # 5. Generate damage claims
+    skus = [p["sku"] for p in g.master("products")[:50]]  # Use real SKUs from products
     for _ in range(15):
         claim_count += 1
         carrier = r.choice(carriers)
@@ -137,7 +138,7 @@ def generate(g):
             "carrier_id": carrier["carrier_id"],
             "lane": lane,
             "depot": r.choice(["Leeds DC", "Manchester Depot", "London Hub", "Glasgow Terminal"]),
-            "sku": r.choice(["SKU-100234", "K-1700", "PF-220", "STY-5520", "SKU-100456"]),
+            "sku": r.choice(skus),
             "package_type": r.choice(["carton", "polybag", "hanging"]),
             "claim_date": g.date_between(90, 0),
             "amount_gbp": round(r.uniform(50.0, 2000.0), 2),
