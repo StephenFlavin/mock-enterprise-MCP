@@ -564,6 +564,28 @@ def generate(g):
             supplier_communications.append(com)
             com_id += 1
 
+    # Generated comments and corrective actions are about the supplier's own products (SKU chosen deterministically, no RNG)
+    sup_skus = defaultdict(list)
+    for p in products:
+        sup_skus[p["supplier_id"]].append(p["sku"])
+    for row in supplier_communications:
+        if row["communication_type"] in ("sample_comment", "milestone_update"):
+            own = sup_skus.get(row["supplier_id"])
+            row["sku"] = own[int(row["communication_id"][4:]) % len(own)] if own else None
+    for row in corrective_actions:
+        own = sup_skus.get(row["supplier_id"])
+        if own:
+            row["sku"] = own[int(row["corrective_action_id"][4:]) % len(own)]
+
+    # Low-quality ESG submissions carry a poor score and a specific follow-up note (05:48:Q4)
+    for e in supplier_esg:
+        if e["submission_status"] == "low_quality" and e["data_quality_score"] is None:
+            n = int(e["supplier_id"][4:])
+            e["data_quality_score"] = 38 + (n * 7 + e["submission_year"]) % 21
+            e["emissions_tonnes_co2e"] = e["emissions_tonnes_co2e"] or 900 + n * 113
+            e["notes"] = ["Emissions methodology unclear; scope 2 basis to be confirmed", "Scope 1 and 2 figures incomplete; site list missing",
+                          "Water and waste figures inconsistent with prior year"][n % 3]
+
     # Ship-date history (03:24:Q1, 02:13:Q4): confirmed ship date (master PO ship date) versus actual departure (master shipment ATD)
     ship_date_history = []
     for po in purchase_orders:
