@@ -228,29 +228,34 @@ EXTRA_CLAUSES["SUP-0039"] = [("promo_funding_1", "other", "Promotional Funding",
     claim_within_days=30, min_notice_weeks=4,
     summary="Supplier funds 25% of bedding promotions that run 14 days or less, up to GBP 6,000 per promotion; claim within 30 days of the promotion ending."))]
 
-# 04:37:Q5 / 04:40:Q4: energy (SUP-0050, SUP-0071) and packaging (SUP-0077 corrugated, SUP-0073 film) service suppliers
-SUP_STORY["SUP-0050"] = {
+# 04:37:Q5 / 04:40:Q4: energy (SUP-0083 Midlands Power & Light, SUP-0084 Pennine Gas) and packaging (SUP-0081 Calder Corrugated, SUP-0082 Northern Film & Wrap)
+# indirect suppliers; 04:37:Q3/Q4 facilities (SUP-0085 cleaning, SUP-0086 facilities management, SUP-0087 MRO)
+SUP_STORY["SUP-0083"] = {
     "price_review": dict(frequency="quarterly", max_increase_pct=None, basis="index-linked: wholesale gas and power index, reset quarterly",
                          fixed_price_option=dict(term_months=12, premium_pct=3.5, notice_days=75), notice_days=30,
                          summary="Energy price is index-linked to the wholesale gas and power index, reset quarterly and uncapped. We may fix the price for 12 months at the forward curve plus a 3.5% premium by giving 75 days' notice."),
 }
-SUP_STORY["SUP-0071"] = {
+SUP_STORY["SUP-0084"] = {
     "price_review": dict(frequency="annual", max_increase_pct=4.0, basis="fixed unit rates for 12 months from each April", notice_days=60,
                          summary="Unit rates are fixed for 12 months from each April; annual reset capped at 4%. No index-linking and no floating option."),
 }
-SUP_STORY["SUP-0077"] = {
+SUP_STORY["SUP-0081"] = {
     "price_review": dict(frequency="quarterly", max_increase_pct=4.5, basis="index-linked to the corrugated board price index", notice_days=30,
                          reopener=dict(trigger_index_move_pct=8, window_months=6, notice_days=60),
                          summary="Corrugated prices are index-linked and reset quarterly, capped at 4.5% a quarter; either party may reopen pricing on 60 days' notice if the board index moves more than 8% in six months."),
 }
-SUP_STORY["SUP-0073"] = {
+SUP_STORY["SUP-0082"] = {
     "price_review": dict(frequency="quarterly", max_increase_pct=6.0, basis="index-linked to the packaging film price index", notice_days=30,
                          summary="Film prices are index-linked and reset quarterly, capped at 6% a quarter. The agreement has lapsed and the supplier is trading on the last agreed prices."),
 }
-STORY_TITLES = {"SUP-0050": "Energy supply agreement", "SUP-0071": "Energy supply agreement",
-                "SUP-0077": "Corrugated packaging supply agreement", "SUP-0073": "Packaging film supply agreement"}
-STORY_VALUE = {"SUP-0050": 550000.0, "SUP-0071": 200000.0, "SUP-0077": 700000.0, "SUP-0073": 600000.0}  # annual service spend (spend system)
-STORY_CATEGORY = {"SUP-0050": "Energy", "SUP-0071": "Energy", "SUP-0077": "Packaging", "SUP-0073": "Packaging"}
+STORY_TITLES = {"SUP-0083": "Energy supply agreement", "SUP-0084": "Energy supply agreement",
+                "SUP-0081": "Corrugated packaging supply agreement", "SUP-0082": "Packaging film supply agreement",
+                "SUP-0085": "Warehouse cleaning services agreement", "SUP-0086": "Facilities management agreement",
+                "SUP-0087": "MRO supply agreement"}
+STORY_VALUE = {"SUP-0083": 550000.0, "SUP-0084": 200000.0, "SUP-0081": 700000.0, "SUP-0082": 600000.0,
+               "SUP-0085": 1220000.0, "SUP-0086": 900000.0, "SUP-0087": 400000.0}  # annual service spend (spend system)
+STORY_CATEGORY = {"SUP-0083": "Energy", "SUP-0084": "Energy", "SUP-0081": "Packaging", "SUP-0082": "Packaging",
+                  "SUP-0085": "Facilities", "SUP-0086": "Facilities", "SUP-0087": "Facilities"}
 
 # 04:32:Q1 price-list terms for Supplier A (SUP-0004) and 04:32:Q7 (SUP-0074)
 PRICE_LIST_STORY = {
@@ -345,6 +350,8 @@ RACKING_SITES = {"DC1": "CTR-000501", "DC2": "CTR-000502", "DC3": "CTR-000503"}
 
 # Suppliers whose contract has lapsed (their later purchase orders are off contract), outside the story categories
 EXPIRED_SUPPLIERS = 4
+# 04:37:Q5 / 04:40:Q4: the packaging film supplier's agreement lapsed (days ago); forced without drawing from the random stream
+FORCED_EXPIRED = {"SUP-0082": 75}
 
 
 def J(**kw):
@@ -397,9 +404,9 @@ def generate(g):
             status = "terminated"
             last = max((p["order_date"] for p in pos if p["supplier_id"] == sid), default=None)
             end = g.as_of.fromisoformat(last) + timedelta(days=10) if last else as_of - timedelta(days=120)
-        elif sid in expired:
+        elif sid in expired or sid in FORCED_EXPIRED:
             status = "expired"
-            end = as_of - timedelta(days=r.randint(30, 200))
+            end = as_of - timedelta(days=FORCED_EXPIRED[sid] if sid in FORCED_EXPIRED else r.randint(30, 200))
             start = min(start, end - timedelta(days=365 * term))
         else:
             end = start + timedelta(days=365 * term)
@@ -550,8 +557,8 @@ def generate(g):
         start = as_of - timedelta(days=500)
         end = as_of + timedelta(days=230)
         contracts.append({
-            "contract_id": cid, "contract_type": "service", "party_type": "service_provider", "party_id": None,
-            "party_name": "Midlands Racking Services Ltd", "title": f"Racking inspection and maintenance - {site}", "category": "Racking inspection and maintenance",
+            "contract_id": cid, "contract_type": "service", "party_type": "service_provider", "party_id": "SUP-0090",
+            "party_name": "Rackwell Storage Systems Ltd", "title": f"Racking inspection and maintenance - {site}", "category": "Racking inspection and maintenance",
             "site_id": site, "owner_id": wh_mgr[site], "start_date": start, "end_date": end, "renewal_notice_days": 90, "auto_renewal": True,
             "status": "active", "annual_value_gbp": {"DC1": 41000.0, "DC2": 36000.0, "DC3": 33000.0}[site],
             "created_at": start - timedelta(days=20), "updated_at": g.days_ago(30),
@@ -565,13 +572,13 @@ def generate(g):
         })
         k = int(cid[-3:]) * 10
         rate_cards.append({
-            "rate_card_id": f"RTC-{k:06d}", "card_type": "service", "party_id": None, "contract_id": cid, "service_type": "racking inspection",
+            "rate_card_id": f"RTC-{k:06d}", "card_type": "service", "party_id": "SUP-0090", "contract_id": cid, "service_type": "racking inspection",
             "lane": site, "rate_unit": "per inspector-day", "effective_from": start, "effective_to": end, "base_rate_gbp": 540.0, "currency": "GBP",
             "surcharges_json": json.dumps(dict(report_fee_gbp_per_site=150, out_of_hours_uplift_pct=25, min_visit_days=2, travel_gbp_per_visit=95)),
             "notice_period_days": 90, "status": "active", "created_at": start,
         })
         rate_cards.append({
-            "rate_card_id": f"RTC-{k + 1:06d}", "card_type": "service", "party_id": None, "contract_id": cid, "service_type": "racking maintenance",
+            "rate_card_id": f"RTC-{k + 1:06d}", "card_type": "service", "party_id": "SUP-0090", "contract_id": cid, "service_type": "racking maintenance",
             "lane": site, "rate_unit": "per labour hour", "effective_from": start, "effective_to": end, "base_rate_gbp": 62.5, "currency": "GBP",
             "surcharges_json": json.dumps(dict(call_out_gbp=185, out_of_hours_uplift_pct=50, materials_markup_pct=12)),
             "notice_period_days": 90, "status": "active", "created_at": start,

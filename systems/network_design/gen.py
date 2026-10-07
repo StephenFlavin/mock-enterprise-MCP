@@ -23,12 +23,12 @@ SCENARIOS = [
       ("DC3", "", 400000, 900000, 1300000, 1.75, 1.90, 1700, 3500, "UK North", 3.9),
       ("", "New owned Midlands DC", 600000, 1900000, 2200000, 1.50, 1.40, 3500, 5500, "UK Midlands", 0.0)]),
     ("NS-000003", "Third-party partner DC in the Midlands",
-     "Keep the current network and add a third-party logistics partner for Midlands and North volume on a 5-year contract; no capex but higher unit handling fees.",
+     "Keep the current network and add a third-party logistics partner (the Corby 3PL overflow DC, DC6) for Midlands and North volume on a 5-year contract; no capex but higher unit handling fees.",
      "partner_dc", 4, "", "", 2.0, 2.6, 62.0, 1400000, 6, 0.9,
      [("DC1", "", 700000, 1500000, 3100000, 1.60, 2.00, 7200, 11000, "UK Midlands", 4.8),
       ("DC2", "", 500000, 1200000, 1750000, 1.95, 2.40, 2600, 4500, "UK Midlands", 6.5),
       ("DC3", "", 400000, 900000, 1300000, 1.75, 2.15, 1900, 3500, "UK North", 3.9),
-      ("", "Partner 3PL Midlands (contract)", 100000, 600000, 400000, 2.10, 1.70, 2000, 3200, "UK Midlands", 0.0)]),
+      ("DC6", "", 100000, 600000, 400000, 2.10, 1.70, 2000, 3200, "UK Midlands", 0.0)]),
     ("NS-000004", "Close DC2 and consolidate into DC1 and DC3",
      "Close the small southern-Midlands DC (Daventry, DC2) and absorb its volume into Northampton (DC1) and Leeds (DC3). Lower rent and labour, longer runs to southern stores, less resilience.",
      "consolidation", 2, "DC3", "", 2.5, 3.2, 38.0, 2800000, 9, 1.4,
@@ -188,7 +188,7 @@ def generate(g):
     growth_plans = [
         ("GP-000001", 2027, "Baseline growth: 5% volume, e-commerce share up 3 points", 5.0, 3.0, "Organic store network expansion", 0.0),
         ("GP-000002", 2028, "Accelerated growth: 7% volume, e-commerce share up 4 points, EU expansion", 7.0, 4.0,
-         "New market: Poland and Czechia via DC4 Venlo", 8.0),
+         "New market: Czechia and Slovakia via DC7 Lodz", 8.0),
         ("GP-000003", 2029, "Mature growth: 5% volume, e-commerce share up 5 points", 5.0, 5.0, "Market consolidation", 0.0),
         ("GP-000004", 2030, "Strategic plan: 5% volume, e-commerce reaches 40% of sales", 5.0, 5.0, "Digital-first retail", 0.0),
     ]

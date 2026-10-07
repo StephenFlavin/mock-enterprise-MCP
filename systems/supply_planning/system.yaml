@@ -589,17 +589,20 @@ tools:
     example: {material_type: leather}
 
   - name: calculate_supplier_disruption_impact
-    desc: Stock-out, revenue and margin impact of a supplier outage of a given length, SKU by SKU with the first to run out first. First row is the total.
+    desc: Stock-out, revenue and margin impact of a supplier outage, SKU by SKU, first to run out first, with a total row. A packaging supplier covers its pack type's SKUs.
     kind: sql
     args:
       supplier_id: {required: true}
       outage_weeks: {type: int, required: true, desc: "Duration of the supplier outage in weeks"}
     sql: |
-      WITH s AS (
+      WITH dep(supplier_id, pack_type) AS (VALUES ('SUP-0081', 'carton'), ('SUP-0082', 'polybag')),
+      s AS (
         SELECT p.sku, p.name, p.category, p.retail_price_gbp, p.unit_cost_gbp, pp.weekly_demand,
                pp.network_stock_units AS stock_units
         FROM master.products p JOIN planning_parameters pp USING (sku)
-        WHERE p.supplier_id = $supplier_id AND p.status <> 'discontinued' AND pp.weekly_demand > 0
+        WHERE (p.supplier_id = $supplier_id
+               OR (p.pack_type IN (SELECT pack_type FROM dep WHERE supplier_id = $supplier_id) AND p.launch_date <= CAST($as_of AS DATE)))
+          AND p.status <> 'discontinued' AND pp.weekly_demand > 0
       ), c AS (
         SELECT s.*, stock_units / weekly_demand AS cover_weeks,
                greatest(weekly_demand * $outage_weeks - stock_units, 0) AS lost_units FROM s

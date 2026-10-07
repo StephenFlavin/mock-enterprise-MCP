@@ -145,7 +145,7 @@ def generate(g):
     # ---- SKU sales trends (K-1700 eight-week slide; PF-220 steady) ----
     sku_sales = []
     k_units = {8: 250, 7: 236, 6: 222, 5: 208, 4: 196, 3: 186, 2: 178, 1: 172, 0: 188}
-    k_rating = {8: 4.2, 7: 4.1, 6: 3.9, 5: 3.8, 4: 3.7, 3: 3.6, 2: 3.5, 1: 3.5, 0: 3.5}
+    k_rating = {8: 4.3, 7: 4.2, 6: 4.1, 5: 4.0, 4: 3.6, 3: 3.2, 2: 2.9, 1: 3.0, 0: 2.8}  # the weekly averages in reviews
     k_return = {8: 3.0, 7: 3.9, 6: 4.8, 5: 5.7, 4: 6.4, 3: 7.0, 2: 7.3, 1: 7.5, 0: 7.4}
     for k in range(26, -1, -1):
         if k > 8:
@@ -153,7 +153,8 @@ def generate(g):
             ret = round(2.4 + r.uniform(-0.3, 0.4), 1)
         else:
             units, rating, ret = k_units[k], k_rating[k], k_return[k]
-        price = 69.99 if k == 0 else 77.99  # promotion price in the latest week
+        # price path as in pricing: 69.99, then 70.99 from mid August and 77.99 from mid September; promotion price in the latest week
+        price = 69.99 if k == 0 or k >= 8 else 70.99 if k >= 3 else 77.99
         sku_sales.append({"sku": "K-1700", "week_ending": week_end(k), "units_sold": units, "revenue_gbp": round(units * price, 2),
                           "avg_rating": rating, "return_rate_pct": ret, "updated_at": as_of})
         pu = round(165 + r.uniform(-8, 8))

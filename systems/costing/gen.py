@@ -89,7 +89,8 @@ EXTRA_SMALL = {"SKU-100063": 1000, "SKU-100056": 1500, "SKU-100049": 2000,
                "SKU-103640": 730, "SKU-101876": 4700}  # last two: the Tops delete candidates of the 06:54:Q2 range review (heavy markdown)  # annual units of the added low-volume lines
 # STORY: target margins that make the pipeline and overshirt questions discoverable (no random draws, applied after the row is built)
 TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5,
-                   "SKU-106335": 78.0}  # SKU-106335 = the new overshirt (STY-9505): the linen option misses its target cost
+                   "SKU-106335": 78.0,   # SKU-106335 = the new overshirt (STY-9505): the linen option misses its target cost
+                   "SKU-105005": 66.0}   # SKU-105005 = the riskiest SS27 pipeline item (demand PL-000008): thinnest margin against target
 # fabric price per metre used to turn a cost-sheet fabric line into metres per garment
 FABRIC_PRICE = {"COTTON": 6.9, "POLYESTER": 5.2, "WOOL": 12.3, "NYLON": 7.4}
 # STORY: cotton fabric per metre up 9% (average) over six months while the cotton index rose 4%.

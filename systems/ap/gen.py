@@ -5,7 +5,7 @@ Deterministic stories (all dates are in data time and move to today at runtime):
   - carrier CAR-002: 12 four-weekly invoices with disputable overcharges (surcharge, accessorial, weight, service level)
   - freight cost: GBP 208,822 invoiced but not accrued (CAR-001/002/006/008) plus four miscoded freight invoices
   - payment performance: SUP-0053 pays on time; SUP-0012 is paid late by us
-  - facilities: SUP-0014 / SUP-0026 / SUP-0067 monthly invoices, SUP-0067 with three one-off project invoices
+  - facilities: SUP-0085 (cleaning) / SUP-0087 (MRO) / SUP-0086 (facilities management) monthly invoices, SUP-0086 with three one-off project invoices
   - goods receipt vs invoice: SUP-0020 over-invoiced on five POs; SUP-0001 bank changed to India the day before the as-of date
   - vendor fraud: VND-000023 bank in HK, VND-000048 shared bank account + bank change before a payment, etc.
   - rebates: SUP-0001 / SUP-0015 / SUP-0008 volume agreements, SUP-0008 over-accrued last year
@@ -267,12 +267,12 @@ def generate(g):
         m += 1
         if m == 13:
             y, m = y + 1, 1
-    fm14 = {2: 100279, 3: 101124, 4: 97577, 5: 97918, 6: 101263, 7: 111412, 8: 103632, 9: 102224}
-    fm26 = [34119, 32567, 32681, 33684, 32582, 34087, 34411, 33742, 32485, 33899, 32908, 32833]
-    fm67 = [18597, 19880, 19398, 18034, 20603, 20103, 19420, 19120, 18860, 20195, 18194, 17983]
+    fm85 = {2: 100279, 3: 101124, 4: 97577, 5: 97918, 6: 101263, 7: 111412, 8: 103632, 9: 102224}
+    fm87 = [34119, 32567, 32681, 33684, 32582, 34087, 34411, 33742, 32485, 33899, 32908, 32833]
+    fm86 = [18597, 19880, 19398, 18034, 20603, 20103, 19420, 19120, 18860, 20195, 18194, 17983]
     for i, d in enumerate(month_dates):
-        for sid, amt, cc, prefix in (("SUP-0026", fm26[i], "CC-2102", "SW"), ("SUP-0067", fm67[i], "CC-2101", "DV"),
-                                     ("SUP-0014", fm14.get(d.month) if d.year == 2026 else None, "CC-2101", "GL")):
+        for sid, amt, cc, prefix in (("SUP-0087", fm87[i], "CC-2102", "HM"), ("SUP-0086", fm86[i], "CC-2101", "SF"),
+                                     ("SUP-0085", fm85.get(d.month) if d.year == 2026 else None, "CC-2101", "BS")):
             if not amt:
                 continue
             terms = int(sup[sid]["payment_terms_days"])
@@ -281,7 +281,7 @@ def generate(g):
             add_invoice(supplier=sid, number=f"{prefix}-{d:%y%m}-{r.randint(100, 999)}", inv_date=d, amount=float(amt), gl="6410",
                         cc=cc, match="matched", desc="Monthly facilities management service", pay_days=pay)
     for stage, (d, amt) in enumerate([(date(2026, 4, 15), 287437.0), (date(2026, 5, 15), 259839.0), (date(2026, 6, 15), 179737.0)], 1):
-        add_invoice(supplier="SUP-0067", number=f"DV-RF-{stage:02d}", inv_date=d, amount=amt, gl="6450", cc="CC-2101",
+        add_invoice(supplier="SUP-0086", number=f"SF-RF-{stage:02d}", inv_date=d, amount=amt, gl="6450", cc="CC-2101",
                     match="matched", desc=f"Warehouse roof replacement stage {stage} of 3 (one-off project)", pay_days=28 + stage)
 
     # ------------------------------------------------------------------ supplier payment performance

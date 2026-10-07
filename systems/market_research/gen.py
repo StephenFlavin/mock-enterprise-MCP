@@ -37,13 +37,21 @@ def generate(g):
     sizes = ["XS", "S", "M", "L", "XL", "XXL"]
 
     size_charts = []
+    # womenswear: our own UK size chart as held in plm for STY-5520 (UK 8-18: bust, waist, hip, length), so both systems agree
+    PLM_WOMEN = [("8", 82, 64, 90, 60), ("10", 86, 68, 94, 62), ("12", 90, 72, 98, 64), ("14", 94, 76, 102, 66),
+                 ("16", 100, 82, 108, 68), ("18", 106, 88, 114, 70)]
     for i, category in enumerate(categories):
+        if category == "womenswear":
+            for j, (size, chest, waist, hip, length) in enumerate(PLM_WOMEN):
+                size_charts.append({"size_chart_id": f"SC-{i * 6 + j + 1:06d}", "category": category, "size_label": f"UK {size}",
+                                    "chest_cm": chest, "waist_cm": waist, "hip_cm": hip, "length_cm": length})
+            continue
         for j, size in enumerate(sizes):
             # Size progresses with chest/waist/hip
-            base_chest = 76 + (j * 4)
-            base_waist = 61 + (j * 4)
-            base_hip = 86 + (j * 4)
-            base_length = 60 + (j * 2)
+            base_chest = 76 + (j * 4) + (16 if category == "menswear" else 0)   # menswear charts run larger than womenswear
+            base_waist = 61 + (j * 4) + (17 if category == "menswear" else 0)
+            base_hip = 86 + (j * 4) + (6 if category == "menswear" else 0)
+            base_length = 60 + (j * 2) + (10 if category == "menswear" else 0)
 
             chart = {
                 "size_chart_id": f"SC-{i * 6 + j + 1:06d}",

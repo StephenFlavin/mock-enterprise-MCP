@@ -6,7 +6,7 @@ pending sample approvals, so the planted rows are what a correct answer finds.
 """
 from datetime import timedelta
 
-PLANTED_STYLES = {"STY-4578", "STY-6227", "STY-8286", "STY-4012", "STY-8975", "STY-9509", "STY-K-1700", "STY-PF-220",
+PLANTED_STYLES = {"STY-4578", "STY-6227", "STY-8286", "STY-4012", "STY-8975", "STY-9509", "STY-8724", "STY-K-1700", "STY-PF-220",
                   "STY-5926", "STY-8491"}
 
 

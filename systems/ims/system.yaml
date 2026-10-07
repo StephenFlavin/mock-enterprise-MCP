@@ -1225,7 +1225,7 @@ tools:
     example: {dimension: category}
 
   - name: get_inventory_cover_by_item
-    desc: Weeks of cover by item across all sites (or one site), with reorder point and safety stock, lowest cover first. Filter by supplier for supplier impact.
+    desc: Weeks of cover by item across all sites or one site, lowest first, with reorder point and safety stock. Filter by supplier for impact; packaging suppliers cover their pack type.
     kind: sql
     args:
       sku: {}
@@ -1239,7 +1239,11 @@ tools:
              sum(i.reorder_point) AS reorder_point, sum(i.safety_stock) AS safety_stock
       FROM inventory_positions i JOIN master.products p USING (sku)
       WHERE ($sku IS NULL OR i.sku = $sku) AND ($site_id IS NULL OR i.site_id = $site_id)
-        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id) AND ($category IS NULL OR p.category = $category)
+        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id
+             OR (p.launch_date <= CAST($as_of AS DATE)
+                 AND p.pack_type IN (SELECT d.pack_type FROM (VALUES ('SUP-0081', 'carton'), ('SUP-0082', 'polybag')) AS d(supplier_id, pack_type)
+                                     WHERE d.supplier_id = $supplier_id)))
+        AND ($category IS NULL OR p.category = $category)
       GROUP BY i.sku, p.name, p.category, p.supplier_id
       HAVING ($max_weeks_cover IS NULL OR sum(i.available) / NULLIF(sum(i.weekly_demand), 0) <= $max_weeks_cover)
       ORDER BY weeks_of_cover
