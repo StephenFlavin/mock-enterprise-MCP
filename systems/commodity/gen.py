@@ -191,7 +191,7 @@ def generate(g):
             cost_outlook.append({
                 "outlook_id": f"OUT-{len(cost_outlook) + 1:06d}",
                 "commodity_id": commodity,
-                "outlook_date": (g.as_of + timedelta(days=days_ahead)).date() if days_ahead > 0 else g.as_of.date(),
+                "outlook_date": (g.as_of + timedelta(days=days_ahead)) if days_ahead > 0 else g.as_of,
                 "expected_cost_gbp": round(outlook_price, 4),
                 "reasoning": r.choice([
                     "Forecast based on current market trends",
@@ -231,7 +231,7 @@ def generate(g):
                 "commodity_id": commodity,
                 "forecast_date": g.as_of - timedelta(days=i*60),
                 "forecast_price_gbp": round(forecast_price, 4),
-                "actual_date": (g.as_of - timedelta(days=i*60) + timedelta(days=30)).date(),
+                "actual_date": (g.as_of - timedelta(days=i*60) + timedelta(days=30)),
                 "actual_price_gbp": round(actual_price, 4),
                 "accuracy_pct": round(accuracy, 1)
             })

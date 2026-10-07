@@ -117,7 +117,7 @@ def generate(g):
 
                 origin_port = supplier_origin_port(po['supplier_id'])
                 container_id = f"CONT-{len(container_shipments) + 1:06d}"
-                shipment_id = f"SHIP-{len(container_shipments) // 4 + 1:05d}"
+                shipment_id = f"SHP-{len(container_shipments) // 4 + 1:07d}"
 
                 # Determine if container is already at destination or still in transit
                 days_since_ship = (g.as_of - datetime.fromisoformat(po['ship_date']).date()).days
