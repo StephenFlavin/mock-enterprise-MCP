@@ -190,7 +190,7 @@ def generate(g):
         start_date = g.as_of - timedelta(days=g.rng.randint(30, 60))
         end_date = g.as_of + timedelta(days=g.rng.randint(90, 270))
         result["capex_projects"].append({
-            "project_id": cxp_id,
+            "capex_project_id": cxp_id,
             "title": g.fake.sentence(),
             "sponsor_id": pick_employee(),
             "status": g.pick(["planned", "active", "on_hold"]),
