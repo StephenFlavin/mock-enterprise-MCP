@@ -429,7 +429,7 @@ tools:
     example: {origin_country: TR}
 
   - name: get_tariff_rates_for_category_origin
-    desc: Duty rates for a product category or department (e.g. Trousers, Lighting, Home) by origin into a market, with preference eligibility.
+    desc: Duty rates for a product category or department (e.g. Trousers, Lighting, Home) by origin into a market, with preference eligibility and any pending tariff scenario with its probability.
     kind: sql
     args:
       category: {required: true, desc: "Product category or department, e.g. Trousers, Lighting, Home; housewares and denim also work"}
@@ -441,15 +441,22 @@ tools:
                     WHEN lower($category) IN ('denim', 'jeans') THEN 'trousers'
                     ELSE lower($category) END AS c
       ), h AS (
-        SELECT DISTINCT left(p.hs_code, 4) AS heading, p.department, p.category
-        FROM master.products p, q WHERE lower(p.category) = q.c OR lower(p.department) = q.c
+        SELECT left(p.hs_code, 4) AS heading, p.department,
+               string_agg(DISTINCT p.category, ', ' ORDER BY p.category) AS categories
+        FROM master.products p, q
+        WHERE lower(p.category) = q.c OR lower(p.department) = q.c
+        GROUP BY left(p.hs_code, 4), p.department
       )
-      SELECT h.category, h.department, d.hs_code, d.origin_country, d.duty_rate_pct, d.vat_rate_pct,
-             d.preferential_rate_pct, d.preference_scheme, d.effective_date
+      SELECT h.categories AS category, h.department, d.hs_code, d.origin_country, d.duty_rate_pct, d.vat_rate_pct,
+             d.preferential_rate_pct, d.preference_scheme, d.effective_date,
+             s.scenario_name AS pending_scenario, s.duty_rate_change_pct AS pending_change_pct,
+             s.probability_pct AS pending_probability_pct
       FROM h JOIN duty_rates d ON d.hs_code = h.heading
+      LEFT JOIN tariff_scenarios s ON s.origin_country = d.origin_country
+           AND (s.hs_code_range = 'All goods' OR starts_with(d.hs_code, s.hs_code_range))
       WHERE d.end_date IS NULL AND d.destination_market = $destination_market
         AND ($origin_country IS NULL OR d.origin_country = $origin_country)
-      ORDER BY h.category, d.hs_code, d.origin_country
+      ORDER BY h.department, d.hs_code, d.origin_country
     limit: 60
     example: {category: Trousers, origin_country: VN}
 

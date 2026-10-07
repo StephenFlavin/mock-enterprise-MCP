@@ -32,7 +32,7 @@ def _rule(heading, origin, market):
     if market == "UK" and (origin == "GB"):
         return None
     if market == "EU" and origin in EU_ORIGINS:
-        return None
+        return (0, None, "EU single market")
     if origin in EU_ORIGINS and market == "UK":
         return (0, None, None)
     if origin == "GB" and market == "EU":
