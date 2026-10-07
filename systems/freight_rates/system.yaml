@@ -239,6 +239,9 @@ tables:
       max_weight_kg:
         type: float
         desc: Parcel weight band upper bound (kg)
+      unit:
+        type: str
+        desc: 'Rate unit, e.g. per 40ft container, per pallet, per load, per parcel'
   surcharges:
     key: surcharge_id
     cols:
@@ -1365,12 +1368,12 @@ tools:
     mode: sea
   limit: 40
 - name: get_market_rate_benchmarks
-  desc: Market and contract rate benchmarks by lane for competitive analysis.
+  desc: Market benchmark percentiles against our contracted rate and carrier for a lane (sea, road or parcel), with variance versus market. Use to judge outsourced rates.
   kind: sql
   args:
     lane_id:
       type: str
-      desc: Lane identifier
+      desc: 'Lane identifier, e.g. VNSGN-GBFXT (sea), DC1-NORTH (road) or UK-next-day (parcel)'
       required: true
     mode:
       type: enum
@@ -1381,16 +1384,20 @@ tools:
       - parcel
       desc: Transport mode
   sql: |
-    SELECT b.lane_id, b.mode, b.volume_band,
+    SELECT b.lane_id, b.mode, b.volume_band, b.min_weight_kg, b.max_weight_kg, b.unit, c.carrier_id,
            b.benchmark_rate_gbp, b.percentile_25_gbp, b.percentile_50_gbp, b.percentile_75_gbp,
-           COALESCE(c.rate_gbp, 0) AS our_contract_rate_gbp,
-           ROUND(((COALESCE(c.rate_gbp, 0) - b.benchmark_rate_gbp) / b.benchmark_rate_gbp) * 100, 1) AS vs_market_pct
+           c.rate_gbp AS our_contract_rate_gbp,
+           ROUND(((c.rate_gbp - b.benchmark_rate_gbp) / b.benchmark_rate_gbp) * 100, 1) AS vs_market_pct
     FROM market_benchmarks b
     LEFT JOIN contract_rates c ON c.lane_id = b.lane_id AND c.mode = b.mode
-    WHERE b.lane_id = $lane_id
-      AND b.mode = $mode
+         AND c.unit = b.unit
+         AND (c.volume_band IS NULL OR c.volume_band = b.volume_band)
+         AND (c.min_weight_kg IS NULL OR c.min_weight_kg = b.min_weight_kg)
+         AND c.rate_from <= CAST($as_of AS DATE) AND c.rate_to >= CAST($as_of AS DATE)
+    WHERE UPPER(b.lane_id) = UPPER($lane_id)
+      AND ($mode IS NULL OR b.mode = $mode)
       AND b.benchmark_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
-    ORDER BY b.volume_band
+    ORDER BY b.unit, b.volume_band, b.min_weight_kg
   example:
     lane_id: VNSGN-GBFXT
     mode: sea
@@ -1536,20 +1543,26 @@ tools:
     destination_airport: LHR
     weight_kg: 400
 - name: get_next_day_delivery_rates_by_postcode
-  desc: Next day delivery rates by postcode for e-commerce fulfillment planning.
+  desc: Carrier next-day cost per parcel drop by destination postcode area and origin DC, for a parcel weight, cheapest first. Use for e-commerce next-day eligibility.
   kind: sql
   args:
     postcode_area:
       type: str
-      desc: Postcode area code, e.g. SW1A
+      desc: Postcode area code or prefix, e.g. SW1A or LS
+    weight_kg:
+      type: float
+      default: 1
+      desc: Parcel weight in kg; returns the weight band covering it
   sql: |
-    SELECT s.lane_id, s.destination AS postcode, s.origin, s.rate_gbp,
-           s.transit_days, s.unit, s.rate_date, 'postcode' AS postcode_type
+    SELECT s.lane_id, s.destination AS postcode, s.origin AS origin_site, s.rate_gbp AS cost_per_drop_gbp,
+           s.min_weight_kg, s.max_weight_kg, s.transit_days, s.unit AS service, s.rate_date
     FROM spot_rates s
     WHERE s.mode = 'parcel'
       AND s.transit_days <= 1
       AND s.rate_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
-      AND ($postcode_area IS NULL OR s.destination LIKE $postcode_area || '%')
-    ORDER BY s.rate_gbp
-    LIMIT 20
+      AND s.rate_date <= CAST($as_of AS DATE)
+      AND ($weight_kg IS NULL OR ($weight_kg > s.min_weight_kg AND $weight_kg <= s.max_weight_kg))
+      AND ($postcode_area IS NULL OR upper(s.destination) LIKE upper($postcode_area) || '%')
+    ORDER BY s.rate_gbp, s.destination
+  limit: 30
   example: {}

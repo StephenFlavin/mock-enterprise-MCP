@@ -213,6 +213,7 @@ def generate(g):
                 "volume_band": band, "benchmark_rate_gbp": float(p50), "data_points": 12 + r.randint(0, 9),
                 "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.93, 2), "percentile_50_gbp": float(p50),
                 "percentile_75_gbp": round(p50 * 1.07, 2), "min_weight_kg": None, "max_weight_kg": None,
+                "unit": "per 40ft container",
             })
     for svc, vals in bench_parcel.items():
         for (lo, hi), p50 in zip([(0, 1), (1, 5), (5, 20)], vals):
@@ -221,7 +222,18 @@ def generate(g):
                 "volume_band": "medium", "benchmark_rate_gbp": p50, "data_points": 25 + r.randint(0, 20),
                 "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.90, 2), "percentile_50_gbp": p50,
                 "percentile_75_gbp": round(p50 * 1.10, 2), "min_weight_kg": lo, "max_weight_kg": hi,
+                "unit": "per parcel",
             })
+    # road haulage benchmarks (outsourced rates on our northbound lanes; used for the in-source vs outsource question)
+    for lane, unit, p50, pts in [("DC1-NORTH", "per pallet", 16.40, 31), ("DC1-NORTH", "per load", 610.0, 24),
+                                 ("DC3-NORTH", "per pallet", 16.00, 27)]:
+        market_benchmarks.append({
+            "benchmark_id": f"BEN-{len(market_benchmarks) + 1:06d}", "lane_id": lane, "mode": "road",
+            "volume_band": "medium", "benchmark_rate_gbp": p50, "data_points": pts,
+            "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.93, 2), "percentile_50_gbp": p50,
+            "percentile_75_gbp": round(p50 * 1.07, 2), "min_weight_kg": None, "max_weight_kg": None,
+            "unit": unit,
+        })
 
     # ------------------------------------------------------------------ surcharges
     sur = [
@@ -346,7 +358,10 @@ def generate(g):
 
     # ------------------------------------------------------------------ parcel spot rates by postcode (next-day service planning)
     for origin, postcode, f in [("DC1", "SW1A", 1.15), ("DC1", "E1C", 1.12), ("DC1", "N1C", 1.10), ("DC2", "B1A", 1.0),
-                                ("DC2", "M1A", 1.02), ("DC3", "LS1", 0.95)]:
+                                ("DC2", "M1A", 1.02), ("DC3", "LS1", 0.95),
+                                ("DC1", "MK9", 0.88), ("DC1", "CV1", 0.92), ("DC1", "OX1", 0.98),
+                                ("DC2", "NG1", 0.97), ("DC3", "S1", 0.93), ("DC2", "L1", 1.04),
+                                ("DC3", "NE1", 1.08), ("DC3", "HU1", 1.01), ("DC3", "YO1", 1.03)]:
         for svc, base, days in (("standard", 3.0, 3), ("express", 4.9, 2), ("next-day", 6.4, 1)):
             for lo, hi, m in ((0, 1, 1.0), (1, 5, 1.35), (5, 20, 2.3)):
                 add_spot(lane_id=f"{origin}-{postcode}", mode="parcel", rate_date=A, rate_gbp=round(base * m * f, 2),
