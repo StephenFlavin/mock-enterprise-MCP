@@ -33,8 +33,8 @@ def generate(g):
     # Generate audit_actions (open and completed)
     audit_actions = []
     for i in range(1, 31):
-        action_date = g.date_between("-540d", "-90d")
-        due_date = g.date_between(action_date, "+60d")
+        action_date = g.date_between(540, 90)
+        due_date = g.date_between(90, 0) if action_date < g.as_of else g.date_between(0, -60)
         status = g.pick(["open", "completed", "reopened"], [0.5, 0.35, 0.15])
         audit_actions.append({
             "action_id": f"ACT-{i:06d}",
@@ -52,7 +52,7 @@ def generate(g):
     # Generate audit_cases (findings from data anomalies)
     audit_cases = []
     for i in range(1, 21):
-        opened_date = g.date_between("-180d", "-30d")
+        opened_date = g.date_between(180, 30)
         audit_cases.append({
             "case_id": f"CASE-{i:06d}",
             "finding_area": g.pick(["Purchase orders", "Vendor payments", "Inventory", "Cash", "Expenses"]),
@@ -69,9 +69,10 @@ def generate(g):
     # Generate audit_engagements (planned and completed)
     audit_engagements = []
     engagement_ids = []
+    from datetime import timedelta
     for i in range(1, 16):
-        start_date = g.date_between("-180d", "+90d")
-        end_date = g.date_between(start_date, f"+{g.rng.randint(14, 45)}d")
+        start_date = g.date_between(180, -90)
+        end_date = start_date + timedelta(days=g.rng.randint(14, 45))
         engagement_ids.append(f"ENG-{i:06d}")
         audit_engagements.append({
             "engagement_id": f"ENG-{i:06d}",
@@ -90,7 +91,7 @@ def generate(g):
     # Generate control_test_results
     control_test_results = []
     for i in range(1, 51):
-        test_date = g.date_between("-120d", "-1d")
+        test_date = g.date_between(120, 1)
         result = g.pick(["pass", "fail", "partial"], [0.65, 0.25, 0.10])
         control_test_results.append({
             "test_id": f"TST-{i:06d}",
@@ -116,7 +117,7 @@ def generate(g):
     # Generate audit_findings
     audit_findings = []
     for i in range(1, 31):
-        audit_date = g.date_between("-365d", "-30d")
+        audit_date = g.date_between(365, 30)
         audit_findings.append({
             "finding_id": f"FND-{i:06d}",
             "site_id": g.pick([s["site_id"] for s in dc_sites]),
@@ -132,7 +133,7 @@ def generate(g):
     # Generate fraud_cases
     fraud_cases = []
     for i in range(1, 21):
-        detected_date = g.date_between("-730d", "-30d")
+        detected_date = g.date_between(730, 30)
         fraud_cases.append({
             "fraud_case_id": f"FRD-{i:06d}",
             "case_type": g.pick(fraud_types),

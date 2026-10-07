@@ -1,5 +1,5 @@
 """Background health & safety data: incidents, corrective actions, risk assessments by site."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 
 def generate(g):
@@ -76,7 +76,9 @@ def generate(g):
 
         status = r.choices(["open", "in_progress", "completed", "closed"], [40, 20, 25, 15])[0]
 
-        due_date = g.as_of + timedelta(days=r.randint(-30, 60))
+        # g.as_of is a date object
+        as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
+        due_date = as_of_date + timedelta(days=r.randint(-30, 60))
         completed_date = None
         if status in ["completed", "closed"]:
             completed_date = due_date - timedelta(days=r.randint(0, 30))
@@ -97,10 +99,10 @@ def generate(g):
                 "Install proximity sensors on equipment"
             ]),
             "owner": r.choice(employees),
-            "due_date": due_date.date(),
-            "completed_date": completed_date.date() if completed_date else None,
-            "created_at": g.as_of - timedelta(days=r.randint(10, 180)),
-            "updated_at": g.as_of - timedelta(days=r.randint(0, 10))
+            "due_date": due_date,
+            "completed_date": completed_date,
+            "created_at": datetime.combine(as_of_date - timedelta(days=r.randint(10, 180)), datetime.min.time()),
+            "updated_at": datetime.combine(as_of_date - timedelta(days=r.randint(0, 10)), datetime.min.time())
         })
 
     # Generate risk assessments for various activities by site
@@ -110,6 +112,9 @@ def generate(g):
     for site_id in sites:
         for activity in r.sample(activities, r.randint(4, 8)):
             risk_level = r.choices(["critical", "high", "medium", "low"], [5, 20, 45, 30])[0]
+
+            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
+            date_assessed = as_of_date - timedelta(days=r.randint(30, 365))
 
             risk_assessments.append({
                 "ra_id": f"RA-{len(risk_assessments) + 1:06d}",
@@ -131,8 +136,8 @@ def generate(g):
                     "Lockout/tagout; warning signs; maintenance logs"
                 ]),
                 "residual_risk": r.choices(["high", "medium", "low"], [20, 50, 30])[0],
-                "date_assessed": g.as_of - timedelta(days=r.randint(30, 365)),
-                "updated_at": g.as_of - timedelta(days=r.randint(0, 90))
+                "date_assessed": date_assessed,
+                "updated_at": datetime.combine(as_of_date - timedelta(days=r.randint(0, 90)), datetime.min.time())
             })
 
     # Generate site safety procedures by site
@@ -141,13 +146,15 @@ def generate(g):
 
     for site_id in sites:
         for ptype in r.sample(procedure_types, r.randint(3, 6)):
+            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
+
             site_procedures.append({
                 "procedure_id": f"PROC-{len(site_procedures) + 1:06d}",
                 "site_id": site_id,
                 "procedure_name": f"{ptype} - {site_id}",
                 "procedure_type": ptype,
                 "status": r.choices(["active", "inactive", "draft"], [85, 10, 5])[0],
-                "last_updated": g.as_of - timedelta(days=r.randint(0, 180))
+                "last_updated": as_of_date - timedelta(days=r.randint(0, 180))
             })
 
     # Generate safety validation records for automation assets
@@ -155,18 +162,19 @@ def generate(g):
 
     for asset in r.sample(assets, min(15, len(assets))):
         for _ in range(r.randint(1, 3)):
-            validation_date = g.as_of - timedelta(days=r.randint(1, 90))
+            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
+            validation_date = as_of_date - timedelta(days=r.randint(1, 90))
 
             safety_validations.append({
                 "validation_id": f"VAL-{len(safety_validations) + 1:06d}",
                 "asset_id": asset["asset_id"],
-                "validation_date": validation_date.date(),
+                "validation_date": validation_date,
                 "validation_type": r.choice(["Firmware update", "Safety checks", "Integration test", "Functional test"]),
                 "status": r.choices(["pass", "fail", "needs_review"], [80, 10, 10])[0],
                 "validated_by": r.choice(employees),
                 "notes": r.choice(["All checks passed", "Minor discrepancy in sensor calibration",
                                  "Requires follow-up testing", "Documentation review needed"]),
-                "updated_at": validation_date + timedelta(hours=r.randint(1, 48))
+                "updated_at": datetime.combine(validation_date, datetime.min.time()) + timedelta(hours=r.randint(1, 48))
             })
 
     return {
