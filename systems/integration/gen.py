@@ -1,5 +1,5 @@
 """Generate realistic integration platform data: interfaces, EDI maps, connections, errors, feeds and costs."""
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 
 
 def generate(g):
@@ -191,8 +191,9 @@ def generate(g):
     # Feed runs for stock feed
     feed_runs = []
     base_start = g.days_ago(14)
+    base_start_dt = datetime.combine(base_start, time(0, 0, 0)) if isinstance(base_start, date) and not isinstance(base_start, datetime) else base_start
     for day_offset in range(14):
-        run_date = base_start + timedelta(days=day_offset)
+        run_date = base_start_dt + timedelta(days=day_offset)
         for hour in range(0, 24, 4):  # Every 4 hours
             scheduled = run_date.replace(hour=hour, minute=0, second=0)
             delay_minutes = r.choice([0, 0, 0, 2, 5, 10, 15, 30])  # Most are on time
@@ -238,7 +239,7 @@ def generate(g):
 
     # Stock feed schedule
     stock_feed_schedule = [{
-        "schedule_id": f"SCH-{len(stock_feed_schedule) + 1:06d}",
+        "schedule_id": "SCH-000001",
         "feed_name": "stock_feed",
         "run_frequency": "4-hourly",
         "run_time_utc": "00:00",

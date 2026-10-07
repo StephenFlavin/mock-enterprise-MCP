@@ -102,7 +102,7 @@ tools:
         AND ($region IS NULL OR s.region = $region)
       ORDER BY shortfall_gbp DESC
     limit: 30
-    example: {period: "2026-10"}
+    example: {period: "last month"}
 
   - name: get_margin_by_store
     desc: Gross margin by store for a period ranked highest to lowest. Shows actual margin percentage and pounds.
@@ -121,7 +121,7 @@ tools:
         AND ($min_margin_pct IS NULL OR p.margin_pct >= $min_margin_pct)
       ORDER BY p.margin_pct DESC
     limit: 50
-    example: {period: "2026-10"}
+    example: {period: "last month"}
 
   - name: get_range_performance_vs_plan
     desc: Product range performance (sales, margin, returns, ratings) vs plan. Shows the top movers and plan variance.
@@ -142,7 +142,7 @@ tools:
         AND ($department IS NULL OR pr.department = $department)
       ORDER BY p.sales_gbp DESC
     limit: 100
-    example: {period: "2026-10"}
+    example: {period: "last month"}
 
   - name: get_margin_vs_plan_by_product
     desc: Margin performance vs plan by product, showing variance. Ranked by biggest variance (positive or negative).
@@ -161,7 +161,7 @@ tools:
         AND (p.margin_pct - t.margin_pct_target) >= COALESCE($min_variance, -100.0)
       ORDER BY ABS(p.margin_pct - t.margin_pct_target) DESC
     limit: 50
-    example: {period: "2026-10"}
+    example: {period: "last month"}
 
   - name: list_outliers_vs_plan
     desc: Products and stores with unusual performance vs plan (high variance). Flag for investigation.
@@ -170,26 +170,29 @@ tools:
       period: {type: str, default: "last month", desc: "Period"}
       variance_threshold_pct: {type: float, default: 10, desc: "Variance threshold in % to flag as outlier"}
     sql: |
-      SELECT 'product' AS type, p.sku AS entity_id, pr.name AS name,
-             p.sales_gbp, p.margin_pct,
-             (p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0) * 100.0 AS variance_pct
-      FROM product_performance p
-      JOIN performance_targets t ON t.entity_id = p.sku AND t.period = p.period AND t.target_type = 'product'
-      JOIN master.products pr ON pr.sku = p.sku
-      WHERE p.period = CAST($period AS VARCHAR)
-        AND ABS((p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
-      UNION ALL
-      SELECT 'store' AS type, s.site_id AS entity_id, s.name AS name,
-             sp.sales_gbp, sp.margin_pct,
-             (sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0) * 100.0 AS variance_pct
-      FROM store_performance sp
-      JOIN performance_targets st ON st.entity_id = sp.site_id AND st.period = sp.period AND st.target_type = 'store'
-      JOIN master.sites s ON s.site_id = sp.site_id
-      WHERE sp.period = CAST($period AS VARCHAR)
-        AND ABS((sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
+      SELECT type, entity_id, name, sales_gbp, margin_pct, variance_pct
+      FROM (
+        SELECT 'product' AS type, p.sku AS entity_id, pr.name AS name,
+               p.sales_gbp, p.margin_pct,
+               (p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0) * 100.0 AS variance_pct
+        FROM product_performance p
+        JOIN performance_targets t ON t.entity_id = p.sku AND t.period = p.period AND t.target_type = 'product'
+        JOIN master.products pr ON pr.sku = p.sku
+        WHERE p.period = CAST($period AS VARCHAR)
+          AND ABS((p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
+        UNION ALL
+        SELECT 'store' AS type, s.site_id AS entity_id, s.name AS name,
+               sp.sales_gbp, sp.margin_pct,
+               (sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0) * 100.0 AS variance_pct
+        FROM store_performance sp
+        JOIN performance_targets st ON st.entity_id = sp.site_id AND st.period = sp.period AND st.target_type = 'store'
+        JOIN master.sites s ON s.site_id = sp.site_id
+        WHERE sp.period = CAST($period AS VARCHAR)
+          AND ABS((sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
+      ) t1
       ORDER BY ABS(variance_pct) DESC
     limit: 50
-    example: {period: "2026-10", variance_threshold_pct: 15}
+    example: {period: "last month", variance_threshold_pct: 15}
 
   - name: calculate_store_priority_score
     desc: Ranks stores by priority using sales, margin, and trend. Higher score = higher priority for investment.

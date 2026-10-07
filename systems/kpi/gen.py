@@ -27,21 +27,19 @@ def generate(g):
     # Generate KPI targets
     kpi_targets = []
     for kpi in kpi_definitions:
-        for period in range(1, 13):
-            variation = r.uniform(0.95, 1.05)
-            kpi_targets.append({
-                "kpi_id": kpi["id"],
-                "kpi_name": kpi["name"],
-                "domain": kpi["domain"],
-                "frequency": "monthly",
-                "unit": kpi["unit"],
-                "target_value": round(kpi["target"] * variation, 2),
-                "min_threshold": round(kpi["target"] * 0.90, 2),
-                "yellow_threshold": round(kpi["target"] * 0.95, 2),
-                "fy_period": period,
-                "effective_from": datetime.combine(g.as_of, datetime.min.time()),
-                "updated_at": datetime.combine(g.as_of, datetime.min.time()),
-            })
+        variation = r.uniform(0.95, 1.05)
+        kpi_targets.append({
+            "kpi_id": kpi["id"],
+            "kpi_name": kpi["name"],
+            "domain": kpi["domain"],
+            "frequency": "monthly",
+            "unit": kpi["unit"],
+            "target_value": round(kpi["target"] * variation, 2),
+            "min_threshold": round(kpi["target"] * 0.90, 2),
+            "yellow_threshold": round(kpi["target"] * 0.95, 2),
+            "effective_from": datetime.combine(g.as_of, datetime.min.time()),
+            "updated_at": datetime.combine(g.as_of, datetime.min.time()),
+        })
 
     # Generate KPI actuals - daily for last 60 days
     kpi_actuals = []
@@ -125,16 +123,14 @@ def generate(g):
     channels = ["Reuse", "Repair", "Recycle", "Refurbish"]
     circularity_targets = []
     for idx, channel in enumerate(channels):
-        for period in range(1, 13):
-            circularity_targets.append({
-                "channel_id": f"CHN-{idx + 1:06d}",
-                "channel_name": channel,
-                "units_collected_target": r.randint(5000, 50000),
-                "value_recovered_target_gbp": round(r.uniform(10000, 150000), 2),
-                "handling_cost_per_unit_gbp": round(r.uniform(0.5, 2.5), 2),
-                "fy_period": period,
-                "effective_from": datetime.combine(as_of, datetime.min.time()),
-            })
+        circularity_targets.append({
+            "channel_id": f"CHN-{idx + 1:06d}",
+            "channel_name": channel,
+            "units_collected_target": r.randint(5000, 50000),
+            "value_recovered_target_gbp": round(r.uniform(10000, 150000), 2),
+            "handling_cost_per_unit_gbp": round(r.uniform(0.5, 2.5), 2),
+            "effective_from": datetime.combine(as_of, datetime.min.time()),
+        })
 
     # Generate issue root causes
     issue_root_causes = []
