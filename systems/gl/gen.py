@@ -173,7 +173,7 @@ def generate(g):
         d, acct = rng.choice(acc_desc)
         accruals.append({
             'accrual_id': f'ACC-{i:06d}', 'je_id': '', 'reversal_je_id': '', 'period': 'FY27-08',
-            'description': d, 'amount_gbp': round(rng.uniform(8000, 52000), 2),
+            'description': d, 'amount_gbp': round(rng.uniform(8000, 48000), 2),
             'accrual_date': g.days_ago(age), 'reversal_date': g.days_ago(age) + timedelta(days=rng.randint(21, 45)),
             'status': 'open', 'entity_id': rng.choices(ENTITIES, weights=ENTITY_WEIGHTS)[0], 'item_type': 'accrual',
             'account_code': acct, 'owner_id': rng.choice(FINANCE)})
