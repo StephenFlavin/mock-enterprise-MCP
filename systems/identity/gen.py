@@ -73,8 +73,8 @@ def generate(g):
     # Alert disposition history (for false positive rates)
     for alert_type, source in alert_types:
         false_pos = r.randint(10, 50)
-        incidents = r.randint(5, 25)
-        total = false_pos + incidents + r.randint(5, 20)
+        confirmed_incidents = r.randint(5, 25)
+        total = false_pos + confirmed_incidents + r.randint(5, 20)
 
         dispositions.append({
             "disposition_id": f"DSP-{len(dispositions) + 1:06d}",

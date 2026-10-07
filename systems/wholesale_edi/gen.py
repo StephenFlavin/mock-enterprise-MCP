@@ -112,7 +112,7 @@ def generate(g):
         recent_errors = sum(1 for m in messages
                            if m["partner_id"] == partner["partner_id"]
                            and m["status"] in ("failed", "reprocessing")
-                           and (g.as_of - m["sent_at"].date()).days <= 7)
+                           and (g.as_of - (m["sent_at"].date() if isinstance(m["sent_at"], datetime) else m["sent_at"])).days <= 7)
 
         # Connection status based on recent errors
         if recent_errors > 5:
@@ -142,7 +142,7 @@ def generate(g):
         # Feed status: mostly active, some stale, rare missing
         feed_choice = r.choices(["active", "stale", "missing"], [85, 12, 3])[0]
         days_since_feed = r.randint(0, 14) if feed_choice == "active" else (r.randint(15, 60) if feed_choice == "stale" else r.randint(61, 180))
-        last_feed = datetime.now() - timedelta(days=days_since_feed)
+        last_feed = g.as_of - timedelta(days=days_since_feed)
 
         accounts.append({
             "partner_id": partner["partner_id"],
@@ -152,7 +152,7 @@ def generate(g):
             "data_feed_coverage_pct": float(coverage_pct),
             "data_feed_status": feed_choice,
             "last_feed_date": last_feed,
-            "updated_at": datetime.now(),
+            "updated_at": g.as_of,
         })
 
     return {
