@@ -132,7 +132,7 @@ def generate(g):
             "suspected_loss_gbp": suspected_loss_gbp,
             "created_at": created_at,
             "closed_at": closed_at,
-            "updated_at": closed_at or created_at + g.fake.time_delta(days=rng.randint(0, 10)),
+            "updated_at": closed_at or created_at + timedelta(days=rng.randint(0, 10)),
         })
 
     return {
