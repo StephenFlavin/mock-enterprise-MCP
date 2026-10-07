@@ -13,6 +13,7 @@ def main():
     s.add_argument("--port", type=int, default=8800)
     s.add_argument("--only", nargs="*", help="system ids to host (default: all)")
     s.add_argument("--record", metavar="PATH", help="append every served tool call to PATH as JSONL (or env MOCKMCP_RECORD)")
+    s.add_argument("--hide-tools", metavar="SRV.TOOL,...", help="eval: do not expose these tools (left out of tools/list, calls rejected)")
     sub.add_parser("stdio", help="serve one system over stdio").add_argument("id")
     c = sub.add_parser("check", help="lint + run examples + scenarios")
     c.add_argument("ids", nargs="*")
@@ -44,7 +45,10 @@ def main():
     if a.cmd == "serve":
         import uvicorn
         from .server import Engine, hub_app
-        eng = Engine(a.only, record=a.record)
+        try:
+            eng = Engine(a.only, record=a.record, hide=[h for h in (a.hide_tools or "").split(",") if h.strip()])
+        except ValueError as e:
+            sys.exit(str(e))
         print(f"{len(eng.systems)} systems on http://{a.host}:{a.port}/<id>/mcp", file=sys.stderr)
         uvicorn.run(hub_app(eng, a.host), host=a.host, port=a.port, log_level="warning")
     elif a.cmd == "stdio":

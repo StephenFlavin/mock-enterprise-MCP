@@ -7,7 +7,8 @@
 
 Filter language: terms joined by `&` (and), alternatives by ` or `; a term is `field<op>value` with op in
 >= <= > < = != (a value may list alternatives: `domain=02|07`), a bare feature or preset name (`write`, `chained`),
-or `!name`. Examples: `systems>=3`, `kind=slice&domain=02`, `complexity=complex or calls>=6`.
+or `!name`. Examples: `systems>=3`, `kind=slice&domain=02`, `complexity=complex or calls>=6`, and for traps
+`trap&multi_turn`, `trap_type=missing_tool`, `tier=complex`, `variant=hidden`, `trap_turn>=1`.
 """
 import operator
 import re
@@ -45,11 +46,14 @@ def features(task: dict) -> dict:
         "calls": sum(len(s["ref"]) for s in sl), "writes": len(task["writes"]["expected"]), "chained": _chained(task),
         "prompt_words": _words(turns[0]["text"]) if turns else 0, "total_words": sum(_words(t["text"]) for t in turns),
         "facts": len(task["reference"]["facts"]), "followups": max(len(turns) - 1, 0),
-        "approval_needed": any(t["approval_needed"] for t in turns),
+        "approval_needed": any(t["approval_needed"] for t in turns), "turns": len(turns),
         "persona": ":".join(filter(None, [task["persona"].get("file"), task["persona"].get("no")])),
         "domain": task["persona"].get("file", ""), "question": task.get("question_id") or "",
         "type": tags.get("type", ""), "specificity": tags.get("specificity", ""), "scope": tags.get("scope", ""),
         "complexity": tags.get("complexity", ""), "trap_type": (task.get("trap") or {}).get("type", ""),
+        # trap bank v2: tier (simple|complex|multi_turn), turn of the trap (-1 = not a trap), variant, number of hidden tools
+        "tier": (task.get("trap") or {}).get("tier", ""), "trap_turn": (task.get("trap") or {}).get("trap_turn", 0) if task.get("trap") else -1,
+        "variant": (task.get("trap") or {}).get("variant", "") or "", "hidden_tools": len((task.get("trap") or {}).get("hidden_tools") or []),
     }
 
 
@@ -62,6 +66,7 @@ PRESETS = {
     "write": lambda f: f["writes"] >= 1,
     "followups": lambda f: f["followups"] >= 1,
     "trap": lambda f: f["kind"] == "trap",
+    "multi_turn": lambda f: f["turns"] >= 2,          # any kind: a conversation of two or more turns
 }
 
 

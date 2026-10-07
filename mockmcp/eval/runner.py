@@ -37,12 +37,14 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_hub(task_dir: Path, servers: list[str], port: int, timeout: float = 120) -> subprocess.Popen:
+def start_hub(task_dir: Path, servers: list[str], port: int, timeout: float = 120, hide: list[str] | None = None) -> subprocess.Popen:
     env = {k: v for k, v in os.environ.items() if k not in ("MOCKMCP_STATE", "MOCKMCP_RECORD")}
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     log = open(task_dir / "hub.log", "w")
-    proc = subprocess.Popen([sys.executable, "-m", "mockmcp", "serve", "--only", *servers, "--port", str(port),
-                             "--record", str(task_dir / "trace.jsonl")], cwd=ROOT, env=env, stdout=log, stderr=log)
+    cmd = [sys.executable, "-m", "mockmcp", "serve", "--only", *servers, "--port", str(port), "--record", str(task_dir / "trace.jsonl")]
+    if hide:  # missing_tool/hidden traps: the tool exists in the system but is not exposed for this task
+        cmd += ["--hide-tools", ",".join(hide)]
+    proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=log)
     end = time.time() + timeout
     while time.time() < end:
         if proc.poll() is not None:
@@ -76,7 +78,7 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
     try:
         (td / "trace.jsonl").unlink(missing_ok=True)
         port = free_port()
-        hub = start_hub(td, task["servers"]["loaded"], port)
+        hub = start_hub(td, task["servers"]["loaded"], port, hide=(task.get("trap") or {}).get("hidden_tools") or None)
         ans = h.run_task(td, task, port, model, opts)
     except Exception as e:  # harness/hub crash: record it, never lose the other tasks
         ans = {"turns": [], "error": f"{type(e).__name__}: {e}"[:500], "model": model}

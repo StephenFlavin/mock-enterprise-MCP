@@ -16,7 +16,7 @@ log = logging.getLogger("mockmcp")
 
 
 class Engine:
-    def __init__(self, ids: list[str] | None = None, record: str | None = None):
+    def __init__(self, ids: list[str] | None = None, record: str | None = None, hide: list[str] | None = None):
         from .eval.record import Recorder
         self.rec = Recorder.make(record)  # eval: append every served call to a TraceCall JSONL
         self.db = DB()
@@ -26,6 +26,11 @@ class Engine:
         self.created: dict = {}
         for sid in ids or system_ids():
             self.add(sid)
+        # eval: tools deliberately not exposed ("<server>.<tool>"): left out of tools/list and rejected when called
+        self.hidden = {tuple(h.split(".", 1)) for h in hide or []}
+        unknown = sorted(".".join(h) for h in self.hidden if h not in self.tools)
+        if unknown:
+            raise ValueError(f"--hide-tools: unknown tool(s) {unknown} (is the server loaded?)")
 
     def add(self, sid: str):
         s = load_system(sid)
@@ -42,6 +47,8 @@ class Engine:
     def mcp_tools(self, sid: str) -> list[types.Tool]:
         out = []
         for t in self.systems[sid].tools:
+            if (sid, t.name) in self.hidden:
+                continue
             ann = types.ToolAnnotations(read_only_hint=not t.writes,
                                         destructive_hint=t.writes and (t.delete or t.name.split("_")[0] in
                                                                        ("cancel", "delete", "block", "archive", "remove")),
@@ -62,7 +69,7 @@ class Engine:
     def _call(self, sid: str, name: str, given: dict | None) -> tuple[str, bool]:
         from .fmt import render
         tool = self.tools.get((sid, name))
-        if not tool:
+        if not tool or (sid, name) in self.hidden:
             return f"Unknown tool '{name}' in {sid}.", True
         s, args = self.systems[sid], self.args[(sid, name)]
         try:
@@ -99,7 +106,7 @@ def hub_app(eng: Engine, host: str = "127.0.0.1"):
     servers = {sid: build_server(eng, sid) for sid in eng.systems}
     routes = [Mount(f"/{sid}", app=srv.streamable_http_app(json_response=True, stateless_http=True, host=host))
               for sid, srv in servers.items()]
-    index = "\n".join(f"/{sid}/mcp  {eng.systems[sid].name}  ({len(eng.systems[sid].tools)} tools)" for sid in servers)
+    index = "\n".join(f"/{sid}/mcp  {eng.systems[sid].name}  ({len(eng.mcp_tools(sid))} tools)" for sid in servers)
     routes.append(Route("/", lambda r: PlainTextResponse(index + "\n")))
 
     @contextlib.asynccontextmanager

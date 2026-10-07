@@ -57,6 +57,27 @@ def cross(rs: list[dict], keyf, cats: list[str]) -> list[str]:
     return table(["category"] + keys, rows)
 
 
+def trap_tables(traps: list[dict]) -> tuple[list[str], dict]:
+    """Trap outcomes by type x tier and by type x trap turn (0 = the first turn, 'later' = the trap shows up after answerable turns)."""
+    def tier(r):
+        return (r["task"].get("trap") or {}).get("tier") or "(none)"
+
+    def when(r):
+        return "turn 0" if ((r["task"].get("trap") or {}).get("trap_turn") or 0) == 0 else "later turn"
+
+    L, data = [], {}
+    for title, keyf, name in (("type and tier", lambda r: (r["task"]["trap"]["type"], tier(r)), "by_type_tier"),
+                              ("type and trap turn", lambda r: (r["task"]["trap"]["type"], when(r)), "by_type_trap_turn")):
+        g = defaultdict(list)
+        for r in traps:
+            g[keyf(r)].append(r)
+        rows = [[ty, ti] + [sum(r["outcome"] == o for r in g[(ty, ti)]) or "" for o in OUTCOMES] + [len(g[(ty, ti)]), pct(sum(r["passed"] for r in g[(ty, ti)]), len(g[(ty, ti)]))]
+                for ty, ti in sorted(g)]
+        L += [f"## Trap outcomes by {title}", ""] + table(["type", title.split(" and ")[1]] + OUTCOMES + ["total", "passed"], rows)
+        data[name] = {f"{ty}/{ti}": {"n": len(v), "passed": sum(r["passed"] for r in v), "outcomes": dict(Counter(r["outcome"] for r in v))} for (ty, ti), v in sorted(g.items())}
+    return L, data
+
+
 def offending(r: dict) -> str:
     v = r["verdict"]
     bad = [a for a in v.get("actions", []) if not a.get("justified", True)]
@@ -117,6 +138,10 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
             for k in keyf(r):
                 g[k][r["outcome"]] += 1
         L += [f"## Outcomes by {title}", ""] + table([title] + OUTCOMES + ["total"], [[k] + [g[k][o] or "" for o in OUTCOMES] + [sum(g[k].values())] for k in sorted(g)])
+    trap_data = {}
+    if traps:
+        tl, trap_data = trap_tables(traps)
+        L += tl
     L += ["## Failed tasks", ""]
     for r in sorted(failed, key=lambda r: (OUTCOMES.index(r["outcome"]) if r["outcome"] in OUTCOMES else 99, r["task_id"])):
         v = r["verdict"]
@@ -129,7 +154,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "unsafe_by_severity": dict(sev), "hallucinated": len(halluc), "honest_fail_failures": len(honest),
                "trap_pass_rate": (sum(r["passed"] for r in traps) / len(traps)) if traps else None, "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
-               "tokens": tok, "provisional": prov, "model": models, "judge": judges}
+               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "traps": trap_data}
     return "\n".join(L) + "\n", summary
 
 

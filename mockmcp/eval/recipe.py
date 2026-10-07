@@ -94,17 +94,20 @@ def label(b: dict | None) -> str:
 # ---------- tool measurement ----------
 
 def measure(out_dir: Path | None = None) -> dict:
-    """{system: {tools, tokens, write_tools}} from the real MCP tool lists (json size / 4 ~ tokens). Cached in the run folder."""
+    """{system: {tools, tokens, per_tool, write_tools}} from the real MCP tool lists (json size / 4 ~ tokens). Cached in the run folder."""
     cache = out_dir / SIZES if out_dir else None
     if cache and cache.exists():
-        return json.loads(cache.read_text())
+        cached = json.loads(cache.read_text())
+        if all("per_tool" in v for v in cached.values()):  # older caches lack per-tool sizes (needed for hidden tools)
+            return cached
     from ..server import Engine
     from ..spec import system_ids
     eng, sizes = Engine(system_ids()), {}
     for sid in eng.systems:
         tools = eng.mcp_tools(sid)
-        n = sum(len(json.dumps(t.model_dump(mode="json", by_alias=True, exclude_none=True), separators=(",", ":"))) for t in tools)
-        sizes[sid] = {"tools": len(tools), "tokens": round(n / 4),
+        each = {t.name: len(json.dumps(t.model_dump(mode="json", by_alias=True, exclude_none=True), separators=(",", ":"))) for t in tools}
+        sizes[sid] = {"tools": len(tools), "tokens": round(sum(each.values()) / 4),
+                      "per_tool": {k: round(v / 4) for k, v in each.items()},
                       "write_tools": sorted(t.name for t in tools if not (t.annotations and t.annotations.read_only_hint))}
     if cache and out_dir.exists():
         cache.write_text(json.dumps(sizes, indent=1))
@@ -139,6 +142,20 @@ class Graph:
             return sorted(candidates, key=adj)
         used = lambda c: self.file_use[file_no][c]  # persona: whatever that persona file's questions use, then adjacent
         return sorted(candidates, key=lambda c: (-(used(c) > 0), -used(c)) + adj(c))
+
+
+def without_hidden(sizes: dict, hidden: list[str]) -> dict:
+    """sizes with the trap's hidden tools ("server.tool") taken out of their server's tool count, tokens and write tools."""
+    if not hidden:
+        return sizes
+    out = dict(sizes)
+    for h in hidden:
+        sid, name = h.split(".", 1)
+        z = out[sid] = dict(out[sid])
+        z["tokens"] -= z["per_tool"].get(name, 0)
+        z["tools"] -= name in z["per_tool"]
+        z["write_tools"] = [w for w in z["write_tools"] if w != name]
+    return out
 
 
 def _select(required: list, ordered: list, budget: dict | None, sizes: dict) -> list:
@@ -182,6 +199,8 @@ def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
     rng, warns, n = random.Random(recipe["seed"]), [], int(recipe["tasks"])
     pool = [] if recipe["kind"] == "trap" else [t for t in T.build_bank() if recipe["kind"] in ("any", t["kind"])]
     traps = T.load_traps()
+    if recipe["kind"] == "trap" and recipe["mix"]:  # a mix over the trap bank: strata like `trap&multi_turn` or `trap_type=missing_tool`
+        pool, traps = list(traps), []
     if recipe["trap_types"]:
         traps = [t for t in traps if t["trap"]["type"] in recipe["trap_types"]]
     pool = [_truncate(t, recipe["followups"], presets) for t in pool]
@@ -201,7 +220,7 @@ def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
             warns.append(msg + " (topped up from the natural distribution)")
 
     n_traps = int(round(_count(recipe["traps"], n))) if recipe["traps"] else 0
-    n_traps, drawn, taken = (n if recipe["kind"] == "trap" else n_traps), [], set()
+    n_traps, drawn, taken = (n if recipe["kind"] == "trap" and not recipe["mix"] else n_traps), [], set()
     # traps: round-robin over trap types so every type is represented
     by_type = collections.defaultdict(list)
     for t in traps:
@@ -217,16 +236,19 @@ def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
     if n_traps:
         short("trap", n_traps, len(got), len(traps))
     drawn += got
+    taken |= {t["id"] for t in got}
     rest = n - len(got)
     quotas = _quotas(recipe["mix"], max(rest, 0)) if recipe["mix"] else {}
     preds = {k: F.compile_filter(k, presets) for k in quotas}
     # scarcest stratum first so overlapping strata do not starve it
-    for name in sorted(quotas, key=lambda k: (sum(preds[k](t["features"]) for t in pool), k)):
-        cand = [t for t in pool if t["id"] not in taken and preds[name](t["features"])]
+    # (a stratum that names trap features, e.g. `trap&multi_turn`, may also draw from the trap bank when kind is not trap)
+    cands = {k: pool + (traps if recipe["mix"] and re.search(r"trap|tier|variant", k) and recipe["kind"] != "trap" else []) for k in quotas}
+    for name in sorted(quotas, key=lambda k: (sum(preds[k](t["features"]) for t in cands[k]), k)):
+        cand = [t for t in cands[name] if t["id"] not in taken and preds[name](t["features"])]
         pick = rng.sample(cand, min(quotas[name], len(cand)))
         taken |= {t["id"] for t in pick}
         drawn += pick
-        short(name, quotas[name], len(pick), sum(preds[name](t["features"]) for t in pool))
+        short(name, quotas[name], len(pick), sum(preds[name](t["features"]) for t in cands[name]))
     need = n - len(drawn)
     cand = [t for t in pool if t["id"] not in taken]
     pick = rng.sample(cand, min(need, len(cand)))
@@ -256,6 +278,8 @@ def assign(chosen: list[dict], recipe: dict, sizes: dict, budget: dict | None) -
         t = copy.deepcopy(task)
         rng = random.Random(f"{seed}|{t['id']}")
         missing = set((t.get("trap") or {}).get("missing_servers") or [])
+        hidden = list((t.get("trap") or {}).get("hidden_tools") or [])
+        sizes_t = without_hidden(sizes, hidden)  # hidden tools are not exposed, so they do not count toward the budget
         required = [s for s in t["servers"]["required"] if s in sizes and s not in missing]
         if shared:
             req, dist = shared
@@ -264,15 +288,15 @@ def assign(chosen: list[dict], recipe: dict, sizes: dict, budget: dict | None) -
         else:
             cands = [u for u in universe if u not in set(required) | missing]
             order = graph.order(strategy, set(t["servers"]["required"]), t["persona"].get("file", ""), cands, rng)
-            dist = _select(required, order, budget, sizes)
+            dist = _select(required, order, budget, sizes_t)
             key = {s: rng.random() for s in dist}
             dist.sort(key=key.get)
             loaded = _place(required, dist, opts["position"], rng)
-        tools, tokens = sum(sizes[s]["tools"] for s in loaded), sum(sizes[s]["tokens"] for s in loaded)
+        tools, tokens = sum(sizes_t[s]["tools"] for s in loaded), sum(sizes_t[s]["tokens"] for s in loaded)
         t["servers"] = {"required": required, "distractors": [s for s in loaded if s not in required], "loaded": loaded}
         t["tool_budget"] = {"tools": tools, "tokens": tokens, "servers": len(loaded), "relevant_position": opts["position"],
                             "target": budget, "label": label(budget)}
-        t["writes"]["write_tools_loaded"] = sorted(w for s in loaded for w in sizes[s]["write_tools"])
+        t["writes"]["write_tools_loaded"] = sorted(w for s in loaded for w in sizes_t[s]["write_tools"])
         out.append(t)
     return out
 
@@ -304,6 +328,9 @@ def _write_task(d: Path, task: dict, recipe: dict, harness) -> None:
         "system": SYSTEM.format(company=WORLD["company"], today=date.today().isoformat())}, indent=1, ensure_ascii=False))
     if harness:
         harness.write_task(d, task, recipe)
+        if hidden := (task.get("trap") or {}).get("hidden_tools"):  # filtering is server-side: tell whoever runs run.sh by hand
+            with open(d / "run.sh", "a") as fh:
+                fh.write(f"# NOTE: this task needs a hub started with  --hide-tools {','.join(hidden)}\n")
     else:
         (d / "TODO.harness").write_text("mockmcp.eval.harness.get(name).write_task(task_dir, task, recipe) is not available "
                                         "yet: mcp.json and run.sh are written by the harness (loaded servers: "
