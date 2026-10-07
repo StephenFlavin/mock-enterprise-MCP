@@ -233,16 +233,21 @@ tools:
       theme: {type: str, desc: "Only this theme, e.g. lightweight"}
       date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
     sql: |
-      SELECT review_id, r.sku, p.category, r.customer_segment, r.country, r.rating, r.review_text, r.theme, r.created_at,
-             count(*) OVER (PARTITION BY r.theme) AS theme_mentions,
-             count(*) OVER () AS total_matching
-      FROM reviews r JOIN master.products p ON p.sku = r.sku
-      WHERE r.customer_segment = replace(replace($customer_segment, ' to ', '-'), '–', '-')
-        AND r.created_at >= CAST($date_from AS DATE)
-        AND ($category IS NULL OR p.category ILIKE $category)
-        AND ($country IS NULL OR r.country = upper($country))
-        AND ($theme IS NULL OR r.theme ILIKE $theme)
-      ORDER BY theme_mentions DESC, r.created_at DESC
+      SELECT review_id, sku, category, customer_segment, country, rating, review_text, theme, created_at, theme_mentions, total_matching
+      FROM (
+        SELECT review_id, r.sku, p.category, r.customer_segment, r.country, r.rating, r.review_text, r.theme, r.created_at,
+               count(*) OVER (PARTITION BY r.theme) AS theme_mentions,
+               count(*) OVER () AS total_matching,
+               row_number() OVER (PARTITION BY r.theme ORDER BY r.created_at DESC) AS theme_rank
+        FROM reviews r JOIN master.products p ON p.sku = r.sku
+        WHERE r.customer_segment = replace(replace($customer_segment, ' to ', '-'), '–', '-')
+          AND r.created_at >= CAST($date_from AS DATE)
+          AND ($category IS NULL OR p.category ILIKE $category)
+          AND ($country IS NULL OR r.country = upper($country))
+          AND ($theme IS NULL OR r.theme ILIKE $theme)
+      ) t
+      WHERE theme_rank <= 6 OR $theme IS NOT NULL
+      ORDER BY theme_mentions DESC, created_at DESC
     limit: 50
     example: {customer_segment: "25-34", category: Outerwear}
 

@@ -282,14 +282,14 @@ def generate(g):
         for rt in ratings_for(r, n, 4.4):
             th, tx = r.choice(a_pos)
             sku = r.choices(["SKU-100070", "SKU-100077", "SKU-100084"], [40, 35, 25])[0]
-            add(sku, "STY-4056", rt, th, tx, when(k), country="GB")
+            add(sku, "STY-4056", rt, th, tx, when(k, days=84 - r.randint(0, 6)) if k == 13 else when(k), country="GB")
         if k <= 13:
             for i in range(2):
                 th, tx = r.choice(a_avail)
-                add("SKU-100084", "STY-4056", 3 if r.random() < 0.7 else 4, th, tx, when(k), country="GB")
+                add("SKU-100084", "STY-4056", 3 if r.random() < 0.7 else 4, th, tx, when(k, days=84 - r.randint(0, 6)) if k == 13 else when(k), country="GB")
             if k % 3 == 0:
                 th, tx = r.choice(a_size)
-                add(r.choice(["SKU-100070", "SKU-100077"]), "STY-4056", 3, th, tx, when(k), country="GB")
+                add(r.choice(["SKU-100070", "SKU-100077"]), "STY-4056", 3, th, tx, when(k, days=84 - r.randint(0, 6)) if k == 13 else when(k), country="GB")
 
     r = random.Random("reviews-blouses")
     # SKU-100014 / SKU-100007 / SKU-100021 blouses (STY-4012): 100014 is the outlier; polybag tears
