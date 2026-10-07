@@ -96,7 +96,9 @@ def generate(g):
     # Routine runs: each active vehicle runs one non-M62 route on most weekdays for 13 weeks.
     runs, logs = [], []
     drivers = [f"DRV-{i:03d}" for i in range(7, 41)]
-    for v in vehicles:
+    seeded = [{"vehicle_id": f"VEH-9000{n:02d}", "vehicle_type": "articulated", "status": "maintenance" if n == 5 else "active"}
+              for n in range(1, 13)]  # seed/fleet_vehicles.csv: also do routine runs
+    for v in vehicles + seeded:
         if v["status"] in ("sold", "decommissioned"):
             continue
         route = routes[int(v["vehicle_id"][4:]) % len(routes)]
