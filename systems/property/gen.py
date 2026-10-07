@@ -5,9 +5,9 @@ from datetime import time, timedelta
 def generate(g):
     r = g.rng
 
-    # Get stores from master data - include enough stores to cover ST214
+    # Get stores from master data
     all_stores = [s for s in g.master("sites") if s["type"] == "store"]
-    stores = all_stores[:220]  # Include stores up to ST220 for coverage
+    stores = all_stores[:50]  # Use first 50 stores
     sites = [s for s in g.master("sites") if s["type"] in ("store", "dc")]  # All stores and DCs for energy
 
     energy = []
@@ -53,8 +53,8 @@ def generate(g):
     for store in stores:
         site_id = store["site_id"]
 
-        # Historical footfall for past 60 days
-        for day_offset in range(-60, 1):
+        # Historical footfall for past 30 days
+        for day_offset in range(-30, 1):
             date = g.as_of + timedelta(days=day_offset)
             day_of_week = date.weekday()  # 0=Monday, 6=Sunday
 
