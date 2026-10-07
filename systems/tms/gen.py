@@ -461,6 +461,39 @@ def generate(g):
         a_["avoidable"] = aid in ("AIR-000071", "AIR-000069", "AIR-000072", "AIR-000054")
         a_["avoided_by"] = "earlier booking" if a_["avoidable"] else None
 
+    # Story (02:13:Q2), reconciled with ap and forwarder (air invoices): the last 90 days of air freight total GBP 420,000, of which
+    # GBP 246,000 is avoidable and GBP 150,000 is supplier_late; SUP-0012 (90k), SUP-0015 (35k) and SUP-0008 (25k) are the late suppliers
+    # and SUP-0021 the next avoidable one. Rolled-booking recovery rows (02:12:Q4) keep their cost; every other row in the window is
+    # rescaled per group so the totals match. Row dates, reasons and flags are unchanged.
+    win = [a_ for a_ in air_freight if d0 - timedelta(days=90) <= a_["planned_date"] <= d0]
+    for a_ in sorted([a_ for a_ in win if a_["reason_code"] == "expedite_order"], key=lambda a_: a_["air_shipment_id"])[:2]:
+        a_["reason_code"], a_["avoidable"], a_["avoided_by"] = "demand_forecast_lift", True, "better forecast"
+        a_["reason_detail"] = "Demand forecast lift on " + a_["po_id"]
+    win_roll = [a_ for a_ in win if a_["reason_code"] == "carrier_rolled"]
+    win_late = sorted([a_ for a_ in win if a_["reason_code"] == "supplier_late"], key=lambda a_: a_["air_shipment_id"])
+    win_av = [a_ for a_ in win if a_["avoidable"] and a_["reason_code"] not in ("supplier_late", "carrier_rolled")]
+    win_un = [a_ for a_ in win if not a_["avoidable"] and a_["reason_code"] != "carrier_rolled"]
+    roll_all = sum(a_["cost_gbp"] for a_ in win_roll)
+    roll_av = sum(a_["cost_gbp"] for a_ in win_roll if a_["avoidable"])
+
+    def _rescale(rows, target):
+        tot = sum(a_["cost_gbp"] for a_ in rows) or 1.0
+        for a_ in rows:
+            a_["cost_gbp"] = round(a_["cost_gbp"] * target / tot, 2)
+        rows[-1]["cost_gbp"] = round(rows[-1]["cost_gbp"] + target - sum(a_["cost_gbp"] for a_ in rows), 2)
+
+    if len(win_late) >= 3 and win_av and win_un:
+        for sup_id, share in (("SUP-0012", 90000.0), ("SUP-0015", 35000.0), ("SUP-0008", 25000.0)):
+            idx = ("SUP-0012", "SUP-0015", "SUP-0008").index(sup_id)
+            bucket = win_late[idx::3]
+            for a_ in bucket:
+                a_["supplier_id"] = sup_id
+            _rescale(bucket, share)
+        for a_ in win_av:
+            a_["supplier_id"] = "SUP-0021"
+        _rescale(win_av, 246000.0 - 150000.0 - roll_av)
+        _rescale(win_un, 420000.0 - 246000.0 - (roll_all - roll_av))
+
     # Generate route_plans
     for i in range(200):
         route_date = g.date_between(30, -14)

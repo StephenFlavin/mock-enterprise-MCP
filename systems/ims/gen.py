@@ -515,7 +515,7 @@ def generate(g):
             pos_rows.append(mkrow(sku, st, avail, dem, 0, 70))
 
     # (6) Aged lines (aged_lines.xlsx): the DC stock age must match the clearance list.
-    AGED = {"SKU-105558|DC5": 180, "SKU-101813|DC3": 120, "SKU-103584|DC4": 260, "SKU-104277|DC5": 315, "SKU-104165|DC4": 285,
+    AGED = {"SKU-105558|DC5": 180, "SKU-101813|DC3": 120, "SKU-103584|DC4": 260, "SKU-104277|DC3": 315, "SKU-104165|DC4": 285,
             "SKU-105026|DC5": 215, "SKU-104501|DC5": 160, "SKU-100924|DC2": 140, "SKU-102408|DC3": 175, "SKU-102009|DC2": 120,
             "SKU-104781|DC4": 200, "SKU-101008|DC1": 210, "SKU-104977|DC4": 235, "SKU-101827|DC5": 135, "SKU-102156|DC1": 270,
             "SKU-101687|DC1": 315, "SKU-102366|DC2": 130, "SKU-100847|DC1": 180, "SKU-100287|DC2": 310, "SKU-102317|DC5": 245,

@@ -31,12 +31,12 @@ WHOLESALE_HOURS = [0] * 8 + [4, 8, 9, 8, 6, 7, 8, 7, 5, 3] + [0] * 6
 
 # key wholesale accounts: orders per week (older 13 weeks, recent 13 weeks), share of lines short, share short
 ACCOUNTS = {
-    "PTN-006": dict(older=1.6, recent=0.7, short_p=0.55, short_frac=0.35),   # worst fill, cutting orders
+    "PTN-006": dict(older=1.6, recent=0.7, short_p=0.50, short_frac=0.22),   # worst fill, cutting orders
     "PTN-007": dict(older=1.4, recent=1.5, short_p=0.04, short_frac=0.15),
     "PTN-010": dict(older=1.2, recent=1.4, short_p=0.12, short_frac=0.20),
     "PTN-003": dict(older=1.5, recent=1.0, short_p=0.22, short_frac=0.25),   # slipping
     "PTN-008": dict(older=1.0, recent=1.2, short_p=0.15, short_frac=0.25),
-    "PTN-009": dict(older=1.3, recent=1.3, short_p=0.30, short_frac=0.28),
+    "PTN-009": dict(older=1.3, recent=1.3, short_p=0.36, short_frac=0.30),
 }
 
 # weekly late rate of store orders by due-week (0 = current week). Falls from 98.5% to 95%.
@@ -420,7 +420,7 @@ def plant_stories(b):
     T = lambda n, h=9, m=0: datetime.combine(D(n), datetime.min.time()) + timedelta(hours=h, minutes=m)
 
     # --- 01:6:Q5 late store orders still waiting, North stores served from DC1 (ids used by write cases)
-    for n, (oid, site) in enumerate([("ORD-900001", "ST159"), ("ORD-900002", "ST150"), ("ORD-900003", "ST183")]):
+    for n, (oid, site) in enumerate([("ORD-900001", "ST150"), ("ORD-900002", "ST159"), ("ORD-900003", "ST183")]):
         b.add(oid=oid, channel="store", site=site, odt=T(6 + n, 7, 30), lines=[b.line("SKU-100469", 24), b.line("SKU-100476", 18)],
               dc="DC1", due=D(2 + n), status="picked", cross_reason="stock_not_at_local_dc")
 

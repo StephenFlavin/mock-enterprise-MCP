@@ -337,11 +337,11 @@ def draft_leadership_summary(ctx, reporting_period=None, revenue_actual_gbp=None
     return DRAFT_HEAD + "\n".join(L)
 
 
-def draft_dispute_response(ctx, customer_id, invoice_number=None, invoiced_units=None, delivered_units=None,
+def draft_dispute_response(ctx, partner_id, invoice_number=None, invoiced_units=None, delivered_units=None,
                            invoiced_unit_price_gbp=None, agreed_unit_price_gbp=None, dispute_amount_gbp=None,
                            offer_valid_days=10):
-    cust = ctx.q("SELECT * FROM master.customers WHERE customer_id = $c", c=customer_id)
-    L = ["DISPUTE RESPONSE", "", f"Customer: {customer_id}" + (f" ({cust[0]['segment']}, {cust[0]['country']})" if cust else ""),
+    cust = ctx.q("SELECT * FROM master.partners WHERE partner_id = $c", c=partner_id)   # wholesale accounts are master partners
+    L = ["DISPUTE RESPONSE", "", f"Customer: {partner_id}" + (f" ({cust[0]['name']}, {cust[0]['country']})" if cust else ""),
          f"Invoice: {invoice_number or 'not stated'}"]
     if None in (invoiced_units, delivered_units, invoiced_unit_price_gbp, agreed_unit_price_gbp):
         amt = _f(dispute_amount_gbp, 0)
@@ -359,12 +359,13 @@ def draft_dispute_response(ctx, customer_id, invoice_number=None, invoiced_units
     L += ["", f"Invoiced: {_int(iu)} units at £{ip:.2f} = £{_int(invoiced)}",
           f"Disputed amount (withheld by the customer): £{_int(disputed)}",
           "", "OUR ANALYSIS",
-          f"- Agreed price: £{ap:.2f} a unit against £{ip:.2f} invoiced; overcharge on delivered units £{_int(over)}",
+          (f"- Agreed price: £{ap:.2f} a unit against £{ip:.2f} invoiced; overcharge on delivered units £{_int(over)}" if over else
+           f"- Invoiced price £{ip:.2f} a unit is the agreed price: no price dispute"),
           f"- Delivered {_int(du)} of {_int(iu)} units; {_int(iu - du)} units short, invoiced at £{_int(short)}",
           f"- Correct value of the goods delivered at the agreed price: £{_int(correct)}",
           f"- Total overbilled: £{_int(credit)} ({100 * credit / invoiced:.1f}% of the invoice)",
           "", "OUR POSITION",
-          f"The customer is right on price and on the short delivery. The amount properly due is £{_int(correct)}; "
+          f"The customer is right {'on price and ' if over else ''}on the short delivery. The amount properly due is £{_int(correct)}; "
           f"£{_int(credit)} of the invoice cannot be supported.",
           "", "PROPOSED RESOLUTION",
           f"We will issue a credit note for £{_int(credit)} and ask for payment of £{_int(correct)} within standard terms. "

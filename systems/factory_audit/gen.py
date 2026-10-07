@@ -6,7 +6,7 @@ Background findings are never open-critical, so planted critical findings are th
 """
 from datetime import datetime, timedelta
 
-STORY = {"FAC-0001", "FAC-0121", "FAC-0087", "FAC-0107", "FAC-0137", "FAC-0097", "FAC-0098",
+STORY = {"FAC-0001", "FAC-0003", "FAC-0121", "FAC-0087", "FAC-0107", "FAC-0137", "FAC-0097", "FAC-0098",
          "FAC-0035", "FAC-0042", "FAC-0023", "FAC-0021"}
 ORDER = ["A", "B", "C", "D"]
 CATS = ["working hours", "wage calculation", "fire safety", "safe working conditions",

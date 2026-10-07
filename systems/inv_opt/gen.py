@@ -47,15 +47,14 @@ def generate(g):
     ranked = sorted(stats, key=lambda k: -stats[k]["annual"])
     top200 = ranked[:200]
 
-    # ---- supplier lead-time drift: a few suppliers got much slower ----
-    sup_count = defaultdict(int)
-    for k in top200:
-        sup_count[products[k]["supplier_id"]] += 1
-    planted_sup = [s for s, _ in sorted(sup_count.items(), key=lambda x: (-x[1], x[0]))[:3]]
+    # ---- supplier lead-time drift: matches the purchasing system's actuals (recent six months vs earlier) ----
+    # PO receipts (master) show SUP-0080 about 31 days slower (+44%), SUP-0048 about 31 days faster (-34%) and
+    # SUP-0013 only a little slower (+7%); inventory optimisation uses the same movements.
+    planted_sup = ["SUP-0080", "SUP-0048", "SUP-0013"]
     sup_shift = {}
     for s in sorted({p["supplier_id"] for p in products.values()}):
         sup_shift[s] = r.uniform(-0.03, 0.03)
-    for s, v in zip(planted_sup, (0.45, 0.35, 0.30)):
+    for s, v in zip(planted_sup, (0.44, -0.34, 0.07)):
         sup_shift[s] = v
 
     # ---- planted mis-set policies among the fastest sellers ----

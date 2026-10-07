@@ -443,6 +443,25 @@ def generate(g):
                       "notes": "Emissions methodology unclear; scope 2 basis to be confirmed" if st[4] == "low_quality" else "",
                       "submitted_date": g.days_ago(70)})
 
+    # Current (2026) reporting round, mirroring the esg system's FY26 data request round (05:48:Q4): eight of the top suppliers have not
+    # sent data and five sent low-quality data. Emissions and renewable % stay empty so the top-20 views keep using the earlier submissions.
+    esg_2026_missing = ["SUP-0008", "SUP-0027", "SUP-0030", "SUP-0035", "SUP-0039", "SUP-0044", "SUP-0065", "SUP-0074"]
+    esg_2026_lowq = {"SUP-0028": 30, "SUP-0049": 34, "SUP-0072": 37, "SUP-0037": 40, "SUP-0014": 41}
+    esg_2026_sent = {"SUP-0028": 16, "SUP-0049": 10, "SUP-0072": 12, "SUP-0037": 20, "SUP-0014": 20}  # days before as_of (as in esg)
+    supplier_esg[:] = [e for e in supplier_esg if not (e["submission_year"] == 2026 and e["supplier_id"] in set(esg_2026_missing) | set(esg_2026_lowq))]
+    for k, sid in enumerate(esg_2026_missing + list(esg_2026_lowq)):
+        lowq = sid in esg_2026_lowq
+        supplier_esg.append({
+            "esg_id": f"ESG-{900100 + k}", "supplier_id": sid, "submission_year": 2026, "submission_type": "esg_full",
+            "submission_status": "low_quality" if lowq else "not_submitted",
+            "submitted_date": g.days_ago(esg_2026_sent[sid]) if lowq else None, "data_quality_score": esg_2026_lowq.get(sid),
+            "emissions_tonnes_co2e": None, "renewable_pct": None, "water_usage_m3": None, "waste_tonnes": None,
+            "emissions_reduction_commitment_pct": None, "emissions_reduction_target_year": None,
+            "audit_evidence_provided": False, "evidence_quality": "self_reported" if lowq else "missing",
+            "follow_up_needed": lowq,
+            "notes": "Low quality: Scope 3 missing, estimates not evidenced" if lowq else "No response to the data request",
+            "created_at": now_ts})
+
     # Forecasts shared with suppliers (04:35:Q5): one row per completed four-week period, own RNG per supplier
     supplier_forecasts = []
     fc_id = 1
@@ -613,7 +632,8 @@ def generate(g):
             "part_id": f"PRT-{i + 1:06d}",
             "part_name": f"{cls.replace('_', ' ').capitalize()} {nm.lower()}",
             "asset_class": cls,
-            "supplier_id": r.choice(["SUP-0014", "SUP-0027", "SUP-0067"]),
+            # maintenance parts come from the indirect MRO suppliers in master (SUP-0087 Hartley MRO, SUP-0088 Apex Maintenance Spares)
+            "supplier_id": {"SUP-0014": "SUP-0088", "SUP-0027": "SUP-0087", "SUP-0067": "SUP-0088"}[r.choice(["SUP-0014", "SUP-0027", "SUP-0067"])],
             "lead_time_days": r.choice([5, 7, 10, 14, 21]),
             "moq_units": r.choice([1, 1, 2, 4]),
             "price_gbp_per_unit": round(r.uniform(60, 1800), 2),

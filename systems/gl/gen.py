@@ -594,6 +594,7 @@ def build_inventory(g, lr, products, erp_stock):
 SEPT = dict(volume=-1_120_000.0, mix=640_000.0, cost_update=2_410_000.0, fx=720_000.0, adjustments=750_000.0)
 DUPLICATE_REVAL = 450_000.0
 FIXED_COST_UPDATE = {('DC2', 'Outerwear'): 712_000.0}   # includes the duplicated standard cost revaluation
+FIXED_ADJUSTMENTS = {('DC3', 'Smart Home'): 300_000.0}   # includes the duplicate receiving-variance posting on SKU-103269 (2 x 107,196, ims)
 COST_W = {'Outerwear': 3.0, 'Small Appliances': 2.5, 'Smart Home': 2.0, 'Audio': 2.0, 'Knitwear': 2.0}
 FX_W = {'Small Appliances': 3.0, 'Smart Home': 3.0, 'Audio': 3.0, 'Lighting': 3.0, 'Outerwear': 1.5}
 SHRINK_CAT = {'Fragrance': 2.2, 'Small Appliances': 1.8, 'Smart Home': 1.6, 'Audio': 1.5, 'Jewellery': 1.9, 'Haircare': 1.3,
@@ -630,7 +631,7 @@ def build_inventory_monthly(g, lr, products, inv):
         'mix': _spread(SEPT['mix'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
         'cost_update': _spread(SEPT['cost_update'], {k: base[k] * COST_W.get(k[1], 1.0) for k in keys}, FIXED_COST_UPDATE),
         'fx': _spread(SEPT['fx'], {k: base[k] * FX_W.get(k[1], 0.4) for k in keys}),
-        'adjustments': _spread(SEPT['adjustments'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
+        'adjustments': _spread(SEPT['adjustments'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}, FIXED_ADJUSTMENTS),
     }
     rows = []
     for key in keys:
@@ -667,6 +668,9 @@ def build_inventory_monthly(g, lr, products, inv):
             if k == 0 and key == ('DC2', 'Outerwear'):
                 note = ('Cost updates include standard cost revaluation JE-900201 and a duplicate posting JE-900202 '
                         '(450000 each, same reference REVAL-2026-09-DC2)')
+            if k == 0 and key == ('DC3', 'Smart Home'):
+                note = ('Adjustments include a duplicate receiving-variance posting on SKU-103269 at DC3 '
+                        '(INV-ADJ-900060 and INV-ADJ-900061, 107196 each, goods receipt over ASN)')
             rows.append({'site_id': site, 'category': cat, 'month_end': month_end(y, m), 'units_on_hand': U[k],
                          'gross_value_gbp': G[k], 'provision_gbp': prov, 'volume_gbp': c['volume'], 'mix_gbp': c['mix'],
                          'cost_update_gbp': c['cost_update'], 'fx_gbp': c['fx'], 'adjustments_gbp': c['adjustments'],

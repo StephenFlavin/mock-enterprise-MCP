@@ -27,6 +27,7 @@ HOLD_WAVE = [
     ("SKU-104270", "DC1", 663), ("SKU-104053", "DC3", 2842), ("SKU-102723", "DC1", 876), ("SKU-103661", "DC3", 1752),
     ("SKU-101715", "DC1", 1058), ("SKU-101750", "DC3", 2879), ("SKU-103080", "DC1", 671), ("SKU-104284", "DC3", 2650),
     ("SKU-101869", "DC1", 696), ("SKU-106069", "DC3", 2496), ("SKU-102338", "DC1", 165),
+    ("SKU-100007", "DC1", 150),                  # the 150 units behind the ERP > WMS gap on SKU-100007 (01:8:Q2)
 ]
 
 # Scorecard trajectories: factory -> (defect% first week, defect% last week, critical first, critical last, on-time first, on-time last)
@@ -229,11 +230,11 @@ def generate(g):
             lot["status"], lot["lot_disposition"] = ("released", "release") if fin["pass_fail"] == "pass" else ("in_inspection", "pending")
 
     # ---- 01:8:Q4 quality holds behind the WMS quarantine stock; two earlier hold waves show it recurs ----------------------
-    def hold(sku, site, qty, days_ago, status, incident_id, released_after=None):
+    def hold(sku, site, qty, days_ago, status, incident_id, released_after=None, minute=None):
         n["hld"] += 1
         holds.append({"hold_id": f"HLD-{910000 + n['hld']}", "sku": sku, "lot_id": None, "site_id": site, "qty_held": qty,
                       "hold_reason": f"Inbound stock at {site} held pending QA release after receipt sample check",
-                      "status": status, "related_incident_id": incident_id, "created_at": ts(days_ago, 9, r.randint(0, 40)),
+                      "status": status, "related_incident_id": incident_id, "created_at": ts(days_ago, 9, r.randint(0, 40) if minute is None else minute),
                       "released_at": ts(max(days_ago - released_after, 0), 14) if released_after else None,
                       "updated_at": ts(max(days_ago - (released_after or 1), 0), 14)})
 
@@ -246,7 +247,7 @@ def generate(g):
                           "created_at": ts(d, 8), "updated_at": ts(d - (rel or 1), 16)})
         if rel is None:
             for sku, site, qty in HOLD_WAVE:
-                hold(sku, site, qty, d, "active", inc_id)
+                hold(sku, site, qty, d, "active", inc_id, minute=20 if sku == "SKU-100007" else None)  # no rng draw for the late-added row
         else:
             pool = [p for p in products if p["sku"] not in story_skus and p["category"] not in ("Small Appliances",)]
             for p in r.sample(pool, count):

@@ -3,7 +3,7 @@
 Story (all relative to g.as_of, the latest Monday):
 - Four-week periods k=0 (latest) .. 5. Over the last 12 weeks five headline KPIs have slipped:
   lost-time injuries (DC2), stock turnover days, waste diversion, cost per unit, OTIF.
-- ST214 (Glasgow Retail Park) and DC2 (Daventry DC) are the two worst sites.
+- ST214 (Glasgow Retail Park) and DC2 (Daventry DC) are the two worst sites; DC1 (Northampton) is third, missing cost and safety (same as hse and budgeting 09:88:Q1).
 - Circularity: units collected / value recovered weekly KPIs with fixed 52-week totals for YoY.
 """
 import math
@@ -232,6 +232,10 @@ def generate(g):
                         row["cost"] = round(r.uniform(2.45, 2.6), 2)
                     else:
                         row["fp"] = round(r.uniform(94.8, 95.8), 1)
+                if sid == "DC1":    # Northampton: HSE's worst DC for incidents and the 09:87:Q5 cost per unit +18% story (service and quality stay on target)
+                    w = max(0.0, 1 - i / 8.0)
+                    row["cost"] = round(2.2 + (2.54 - 2.2) * w, 2)
+                    row["ltif"] = round(0.3 + (0.65 - 0.3) * w, 2)
             site_metrics.append({
                 "site_id": sid, "measured_date": d, "service_score": row["service"],
                 "cost_per_unit_gbp": row["cost"], "safety_ltif": row["ltif"],

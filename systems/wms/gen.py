@@ -753,7 +753,7 @@ def generate(g):
 
     # ------------------------------------------------------------------ exceptions (store waves, picking, loading)
     exceptions = []
-    north = ['ST159', 'ST150', 'ST183', 'ST148', 'ST151']
+    north = ['ST150', 'ST159', 'ST183', 'ST148', 'ST151']      # ST150 Leeds Shopping Centre ('the Leeds store') takes the biggest hit
     north_w = [30, 25, 20, 8, 7]
     others = [s['site_id'] for s in stores if s['site_id'] not in north]
     CHANGE_MON = last_monday - timedelta(weeks=3)       # the Monday three weeks before this week

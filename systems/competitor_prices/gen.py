@@ -148,17 +148,52 @@ add(5, "R02", None, WR, "Massage guns", "Home", "Argos Mini Massage Gun", "Argos
 
 # ---- Home & kitchen, matched to our Home SKUs (price-gap story): pans overpriced, storage overpriced, bedding cheap ----
 PP = "Pots and pans"
-add(5, "P01", "SKU-103787", PP, "Frying pans", "Home", "Argos Home Non-stick Pan Set", "Argos Brand", "Three non-stick pans; induction ready", 36.99)
-add(1, "P01", "SKU-103787", PP, "Frying pans", "Home", "HomeShop Ceramic Pan Set", "HomeShop Value", "Ceramic coating; stay-cool handles", 38.99)
-add(2, "P01", "SKU-103787", PP, "Frying pans", "Home", "John Lewis Essentials Pan Set", "John Lewis", "Aluminium; PFOA-free coating", 44.99)
+# Cookware sets matched to the two lines pricing flags: SKU-103612 Ivory Cookware (132.99, about 14% above the market average)
+# and SKU-100819 Ochre Cookware (114.99, about 12% above), the same gaps the pricing system works from.
+add(5, "P01", "SKU-103612", PP, "Cookware sets", "Home", "Argos Home Stainless Steel Cookware Set 8pc", "Argos Brand", "Eight piece induction-ready set", 110.00)
+add(1, "P01", "SKU-103612", PP, "Cookware sets", "Home", "HomeShop Ceramic Cookware Set 8pc", "HomeShop Value", "Ceramic coating; stay-cool handles", 117.00)
+add(2, "P01", "SKU-103612", PP, "Cookware sets", "Home", "John Lewis Essentials Cookware Set 8pc", "John Lewis", "Aluminium; PFOA-free coating", 122.95)
+add(5, "P02", "SKU-100819", PP, "Cookware sets", "Home", "Argos Home Hard Anodised Cookware Set", "Argos Brand", "Hard anodised; five pieces", 96.99)
+add(1, "P02", "SKU-100819", PP, "Cookware sets", "Home", "HomeShop Cast Aluminium Cookware Set", "HomeShop Value", "Cast aluminium; glass lids", 104.99)
+add(2, "P02", "SKU-100819", PP, "Cookware sets", "Home", "John Lewis Cook Cookware Set 5pc", "John Lewis", "Tri-ply base; oven safe", 106.03)
 ST = "Storage boxes"
 add(5, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "Argos Home Stackable Storage Set", "Argos Brand", "Set of 3 stackable boxes with lids", 36.99)
 add(2, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "John Lewis Stackable Storage Boxes", "John Lewis", "Set of 3; recycled plastic", 41.99)
 add(1, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "HomeShop Lidded Storage Set", "HomeShop Value", "Set of 4 lidded boxes", 34.99)
+# ---- New storage launch (SKU-100595 Sage Storage, 23.99): food storage benchmark; not matched to a SKU so it stays out of the gap report ----
+FS = "Food storage"
+add(5, "FS1", None, FS, "Storage containers", "Home", "Argos Home 10pc Plastic Food Storage Set", "Argos Brand", "Ten piece set; clip lids; microwave safe", 19.99)
+add(1, "FS1", None, FS, "Storage containers", "Home", "HomeShop Stackable Food Storage Tubs", "HomeShop Value", "Six stackable tubs with lids", 21.99)
+add(2, "FS1", None, FS, "Storage containers", "Home", "John Lewis Glass Food Storage Set", "John Lewis", "Borosilicate glass; airtight lids", 27.99)
+add(3, "FS1", None, FS, "Storage containers", "Home", "Boites de conservation 6 pieces", "Carrefour Brand", "Six piece set; BPA-free", 17.99, dq="estimated")
 BD = "Bed linen"
 add(2, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "John Lewis Cotton Duvet Set Double", "John Lewis", "Percale cotton; 200 thread count", 46.00)
 add(5, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "Argos Home Cotton Duvet Set Double", "Argos Brand", "Easy care poly-cotton", 39.99)
 add(1, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "HomeShop Soft Touch Duvet Set Double", "HomeShop Value", "Brushed microfibre", 41.99)
+
+# ---- Our top sellers by revenue over the last 90 days (the same lines the e-commerce system ranks first) ----
+# SKU-104032 / SKU-104025 (style STY-8220, 231.99), SKU-105075 (STY-8766 shirt, 175.99), SKU-102261 (STY-5713 audio, 165.99), SKU-100630 (STY-4345 audio, 187.99)
+FP = "Food preparation"
+add(4, "M01", "SKU-104032", FP, "Stand mixers", "Electricals", "Currys Pro 5L Stand Mixer", "Currys Own", "1000W; 5L bowl; three attachments", 249.99)
+add(5, "M01", "SKU-104032", FP, "Stand mixers", "Electricals", "Argos 4.8L Stand Mixer", "Argos Brand", "800W; tilt-head; splash guard", 199.99)
+add(2, "M01", "SKU-104032", FP, "Stand mixers", "Electricals", "John Lewis 5L Stand Mixer", "John Lewis", "1200W; planetary mixing; 10 speeds", 279.00)
+add(1, "M01", "SKU-104032", FP, "Stand mixers", "Electricals", "HomeShop Tilt-head Stand Mixer 5L", "HomeShop Premium", "1000W; dough hook and whisk", 214.99,
+    promos=[(2, 0, "percentage", 10, "Weekend Offer - 10% off kitchen machines")])
+HP = "Headphones"
+add(4, "H01", "SKU-102261", HP, "Wireless headphones", "Electricals", "Currys Pro Wireless Headphones", "Currys Own", "Active noise cancelling; 30 hour battery", 149.99)
+add(5, "H01", "SKU-102261", HP, "Wireless headphones", "Electricals", "Argos Wireless Over-ear Headphones", "Argos Brand", "Bluetooth 5; 25 hour battery", 129.99)
+add(2, "H01", "SKU-102261", HP, "Wireless headphones", "Electricals", "John Lewis Studio Wireless Headphones", "John Lewis", "Noise cancelling; multipoint", 179.00)
+add(1, "H01", "SKU-102261", HP, "Wireless headphones", "Electricals", "HomeShop Wireless Headphones", "HomeShop Value", "Bluetooth; foldable", 139.99)
+SB = "Soundbars"
+add(4, "SB1", "SKU-100630", SB, "Soundbars", "Electricals", "Currys Pro 3.1 Soundbar", "Currys Own", "Wireless sub; Dolby Atmos", 169.99)
+add(5, "SB1", "SKU-100630", SB, "Soundbars", "Electricals", "Argos 2.1 Soundbar with Subwoofer", "Argos Brand", "Bluetooth; HDMI ARC", 159.99)
+add(2, "SB1", "SKU-100630", SB, "Soundbars", "Electricals", "John Lewis 3.1 Soundbar", "John Lewis", "Dolby Atmos; app control", 199.00)
+add(3, "SB1", "SKU-100630", SB, "Soundbars", "Electricals", "Barre de son 2.1", "Carrefour Brand", "Bluetooth; remote", 149.99, dq="estimated")
+MS = "Men's shirts"
+add(2, "SH1", "SKU-105075", MS, "Formal shirts", "Menswear", "John Lewis Premium Oxford Shirt", "John Lewis", "Cotton oxford; button-down collar", 139.00)
+add(1, "SH1", "SKU-105075", MS, "Formal shirts", "Menswear", "HomeShop Easy Iron Shirt", "HomeShop Value", "Easy iron cotton blend", 104.99)
+add(5, "SH1", "SKU-105075", MS, "Formal shirts", "Menswear", "Argos Collection Cotton Shirt", "Argos Brand", "Regular fit; non-iron", 94.99)
+add(6, "SH1", "SKU-105075", MS, "Formal shirts", "Menswear", "JD Smart Shirt", "JD Sports", "Slim fit; stretch cotton", 124.99)
 
 # ---- Sage green in home ranges (colour trend for next year's home range) ----
 HT = "Home textiles"

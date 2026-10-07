@@ -191,7 +191,7 @@ def generate(g):
                     'request_id': f'ALR-{n:06d}', 'site_id': site, 'shift_type': shift, 'date_from': f,
                     'date_to': t, 'quantity_required': r.randint(5, 20), 'labour_type': 'operative',
                     'status': 'filled' if done else 'cancelled',
-                    'supplier_id': r.choice(['SUP-0001', 'SUP-0002', 'SUP-0003']) if done else None,
+                    'supplier_id': (r.choice(['SUP-0001', 'SUP-0002', 'SUP-0003']) and 'SUP-0089') if done else None,   # one agency: SUP-0089 Quickstaff (draw kept so the random stream is unchanged)
                     'cost_per_hour_gbp': round(r.uniform(17.5, 19.5), 2) if done else None,
                     'created_at': f - timedelta(days=5), 'updated_at': f})
 

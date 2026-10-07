@@ -172,7 +172,7 @@ SUP_STORY["SUP-0020"] = {"ip_protection": dict(ownership="joint", supplier_may_r
                                               summary="Jointly owned in name, but the supplier may use the jointly developed coating for other customers and we get no licence to its background IP after termination.")}
 
 # 04:39:Q3 / 04:39:Q4 fabric supplier SUP-0001 (cotton and polyester, sole source for Style 5520) and merino supplier SUP-0042;
-# 05:50:Q4 single points of failure SUP-0001 and SUP-0008 (lithium cells for PF-220)
+# 05:50:Q4 single points of failure SUP-0001 (Style 5520) and SUP-0013 (lithium cells for PF-220)
 SUP_STORY["SUP-0001"] = {
     "price_review": dict(frequency="monthly", max_increase_pct=None, trigger="monthly reset to the fabric index", notice_days=30,
                          materials=[dict(material="cotton fabric", index="ICE cotton No.2 monthly average", mill_premium_pct=12, reset_lag_months=1),
@@ -185,12 +185,20 @@ SUP_STORY["SUP-0001"] = {
     "termination": dict(for_convenience_notice_days=60, for_cause_cure_days=30, exit_support_days=0,
                         summary="Either party may terminate for convenience on 60 days' notice; no exit or transition support and no step-in right."),
 }
+# SUP-0008 keeps its non-standard terms: its contract is one of the renewals that need legal input (04:38:Q7)
 SUP_STORY["SUP-0008"] = {
     "force_majeure": dict(max_suspension_days=120, notice_hours=72,
                           summary="Force majeure, including upstream lithium cell allocation, suspends obligations for up to 120 days."),
     "termination": dict(for_convenience_notice_days=30, for_cause_cure_days=30, exit_support_days=0,
                         summary="Either party may terminate for convenience on 30 days' notice; no exit support."),
 }
+# SUP-0013 (Lynch Homewares) is the PF-220 / K-1700 supplier at FAC-0027 in master, plm and risk (SPF-900005): the lithium cell single point of failure
+SUP_STORY["SUP-0013"]["force_majeure"] = dict(max_suspension_days=120, notice_hours=72,
+                          summary="Force majeure, including upstream lithium cell allocation, suspends obligations for up to 120 days.")
+SUP_STORY["SUP-0013"]["termination"] = dict(for_convenience_notice_days=30, for_cause_cure_days=30, exit_support_days=0,
+                        summary="Either party may terminate for convenience on 30 days' notice; no exit support.")
+# contracts that end soon without auto-renewal: supplier -> days from as_of (05:50:Q4: the PF-220 cell supplier's contract ends in about two months)
+END_SOON = {"SUP-0013": 67}
 # extra clauses (clause_id, clause_type, title, content) added to a supplier's contract
 EXTRA_CLAUSES = {
     "SUP-0001": [("other_1", "other", "Supply continuity", dict(
@@ -405,6 +413,8 @@ def generate(g):
             status, start, end = "draft", as_of + timedelta(days=21), as_of + timedelta(days=21 + 365 * 2)
         if sid in SHORT_NOTICE:
             notice = SHORT_NOTICE[sid]
+        if sid in END_SOON:  # contract ends soon and does not renew automatically
+            end, auto, status = as_of + timedelta(days=END_SOON[sid]), False, "active"
         if sid == "SUP-0074":  # annual review is coming up: contract anniversary in the next weeks
             start = as_of - timedelta(days=365 * 2 - 6)
             end = start + timedelta(days=365 * 3)
@@ -572,13 +582,13 @@ def generate(g):
         })
 
     # ------------------------------------------------------------------ temporary-labour agency (09:89:Q1, 09:89:Q4)
-    # The agency is not a master party, so it is held by name like the racking provider. Charge rate = pay rate + 25% mark-up
+    # The agency is master supplier SUP-0089 (Quickstaff Temporary Labour Ltd, indirect). Charge rate = pay rate + 25% mark-up
     # (matches the GBP 16.875 per agency hour in the lms labour-hours data).
     agency_start = as_of - timedelta(days=400)
     agency_end = as_of + timedelta(days=700)
     contracts.append({
-        "contract_id": "CTR-000601", "contract_type": "agency", "party_type": "service_provider", "party_id": None,
-        "party_name": "Northgate Workforce Solutions Ltd", "title": "Temporary warehouse labour agreement", "category": "Agency labour",
+        "contract_id": "CTR-000601", "contract_type": "agency", "party_type": "service_provider", "party_id": "SUP-0089",
+        "party_name": "Quickstaff Temporary Labour Ltd", "title": "Temporary warehouse labour agreement", "category": "Agency labour",
         "site_id": None, "owner_id": wh_mgr["DC1"], "start_date": agency_start, "end_date": agency_end, "renewal_notice_days": 60,
         "auto_renewal": False, "status": "active", "annual_value_gbp": 1200000.0,
         "created_at": agency_start - timedelta(days=20), "updated_at": g.days_ago(14),
@@ -587,10 +597,10 @@ def generate(g):
         "termination": ("Termination", dict(for_convenience_notice_days=30, summary="Termination for convenience on 30 days' notice.")),
         "renewal": ("Renewal", dict(auto_renewal=False, notice_days=60, summary="Expires at the end of the term unless renewed in writing.")),
     })
-    for k, (site, role, pay, req_days) in enumerate([(s_, r_, p_, d_) for s_ in ("DC1", "DC2", "DC3")
+    for k, (site, role, pay, req_days) in enumerate([(s_, r_, p_, d_) for s_ in ("DC1", "DC2", "DC3", "DC6")
                                                       for r_, p_, d_ in (("Warehouse Operative", 13.50, 4), ("Picker/Packer", 14.00, 3))]):
         rate_cards.append({
-            "rate_card_id": f"RTC-{6010 + k:06d}", "card_type": "agency", "party_id": None, "contract_id": "CTR-000601",
+            "rate_card_id": f"RTC-{6010 + k:06d}", "card_type": "agency", "party_id": "SUP-0089", "contract_id": "CTR-000601",
             "service_type": role, "lane": site, "rate_unit": "per hour", "effective_from": agency_start, "effective_to": agency_end,
             "base_rate_gbp": round(pay * 1.25, 3), "currency": "GBP",
             "surcharges_json": json.dumps(dict(pay_rate_gbp=pay, markup_pct=25, night_shift_uplift_pct=15, overtime_uplift_pct=50,

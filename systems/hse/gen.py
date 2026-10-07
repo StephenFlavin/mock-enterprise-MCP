@@ -13,6 +13,7 @@ REGIMES = {
     "NL": "Arbowet; Arbobesluit; Arbeidstijdenwet",
     "US": "OSHA 29 CFR 1910.178 (powered industrial trucks); OSHA General Duty Clause",
     "HK": "Occupational Safety and Health Ordinance (Cap. 509)",
+    "PL": "Labour Code (Kodeks pracy) Section X; BHP general OHS regulation; UDT technical inspection of industrial trucks; EU Directive 89/391/EEC; Directive 2009/104/EC",
 }
 
 TASKS = {
@@ -41,7 +42,7 @@ def generate(g):
     incidents = []
     weights = {"DC1": 1.0, "DC2": 1.0, "DC3": 0.4, "DC4": 0.7, "DC5": 0.2}
     for _ in range(50):
-        site = r.choices(dcs, [weights[d] for d in dcs])[0]
+        site = r.choices(dcs, [weights.get(d, 0.0) for d in dcs])[0]   # DC6-DC8 (3PL overflow, Poland, Germany) have no background incidents
         days = r.randint(1, 365)
         shift = r.choices(["early", "late", "night"], [35, 40, 25])[0]
         hour = {"early": r.randint(6, 13), "late": r.randint(14, 21), "night": r.choice([22, 23, 0, 1, 2, 3, 4, 5])}[shift]
@@ -66,7 +67,7 @@ def generate(g):
         })
 
     cas = []
-    for site in dcs:
+    for site in [d for d in dcs if d in weights]:   # DC6-DC8 have no HSE employees or history in master
         old_site = site in ("DC1", "DC2", "DC3")
         for _ in range(5 if old_site else 8):
             status = r.choice(["completed", "closed"]) if old_site else r.choices(["open", "in_progress", "completed", "closed"], [40, 20, 25, 15])[0]
@@ -105,6 +106,7 @@ def generate(g):
                 "validation_type": "Safety checks", "status": "pass", "validated_by": r.choice(mgrs["DC2"]),
                 "firmware_version": a["software_version"], "notes": "Routine safety checks passed; gates and e-stops verified",
                 "updated_at": datetime.combine(d, datetime.min.time()) + timedelta(hours=15),
+                "site_id": None, "asset_name": None, "current_firmware": None,
             })
 
     return {"incidents": incidents, "corrective_actions": cas, "risk_assessments": [],

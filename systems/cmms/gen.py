@@ -265,9 +265,13 @@ def generate(g):
             n += 1
             on_hand = r.randint(0, 8)
             cost = round(cost * r.uniform(0.95, 1.05), 2)
+            # maintenance spares come from the indirect MRO suppliers in master (SUP-0087 Hartley MRO, SUP-0088 Apex Maintenance Spares); racking from SUP-0090
+            sup = {"SUP-0014": "SUP-0088", "SUP-0027": "SUP-0087", "SUP-0067": "SUP-0088"}[r.choice(["SUP-0014", "SUP-0027", "SUP-0067"])]
+            if cls == "racking":
+                sup = "SUP-0090"
             parts.append({
                 "part_id": f"SPR-{n:06d}", "name": name, "asset_class": cls, "sku": None,
-                "supplier_id": r.choice(["SUP-0014", "SUP-0027", "SUP-0067"]),
+                "supplier_id": sup,
                 "on_hand": on_hand, "reorder_level": r.randint(1, 4), "reorder_qty": r.choice([2, 4, 5, 10]),
                 "lead_time_days": lead + r.randint(-2, 4), "unit_cost_gbp": cost,
                 "stock_value_gbp": round(on_hand * cost, 2), "last_usage_date": g.date_between(90, 2),

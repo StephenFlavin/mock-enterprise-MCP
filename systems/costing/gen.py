@@ -86,7 +86,8 @@ STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0,
                    "SKU-100077": 70.0, "SKU-100070": 66.6, "SKU-100063": 63.5, "SKU-100056": 61.7, "SKU-100049": 58.4}
 EXTRA_SMALL = {"SKU-100063": 1000, "SKU-100056": 1500, "SKU-100049": 2000}  # annual units of the added low-volume lines
 # STORY: target margins that make the pipeline and overshirt questions discoverable (no random draws, applied after the row is built)
-TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5}
+TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5,
+                   "SKU-106335": 78.0}  # SKU-106335 = the new overshirt (STY-9505): the linen option misses its target cost
 # fabric price per metre used to turn a cost-sheet fabric line into metres per garment
 FABRIC_PRICE = {"COTTON": 6.9, "POLYESTER": 5.2, "WOOL": 12.3, "NYLON": 7.4}
 # STORY: cotton fabric per metre up 9% (average) over six months while the cotton index rose 4%.
@@ -133,6 +134,8 @@ RECYCLED = [  # material_type, commodity, recycled, virgin, unit, recycled cost,
 # master products added after the original build (STY-9501..9510): own per-SKU rng and no margin blocks, so adding
 # them leaves every other SKU's generated numbers unchanged
 ADDED_STYLES = {f"STY-95{n:02d}" for n in range(1, 11)}
+# ...of which these have a costing sheet (lunch box, padded jacket, overshirt); add a style here to cost another one
+COSTED_ADDED = {"STY-9502", "STY-9504", "STY-9505"}
 
 
 def generate(g):
@@ -165,6 +168,8 @@ def generate(g):
     exp_n = 1
     for p in products:
         sku, cat, dept = p["sku"], p["category"], p["department"]
+        if p["style_id"] in ADDED_STYLES and p["style_id"] not in COSTED_ADDED:
+            continue
         rr = random.Random(sku) if p["style_id"] in ADDED_STYLES else r
         total, retail = float(p["unit_cost_gbp"]), float(p["retail_price_gbp"])
         co = p["country_of_origin"]
@@ -194,6 +199,8 @@ def generate(g):
         moq = int(p["moq"] or 500)
         qty = max(300, int(round(moq * rr.randint(2, 6), -2)))
         weekly = int(round(wk)) if wk else max(20, qty // 16)
+        if p["style_id"] in ADDED_STYLES:
+            weekly = 0  # not launched: no sales yet, so the demand-weighted totals other questions use are unchanged
         row = {
             "costing_id": f"CST-{sku}-V1", "style_id": p["style_id"], "sku": sku, "season": p["season"], "version": 1,
             "origin_country": co, "supplier_id": p["supplier_id"], "factory_id": p["factory_id"], "quantity_units": qty,
