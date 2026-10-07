@@ -1,0 +1,133 @@
+id: property
+name: Retail Property & Footfall System
+instructions: >
+  Store footfall, energy consumption and catchment areas for Harbour & Vale retail locations.
+  Footfall ids look like FF-000123. Use it for energy tracking, footfall history and forecasts,
+  store catchment analysis and competitor impact assessment.
+
+tables:
+  energy_consumption:
+    key: consumption_id
+    cols:
+      consumption_id: {type: str, desc: "Energy consumption record, e.g. ENG-000123"}
+      site_id: {type: str, desc: "Store or DC, e.g. ST001 or DC1"}
+      period_start: {type: date, desc: Period start date}
+      period_end: {type: date, desc: Period end date}
+      energy_kwh: {type: float, desc: Energy used in kWh}
+      energy_cost_gbp: {type: float, desc: Energy cost in GBP}
+      measured_at: {type: timestamp, desc: When measured}
+
+  store_footfall:
+    key: footfall_id
+    cols:
+      footfall_id: {type: str, desc: "Footfall record, e.g. FF-000123"}
+      site_id: {type: str, desc: Store id}
+      date: {type: date, desc: Date of footfall data}
+      hour: {type: int, desc: "Hour of day (0-23)"}
+      footfall_count: {type: int, desc: Number of visitors in the hour}
+      sales_gbp: {type: float, desc: Sales in GBP for the hour}
+      recorded_at: {type: timestamp, desc: When recorded}
+
+  footfall_forecast:
+    key: forecast_id
+    cols:
+      forecast_id: {type: str, desc: "Footfall forecast, e.g. FFC-000123"}
+      site_id: {type: str, desc: Store id}
+      forecast_date: {type: date, desc: Date of forecast}
+      hour: {type: int, desc: "Hour of day (0-23)"}
+      forecast_footfall_count: {type: int, desc: Predicted visitor count}
+      confidence_level: {type: float, desc: "Confidence as percentage (0-100)"}
+      created_at: {type: timestamp, desc: When forecast was created}
+
+  store_catchment:
+    key: catchment_id
+    cols:
+      catchment_id: {type: str, desc: "Catchment, e.g. CAT-000123"}
+      primary_store_id: {type: str, desc: Primary store}
+      radius_km: {type: float, desc: Catchment radius in km}
+      population: {type: int, desc: Population in catchment}
+      competitor_stores: {type: str, desc: "Comma-separated competitor store ids"}
+      overlap_percentage: {type: float, desc: "Overlap with competitors as percentage"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: get_energy_consumption_by_site
+    desc: Energy use by site and period. Returns kWh and cost. Use to reconcile Scope 2 emissions.
+    kind: sql
+    args:
+      site_id: {desc: "Site, e.g. DC1 or ST001 (default all)"}
+      period_from: {type: date, default: "-90d", desc: "Period start on or after"}
+    sql: |
+      SELECT site_id, period_start, period_end, energy_kwh, energy_cost_gbp, measured_at
+      FROM energy_consumption
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND period_start >= CAST($period_from AS DATE)
+      ORDER BY site_id, period_start DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_store_footfall_and_sales_by_store
+    desc: Total footfall and sales by store. Use to identify high-volume stores and assess programme viability.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Footfall on or after"}
+      date_to: {type: date, default: "$as_of", desc: "Footfall up to and including"}
+    sql: |
+      SELECT site_id,
+             count(DISTINCT date) AS days_recorded,
+             sum(footfall_count) AS total_footfall,
+             round(avg(footfall_count), 0) AS avg_hourly_footfall,
+             round(sum(sales_gbp), 2) AS total_sales_gbp,
+             round(sum(sales_gbp) / NULLIF(sum(footfall_count), 0), 2) AS sales_per_visitor_gbp,
+             'total_sales_per_visitor = total_sales / total_footfall' AS formula
+      FROM store_footfall
+      WHERE date >= CAST($date_from AS DATE)
+        AND date <= CAST($date_to AS DATE)
+      GROUP BY site_id
+      ORDER BY total_footfall DESC
+    limit: 50
+    example: {}
+
+  - name: get_footfall_forecast_for_store
+    desc: Hourly footfall forecast for a store. Use to plan staffing and resources.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Store, e.g. ST214"}
+      forecast_date: {type: date, required: true, desc: "Date to forecast"}
+    sql: |
+      SELECT site_id, forecast_date, hour, forecast_footfall_count, confidence_level, created_at
+      FROM footfall_forecast
+      WHERE site_id = $site_id AND forecast_date = $forecast_date
+      ORDER BY hour ASC
+    limit: 25
+    example: {site_id: ST214, forecast_date: "+7d"}
+
+  - name: get_footfall_history_for_store
+    desc: Historical hourly footfall for a store. Use to assess past event impact and seasonal patterns.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Store, e.g. ST214"}
+      date_from: {type: date, required: true, desc: "Date from"}
+      date_to: {type: date, default: "$as_of", desc: "Date to"}
+    sql: |
+      SELECT site_id, date, hour, footfall_count, sales_gbp, recorded_at
+      FROM store_footfall
+      WHERE site_id = $site_id
+        AND date >= CAST($date_from AS DATE)
+        AND date <= CAST($date_to AS DATE)
+      ORDER BY date DESC, hour ASC
+    limit: 168
+    example: {site_id: ST214, date_from: "-30d"}
+
+  - name: get_store_catchment_overlap
+    desc: Store catchment areas and competitor overlap. Use to assess local competitor impact on trade.
+    kind: sql
+    args:
+      primary_store_id: {desc: "Store, e.g. ST214 (default all)"}
+    sql: |
+      SELECT primary_store_id, radius_km, population, competitor_stores, overlap_percentage, updated_at
+      FROM store_catchment
+      WHERE ($primary_store_id IS NULL OR primary_store_id = $primary_store_id)
+      ORDER BY primary_store_id, overlap_percentage DESC
+    limit: 50
+    example: {primary_store_id: ST214}

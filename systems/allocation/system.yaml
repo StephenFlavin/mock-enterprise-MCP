@@ -1,0 +1,175 @@
+id: allocation
+name: Allocation & Replenishment System
+instructions: >
+  Stock allocation decisions to stores, rebalancing analysis across regions, and replenishment scenario planning.
+  Allocation ids look like ALO-000123. Use it for store-level stock allocation, regional rebalancing, and
+  replenishment impact analysis.
+
+tables:
+  store_allocations:
+    key: allocation_id
+    cols:
+      allocation_id: {type: str, desc: "Allocation decision, e.g. ALO-000123"}
+      sku: {desc: "Product SKU"}
+      store_id: {desc: "Store receiving allocation"}
+      qty_allocated: {type: int, desc: "Units allocated to store"}
+      qty_received: {type: int, desc: "Units received at store so far"}
+      allocation_date: {type: date, desc: "Date allocation was made"}
+      source_dc: {desc: "DC the stock comes from, e.g. DC1"}
+      reason: {type: str, desc: "Reason for allocation (e.g. stock-out prevention, rebalance, replenishment)"}
+      status: {type: enum, values: [allocated, in_transit, received, cancelled, partial], desc: "Allocation status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  regional_stock_summary:
+    key: [sku, region, summary_date]
+    cols:
+      sku: {desc: "Product SKU"}
+      region: {type: str, desc: "Trading region, e.g. UK North"}
+      summary_date: {type: date, desc: "Date of snapshot"}
+      store_count: {type: int, desc: "Number of stores in region"}
+      total_on_hand: {type: int, desc: "Total units on hand across stores"}
+      total_allocated: {type: int, desc: "Total units allocated to orders"}
+      available_units: {type: int, desc: "On hand minus allocated"}
+      days_of_cover: {type: float, desc: "Estimated days of sales at current velocity"}
+      weekly_sales_units: {type: int, desc: "Average weekly sales in region"}
+      out_of_stock_count: {type: int, desc: "Number of stores at zero stock"}
+
+  rebalance_analysis:
+    key: analysis_id
+    cols:
+      analysis_id: {type: str, desc: "Analysis record, e.g. RBA-000123"}
+      sku: {desc: "Product SKU"}
+      analysis_date: {type: date, desc: "Date analysis was run"}
+      scenario_name: {type: str, desc: "Scenario description (e.g. Port closure 2 weeks)"}
+      region_from: {type: str, desc: "Supplying region"}
+      region_to: {type: str, desc: "Receiving region"}
+      units_to_transfer: {type: int, desc: "Units in proposed transfer"}
+      transfer_cost_gbp: {type: float, desc: "Cost of logistics for transfer"}
+      potential_sales_impact_gbp: {type: float, desc: "Revenue at risk if rebalance not done"}
+      net_benefit_gbp: {type: float, desc: "Potential sales uplift minus transfer cost"}
+      benefit_pct: {type: float, desc: "Potential sales uplift as percentage"}
+      status: {type: enum, values: [proposed, approved, executed, declined], desc: "Rebalance status"}
+      created_at: {type: timestamp, desc: "When analysis was created"}
+
+  forecast_level_impact:
+    key: impact_id
+    cols:
+      impact_id: {type: str, desc: "Impact analysis, e.g. IMP-000123"}
+      sku: {desc: "Product SKU"}
+      forecast_level: {type: enum, values: [store_sku, cluster, category], desc: "Forecasting level"}
+      analysis_date: {type: date, desc: "Date of analysis"}
+      mape_pct: {type: float, desc: "Mean absolute percentage error of forecast"}
+      replenishment_frequency_days: {type: int, desc: "Average replenishment cycle days"}
+      total_safety_stock: {type: int, desc: "Total safety stock required"}
+      total_dead_stock: {type: int, desc: "Total excess inventory"}
+      stockout_incidents: {type: int, desc: "Number of stockout incidents"}
+      lost_sales_gbp: {type: float, desc: "Estimated lost sales from stockouts"}
+      carrying_cost_gbp: {type: float, desc: "Carrying cost of safety stock"}
+      total_cost_gbp: {type: float, desc: "Total of stockout loss + carrying cost"}
+
+tools:
+  - name: get_store_allocations_for_product
+    desc: Store allocations for a product by status and date range. Use to trace which stores got stock and when.
+    kind: sql
+    args:
+      sku: {required: true}
+      status: {type: enum, values: [allocated, in_transit, received, cancelled, partial], desc: "Filter by allocation status (default all)"}
+      allocation_from: {col: allocation_date, op: ">=", type: date, default: "-90d", desc: "Allocations on or after"}
+    sql: |
+      SELECT a.allocation_id, a.sku, a.store_id, s.name AS store_name, s.region,
+             a.qty_allocated, a.qty_received, a.allocation_date, a.source_dc, a.reason, a.status
+      FROM store_allocations a
+      JOIN master.sites s ON s.site_id = a.store_id
+      WHERE a.sku = $sku
+        AND ($status IS NULL OR a.status = $status)
+        AND a.allocation_date >= CAST($allocation_from AS DATE)
+      ORDER BY a.allocation_date DESC, a.store_id
+    limit: 100
+    example: {sku: "STY-5520"}
+
+  - name: get_store_stock_and_sales_by_region
+    desc: Current stock and sales velocity by store region. Use to identify over/under-stocked regions for rebalancing.
+    kind: sql
+    args:
+      sku: {required: true}
+      region: {type: str, desc: "Trading region (default all)"}
+    sql: |
+      SELECT r.region, r.store_count, r.total_on_hand, r.total_allocated, r.available_units,
+             r.days_of_cover, r.weekly_sales_units, r.out_of_stock_count,
+             round(r.total_on_hand * p.unit_cost_gbp, 2) AS value_at_cost_gbp,
+             CASE WHEN r.days_of_cover < 7 THEN 'at_risk' WHEN r.days_of_cover > 60 THEN 'overstocked' ELSE 'balanced' END AS status
+      FROM regional_stock_summary r
+      JOIN master.products p ON p.sku = r.sku
+      WHERE r.sku = $sku
+        AND r.summary_date = CAST($as_of AS DATE)
+        AND ($region IS NULL OR r.region = $region)
+      ORDER BY r.days_of_cover ASC
+    limit: 20
+    example: {sku: "STY-7731"}
+
+  - name: calculate_rebalance_benefit
+    desc: "Rebalance benefit analysis: transfer cost vs sales uplift potential. Returns inputs plus net benefit and ROI."
+    kind: sql
+    args:
+      sku: {required: true}
+      scenario: {type: str, default: "standard", desc: "Scenario to analyze (e.g., standard, port_closure_2w, port_closure_4w)"}
+    sql: |
+      SELECT a.analysis_id, a.sku, a.scenario_name, a.region_from, a.region_to,
+             a.units_to_transfer, a.transfer_cost_gbp, a.potential_sales_impact_gbp,
+             a.net_benefit_gbp, a.benefit_pct,
+             CASE WHEN a.net_benefit_gbp > 0 THEN 'YES' ELSE 'NO' END AS recommend_rebalance,
+             CASE WHEN a.transfer_cost_gbp > 0 THEN round(a.potential_sales_impact_gbp / a.transfer_cost_gbp, 1) ELSE 0 END AS roi_multiple,
+             'net_benefit = potential_sales_impact - transfer_cost' AS formula
+      FROM rebalance_analysis a
+      WHERE a.sku = $sku
+        AND a.scenario_name LIKE '%' || $scenario || '%'
+        AND a.analysis_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
+      ORDER BY a.analysis_date DESC, a.net_benefit_gbp DESC
+      LIMIT 5
+    limit: 5
+    example: {sku: "STY-5520", scenario: "standard"}
+
+  - name: calculate_stock_reallocation_plan
+    desc: Optimal stock reallocation plan across network for a scenario (e.g. port closure). Shows transfer quantities and impact.
+    kind: sql
+    args:
+      sku: {required: true}
+      scenario: {type: str, default: "standard", desc: "Scenario name (e.g. port_closure_2w, port_closure_4w)"}
+    sql: |
+      SELECT a.region_from, a.region_to, sum(a.units_to_transfer) AS total_units,
+             round(sum(a.transfer_cost_gbp), 2) AS total_transfer_cost_gbp,
+             round(sum(a.potential_sales_impact_gbp), 2) AS total_sales_uplift_gbp,
+             round(sum(a.net_benefit_gbp), 2) AS total_net_benefit_gbp,
+             count(*) AS route_count,
+             'Total benefit from all rebalance moves in scenario' AS formula
+      FROM rebalance_analysis a
+      WHERE a.sku = $sku
+        AND a.scenario_name LIKE '%' || $scenario || '%'
+        AND a.status IN ('proposed', 'approved', 'executed')
+        AND a.analysis_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
+      GROUP BY a.region_from, a.region_to
+      ORDER BY a.region_from, total_net_benefit_gbp DESC
+    limit: 20
+    example: {sku: "STY-5520", scenario: "port_closure_2w"}
+
+  - name: calculate_replenishment_impact
+    desc: Replenishment performance by forecast level (store-SKU vs cluster vs category). Shows accuracy, costs and stockout risk trade-offs.
+    kind: sql
+    args:
+      sku: {required: true}
+      include_all_levels: {type: bool, default: true, desc: "Show all forecast levels or just recommended (default all)"}
+    sql: |
+      SELECT f.forecast_level, f.mape_pct, f.replenishment_frequency_days,
+             f.total_safety_stock, f.total_dead_stock, f.stockout_incidents, f.lost_sales_gbp,
+             round(f.carrying_cost_gbp, 2) AS carrying_cost_gbp,
+             round(f.total_cost_gbp, 2) AS total_cost_gbp,
+             CASE WHEN f.forecast_level = 'store_sku' THEN 'Most accurate but highest effort'
+                  WHEN f.forecast_level = 'cluster' THEN 'Moderate accuracy & effort'
+                  ELSE 'Least accurate but lowest effort' END AS trade_off,
+             'total_cost = lost_sales + carrying_cost' AS formula
+      FROM forecast_level_impact f
+      WHERE f.sku = $sku
+        AND f.analysis_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
+      ORDER BY f.total_cost_gbp ASC
+    limit: 10
+    example: {sku: "STY-5520"}
