@@ -234,17 +234,18 @@ def generate(g):
                 "status": g.rng.choice(["healthy", "degraded", "critical"]) if g.rng.random() < 0.1 else "healthy",
             })
 
-    # Generate asset CMDB
+    # Generate asset CMDB - use real assets from master
     asset_cmdb = []
-    asset_types = ["database", "application server", "API", "cache", "message queue"]
-    for i in range(20):
+    master_assets = g.master("assets")
+    asset_sample = g.pick(master_assets, k=min(20, len(master_assets)))
+    for i, asset in enumerate(asset_sample):
         asset_cmdb.append({
             "asset_entry_id": f"AST-{900000 + i:06d}",
-            "asset_id": f"AST-{g.rng.choice(['DB', 'APP', 'API', 'MQ', 'CSH'])}-{g.rng.randint(1, 20):03d}",
-            "asset_name": f"{g.rng.choice(['Primary', 'Secondary', 'Cache', 'Queue', 'API'])} {g.rng.choice(['Server', 'Database', 'Service'])}",
-            "asset_type": g.rng.choice(asset_types),
+            "asset_id": asset["asset_id"],
+            "asset_name": asset["name"],
+            "asset_type": asset["asset_class"],
             "business_service": g.rng.choice(systems),
-            "criticality": g.rng.choice(["critical", "high", "medium", "low"]),
+            "criticality": asset.get("criticality", "medium"),
             "owner_team": g.rng.choice(["WMS Team", "Platform Team", "Integration Team", "DevOps"]),
             "rto_minutes": g.rng.choice([15, 30, 60, 120, 240]),
             "rpo_minutes": g.rng.choice([5, 15, 30, 60]),

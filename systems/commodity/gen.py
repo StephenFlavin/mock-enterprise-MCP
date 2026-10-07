@@ -37,7 +37,7 @@ def generate(g):
 
             prices.append({
                 "commodity_id": commodity,
-                "price_date": date.date(),
+                "price_date": date,
                 "price_gbp_unit": round(price, 4),
                 "source": r.choice(["LME", "ICE", "Market Feed", "Bloomberg"]),
                 "unit_name": unit
@@ -128,7 +128,7 @@ def generate(g):
                 "category": category,
                 "base_date": g.as_of - timedelta(days=365),
                 "index_value": round(idx_val, 1),
-                "index_date": date.date()
+                "index_date": date
             })
 
     # 6. Generate component prices (zips, trims)
@@ -150,7 +150,7 @@ def generate(g):
             components.append({
                 "component_id": comp_id,
                 "component_name": comp_name,
-                "price_date": date.date(),
+                "price_date": date,
                 "price_gbp": round(current_price, 4),
                 "unit_desc": unit
             })
@@ -178,7 +178,7 @@ def generate(g):
         film_base = 98.2
 
         packaging_idx.append({
-            "index_date": date.date(),
+            "index_date": date,
             "corrugated_index": round(corrugated_base * (1 + r.gauss(0, 0.04)), 1),
             "film_index": round(film_base * (1 + r.gauss(0, 0.03)), 1)
         })
@@ -209,7 +209,7 @@ def generate(g):
             recycled_prem.append({
                 "material_id": recycled,
                 "virgin_material_id": virgin,
-                "premium_date": date.date(),
+                "premium_date": date,
                 "premium_pct": round(r.uniform(8, 25), 1),
                 "reasoning": r.choice([
                     "Supply constraint for recycled material",
