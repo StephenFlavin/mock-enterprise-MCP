@@ -1220,3 +1220,488 @@ tools:
     args:
       retail_price_gbp: {type: float, required: true, desc: "New retail price in GBP"}
     example: {costing_id: "CST-000001", retail_price_gbp: 49.99}
+
+  - name: get_style_unit_margin
+    desc: Unit margin for a style, showing gross and net margin per unit by channel and status.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style, e.g. STY-5520"}
+    sql: |
+      SELECT
+        pc.style_id,
+        pc.sku,
+        ROUND(pc.retail_price_gbp, 2) AS retail_price_gbp,
+        ROUND(pc.total_cost_gbp, 2) AS total_cost_gbp,
+        ROUND(pc.gross_margin_gbp, 2) AS unit_gross_margin_gbp,
+        ROUND(pc.gross_margin_pct, 1) AS gross_margin_pct,
+        pc.status,
+        pc.quantity_units AS costing_volume
+      FROM product_costings pc
+      WHERE pc.style_id = $style_id AND pc.status = 'active'
+      ORDER BY pc.gross_margin_gbp DESC
+    limit: 5
+    example: {style_id: STY-5520}
+
+  - name: get_product_costing_for_style
+    desc: Full costing sheet for a style, including material, labour, overhead and freight breakdown.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style, e.g. STY-5520"}
+    sql: |
+      SELECT
+        pc.costing_id,
+        pc.style_id,
+        pc.sku,
+        pc.season,
+        ROUND(pc.material_cost_gbp, 2) AS material_cost_gbp,
+        ROUND(pc.labour_cost_gbp, 2) AS labour_cost_gbp,
+        ROUND(pc.overhead_cost_gbp, 2) AS overhead_cost_gbp,
+        ROUND(pc.freight_cost_gbp, 2) AS freight_cost_gbp,
+        ROUND(pc.tooling_cost_gbp, 2) AS tooling_cost_gbp,
+        ROUND(pc.total_cost_gbp, 2) AS total_cost_gbp,
+        ROUND(pc.retail_price_gbp, 2) AS retail_price_gbp,
+        ROUND(pc.gross_margin_gbp, 2) AS gross_margin_gbp,
+        ROUND(pc.gross_margin_pct, 1) AS gross_margin_pct,
+        pc.status,
+        pc.quantity_units
+      FROM product_costings pc
+      WHERE pc.style_id = $style_id AND pc.status = 'active'
+      LIMIT 1
+    limit: 1
+    example: {style_id: STY-5520}
+
+  - name: get_material_cost_share_for_product
+    desc: Material share of product cost, showing percentage contribution and breakdown by material type.
+    kind: sql
+    args:
+      sku: {required: true, desc: "SKU, e.g. K-1700"}
+    sql: |
+      SELECT
+        pc.sku,
+        ROUND(pc.material_cost_gbp, 2) AS material_cost_gbp,
+        ROUND(pc.total_cost_gbp, 2) AS total_cost_gbp,
+        ROUND(pc.material_cost_gbp / pc.total_cost_gbp * 100, 1) AS material_share_pct,
+        ROUND(pc.labour_cost_gbp / pc.total_cost_gbp * 100, 1) AS labour_share_pct,
+        ROUND(pc.overhead_cost_gbp / pc.total_cost_gbp * 100, 1) AS overhead_share_pct,
+        ROUND(pc.freight_cost_gbp / pc.total_cost_gbp * 100, 1) AS freight_share_pct,
+        ROUND(pc.tooling_cost_gbp / pc.total_cost_gbp * 100, 1) AS tooling_share_pct
+      FROM product_costings pc
+      WHERE pc.sku = $sku AND pc.status = 'active'
+      LIMIT 1
+    limit: 1
+    example: {sku: K-1700}
+
+  - name: get_shrink_by_category
+    desc: Shrink or markdown pressure by product category, based on historical markdown patterns and velocity.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Dresses"}
+    sql: |
+      SELECT
+        m.category,
+        ROUND(SUM(m.markdown_gbp) / SUM(m.revenue_gbp) * 100, 2) AS shrink_as_pct_of_revenue,
+        ROUND(AVG(m.markdown_gbp), 2) AS avg_markdown_gbp_per_period,
+        COUNT(DISTINCT m.period) AS periods_with_markdown,
+        ROUND(SUM(m.volume_units), 0) AS total_units_sold,
+        ROUND(SUM(m.markdown_gbp), 2) AS total_markdown_gbp
+      FROM margin_analyses m
+      WHERE m.category = $category
+      GROUP BY m.category
+    limit: 1
+    example: {category: Dresses}
+
+  - name: get_sku_margin_and_revenue
+    desc: Revenue and margin by SKU, showing sales by channel and net contribution.
+    kind: sql
+    args:
+      sku: {}
+      period_from: {type: date, default: "-90d", desc: "Period start"}
+    sql: |
+      SELECT
+        m.sku,
+        m.category,
+        SUM(m.volume_units) AS total_units,
+        ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+        ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp,
+        ROUND(SUM(m.gross_margin_gbp), 2) AS gross_margin_gbp,
+        ROUND(SUM(m.markdown_gbp), 2) AS markdown_gbp,
+        ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
+        ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS net_margin_pct
+      FROM margin_analyses m
+      WHERE ($sku IS NULL OR m.sku = $sku)
+        AND m.analysed_at >= CAST($period_from AS DATE)
+      GROUP BY m.sku, m.category
+      ORDER BY total_revenue_gbp DESC
+    limit: 50
+    example: {period_from: "-90d"}
+
+  - name: get_sku_margin_and_sales_at_risk
+    desc: SKUs facing stockout risk, showing margin per unit and sales potentially at risk if stock runs out.
+    kind: sql
+    args:
+      sku: {}
+      min_stock_weeks: {type: int, desc: "Stock coverage threshold in weeks", default: 4}
+    sql: |
+      SELECT
+        m.sku,
+        m.category,
+        ROUND(m.revenue_gbp / NULLIF(m.volume_units, 0), 2) AS revenue_per_unit_gbp,
+        ROUND(m.net_margin_gbp / NULLIF(m.volume_units, 0), 2) AS margin_per_unit_gbp,
+        m.volume_units,
+        ROUND(m.net_margin_gbp, 2) AS total_margin_gbp,
+        'SKU risk based on current sales velocity and stock position' AS note
+      FROM margin_analyses m
+      WHERE ($sku IS NULL OR m.sku = $sku)
+      GROUP BY m.sku, m.category, m.revenue_gbp, m.volume_units, m.net_margin_gbp
+      ORDER BY m.net_margin_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_sku_sales_and_margin
+    desc: Sales and margin per SKU, ranked by revenue or margin contribution.
+    kind: sql
+    args:
+      sku: {}
+      rank_by: {type: str, desc: "Rank by revenue or margin", default: revenue}
+    sql: |
+      SELECT
+        m.sku,
+        m.category,
+        SUM(m.volume_units) AS units_sold,
+        ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+        ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cost_gbp,
+        ROUND(SUM(m.gross_margin_gbp), 2) AS gross_margin_gbp,
+        ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
+        ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS margin_pct
+      FROM margin_analyses m
+      WHERE ($sku IS NULL OR m.sku = $sku)
+      GROUP BY m.sku, m.category
+      ORDER BY SUM(m.revenue_gbp) DESC
+    limit: 100
+    example: {}
+
+  - name: list_top_skus_by_sales
+    desc: Top SKUs ranked by sales volume or revenue, with margin and velocity metrics.
+    kind: sql
+    args:
+      limit_rows: {type: int, desc: "Number of top SKUs to return", default: 20}
+      rank_by: {type: str, desc: "Rank by units or revenue", default: units}
+    sql: |
+      SELECT
+        m.sku,
+        m.category,
+        SUM(m.volume_units) AS units_sold,
+        ROUND(SUM(m.revenue_gbp), 2) AS revenue_gbp,
+        ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
+        ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0), 2) AS margin_per_unit_gbp,
+        COUNT(DISTINCT m.period) AS periods_in_sale
+      FROM margin_analyses m
+      GROUP BY m.sku, m.category
+      ORDER BY SUM(m.volume_units) DESC
+      LIMIT $limit_rows
+    limit: 100
+    example: {limit_rows: 20}
+
+  - name: list_loss_making_skus
+    desc: SKUs where cost to serve exceeds margin or where net margin is negative; priority for cost reduction or discontinuation.
+    kind: sql
+    args:
+      min_loss_gbp: {type: float, desc: "Minimum loss threshold in GBP", default: 0}
+    sql: |
+      SELECT
+        m.sku,
+        m.category,
+        ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+        ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp,
+        ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
+        ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS net_margin_pct,
+        SUM(m.volume_units) AS units_sold
+      FROM margin_analyses m
+      GROUP BY m.sku, m.category
+      HAVING SUM(m.net_margin_gbp) < $min_loss_gbp
+      ORDER BY SUM(m.net_margin_gbp) ASC
+    limit: 100
+    example: {min_loss_gbp: 0}
+
+  - name: get_standard_cost_updates
+    desc: Standard cost changes and effective dates by SKU and period, tracking cost evolution.
+    kind: sql
+    args:
+      sku: {}
+      period_from: {type: date, default: "-180d"}
+    sql: |
+      SELECT
+        sch.sku,
+        sch.period,
+        ROUND(sch.actual_cost_gbp, 2) AS actual_cost_gbp,
+        ROUND(sch.quoted_cost_gbp, 2) AS quoted_cost_gbp,
+        ROUND((sch.actual_cost_gbp - sch.quoted_cost_gbp) / NULLIF(sch.quoted_cost_gbp, 0) * 100, 1) AS variance_pct,
+        sch.pass_through_pct,
+        sch.notes
+      FROM supplier_cost_history sch
+      WHERE ($sku IS NULL OR sch.sku = $sku)
+        AND sch.period >= CAST($period_from AS DATE)
+      ORDER BY sch.period DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_unit_cost_and_retail_price
+    desc: Unit cost and retail price by SKU, with margin and status.
+    kind: sql
+    args:
+      sku: {}
+    sql: |
+      SELECT
+        pc.sku,
+        pc.style_id,
+        ROUND(pc.total_cost_gbp, 2) AS unit_cost_gbp,
+        ROUND(pc.retail_price_gbp, 2) AS retail_price_gbp,
+        ROUND(pc.gross_margin_gbp, 2) AS gross_margin_gbp,
+        ROUND(pc.gross_margin_pct, 1) AS gross_margin_pct,
+        pc.status,
+        pc.quantity_units
+      FROM product_costings pc
+      WHERE ($sku IS NULL OR pc.sku = $sku) AND pc.status = 'active'
+      ORDER BY pc.retail_price_gbp DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_target_cost_for_product
+    desc: Target cost for a product based on retail price and margin goal, with budget allocation to material, labour and overhead.
+    kind: sql
+    args:
+      sku: {required: true, desc: "SKU"}
+      target_margin_pct: {type: float, desc: "Target margin %", default: 55}
+    sql: |
+      SELECT
+        $sku AS sku,
+        $target_margin_pct AS target_margin_pct,
+        ROUND(AVG(pc.retail_price_gbp), 2) AS avg_retail_price_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100), 2) AS target_total_cost_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.55, 2) AS material_budget_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.25, 2) AS labour_budget_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.2, 2) AS overhead_freight_budget_gbp,
+        'Budget split: 55% material, 25% labour, 20% overhead/freight' AS budget_allocation
+      FROM product_costings pc
+      WHERE pc.sku = $sku AND pc.status = 'active'
+    limit: 1
+    example: {sku: K-1700}
+
+  - name: get_target_cost_for_style
+    desc: Target cost for a style given retail price and desired margin, breaking down by component.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style, e.g. STY-5520"}
+      target_margin_pct: {type: float, desc: "Target margin %", default: 55}
+    sql: |
+      SELECT
+        $style_id AS style_id,
+        $target_margin_pct AS target_margin_pct,
+        ROUND(AVG(pc.retail_price_gbp), 2) AS avg_retail_price_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100), 2) AS target_cost_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.50, 2) AS material_target_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.30, 2) AS labour_target_gbp,
+        ROUND(AVG(pc.retail_price_gbp) * (1 - $target_margin_pct / 100) * 0.20, 2) AS overhead_target_gbp
+      FROM product_costings pc
+      WHERE pc.style_id = $style_id AND pc.status = 'active'
+      GROUP BY pc.style_id
+    limit: 1
+    example: {style_id: STY-5520}
+
+  - name: get_target_margin_for_category
+    desc: Target margin for a category, showing plan vs current and variance.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Dresses"}
+    sql: |
+      SELECT
+        m.category,
+        ROUND(AVG(m.plan_margin_pct), 1) AS target_margin_pct,
+        ROUND(AVG(m.gross_margin_pct), 1) AS current_gross_margin_pct,
+        ROUND(AVG(m.net_margin_pct), 1) AS current_net_margin_pct,
+        ROUND(AVG(m.plan_margin_pct) - AVG(m.net_margin_pct), 1) AS variance_to_plan_pct,
+        COUNT(DISTINCT m.sku) AS sku_count
+      FROM margin_analyses m
+      WHERE m.category = $category
+      GROUP BY m.category
+    limit: 1
+    example: {category: Dresses}
+
+  - name: get_product_cost_sheet
+    desc: Detailed product cost sheet with line items: material, labour, overhead, freight and tooling per unit.
+    kind: sql
+    args:
+      costing_id: {required: true, desc: "Costing id, e.g. CST-000001"}
+    sql: |
+      SELECT
+        csd.costing_id,
+        csd.line_no,
+        csd.component_type,
+        csd.description,
+        ROUND(csd.quantity, 2) AS quantity,
+        csd.unit,
+        ROUND(csd.unit_cost_gbp, 3) AS unit_cost_gbp,
+        ROUND(csd.total_cost_gbp, 2) AS total_cost_gbp,
+        ROUND(csd.as_pct_of_total, 1) AS pct_of_total_cost
+      FROM cost_sheet_details csd
+      WHERE csd.costing_id = $costing_id
+      ORDER BY csd.line_no
+    limit: 50
+    example: {costing_id: "CST-STY-5520-26S1"}
+
+  - name: get_products_requiring_modification
+    desc: Products where cost structure or sourcing needs review due to margin or cost pressure.
+    kind: sql
+    args:
+      margin_threshold_pct: {type: float, desc: "Margin threshold for review", default: 45}
+    sql: |
+      SELECT
+        pc.sku,
+        pc.style_id,
+        ROUND(pc.gross_margin_pct, 1) AS gross_margin_pct,
+        ROUND(pc.target_margin_pct, 1) AS target_margin_pct,
+        CASE WHEN pc.gross_margin_pct < $margin_threshold_pct THEN 'YES' ELSE 'NO' END AS needs_modification,
+        ROUND(pc.material_cost_gbp, 2) AS material_cost_gbp,
+        ROUND(pc.labour_cost_gbp, 2) AS labour_cost_gbp,
+        ROUND(pc.freight_cost_gbp, 2) AS freight_cost_gbp,
+        'Review sourcing, material or labour efficiency' AS action
+      FROM product_costings pc
+      WHERE pc.status = 'active' AND pc.gross_margin_pct < $margin_threshold_pct
+      ORDER BY pc.gross_margin_pct ASC
+    limit: 50
+    example: {margin_threshold_pct: 45}
+
+  - name: get_nearshore_cost_assumptions
+    desc: Unit cost, lead time and MOQ assumptions for nearshore sourcing (Portugal, Turkey, Morocco) versus far-east.
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style, e.g. STY-5520"}
+    sql: |
+      SELECT
+        $style_id AS style_id,
+        pc.origin_country,
+        ROUND(AVG(pc.total_cost_gbp), 2) AS avg_cost_gbp,
+        ROUND(AVG(pc.material_cost_gbp), 2) AS material_cost_gbp,
+        ROUND(AVG(pc.labour_cost_gbp), 2) AS labour_cost_gbp,
+        ROUND(AVG(pc.freight_cost_gbp), 2) AS freight_cost_gbp,
+        CASE
+          WHEN pc.origin_country IN ('PT', 'TR', 'MA') THEN 'Nearshore (4-6 week lead)'
+          ELSE 'Far-east (8-12 week lead)'
+        END AS sourcing_region,
+        AVG(pc.quantity_units) AS typical_moq,
+        'Nearshore offers speed advantage but cost premium' AS note
+      FROM product_costings pc
+      WHERE pc.style_id = $style_id AND pc.status = 'active'
+      GROUP BY pc.origin_country
+      ORDER BY pc.origin_country
+    limit: 10
+    example: {style_id: STY-5520}
+
+  - name: get_packaging_unit_cost_by_material
+    desc: Packaging unit cost by material type (corrugated, moulded pulp, recycled plastic), with damage rate and recyclability.
+    kind: sql
+    args:
+      category: {}
+    sql: |
+      SELECT
+        'Corrugated' AS material,
+        0.85 AS cost_gbp,
+        0.95 AS recyclability_pct,
+        2.0 AS damage_rate_pct,
+        'Standard box' AS spec,
+        'Standard option' AS note
+      UNION ALL
+      SELECT
+        'Moulded pulp' AS material,
+        0.92 AS cost_gbp,
+        0.98 AS recyclability_pct,
+        1.5 AS damage_rate_pct,
+        'Moulded pulp tray' AS spec,
+        'Better protection, premium cost' AS note
+      UNION ALL
+      SELECT
+        'Recycled plastic' AS material,
+        0.78 AS cost_gbp,
+        0.85 AS recyclability_pct,
+        3.0 AS damage_rate_pct,
+        'Recycled clamshell' AS spec,
+        'Lowest cost but higher damage' AS note
+    limit: 3
+    example: {}
+
+  - name: get_recycled_material_cost_premium
+    desc: Cost premium of recycled versus virgin materials (fabric, packaging, plastic components).
+    kind: sql
+    args:
+      material_type: {type: str, desc: "Material type, e.g. fabric, packaging, plastic"}
+    sql: |
+      SELECT
+        CASE WHEN $material_type = 'fabric' THEN 'Recycled polyester' ELSE 'Virgin polyester' END AS material,
+        CASE WHEN $material_type = 'fabric' THEN 5.50 ELSE 5.00 END AS cost_per_unit_gbp,
+        CASE WHEN $material_type = 'fabric' THEN 10.0 ELSE 0.0 END AS premium_pct,
+        'Supplier margin and certification cost drive premium' AS note
+      UNION ALL
+      SELECT
+        'Recycled packaging',
+        0.92 AS cost_per_unit_gbp,
+        15.0 AS premium_pct,
+        'Certified recycled content and sourcing cost'
+    limit: 5
+    example: {material_type: fabric}
+
+  - name: get_repair_cost_by_category
+    desc: Repair and refurbishment cost by product category (electronics, appliances, furniture) if returned for service.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category"}
+    sql: |
+      SELECT
+        $category AS category,
+        CASE WHEN $category = 'Electronics' THEN 12.50
+             WHEN $category = 'Appliances' THEN 15.00
+             ELSE 8.00 END AS repair_cost_gbp,
+        CASE WHEN $category = 'Electronics' THEN 3
+             WHEN $category = 'Appliances' THEN 5
+             ELSE 7 END AS avg_repair_days,
+        CASE WHEN $category = 'Electronics' THEN 'Component replacement, testing'
+             WHEN $category = 'Appliances' THEN 'Functional test, minor parts'
+             ELSE 'Inspection and repackaging' END AS typical_repair_work,
+        85.0 AS success_rate_pct
+    limit: 1
+    example: {category: Electronics}
+
+  - name: get_resale_value_estimates_by_category
+    desc: Expected resale value as % of cost by category and age, for clearance and aged stock routing decisions.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category"}
+      age_days: {type: int, desc: "Product age in days", default: 90}
+    sql: |
+      SELECT
+        $category AS category,
+        $age_days AS age_days,
+        CASE WHEN $age_days <= 30 THEN 85
+             WHEN $age_days <= 60 THEN 70
+             WHEN $age_days <= 180 THEN 50
+             ELSE 25 END AS resale_value_pct_of_cost,
+        CASE WHEN $age_days <= 30 THEN 'Near full retail'
+             WHEN $age_days <= 60 THEN 'Outlet channel'
+             WHEN $age_days <= 180 THEN 'Liquidator discount'
+             ELSE 'Recycling only' END AS best_disposition_route
+    limit: 1
+    example: {category: Dresses, age_days: 90}
+
+  - name: get_inventory_holding_cost_rate
+    desc: Inventory holding cost rate per unit per week, used in landed cost and lead time analysis.
+    kind: sql
+    args:
+      sku: {}
+    sql: |
+      SELECT
+        $sku AS sku,
+        0.04 AS holding_cost_pct_per_week,
+        0.0008 AS holding_cost_gbp_per_pound_per_week,
+        2.1 AS annual_holding_cost_pct,
+        'Rate includes warehouse space, insurance, shrink and working capital cost' AS components
+    limit: 1
+    example: {sku: K-1700}
