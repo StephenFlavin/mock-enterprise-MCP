@@ -333,7 +333,7 @@ def generate(g):
 
     # Generate classification positions
     positions_data = []
-    for i, sku in enumerate(g.pick(g.master("products"), 10)):
+    for i, sku in enumerate(g.pick([p for p in g.master("products") if p["status"] != "new"], 10)):
         position_id = f"POS-{i+1:06d}"
         positions_data.append({
             "position_id": position_id,

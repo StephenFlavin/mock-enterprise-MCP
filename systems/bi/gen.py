@@ -22,7 +22,6 @@ def _clip(x, lo, hi):
 
 
 def generate(g):
-    r = g.rng
     today = g.as_of
 
     # last four complete calendar months
@@ -51,6 +50,7 @@ def generate(g):
     wsum = sum(weights.values())
 
     store_perf, store_targets, product_perf, product_targets = [], [], [], []
+    rngs = {}
 
     for (y, m) in months:
         pe = _month_end(y, m)
@@ -61,6 +61,7 @@ def generate(g):
             sid = s["site_id"]
             if sid in STORY_STORES:
                 continue
+            r = rngs.setdefault(sid, g.rng_for("bi_store", sid))
             units = int(units_total * weights[sid] / wsum * r.uniform(0.94, 1.06))
             sales = round(units * avg_price * r.uniform(0.97, 1.03), 2)
             margin = round(_clip(r.gauss(34, 2.0), 27, 41), 1)
@@ -82,6 +83,7 @@ def generate(g):
             units, rev = sku_m[(sku, key)]
             if units <= 0:
                 continue
+            r = rngs.setdefault(sku, g.rng_for("bi_product", sku))
             margin = round(_clip(r.gauss(36, 3.0), 26, 50), 1)
             returns = round(_clip(r.gauss(2.2, 0.5), 0.8, 3.6), 1)
             rating = round(_clip(r.gauss(4.2, 0.25), 3.6, 4.8), 1)
