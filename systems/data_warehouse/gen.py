@@ -31,8 +31,8 @@ def generate(g):
 
     # Generate product_sales_fact
     sales_fact = []
-    for day in g.weeks(-26):  # 26 weeks back
-        for _ in range(g.rng.randint(20, 40)):  # 20-40 sales per week
+    for week in g.weeks(-26):  # 26 weeks back
+        for _ in range(g.rng.randint(20, 40)):  # 20-40 sales records per week
             sku = g.pick(skus)
             product = next((p for p in products if p["sku"] == sku), None)
             market = g.pick(markets)
@@ -50,7 +50,7 @@ def generate(g):
             size = g.pick(size_options)
 
             sales_fact.append({
-                "date": day,
+                "date": week,
                 "sku": sku,
                 "style_id": product["style_id"] if product else "STY-0000",
                 "category": product["category"] if product else "General",
@@ -159,7 +159,7 @@ def generate(g):
     for i in range(50):
         sku = g.pick(skus)
         product = next((p for p in products if p["sku"] == sku), None)
-        launch_date = g.date_between(g.as_of.replace(year=g.as_of.year-1), g.as_of - __import__('datetime').timedelta(days=30))
+        launch_date = g.date_between(start_days_ago=365, end_days_ago=30)
         initial_alloc = g.rng.randint(100, 2000)
         week1 = int(initial_alloc * g.rng.uniform(0.3, 0.8))
         month1 = int(initial_alloc * g.rng.uniform(1.2, 2.5))
