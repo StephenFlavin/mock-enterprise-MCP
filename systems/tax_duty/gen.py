@@ -5,7 +5,6 @@ Hand-written reference data (transfer pricing, incentives, tasks, market rules) 
 """
 from datetime import date, timedelta
 
-FX = {"USD": 0.78, "EUR": 0.86, "GBP": 1.0}
 EU_ORIGINS = {"PT", "IT", "FR", "DE", "PL"}
 ORIGINS = ["CN", "VN", "BD", "TR", "IN", "ID", "MX", "PT", "IT", "FR", "DE", "PL", "GB"]
 MARKETS = ["UK", "EU", "US"]
@@ -137,7 +136,7 @@ def _entries(g, rates):
         prod = P[ln["sku"]]
         heading = prod["hs_code"][:4]
         qty = int(ln["qty_ordered"])
-        value = round(qty * float(ln["unit_cost"]) * FX[po["currency"]], 2)
+        value = round(qty * float(prod["unit_cost_gbp"]), 2)   # master unit cost, already in GBP
         rate = _rate_at(rates, heading, origin, market, entry_date)
         is_story = po["supplier_id"] == STORY_SUPPLIER and entry_date >= g.as_of - timedelta(days=365)
         claims_pref = rate["preferential_rate_pct"] is not None and (is_story or r.random() < 0.9)

@@ -197,7 +197,7 @@ tools:
     args:
       hs_code: {required: true}
       destination_market: {type: str, desc: "Market: UK, EU or US; omit for all three"}
-      origin_country: {desc: "Only this origin, e.g. VN; omit for all origins"}
+      origin_country: {desc: "Origin codes, comma-separated, e.g. VN,BD,TR; omit for all origins"}
     sql: |
       SELECT c.hs_code, c.origin_country, c.destination_market, c.duty_rate_pct, c.vat_rate_pct,
              c.preferential_rate_pct, c.preference_scheme, c.effective_date,
@@ -211,17 +211,17 @@ tools:
            AND p.end_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
       WHERE c.end_date IS NULL AND starts_with($hs_code, c.hs_code)
         AND ($destination_market IS NULL OR c.destination_market = $destination_market)
-        AND ($origin_country IS NULL OR c.origin_country = $origin_country)
+        AND ($origin_country IS NULL OR list_contains(string_split(upper(replace($origin_country, ' ', '')), ','), c.origin_country))
       ORDER BY c.destination_market, c.origin_country
     limit: 60
     example: {hs_code: "6110", origin_country: VN}
 
   - name: calculate_duty_per_value
-    desc: Duty and VAT per £10,000 of goods by origin and market, with the duty gap to the cheapest origin. Omit origin or market to compare.
+    desc: Duty and VAT per £10,000 of goods by origin and market, with the duty gap to the cheapest origin listed. Pass several origins to compare.
     kind: sql
     args:
       hs_code: {required: true}
-      origin_country: {desc: "Only this origin, e.g. VN; omit to compare all origins"}
+      origin_country: {desc: "Origin codes, comma-separated, e.g. VN,BD,TR; omit to compare all origins"}
       destination_market: {type: str, desc: "Market: UK, EU or US; omit for all three"}
       declared_value_gbp: {type: float, default: 10000, desc: "Value of goods to price"}
     sql: |
@@ -233,16 +233,16 @@ tools:
         FROM duty_rates d
         WHERE d.end_date IS NULL AND starts_with($hs_code, d.hs_code)
           AND ($destination_market IS NULL OR d.destination_market = $destination_market)
+          AND ($origin_country IS NULL OR list_contains(string_split(upper(replace($origin_country, ' ', '')), ','), d.origin_country))
       ), s AS (
-        SELECT *, round(duty_gbp - MIN(duty_gbp) OVER (PARTITION BY destination_market), 2) AS duty_above_cheapest_origin_gbp
+        SELECT *, round(duty_gbp - MIN(duty_gbp) OVER (PARTITION BY destination_market), 2) AS duty_above_cheapest_listed_origin_gbp
         FROM r
       )
       SELECT hs_code, origin_country, destination_market, $declared_value_gbp AS declared_value_gbp,
-             duty_rate_pct, vat_rate_pct, duty_gbp, vat_gbp, duty_above_cheapest_origin_gbp,
+             duty_rate_pct, vat_rate_pct, duty_gbp, vat_gbp, duty_above_cheapest_listed_origin_gbp,
              preferential_rate_pct, duty_if_preference_met_gbp,
              'duty = value * duty_rate%; vat = (value + duty) * vat_rate%' AS formula
       FROM s
-      WHERE $origin_country IS NULL OR origin_country = $origin_country
       ORDER BY destination_market, duty_gbp, origin_country
     limit: 60
     example: {hs_code: "6110", origin_country: VN}
@@ -891,7 +891,7 @@ tools:
     example: {destination_market: MX}
 
   - name: get_duty_and_insurance_by_sku
-    desc: Duty and insurance cost per unit for a SKU, list rate versus actual paid in the last 90 days and the prior period. Use for landed cost analysis.
+    desc: Duty and insurance cost per unit for a SKU, with the duty rate now versus its previous rate and actual duty paid in the last 90 days.
     kind: sql
     args:
       sku: {required: true}
@@ -900,40 +900,43 @@ tools:
       WITH p AS (
         SELECT sku, name, unit_cost_gbp, hs_code, country_of_origin FROM master.products WHERE sku = $sku
       ), r AS (
-        SELECT d.duty_rate_pct, d.vat_rate_pct FROM duty_rates d, p
+        SELECT d.hs_code, d.duty_rate_pct, d.vat_rate_pct, d.effective_date FROM duty_rates d, p
         WHERE d.end_date IS NULL AND d.destination_market = $destination_market AND d.origin_country = p.country_of_origin
           AND starts_with(p.hs_code, d.hs_code)
         ORDER BY length(d.hs_code) DESC LIMIT 1
+      ), prev AS (
+        SELECT d.duty_rate_pct FROM duty_rates d, p, r
+        WHERE d.hs_code = r.hs_code AND d.destination_market = $destination_market AND d.origin_country = p.country_of_origin
+          AND d.end_date IS NOT NULL AND d.end_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+        ORDER BY d.end_date DESC LIMIT 1
       ), e AS (
-        SELECT SUM(quantity) FILTER (WHERE entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS q_new,
-               SUM(duty_paid_gbp) FILTER (WHERE entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS d_new,
-               SUM(insurance_gbp) FILTER (WHERE entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS i_new,
-               SUM(quantity) FILTER (WHERE entry_date < CAST($as_of AS DATE) - INTERVAL 90 DAY) AS q_old,
-               SUM(duty_paid_gbp) FILTER (WHERE entry_date < CAST($as_of AS DATE) - INTERVAL 90 DAY) AS d_old,
-               COUNT(*) FILTER (WHERE entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS entries_last_90_days
+        SELECT SUM(quantity) AS q, SUM(duty_paid_gbp) AS d, SUM(insurance_gbp) AS i, COUNT(*) AS n
         FROM import_entries
         WHERE sku = $sku AND destination_market = $destination_market AND status IN ('cleared', 'amended')
-          AND entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+          AND entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
       )
       SELECT p.sku, p.name, p.unit_cost_gbp, p.hs_code, p.country_of_origin,
              r.duty_rate_pct, r.vat_rate_pct,
-             round(p.unit_cost_gbp * r.duty_rate_pct / 100.0, 2) AS list_duty_per_unit_gbp,
-             e.entries_last_90_days,
-             round(e.d_new / NULLIF(e.q_new, 0), 2) AS duty_per_unit_last_90_days_gbp,
-             round(e.d_old / NULLIF(e.q_old, 0), 2) AS duty_per_unit_before_gbp,
-             round((e.d_new / NULLIF(e.q_new, 0)) / NULLIF(e.d_old / NULLIF(e.q_old, 0), 0) * 100 - 100, 1) AS duty_per_unit_change_pct,
-             round(COALESCE(e.i_new / NULLIF(e.q_new, 0), p.unit_cost_gbp * 0.005), 2) AS insurance_per_unit_gbp,
-             'duty = unit cost * duty rate; actual per-unit figures come from customs entries' AS formula
+             round(p.unit_cost_gbp * r.duty_rate_pct / 100.0, 2) AS duty_per_unit_gbp,
+             (SELECT duty_rate_pct FROM prev) AS previous_duty_rate_pct,
+             round(p.unit_cost_gbp * (SELECT duty_rate_pct FROM prev) / 100.0, 2) AS previous_duty_per_unit_gbp,
+             CASE WHEN (SELECT duty_rate_pct FROM prev) IS NULL THEN 'No rate change in last 12 months'
+                  ELSE 'Rate changed in last 12 months, effective ' || CAST(r.effective_date AS VARCHAR) END AS rate_change_note,
+             e.n AS entries_last_90_days,
+             round(e.d / NULLIF(e.q, 0), 2) AS actual_duty_per_unit_last_90_days_gbp,
+             round(COALESCE(e.i / NULLIF(e.q, 0), p.unit_cost_gbp * 0.005), 2) AS insurance_per_unit_gbp,
+             'duty = unit cost * duty rate; insurance from recent customs entries' AS formula
       FROM p LEFT JOIN r ON true CROSS JOIN e
     limit: 1
-    example: {sku: "SKU-100007"}
+    example: {sku: "SKU-102009"}
 
   - name: get_duty_cost_trend
-    desc: Duty paid by month with average duty rate and change on the prior month, for all origins or one. Use for margin bridges and forecasting.
+    desc: Duty paid by complete month with average duty rate and change on the prior month, for all origins or one. Use for margin bridges and forecasting.
     kind: sql
     args:
       origin_country: {desc: "Filter by origin; omit for all origins combined"}
       category: {desc: "Product category or department, e.g. Womenswear, Trousers (optional)"}
+      destination_market: {type: str, desc: "Market the goods were entered into: UK, EU or US (optional)"}
       date_from: {type: date, default: "-180d", desc: "Entries from the start of this date's month"}
     sql: |
       WITH m AS (
@@ -943,7 +946,9 @@ tools:
         WHERE ie.status IN ('cleared', 'amended')
           AND ($origin_country IS NULL OR ie.origin_country = $origin_country)
           AND ($category IS NULL OR lower(p.category) = lower($category) OR lower(p.department) = lower($category))
+          AND ($destination_market IS NULL OR ie.destination_market = $destination_market)
           AND ie.entry_date >= date_trunc('month', CAST($date_from AS DATE))
+          AND ie.entry_date < date_trunc('month', CAST($as_of AS DATE))
         GROUP BY 1
       )
       SELECT month, COALESCE($origin_country, 'ALL') AS origin_country, COALESCE($category, 'ALL') AS category,
