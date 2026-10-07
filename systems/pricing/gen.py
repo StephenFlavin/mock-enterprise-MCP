@@ -44,6 +44,8 @@ SKU_ELASTICITY = {
     "SKU-105558": ("Drinkware", -1.30, 0.55, 0.30, 31),
     "K-1700": ("Small Appliances", -1.25, 0.65, 0.18, 28),
     "PF-220": ("Personal Care", -1.48, 0.62, 0.21, 32),
+    "SKU-103612": ("Cookware", -1.90, 0.60, 0.35, 21),    # ivory cookware set: elastic, above the competitor price
+    "SKU-100819": ("Cookware", -1.40, 0.60, 0.28, 24),
 }
 
 # clearance option profiles: recovery % of current price, sell-through %, weeks to clear, channel,
@@ -71,6 +73,10 @@ ALIASES = {
     "Footwear": "shoes, boots, trainers", "Scarves": "scarfs", "Tops": "tees", "Personal Care": "personal care electricals",
     "Audio": "headphones, speakers", "Dresses": "dress", "Towels": "bath towels",
 }
+
+# Home categories whose markdown story is planted in seed/markdown_events.csv (Home margin question): no background
+# markdown events there, so the department's markdown depth is what the seed says.
+STORY_HOME_CATS = {"Lighting", "Storage", "Towels"}
 
 NOISE_CATS = ["Dresses", "Tops", "Shirts", "Audio", "Smart Home", "Lighting", "Storage", "Towels", "Jewellery",
               "Babywear", "Fragrance", "Skincare", "Haircare", "Blouses"]
@@ -194,6 +200,11 @@ def generate(g):
                                 "weekly_revenue_gbp": round(u * float(prod["retail_price_gbp"]) * (1 - depth / 100), 2),
                                 "remaining_stock": max(left, 0)})
 
+    keep = {p["sku"] for c, ps in by_cat.items() if c not in STORY_HOME_CATS for p in ps}
+    markdowns = [m for m in markdowns if m["sku"] in keep]
+    kept_ids = {m["markdown_id"] for m in markdowns}
+    md_hist = [h for h in md_hist if h["markdown_id"] in kept_ids]
+
     # ---- background price changes
     changes = []
     for i in range(36):
@@ -252,8 +263,19 @@ def generate(g):
                                      "end_date": p["end_date"], "category": p["category"],
                                      "promotion_type": p["promotion_type"]})
 
+    # ---- product quality scores: one score per style (colours and sizes share it); story styles are in seed/
+    quality, style_score = [], {}
+    for cat, prods in by_cat.items():
+        for prod in prods:
+            if prod["style_id"] not in style_score:
+                style_score[prod["style_id"]] = round(r.uniform(3.9, 4.4), 1)
+            score = style_score[prod["style_id"]]
+            quality.append({"sku": prod["sku"], "quality_score": score,
+                            "quality_tier": "high" if score >= 4.4 else "standard" if score >= 3.6 else "basic",
+                            "scored_at": day(-14)})
+
     return {
-        "promotions": promotions, "markdown_events": markdowns, "markdown_history": md_hist,
+        "product_quality": quality, "promotions": promotions, "markdown_events": markdowns, "markdown_history": md_hist,
         "price_changes": changes, "price_tests": tests, "elasticity_data": elasticity,
         "promotion_history": promo_hist, "price_positioning": positioning, "clearance_options": options,
         "promotion_calendar": calendar, "markdown_review_requests": [],

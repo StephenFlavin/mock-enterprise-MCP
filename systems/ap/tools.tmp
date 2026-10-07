@@ -1,0 +1,407 @@
+  - name: list_vendor_fraud_indicators
+    desc: Vendor fraud risk scores and indicators (duplicate IDs, unusual bank details, new vendors, high-risk patterns).
+    kind: select
+    from: vendors
+    filters:
+      fraud_risk_score: {op: ">=", type: int, desc: "Minimum fraud risk score"}
+      fraud_indicators: {op: like}
+    columns: [vendor_id, name, fraud_risk_score, fraud_indicators, country, bank_country, updated_at]
+    order: fraud_risk_score DESC
+    limit: 100
+    example: {fraud_risk_score: 50}
+
+  - name: get_open_transactions_for_vendor
+    desc: Open invoices and unmatched POs for a vendor. Returns status of payment and matching.
+    kind: sql
+    args:
+      vendor_id: {required: true}
+      supplier_id: {}
+    sql: |
+      SELECT vendor_id, 'invoice' AS transaction_type, invoice_id, amount_gbp,
+             invoice_date, payment_status, three_way_match_status, po_id
+      FROM invoices
+      WHERE (vendor_id = $vendor_id OR ($supplier_id IS NOT NULL AND supplier_id = $supplier_id))
+        AND payment_status IN ('open', 'on_hold', 'scheduled')
+      ORDER BY invoice_date DESC
+    limit: 50
+    example: {vendor_id: VND-000001}
+
+  - name: list_bank_detail_change_requests
+    desc: Bank detail change history and approval status. Shows requested changes, approval progress and first payments to new accounts.
+    kind: select
+    from: bank_detail_changes
+    filters:
+      vendor_id: {}
+      approval_status: {}
+    columns: [change_id, vendor_id, old_bank_account, new_bank_account, requested_date, approval_status, approvals_count, first_payment_date]
+    order: requested_date DESC
+    limit: 50
+    example: {approval_status: pending}
+
+  - name: get_vendor_master_controls
+    desc: Vendor master data control settings, approval requirements and change audit trail.
+    kind: sql
+    args:
+      vendor_id: {}
+      supplier_id: {}
+    sql: |
+      SELECT vendor_id, supplier_id, name, country, bank_country, tax_id,
+             payment_terms_days, on_payment_hold, control_approvals_required, updated_at
+      FROM vendors
+      WHERE ($vendor_id IS NULL OR vendor_id = $vendor_id)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      ORDER BY vendor_id
+    limit: 50
+    example: {}
+
+  - name: get_accounts_payable_invoices_for_supplier
+    desc: Invoices for a supplier over a period, with payment and matching status.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+      date_to: {type: date, default: "+1d", desc: "Invoice date on or before"}
+      payment_status: {desc: "Filter by payment status"}
+    sql: |
+      SELECT invoice_id, invoice_number, invoice_date, amount_gbp, invoice_type,
+             po_id, three_way_match_status, gl_account, cost_centre_id,
+             accrued, payment_status, actual_payment_date
+      FROM invoices
+      WHERE supplier_id = $supplier_id
+        AND invoice_date >= CAST($date_from AS DATE)
+        AND invoice_date <= CAST($date_to AS DATE)
+        AND ($payment_status IS NULL OR payment_status = $payment_status)
+      ORDER BY invoice_date DESC
+    limit: 100
+    example: {supplier_id: SUP-0042}
+
+  - name: get_air_spend_by_supplier
+    desc: Air freight spend by supplier, with reason codes and avoidability breakdown.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+      supplier_id: {desc: "Filter by supplier (optional)"}
+    sql: |
+      SELECT supplier_id, air_reason, count(*) AS invoice_count,
+             sum(amount_gbp) AS total_spend_gbp,
+             sum(CASE WHEN avoidable THEN amount_gbp * avoidable_pct / 100 ELSE 0 END) AS avoidable_spend_gbp,
+             sum(CASE WHEN avoidable THEN 0 ELSE amount_gbp END) AS unavoidable_spend_gbp
+      FROM air_freight_invoices
+      WHERE invoice_date >= CAST($date_from AS DATE)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      GROUP BY supplier_id, air_reason
+      ORDER BY total_spend_gbp DESC
+    limit: 50
+    example: {date_from: "-90d"}
+
+  - name: calculate_avoidable_air_spend
+    desc: Splits air freight spend into avoidable and unavoidable by cause. Returns detailed breakdown.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+    sql: |
+      SELECT
+        sum(amount_gbp) AS total_air_spend_gbp,
+        sum(CASE WHEN avoidable THEN amount_gbp * avoidable_pct / 100 ELSE 0 END) AS avoidable_spend_gbp,
+        sum(CASE WHEN avoidable THEN 0 ELSE amount_gbp END) AS unavoidable_spend_gbp,
+        sum(CASE WHEN avoidable THEN amount_gbp * avoidable_pct / 100 ELSE 0 END) * 100 /
+          NULLIF(sum(amount_gbp), 0) AS avoidable_pct,
+        'avoidable = sum(amount_gbp where avoidable) * avoidable_pct / 100' AS formula
+      FROM air_freight_invoices
+      WHERE invoice_date >= CAST($date_from AS DATE)
+        AND status != 'cancelled'
+    limit: 1
+    example: {}
+
+  - name: list_carrier_invoice_lines
+    desc: Carrier invoice line items with charge types, contracted rates and variances. Use to identify overcharges.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      date_from: {type: date, default: "-365d", desc: "Invoice date on or after"}
+      variance_pct_gt: {type: float, desc: "Show only lines with variance > this %"}
+    sql: |
+      SELECT i.invoice_id, i.invoice_number, i.invoice_date, il.line_no,
+             il.description, il.charge_type, il.quantity, il.unit_price_gbp,
+             il.line_total_gbp, il.contracted_rate_gbp, il.variance_gbp, il.variance_pct,
+             il.disputable
+      FROM invoice_lines il
+      JOIN invoices i ON i.invoice_id = il.invoice_id
+      WHERE i.supplier_id = $supplier_id
+        AND i.invoice_type = 'carrier'
+        AND i.invoice_date >= CAST($date_from AS DATE)
+        AND ($variance_pct_gt IS NULL OR il.variance_pct >= $variance_pct_gt)
+      ORDER BY il.variance_gbp DESC
+    limit: 200
+    example: {supplier_id: SUP-0042, variance_pct_gt: 5}
+
+  - name: compare_invoice_to_contract_rate
+    desc: Compares carrier invoice lines against contracted rates, flags variances by charge type.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      invoice_id: {required: true}
+      charge_type: {}
+    sql: |
+      SELECT il.charge_type, count(*) AS line_count,
+             sum(il.line_total_gbp) AS invoiced_amount_gbp,
+             sum(il.contracted_rate_gbp) AS contracted_amount_gbp,
+             sum(il.variance_gbp) AS total_variance_gbp,
+             round(sum(il.variance_gbp) * 100 / NULLIF(sum(il.line_total_gbp), 0), 1) AS variance_pct,
+             count(*) FILTER (WHERE il.disputable) AS disputable_lines
+      FROM invoice_lines il
+      JOIN invoices i ON i.invoice_id = il.invoice_id
+      WHERE i.supplier_id = $supplier_id
+        AND i.invoice_id = $invoice_id
+        AND ($charge_type IS NULL OR il.charge_type = $charge_type)
+      GROUP BY il.charge_type
+      ORDER BY total_variance_gbp DESC
+    limit: 50
+    example: {supplier_id: SUP-0042, invoice_id: INV-900020}
+
+  - name: calculate_dispute_value_by_charge_type
+    desc: Disputable invoice variance value by charge category. Returns total by type and claim time limits.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      invoice_id: {required: true}
+    sql: |
+      SELECT il.charge_type, sum(il.variance_gbp) AS disputable_variance_gbp,
+             count(*) AS disputable_line_count,
+             round(sum(il.variance_gbp) * 100 / NULLIF(sum(il.line_total_gbp), 0), 1) AS variance_pct,
+             'disputable_variance = sum(variance_gbp where disputable)' AS formula
+      FROM invoice_lines il
+      JOIN invoices i ON i.invoice_id = il.invoice_id
+      WHERE i.supplier_id = $supplier_id
+        AND i.invoice_id = $invoice_id
+        AND il.disputable = true
+      GROUP BY il.charge_type
+      ORDER BY disputable_variance_gbp DESC
+    limit: 50
+    example: {supplier_id: SUP-0042, invoice_id: INV-900020}
+
+  - name: draft_dispute_letter
+    desc: Draft a carrier invoice dispute letter with line items and variance details.
+    kind: draft
+    args:
+      supplier_id: {required: true}
+      invoice_id: {required: true}
+    sql:
+      invoices: |
+        SELECT * FROM invoices WHERE supplier_id = $supplier_id AND invoice_id = $invoice_id
+      lines: |
+        SELECT charge_type, count(*) AS line_count, sum(variance_gbp) AS variance_gbp
+        FROM invoice_lines
+        WHERE invoice_id = $invoice_id AND disputable = true
+        GROUP BY charge_type
+        ORDER BY variance_gbp DESC
+    template: |
+      Dear {{ invoices[0].supplier_id | default('Carrier') }},
+
+      We are writing to formally dispute invoice {{ invoices[0].invoice_number }} dated {{ invoices[0].invoice_date }}.
+
+      Our analysis of your charges identifies the following discrepancies from our contracted rates:
+      {% for line in lines -%}
+      - {{ line.charge_type }}: {{ line.line_count }} lines totalling £{{ "%.2f" | format(line.variance_gbp) }} variance
+      {% endfor %}
+
+      We request a credit note within 14 days, or we will escalate this matter.
+
+      Yours faithfully,
+      Accounts Payable Team
+    example: {supplier_id: SUP-0042, invoice_id: INV-900020}
+
+  - name: get_supplier_payment_performance
+    desc: Our payment timeliness to a supplier (days to pay, on-time %, overdue %). Shows relationship health.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      days_back: {type: int, default: 365, desc: "Look back this many days"}
+    sql: |
+      SELECT supplier_id,
+             count(*) AS total_payments,
+             count(*) FILTER (WHERE days_to_pay <= 30) AS on_time_count,
+             round(count(*) FILTER (WHERE days_to_pay <= 30) * 100 / NULLIF(count(*), 0), 1) AS on_time_pct,
+             round(avg(days_to_pay), 1) AS avg_days_to_pay,
+             max(days_to_pay) AS max_days_to_pay,
+             sum(amount_gbp) AS total_amount_gbp
+      FROM supplier_payments
+      WHERE supplier_id = $supplier_id
+        AND payment_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
+      GROUP BY supplier_id
+    limit: 1
+    example: {supplier_id: SUP-0042}
+
+  - name: list_supplier_rebate_agreements
+    desc: Active and expired rebate agreements by supplier with thresholds, terms and accrual status.
+    kind: select
+    from: rebate_agreements
+    filters:
+      supplier_id: {}
+      status: {default: active}
+    columns: [agreement_id, supplier_id, rebate_type, threshold_amount_gbp, rebate_pct, rebate_amount_gbp, effective_from, effective_to, status]
+    order: supplier_id
+    limit: 100
+    example: {status: active}
+
+  - name: get_rebate_accrual_history
+    desc: Rebate accruals and settlements by supplier to date. Shows recognition, tracking and settlement.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      agreement_id: {}
+    sql: |
+      SELECT accrual_id, agreement_id, supplier_id, accrual_period, ytd_spend_gbp,
+             accrued_amount_gbp, settled_amount_gbp, accrual_date, settlement_date, status
+      FROM rebate_accruals
+      WHERE supplier_id = $supplier_id
+        AND ($agreement_id IS NULL OR agreement_id = $agreement_id)
+      ORDER BY accrual_date DESC
+    limit: 100
+    example: {supplier_id: SUP-0042}
+
+  - name: list_unaccrued_freight_invoices
+    desc: Freight invoices received but not yet accrued in accounting. Shows timing gaps.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-60d", desc: "Invoice date on or after"}
+      supplier_id: {desc: "Filter by supplier (optional)"}
+    sql: |
+      SELECT invoice_id, invoice_number, invoice_date, supplier_id, amount_gbp,
+             received_date, accrued, invoices.created_date
+      FROM invoices
+      WHERE invoice_type IN ('freight', 'carrier')
+        AND accrued = false
+        AND invoice_date >= CAST($date_from AS DATE)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      ORDER BY invoice_date ASC
+    limit: 100
+    example: {date_from: "-60d"}
+
+  - name: list_miscoded_freight_invoices
+    desc: Freight invoices posted to unexpected GL accounts or without cost centre coding.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+    sql: |
+      SELECT invoice_id, invoice_number, invoice_date, amount_gbp, supplier_id,
+             gl_account, cost_centre_id, invoice_type
+      FROM invoices
+      WHERE invoice_type IN ('freight', 'carrier')
+        AND (gl_account NOT IN ('5100', '5102', '5105') OR cost_centre_id IS NULL)
+        AND invoice_date >= CAST($date_from AS DATE)
+      ORDER BY invoice_date DESC
+    limit: 50
+    example: {}
+
+  - name: get_goods_receipt_vs_invoice_discrepancies
+    desc: Goods receipt vs invoice mismatches by type (quantity, price or both). Shows control gaps.
+    kind: sql
+    args:
+      po_id: {desc: "Filter by PO (optional)"}
+      status: {desc: "Filter by status (optional)"}
+    sql: |
+      SELECT variance_id, po_id, invoice_id, quantity_variance, amount_variance_gbp,
+             variance_type, status, created_date
+      FROM goods_receipt_invoice_variance
+      WHERE ($po_id IS NULL OR po_id = $po_id)
+        AND ($status IS NULL OR status = $status)
+      ORDER BY created_date DESC
+    limit: 100
+    example: {}
+
+  - name: block_supplier_payments
+    desc: Place a payment hold on a vendor. Blocks all scheduled payments until released.
+    kind: update
+    table: vendors
+    set: {on_payment_hold: true, hold_reason: "{hold_reason}"}
+    args:
+      vendor_id: {required: true}
+      hold_reason: {required: true, desc: "Reason for hold, e.g. fraud investigation"}
+    example: {vendor_id: VND-000001, hold_reason: "Fraud investigation pending"}
+
+  - name: block_vendor_for_payment
+    desc: Place a payment block on a vendor for audit investigation.
+    kind: update
+    table: vendors
+    set: {on_payment_hold: true, hold_reason: "{hold_reason}"}
+    args:
+      vendor_id: {required: true}
+      hold_reason: {required: true}
+    example: {vendor_id: VND-000001, hold_reason: "Audit anomaly investigation"}
+
+  - name: block_vendor_payment
+    desc: Block vendor payments due to fraud risk or security incident.
+    kind: update
+    table: vendors
+    set: {on_payment_hold: true, hold_reason: "{hold_reason}"}
+    args:
+      vendor_id: {required: true}
+      hold_reason: {required: true}
+    example: {vendor_id: VND-000001, hold_reason: "Security incident - account compromise"}
+
+  - name: update_invoice_gl_coding
+    desc: Changes the GL account or cost centre coded on a posted invoice.
+    kind: update
+    table: invoices
+    set: {gl_account: "{gl_account}", cost_centre_id: "{cost_centre_id}"}
+    args:
+      invoice_id: {required: true}
+      gl_account: {desc: "New GL account code"}
+      cost_centre_id: {desc: "New cost centre"}
+    example: {invoice_id: INV-000001, gl_account: "5100", cost_centre_id: "CC-2101"}
+
+  - name: update_payment_run_date
+    desc: Moves a scheduled payment run to a new date.
+    kind: update
+    table: payment_runs
+    set: {run_date: "{run_date}"}
+    args:
+      payment_run_id: {required: true}
+      run_date: {required: true, desc: "New payment date"}
+    example: {payment_run_id: RUN-000001, run_date: "+7d"}
+
+  - name: cancel_payment_run
+    desc: Cancels a scheduled payment run. All invoices remain in the system for later processing.
+    kind: update
+    table: payment_runs
+    set: {status: cancelled, cancellation_reason: "{cancellation_reason}"}
+    args:
+      payment_run_id: {required: true}
+      cancellation_reason: {required: true, desc: Reason for cancellation}
+    example: {payment_run_id: RUN-000001, cancellation_reason: "Liquidity constraint"}
+
+  - name: get_payment_runs_for_changed_vendors
+    desc: Payments made or queued to vendors whose bank details recently changed.
+    kind: sql
+    args:
+      days_back: {type: int, default: 90, desc: "Look back this many days"}
+    sql: |
+      SELECT p.payment_id, p.supplier_id, p.vendor_id, p.amount_gbp, p.payment_date,
+             b.change_id, b.old_bank_account, b.new_bank_account, b.requested_date
+      FROM supplier_payments p
+      JOIN bank_detail_changes b ON b.vendor_id = p.vendor_id
+      WHERE p.payment_date >= b.requested_date
+        AND p.payment_date <= CAST($as_of AS DATE)
+        AND b.requested_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
+      ORDER BY b.requested_date DESC
+    limit: 100
+    example: {}
+
+  - name: list_vendor_master_changes
+    desc: New vendors and bank detail changes with dates and approvals. For audit trail and fraud screening.
+    kind: sql
+    args:
+      days_back: {type: int, default: 180, desc: "Look back this many days"}
+    sql: |
+      SELECT vendor_id, supplier_id, name, 'new_vendor' AS change_type, updated_at
+      FROM vendors
+      WHERE updated_at >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
+      UNION ALL
+      SELECT vendor_id, NULL, old_bank_account || ' -> ' || new_bank_account AS name,
+             'bank_detail_change' AS change_type, CAST(requested_date AS TIMESTAMP)
+      FROM bank_detail_changes
+      WHERE requested_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
+      ORDER BY updated_at DESC
+    limit: 100
+    example: {}
