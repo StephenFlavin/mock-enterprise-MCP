@@ -455,6 +455,14 @@ def generate(g):
         "SUP-0063": (15, 10400, None, None, "submitted", 60, "missing"), "SUP-0046": (33, 8300, 20, 2030, "accepted", 82, "verified"),
         "SUP-0028": (18, 7600, 10, 2030, "pending_review", 70, "self_reported"), "SUP-0016": (25, 12100, 20, 2030, "accepted", 83, "verified"),
     }
+    # The current top 20 by spend (master spend is derived from the last 12 months of POs) get the same mix of profiles:
+    # the story tuples above are handed out in spend order to those top-20 suppliers that do not already have one.
+    live_by_spend = sorted((x for x in suppliers if x["status"] not in ("exited", "blocked")),
+                           key=lambda x: (-float(x["annual_spend_gbp"] or 0), x["supplier_id"]))
+    templates = list(esg_story.values())
+    for k, sid in enumerate(x["supplier_id"] for x in live_by_spend[:20] if x["supplier_id"] not in esg_story
+                            and (x["supplier_id"], 2025) not in seeded_esg):
+        esg_story[sid] = templates[k % len(templates)]
     for e in supplier_esg:
         st = esg_story.get(e["supplier_id"])
         if st and e["submission_year"] == 2025:
