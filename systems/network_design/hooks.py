@@ -210,7 +210,7 @@ def calc_redundancy_cost(ctx, scenario_id, target_redundancy_score=80.0):
 def calc_peak_capacity_risk(ctx, scenario_id, peak_volume_uplift_pct=25.0):
     """Peak capacity risk for a scenario."""
     profiles = ctx.q("SELECT site_id, site_label, peak_capacity_units_day AS peak, avg_daily_volume_units AS avg "
-                     "FROM dc_profiles WHERE scenario_id = $sid", sid=scenario_id)
+                     "FROM dc_profiles WHERE scenario_id = $sid ORDER BY site_id", sid=scenario_id)
     if not profiles:
         return {"error": f"No DC profiles for scenario {scenario_id}"}
     cap = sum(p["peak"] for p in profiles)
@@ -352,13 +352,15 @@ def calc_route_cost_comparison(ctx, origin_site, dest_site, weekly_volume_units=
                "fixed_cost_gbp_per_week": r["fixed_cost_gbp_per_week"], "weekly_volume_units": round(vol),
                "normal_total_gbp_per_unit": round(normal, 2), "peak_total_gbp_per_unit": round(peak, 2),
                "peak_handling_uplift_pct": r["peak_handling_uplift_pct"], "peak_transport_uplift_pct": r["peak_transport_uplift_pct"]}
+        row["breakeven_weekly_volume_normal"] = None
+        row["breakeven_weekly_volume_peak"] = None
         if direct and r is not direct:
             dvar = direct["handling_gbp_per_unit"] + direct["transport_gbp_per_unit"] + direct["inventory_holding_gbp_per_unit"]
             dpvar = (direct["handling_gbp_per_unit"] * (1 + direct["peak_handling_uplift_pct"] / 100.0)
                      + direct["transport_gbp_per_unit"] * (1 + direct["peak_transport_uplift_pct"] / 100.0)
                      + direct["inventory_holding_gbp_per_unit"])
-            row["breakeven_weekly_volume_normal"] = round(r["fixed_cost_gbp_per_week"] / (dvar - var)) if dvar > var else None
-            row["breakeven_weekly_volume_peak"] = round(r["fixed_cost_gbp_per_week"] / (dpvar - pvar)) if dpvar > pvar else None
+            row["breakeven_weekly_volume_normal"] = round(r["fixed_cost_gbp_per_week"] / (dvar - var)) if dvar > var else "never cheaper than direct"
+            row["breakeven_weekly_volume_peak"] = round(r["fixed_cost_gbp_per_week"] / (dpvar - pvar)) if dpvar > pvar else "never cheaper than direct"
         rows.append(row)
     cn = min(rows, key=lambda x: x["normal_total_gbp_per_unit"])["route_type"]
     cp = min(rows, key=lambda x: x["peak_total_gbp_per_unit"])["route_type"]

@@ -433,10 +433,12 @@ tools:
     args:
       scenario_id: {desc: "Scenario to simulate, e.g. NS-000002; omit for all network design options"}
       volume_growth_pct: {type: float, desc: "Volume growth from today's baseline, %", default: 0}
+      ecommerce_share_pct: {type: float, desc: "E-commerce share of volume, %; today's share is 22", default: 22}
     sql: |
       WITH m AS (
         SELECT n.*, round(n.annual_handling_cost_gbp * (1 + $volume_growth_pct / 100.0)
                         + n.annual_transport_cost_gbp * (1 + $volume_growth_pct / 100.0)
+                          * (1 + n.ecom_transport_uplift_pct / 100.0 * greatest(0, $ecommerce_share_pct - 22))
                         + n.annual_rent_gbp + n.annual_overhead_gbp
                         + n.annual_labour_cost_gbp * (0.6 + 0.4 * (1 + $volume_growth_pct / 100.0))) AS cost_at_growth
         FROM network_scenarios n WHERE n.status = 'active'
@@ -605,18 +607,18 @@ tools:
       FINANCIAL IMPACT (per year)
       Baseline total cost: {{ cmp[0].base_total | money }}
       Proposed total cost: {{ cmp[0].prop_total | money }}
-      Annual saving: {{ cmp[0].annual_saving | money }}{% if cmp[0].annual_saving < 0 %} (a cost increase){% endif %}
+      Annual saving: {{ cmp[0].annual_saving | money }} ({{ 'saving' if cmp[0].annual_saving > 0 else 'cost increase' }})
       Handling change: {{ cmp[0].handling_change | money }}; transport change: {{ cmp[0].transport_change | money }}; rent change: {{ cmp[0].rent_change | money }}; labour change: {{ cmp[0].labour_change | money }}
-      One-off cost: {{ cmp[0].setup_cost | money }}{% if cmp[0].annual_saving > 0 %}; payback {{ (cmp[0].setup_cost / cmp[0].annual_saving) | num(1) }} years{% endif %}
+      One-off cost: {{ cmp[0].setup_cost | money }}; payback: {{ ((cmp[0].setup_cost / cmp[0].annual_saving) | num(1) ~ ' years') if cmp[0].annual_saving > 0 else 'none (no annual saving)' }}
 
       SERVICE AND RESILIENCE
       Delivery days to stores: {{ cmp[0].base_store_days }} to {{ cmp[0].prop_store_days }}
       Delivery days to customers: {{ cmp[0].base_cust_days }} to {{ cmp[0].prop_cust_days }}
       Redundancy score: {{ cmp[0].base_red | num(0) }} to {{ cmp[0].prop_red | num(0) }} out of 100
-      Peak (+25% volume): needs {{ peak[0].peak_daily | num(0) }} units a day against {{ peak[0].peak_cap | num(0) }} capacity ({% if peak[0].spare_at_peak < 0 %}shortfall of {{ (0 - peak[0].spare_at_peak) | num(0) }} units a day{% else %}spare {{ peak[0].spare_at_peak | num(0) }} units a day{% endif %})
+      Peak (+25% volume): needs {{ peak[0].peak_daily | num(0) }} units a day against {{ peak[0].peak_cap | num(0) }} capacity ({{ ('shortfall of ' ~ ((0 - peak[0].spare_at_peak) | num(0)) ~ ' units a day') if peak[0].spare_at_peak < 0 else ('spare ' ~ (peak[0].spare_at_peak | num(0)) ~ ' units a day') }})
 
       RECOMMENDATION
-      {% if cmp[0].annual_saving > 0 %}Proceed subject to a peak capacity plan and a redundancy plan.{% else %}Do not proceed on cost grounds alone.{% endif %}
+      {{ 'Proceed only with a peak capacity plan and a redundancy plan in place.' if cmp[0].annual_saving > 0 else 'Do not proceed on cost grounds alone.' }}
 
       ASSUMPTIONS
       - Volume held at today's level (about 5.0 million units a year); peak uplift 25%
