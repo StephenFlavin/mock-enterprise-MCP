@@ -180,6 +180,9 @@ def generate(g):
     program("FAC-0072", ["SKU-100637", "SKU-100644", "SKU-100651"], 5, 2.8, 80, 12, 4)
     program("FAC-0027", ["PF-220"], 4, 5.0, 80, 12, 3)
     program("FAC-0027", ["K-1700"], 4, 4.2, 78, 10, 0)
+    # 06:54:Q1 kettle K-1700: quality incidents over the last eight weeks, tied to the 55 and 33 day old lots
+    incident("K-1700", "FAC-0027", "Glass jug hairline cracks near the base seal after repeated boil cycles", "high", "investigating", 38)
+    incident("K-1700", "FAC-0027", "Water leaking at the base seal during first-use test", "high", "open", 20)
     # ---- 05:42:Q5 shoe sole separation (SKU-100301 at FAC-0081): lots from the new sole batches fail increasingly ----------
     for batch, d, (iu, idf), (fu, fdf), st, disp in (
             ("BATCH-SHOE-001", 108, (80, 2), (150, 3), "released", "release"),
@@ -381,7 +384,9 @@ def generate(g):
     for skus_, pack, rate, dtype, ship in ((["SKU-102548", "SKU-102555", "SKU-103808"], "polybag", 6.8, "torn", (700, 1100)),
                                            (["SKU-104795", "SKU-104802", "SKU-100994"], "carton", 2.1, "crushed", (900, 1400)),
                                            (["SKU-100259", "SKU-100266"], "padded_mailer", 3.4, "leaking", (500, 800)),
-                                           (["SKU-101414", "SKU-101421"], "rigid_box", 0.5, "dented", (300, 500))):
+                                           (["SKU-101414", "SKU-101421"], "rigid_box", 0.5, "dented", (300, 500)),
+                                           # 06:55:Q3 flexible pouches sit between mailers and rigid boxes on protection
+                                           (["SKU-100091", "SKU-100098", "SKU-100105"], "pouch", 3.9, "punctured", (400, 700))):
         for sku in skus_:
             for i, wk in enumerate(dweeks):
                 damage(sku, pack, "ecommerce", wk, r.randint(*ship), max(0.1, rate + (MULT[(i + len(sku) + 2) % 7] - 1.0) * 2 + r.gauss(0, 0.3)), dtype)
