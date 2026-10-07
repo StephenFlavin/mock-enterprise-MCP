@@ -150,7 +150,7 @@ def generate(g):
         "SUP-0013": (78, 83, 64, 61, 52, 80),
         # long-standing weak performers on small spend (the obvious consolidation exits)
         "SUP-0005": (60, 56, 61, 66, 54, 64), "SUP-0048": (58, 55, 58, 72, 50, 62),
-        "SUP-0045": (62, 57, 60, 68, 52, 66), "SUP-0043": (61, 58, 62, 64, 55, 67),
+        "SUP-0071": (62, 57, 60, 68, 52, 66), "SUP-0059": (61, 58, 62, 64, 55, 67),
     }
     RISK_Q = {"low": 87, "medium": 82, "high": 76, "critical": 68}
     RISK_C = {"low": 88, "medium": 83, "high": 77, "critical": 69}
@@ -195,7 +195,7 @@ def generate(g):
     for s in product_live:
         r = g.rng_for("mgmt", s["supplier_id"])
         sid, spend = s["supplier_id"], float(s["annual_spend_gbp"])
-        heavy = 1.7 if sid in ("SUP-0005", "SUP-0048", "SUP-0045", "SUP-0043") else 1.0
+        heavy = 1.7 if sid in ("SUP-0005", "SUP-0048", "SUP-0071", "SUP-0059") else 1.0
         hours = int((70 + 26 * (spend / 1e5) ** 0.5 + r.randint(-12, 18)) * heavy)
         audit = round((1800 + 140 * (spend / 1e5) ** 0.5) * (1.8 if heavy > 1 else 1) + r.randint(0, 900), -1)
         far = s["country"] in ("CN", "VN", "IN", "BD")

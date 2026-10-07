@@ -21,7 +21,7 @@ INDIRECT = {
 SERVICE_RATE = {"Facilities": 35.0, "Energy": 190.0, "Packaging": 0.42}
 
 # monthly slope of a supplier's spend profile over the last 12 months (negative = losing volume)
-SLOPE = {"SUP-0027": -0.55, "SUP-0013": -0.35, "SUP-0055": 0.9, "SUP-0062": 0.7, "SUP-0074": 0.15}
+SLOPE = {"SUP-0023": -0.9, "SUP-0027": -0.55, "SUP-0013": -0.35, "SUP-0055": 0.9, "SUP-0062": 0.7, "SUP-0074": 0.15}
 
 SEASON = {"Home": [1, 1, 1, 1, 1, 1, 1, 1.05, 1.1, 1.2, 1.25, 1.1], "Kids": [1, 1, 1, 1, 1, 1.05, 1.2, 1.3, 1.1, 1, 1, 1],
           "Womenswear": [1, 1, 1.1, 1.15, 1.1, 1, 1, 1.05, 1.15, 1.1, 1, 1], "Menswear": [1, 1, 1.05, 1.1, 1.05, 1, 1, 1.05, 1.15, 1.1, 1, 1]}

@@ -112,8 +112,8 @@ SUP_STORY["SUP-0067"] = {
     "claim_window": dict(shortage_claim_days=7, damage_claim_days=7, quality_claim_days=60,
                          summary="Shortage and damage claims within 7 days of goods receipt; quality claims within 60 days."),
 }
-# 04:38:Q4: three of the top-30 contracts by spend carry the clauses that bite if costs spike or the supplier fails
-SUP_STORY["SUP-0057"] = {
+# 04:38:Q4: three of the top-30 contracts by spend (SUP-0041, SUP-0076, SUP-0045: ranks 1, 4 and 6 by master annual spend) carry the clauses that bite if costs spike or the supplier fails
+SUP_STORY["SUP-0041"] = {
     "price_review": dict(frequency="quarterly", max_increase_pct=12, trigger="quarterly fabric and labour cost index move over 3%", notice_days=30,
                          summary="Quarterly price review; increases up to 12% a quarter on 30 days' notice."),
     "force_majeure": dict(max_suspension_days=120, notice_hours=72,
@@ -121,7 +121,7 @@ SUP_STORY["SUP-0057"] = {
     "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
                         summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
 }
-SUP_STORY["SUP-0049"] = {
+SUP_STORY["SUP-0076"] = {
     "price_review": dict(frequency="annual", max_increase_pct=10, trigger="annual review or material cost index move over 5%", notice_days=30,
                          summary="Annual price review plus mid-year reopener; increases up to 10% on 30 days' notice."),
     "force_majeure": dict(max_suspension_days=90, notice_hours=72,
@@ -129,7 +129,7 @@ SUP_STORY["SUP-0049"] = {
     "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
                         summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
 }
-SUP_STORY["SUP-0036"] = {
+SUP_STORY["SUP-0045"] = {
     "price_review": dict(frequency="annual", max_increase_pct=8, trigger="annual review or material cost index move over 5%", notice_days=45,
                          summary="Annual price review; increases up to 8% on 45 days' notice."),
     "force_majeure": dict(max_suspension_days=90, notice_hours=72,
@@ -137,7 +137,7 @@ SUP_STORY["SUP-0036"] = {
     "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
                         summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
 }
-SHORT_NOTICE = {"SUP-0035": 14}  # 04:38:Q4: the shortest renewal notice among the top-30 contracts (days)
+SHORT_NOTICE = {"SUP-0061": 14}  # 04:38:Q4: the shortest renewal notice among the top-30 contracts (days)
 
 # 04:38:Q6 supplier SUP-0070 missed a critical delivery (PO-2026-004982, due early September): strong delay remedies
 SUP_STORY["SUP-0070"] = {
