@@ -12,7 +12,8 @@ def generate(g):
 
     store_perf = []
     product_perf = []
-    targets = []
+    store_targets = []
+    product_targets = []
     dq_issues = []
     reports = []
 
@@ -57,9 +58,8 @@ def generate(g):
             })
 
             # Add target
-            targets.append({
-                "target_type": "store",
-                "entity_id": site["site_id"],
+            store_targets.append({
+                "site_id": site["site_id"],
                 "period": period,
                 "sales_units_target": int(store_perf[-1]["sales_units"] * r.uniform(0.95, 1.05)),
                 "sales_gbp_target": store_perf[-1]["sales_gbp"] * r.uniform(0.95, 1.05),
@@ -95,9 +95,8 @@ def generate(g):
             })
 
             # Add target
-            targets.append({
-                "target_type": "product",
-                "entity_id": prod["sku"],
+            product_targets.append({
+                "sku": prod["sku"],
                 "period": period,
                 "sales_units_target": int(product_perf[-1]["sales_units"] * r.uniform(0.90, 1.10)),
                 "sales_gbp_target": product_perf[-1]["sales_gbp"] * r.uniform(0.90, 1.10),

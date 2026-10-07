@@ -56,7 +56,6 @@ def generate(g):
         edi_messages.append({
             "message_id": f"EDI-{len(edi_messages) + 1:06d}",
             "message_type": msg_type,
-            "partner_id": r.choice([s["supplier_id"] for s in suppliers]),
             "supplier_id": r.choice([s["supplier_id"] for s in suppliers]),
             "sent_at": sent_time,
             "status": status,
