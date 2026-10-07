@@ -109,12 +109,12 @@ def generate(g):
 
     # Generate cycle count results (for completed counts)
     for cc in cycle_counts:
-        if cc["status"] == "completed" and r.random() < 0.7:
+        if cc["status"] == "completed" and r.random() < 0.7 and cc["location_id"]:
             for _ in range(r.randint(3, 10)):
                 cycle_results.append({
                     "cycle_count_id": cc["cycle_count_id"],
                     "sku": r.choice(skus)["sku"],
-                    "location_id": cc["location_id"] or f"{cc['site_id']}-A-01-01",
+                    "location_id": cc["location_id"],
                     "system_qty": r.randint(0, 100),
                     "counted_qty": r.randint(0, 100),
                     "variance": r.randint(-10, 10),
