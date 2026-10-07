@@ -3,128 +3,165 @@
 
 - question: "02:13:Q2"
   story: >
-    Q3 air freight invoices show spend breakdown by supplier and reason code,
-    with avoidability analysis showing split between avoidable and unavoidable.
+    Air freight in the last 90 days totals GBP 420,000 over 11 invoices. Causes: supplier_late 150k, demand_spike 120k,
+    store_emergency 90k, quality_issue 40k, cancelled_order 20k. GBP 246,000 (58.6%) is avoidable. The top avoidable
+    suppliers are SUP-0012 (90k), SUP-0015 (59k) and SUP-0021 (38k). Older history sits outside the 90 day window.
   checks:
     - tool: get_air_spend_by_supplier
-      args: {date_from: "-90d"}
-      expect: ["air_reason", "total_spend"]
+      args: {date_from: "-90d", group_by: supplier}
+      expect: ["SUP-0012", "SUP-0015", "SUP-0021", "90000", "59000", "38000"]
     - tool: calculate_avoidable_air_spend
       args: {date_from: "-90d"}
-      expect: ["avoidable_spend", "unavoidable", "formula"]
+      expect: ["TOTAL", "420000", "246000", "174000", "58.6", "supplier_late", "150000"]
 
 - question: "02:20:Q1"
   story: >
-    12 months of carrier invoices show overcharges on surcharges and accessorials.
-    Tool returns line details with variance analysis for dispute calculation.
+    Midshires Transport (CAR-002) sent 12 four-weekly invoices. Disputable overcharges total GBP 32,905: weight
+    adjustments 11,035, service level 10,860, surcharges 7,240, accessorials 3,770. The largest single invoice is
+    INV-000006 with 5,850 disputable (surcharge 960, accessorial 710, service level 4,180). Fuel surcharge and linehaul
+    lines match the contract.
   checks:
     - tool: list_carrier_invoice_lines
-      args: {supplier_id: "SUP-0001", variance_pct_gt: 1}
-      expect: ["charge_type", "variance"]
-    - tool: get_accounts_payable_invoices_for_supplier
-      args: {supplier_id: "SUP-0001"}
-      expect: ["invoice"]
+      args: {carrier_id: CAR-002, variance_pct_gt: 20}
+      expect: ["service_level", "4180", "INV-000006"]
+    - tool: compare_invoice_to_contract_rate
+      args: {carrier_id: CAR-002, group_by: invoice}
+      expect: ["INV-000006", "5850"]
+    - tool: calculate_dispute_value_by_charge_type
+      args: {carrier_id: CAR-002}
+      expect: ["weight_variance", "11035", "service_level", "10860", "TOTAL", "32905"]
+    - tool: draft_dispute_letter
+      args: {carrier_id: CAR-002, invoice_id: INV-000006}
+      expect: ["Midshires Transport", "5,850"]
 
 - question: "04:35:Q1"
   story: >
-    Supplier performance check shows payment timeliness and open transactions.
+    Supplier S is SUP-0053 (60 day terms). Our payment record to them is clean: 9 of 10 payments inside terms, one
+    paid 63 days after invoice, average 56 days, nothing overdue. So late payment by us is not the cause of their slip.
   checks:
     - tool: get_supplier_payment_performance
-      args: {supplier_id: "SUP-0001"}
-      expect: ["supplier_id"]
-    - tool: get_open_transactions_for_vendor
-      args: {vendor_id: "VND-000001"}
-      expect: ["vendor_id"]
+      args: {supplier_id: SUP-0053}
+      expect: ["SUP-0053", "90", "56", "63"]
 
 - question: "04:35:Q5"
   story: >
-    Rebate agreement tracking shows accrual history and settlement status.
+    Supplier T is SUP-0012 (30 day terms). We pay them late and it is getting worse: 7 of 11 payments late (36.4% on
+    time), average 37.5 days, longest 58 days, plus one invoice of 13,800 still open and overdue. Their complaint about
+    our payments is fair.
   checks:
-    - tool: list_supplier_rebate_agreements
-      args: {supplier_id: "SUP-0001"}
-      expect: ["agreement_id"]
-    - tool: get_rebate_accrual_history
-      args: {supplier_id: "SUP-0001"}
-      expect: ["accrual"]
+    - tool: get_supplier_payment_performance
+      args: {supplier_id: SUP-0012}
+      expect: ["SUP-0012", "36.4", "37.5", "58", "13800"]
 
 - question: "04:36:Q5"
   story: >
-    Vendor fraud screening identifies high-risk vendors with fraud indicators.
+    Four vendors score 70 or more: VND-000048 (88, shares a bank account and was paid after a bank change),
+    VND-000023, VND-000060 and VND-000071. VND-000034 and VND-000062 (Wilson Garments) are duplicates rather than fraud;
+    VND-000062 has an open invoice of 37,600 so it is left until later. VND-000048 has open invoices 41,200 and 18,750.
+    Blocking VND-000048 sets the hold.
   checks:
     - tool: list_vendor_fraud_indicators
-      args: {fraud_risk_score: 50}
-      expect: ["fraud_risk_score"]
-    - tool: list_vendor_fraud_indicators
-      args: {}
-      expect: ["vendor_id"]
+      args: {fraud_risk_score: 70}
+      expect: ["VND-000048", "shared_bank_account", "VND-000023", "VND-000060", "VND-000071"]
+    - tool: get_open_transactions_for_vendor
+      args: {vendor_id: VND-000048}
+      expect: ["41200", "18750"]
+    - tool: get_open_transactions_for_vendor
+      args: {vendor_id: VND-000062}
+      expect: ["37600"]
+    - tool: block_supplier_payments
+      args: {vendor_id: VND-000048, hold_reason: "Possible fraud - shared bank account"}
+      expect: ["on_payment_hold", "true"]
 
 - question: "04:37:Q3"
   story: >
-    Supplier invoice retrieval by date range and payment status for budget variance analysis.
+    Facilities suppliers SUP-0014, SUP-0026 and SUP-0067 are invoiced monthly. SUP-0067 also has three one-off roof
+    replacement project invoices in spring (287,437, 259,839 and 179,737) coded to GL 6450, on top of about 19k a month.
   checks:
     - tool: get_accounts_payable_invoices_for_supplier
-      args: {supplier_id: "SUP-0001", date_from: "-90d"}
-      expect: ["invoice"]
+      args: {supplier_id: SUP-0067}
+      expect: ["287437", "259839", "179737", "one-off project", "6450"]
+    - tool: get_accounts_payable_invoices_for_supplier
+      args: {supplier_id: SUP-0026}
+      expect: ["Monthly facilities management service", "CC-2102"]
 
 - question: "04:41:Q3"
   story: >
-    Vendor master controls review showing approval requirements by risk tier.
+    SUP-0023 (Morley Industries, registered in CN) has its bank account in HK: fraud score 82 with bank_country_mismatch
+    and unverified_bank_account. It is not yet on hold; blocking VND-000023 sets the hold.
   checks:
     - tool: get_vendor_master_controls
-      args: {}
-      expect: ["vendor_id"]
+      args: {supplier_id: SUP-0023}
+      expect: ["VND-000023", "CN", "HK", "false"]
+    - tool: block_supplier_payments
+      args: {vendor_id: VND-000023, hold_reason: "Bank country differs from registered address, pending verification"}
+      expect: ["on_payment_hold", "pending verification"]
 
 - question: "04:41:Q6"
   story: >
-    Fraud indicator analysis for onboarding control design.
+    Fraud indicators seen on our own vendors: shared_bank_account, bank_country_mismatch, unverified_bank_account,
+    new_vendor, payment_within_days_of_creation, po_box_address, duplicate_tax_id, round_sum_invoices, recent_bank_change.
   checks:
     - tool: list_vendor_fraud_indicators
       args: {}
-      expect: ["fraud_risk_score"]
+      expect: ["shared_bank_account", "bank_country_mismatch", "payment_within_days_of_creation", "duplicate_tax_id", "round_sum_invoices"]
+    - tool: list_vendor_fraud_indicators
+      args: {fraud_indicators: new_vendor}
+      expect: ["VND-000060", "VND-000034"]
 
 - question: "07:61:Q3"
   story: >
-    Freight cost reconciliation identifying unaccrued and miscoded invoices for GL correction.
+    Volume rebates: SUP-0001 (threshold 1,000,000 at 2.5%), SUP-0015 (3,000,000 at 1.5%) and SUP-0008 (1,800,000 at 3%).
+    Last year SUP-0008 was accrued 12,000 on a 2.2m forecast but bought 2.05m and settled 7,500, leaving 4,500 to release.
+    This year SUP-0008 has 6,000 accrued with spend of 960,000 against a 1,800,000 threshold.
   checks:
-    - tool: list_unaccrued_freight_invoices
-      args: {date_from: "-90d"}
-      expect: ["invoice_id"]
-    - tool: list_miscoded_freight_invoices
-      args: {date_from: "-90d"}
-      expect: ["gl_account"]
+    - tool: list_supplier_rebate_agreements
+      args: {rebate_type: volume, status: active}
+      expect: ["RBA-900001", "1000000", "RBA-900003", "1800000", "RBA-900002", "3000000"]
+    - tool: get_rebate_accrual_history
+      args: {supplier_id: SUP-0008}
+      expect: ["12000", "7500", "4500", "960000", "6000"]
 
 - question: "07:61:Q5"
   story: >
-    Accrual processing for unaccrued freight invoices.
+    Freight invoiced but not accrued in the last four weeks totals GBP 208,822: CAR-008 66,981, CAR-001 63,254,
+    CAR-002 59,896 and CAR-006 18,691. Four freight invoices are miscoded (INV-902001 on GL 5000, INV-902002 on 6100,
+    INV-902004 on 4000, INV-902003 with no cost centre), 39,130 in all. Recoding INV-902001 to 5102 fixes one.
   checks:
     - tool: list_unaccrued_freight_invoices
-      args: {date_from: "-90d"}
-      expect: ["accrued"]
+      args: {date_from: "-28d"}
+      expect: ["CAR-008", "CAR-001", "CAR-002", "CAR-006", "208822"]
+    - tool: list_miscoded_freight_invoices
+      args: {}
+      expect: ["INV-902001", "5000", "INV-902002", "6100", "INV-902003", "missing cost centre", "39130"]
+    - tool: update_invoice_gl_coding
+      args: {invoice_id: INV-902001, gl_account: "5102"}
+      expect: ["gl_account", "5000", "5102"]
 
 - question: "07:66:Q5"
   story: >
-    Payment run scheduling and liquidity management with date changes and run cancellation.
+    Scheduled payment runs: RUN-900001 (Friday this week, 1.64m regular) and RUN-900002 (the Friday after, 420k ad hoc,
+    non-critical). The non-critical run can be moved a week or cancelled.
   checks:
-    - tool: get_payment_runs_for_changed_vendors
-      args: {days_back: 90}
-      expect: ["payment", "change"]
     - tool: update_payment_run_date
-      args: {payment_run_id: "RUN-000001", run_date: "+7d"}
-      expect: ["2026"]
+      args: {payment_run_id: RUN-900002, run_date: "+14d"}
+      expect: ["run_date", "RUN-900002"]
     - tool: cancel_payment_run
-      args: {payment_run_id: "RUN-000008", cancellation_reason: "Liquidity constraint"}
-      expect: ["cancelled"]
+      args: {payment_run_id: RUN-900002, cancellation_reason: "Liquidity constraint"}
+      expect: ["cancelled", "Liquidity constraint"]
 
 - question: "07:68:Q1"
   story: >
-    Audit analysis of vendor master changes and fraud anomalies with payment blocks.
+    Vendor master changes in the last year: VND-000048 changed bank country VN to SG with 1 of 3 required approvals and
+    was paid 38,400 two days later; VND-000071 changed bank (1 of 3 approvals), paid 29,950 three days later. New
+    vendors VND-000060 (paid 61,500 seven days after creation) and VND-000034 (paid 74,200 five days after creation).
   checks:
     - tool: list_vendor_master_changes
-      args: {}
-      expect: ["vendor_id"]
-    - tool: list_vendor_fraud_indicators
-      args: {}
-      expect: ["fraud_risk_score"]
+      args: {days_back: 365}
+      expect: ["VND-000048", "38400", "VND-000071", "29950", "VND-000060", "61500", "VND-000034", "74200"]
+    - tool: block_vendor_for_payment
+      args: {vendor_id: VND-000071, hold_reason: "Bank change with 1 of 3 approvals before payment"}
+      expect: ["on_payment_hold", "true"]
 
 - question: "07:68:Q4"
   story: >

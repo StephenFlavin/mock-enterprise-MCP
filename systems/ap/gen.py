@@ -225,8 +225,7 @@ def generate(g):
     for k in range(12):
         over = {"surcharge": s_o[k], "accessorial": a_o[k], "weight_variance": w_o[k], "service_level": v_o[k],
                 "rounding": rounding[k], "base": 41000 + 1150 * ((k * 5) % 7)}
-        carrier_invoice("CAR-002", 8 + 28 * k, over, total=59896.0 if k == 0 else None, accrued=k != 0, tag="MID",
-                        dispute="Weight and service level overcharge" if k == 5 else None)
+        carrier_invoice("CAR-002", 8 + 28 * k, over, total=59896.0 if k == 0 else None, accrued=k != 0, tag="MID")
     # CAR-001 Northline: Aug surcharge not in contract (GBP 1,250.50); latest invoice unaccrued (63,254)
     for k in range(6):
         over = {"surcharge": 1250.5 if k == 2 else 0.0, "rounding": [2.1, -1.4, 3.3, 0.9, -2.2, 1.7][k], "base": 36000 + 900 * k}
@@ -237,7 +236,7 @@ def generate(g):
         carrier_invoice("CAR-003", 12 + 28 * k, over, accrued=True, tag="PEN", cc="CC-2124")
 
     # freight (air / ocean) invoices received but not accrued: CAR-008 66,981 and CAR-006 18,691
-    for carrier, items in (("CAR-008", [(20, 28300.0), (13, 21450.0), (6, 17231.0)]), ("CAR-006", [(22, 11200.0), (9, 7491.0)])):
+    for carrier, items in (("CAR-008", [(20, 28300.0), (13, 21450.0), (6, 17231.0)]), ("CAR-006", [(18, 11200.0), (9, 7491.0)])):
         for days, amt in items:
             add_invoice(carrier=carrier, itype="freight", number=f"FRT-{r.randint(100000, 999999)}", inv_date=D(days), amount=amt,
                         match="pending", gl="5105" if carrier == "CAR-008" else "5100", cc="CC-2124", accrued=False,
@@ -292,7 +291,7 @@ def generate(g):
     for i, days in enumerate(p53):
         add_invoice(supplier="SUP-0053", inv_date=D(days), amount=float(a53[i]), gl="5000", cc="CC-2113", match="matched",
                     desc="Goods invoice", pay_days=d53[i] if i < 10 else None)
-    p12 = [350, 322, 294, 266, 238, 210, 182, 154, 126, 98, 70, 56, 28, 14]
+    p12 = [350, 322, 294, 266, 238, 210, 182, 154, 126, 98, 70, 56, 18, 9]
     a12 = [21500, 18900, 24300, 19800, 22700, 20400, 23100, 25800, 21900, 26500, 24100, 13800, 27400, 22600]
     d12 = [26, 28, 29, 30, 33, 35, 34, 41, 46, 52, 58]
     for i, days in enumerate(p12):
