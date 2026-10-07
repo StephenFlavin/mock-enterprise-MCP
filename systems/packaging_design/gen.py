@@ -10,7 +10,7 @@ STORY_SKUS = {
     "SKU-100532", "SKU-100658", "SKU-100091", "SKU-101904", "SKU-103164", "SKU-100112",
     "K-1700", "SKU-104123", "SKU-104795", "SKU-100539",
 }
-STORY_STYLES = {"STY-4012", "STY-7731", "STY-5520"}
+STORY_STYLES = {"STY-4012", "STY-9509", "STY-7731", "STY-5520"}
 
 MATERIALS = {  # key: (cost base GBP, recycled %, recyclable)
     "corrugated": (0.85, 70, True),

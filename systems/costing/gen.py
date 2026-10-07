@@ -74,13 +74,14 @@ STORY_COSTING = {  # sku -> overrides
     "SKU-103164": {"quantity_units": 2000, "weekly_demand_units": 333, "late_sales_lost_pct": 78, "notes": "Winter promo line, 6,000 units across the three sizes of STY-7731"},
     "SKU-103171": {"quantity_units": 2000, "weekly_demand_units": 334, "late_sales_lost_pct": 78, "notes": "Winter promo line, 6,000 units across the three sizes of STY-7731"},
 }
-# STORY: 750ml insulated bottle stand-in (Drinkware SKU-102590), cost sheet totals 20.82
-BOTTLE = "SKU-102590"
-BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 7.10), ("plastics", "PP lid and silicone seal", 2.30),
-                ("trimming", "Powder coat and vacuum insulation", 2.40), ("labour_cut", "Laser cutting", 0.50),
-                ("labour_sew", "Welding and assembly", 0.95), ("labour_finish", "Polish and test", 0.45),
-                ("packing", "Gift box", 0.85), ("inbound_freight", "Inbound freight", 2.35), ("tooling", "Tooling amortisation", 1.95),
-                ("overhead", "Overhead allocation", 1.97)]
+# STORY: new 750ml insulated bottle (Drinkware SKU-106307, STY-9501, Supplier A SUP-0004), cost sheet totals the 4.80 quote
+BOTTLE = "SKU-106307"
+BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 1.38), ("plastics", "PP lid and silicone seal", 0.30),
+                ("trimming", "Powder coat finish", 0.55), ("labour_cut", "Laser cutting", 0.30),
+                ("labour_sew", "Welding and assembly", 0.60), ("labour_finish", "Polish and test", 0.30),
+                ("packing", "Individual carton", 0.15), ("inbound_freight", "Inland freight to port", 0.25),
+                ("tooling", "Tooling amortisation (14,000 over 50,000 units)", 0.28),
+                ("overhead", "Overhead and supplier margin", 0.69)]
 # STORY: SKU-103157 is on clearance, so it carries heavy markdown (plan markdown moves with it, so variance to plan is unchanged)
 STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0,
                    "SKU-100077": 70.0, "SKU-100070": 66.6, "SKU-100063": 63.5, "SKU-100056": 61.7, "SKU-100049": 58.4}
@@ -134,8 +135,8 @@ RECYCLED = [  # material_type, commodity, recycled, virgin, unit, recycled cost,
 # master products added after the original build (STY-9501..9510): own per-SKU rng and no margin blocks, so adding
 # them leaves every other SKU's generated numbers unchanged
 ADDED_STYLES = {f"STY-95{n:02d}" for n in range(1, 11)}
-# ...of which these have a costing sheet (lunch box, padded jacket, overshirt); add a style here to cost another one
-COSTED_ADDED = {"STY-9502", "STY-9504", "STY-9505"}
+# ...of which these have a costing sheet (750ml bottle, lunch box, padded jacket, overshirt); add a style here to cost another one
+COSTED_ADDED = {"STY-9501", "STY-9502", "STY-9504", "STY-9505"}
 
 
 def generate(g):
@@ -185,7 +186,7 @@ def generate(g):
         lines = None
         if sku == BOTTLE:
             lines = BOTTLE_LINES
-            mat, lab, frt, tool, ovh = 11.80, 1.90, 3.20, 1.95, 1.97
+            mat, lab, frt, tool, ovh = 2.23, 1.20, 0.40, 0.28, 0.69
         else:
             mats = MAT.get(cat) or DEPT_MAT.get(dept) or DEFAULT_MAT
             lines = [(t, f"{d}", round(mat * sh, 2)) for t, sh, d in mats]
@@ -234,7 +235,7 @@ def generate(g):
             if ln:
                 (add_exposures if added else exposures).append({"exposure_id": f"EXP-{exp_n:06d}", "sku": sku, "category": cat, "commodity": code,
                                   "exposure_pct": round(ln[2] / total * 100, 1), "exposure_unit": "kg",
-                                  "exposure_quantity": round(ln[2] / 17.0, 2) if code == "SS304" else round(ln[2] / 9.0, 2),
+                                  "exposure_quantity": (0.42 if sku == BOTTLE else round(ln[2] / 17.0, 2)) if code == "SS304" else round(ln[2] / 9.0, 2),
                                   "elasticity": el, "date_from": g.as_of - timedelta(days=365)})
                 exp_n += 1
     cost_by_sku = {c["sku"]: c for c in costings + add_costings}
