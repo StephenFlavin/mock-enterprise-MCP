@@ -21,7 +21,7 @@ tables:
       variance_reason: {type: str, desc: "Why: short-ship, damage, over-ship, system error, unknown"}
       variance_value_gbp: {type: float, desc: Cost impact of variance}
       is_claimable: {type: bool, desc: Whether this variance can be claimed}
-      claim_window_days: {type: int, desc: Days remaining to claim}
+      claim_window_days: {type: int, desc: "Days after receipt in which a claim can be raised (contract window)"}
       received_at: {type: date, desc: Receipt date}
       created_at: {type: timestamp, desc: Variance recorded}
 
@@ -278,7 +278,7 @@ tools:
     sql: |
       WITH snap AS (
         SELECT sp.supplier_id, COALESCE(sp.material_id, 'finished goods') AS item,
-               max(m.material_name) AS item_name, max(m.material_type) AS material_type, sp.position_date,
+               COALESCE(max(m.material_name), 'All finished products') AS item_name, COALESCE(max(m.material_type), 'finished_goods') AS material_type, sp.position_date,
                sum(sp.total_capacity_units) AS total, sum(sp.committed_capacity_units) AS committed,
                sum(sp.available_capacity_units) AS available, round(avg(sp.lead_time_days)) AS lead_time_days
         FROM supply_position sp LEFT JOIN material_supply m ON m.material_id = sp.material_id
@@ -535,18 +535,18 @@ tools:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
       variances: SELECT v.variance_id, v.po_id, v.sku, v.asn_quantity, v.receipt_quantity, v.variance_units, v.variance_reason,
                         round(v.variance_value_gbp, 2) AS variance_value_gbp, v.received_at, v.is_claimable,
-                        CAST(v.received_at AS DATE) + v.claim_window_days AS claim_deadline,
-                        (CAST(v.received_at AS DATE) + v.claim_window_days) - CAST($as_of AS DATE) AS days_left,
-                        (v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)) AS inside_window
+                        CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER) AS claim_deadline,
+                        (CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER)) - CAST($as_of AS DATE) AS days_left,
+                        (v.is_claimable AND (CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER)) >= CAST($as_of AS DATE)) AS inside_window
                  FROM supplier_variances v
                  WHERE v.supplier_id = $supplier_id AND v.variance_units <> 0
                    AND v.received_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
                  ORDER BY v.received_at DESC, v.po_id
       totals: SELECT count(*) FILTER (WHERE v.variance_units < 0) AS short_lines,
                      coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.variance_units < 0), 0) AS short_value_gbp,
-                     count(*) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)) AS open_claim_lines,
-                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) >= CAST($as_of AS DATE)), 0) AS open_claim_value_gbp,
-                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + v.claim_window_days) < CAST($as_of AS DATE)), 0) AS expired_claim_value_gbp
+                     count(*) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER)) >= CAST($as_of AS DATE)) AS open_claim_lines,
+                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER)) >= CAST($as_of AS DATE)), 0) AS open_claim_value_gbp,
+                     coalesce(sum(v.variance_value_gbp) FILTER (WHERE v.is_claimable AND (CAST(v.received_at AS DATE) + CAST(v.claim_window_days AS INTEGER)) < CAST($as_of AS DATE)), 0) AS expired_claim_value_gbp
               FROM supplier_variances v
               WHERE v.supplier_id = $supplier_id AND v.variance_units <> 0
                 AND v.received_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
@@ -560,7 +560,7 @@ tools:
 
       {% endfor %}
       Short-shipped value in the period: £{{ "{:,.2f}".format(totals[0].short_value_gbp) }} over {{ totals[0].short_lines }} lines.
-      Claimable inside the window: £{{ "{:,.2f}".format(totals[0].open_claim_value_gbp) }} over {{ totals[0].open_claim_lines }} lines; claims already outside the window: £{{ "{:,.2f}".format(totals[0].expired_claim_value_gbp) }}.
+      Claimable inside the window: £{{ "{:,.2f}".format(totals[0].open_claim_value_gbp) }} over {{ totals[0].open_claim_lines }} lines; lines now outside the claim window: £{{ "{:,.2f}".format(totals[0].expired_claim_value_gbp) }}.
 
       Please confirm the cause of each shortfall and the corrective action to prevent a repeat. We will raise claims for the lines still inside the window.
 
@@ -675,8 +675,10 @@ tools:
     sql: |
       WITH otd AS (
         SELECT supplier_id, count(*) AS shipped_orders, count(*) FILTER (WHERE days_late <= 2) AS on_time_orders
-        FROM ship_date_history
-        WHERE actual_ship_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        FROM (SELECT supplier_id, days_late,
+                     row_number() OVER (PARTITION BY supplier_id ORDER BY order_date DESC, po_id) AS rn
+              FROM ship_date_history WHERE actual_ship_date IS NOT NULL) h
+        WHERE rn <= 10
         GROUP BY supplier_id
       ), d AS (
         SELECT supplier_id, count(*) AS delayed_orders, sum(units_delayed) AS delayed_units,
@@ -707,7 +709,7 @@ tools:
              round(x.air_units_from_delays + x.air_units_from_otd_risk) AS expected_air_units,
              round((x.air_units_from_delays + x.air_units_from_otd_risk) * $avg_unit_weight_kg * $air_rate_per_kg_gbp) AS expected_air_cost_gbp,
              round(sum((x.air_units_from_delays + x.air_units_from_otd_risk) * $avg_unit_weight_kg * $air_rate_per_kg_gbp) OVER ()) AS total_expected_air_cost_gbp,
-             'air units = delayed units x min(1, delay days / 28) + open units still to ship x (1 - on-time rate) x 30%; cost = air units x unit weight kg x rate per kg' AS formula
+             'air units = delayed units x min(1, delay days / 28) + open units still to ship x (1 - on-time rate of its last 10 shipped orders) x 30%; cost = air units x unit weight kg x rate per kg' AS formula
       FROM x JOIN master.suppliers s ON s.supplier_id = x.supplier_id
       ORDER BY expected_air_cost_gbp DESC
     limit: 50
@@ -728,21 +730,29 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_expedite_options
-    desc: Retrieve supplier expedite options (available stock and capacity). Use to identify expeditable orders.
+    desc: Latest stock and spare capacity per SKU with the quickest expedite route. Use to see what a supplier can bring forward and in what quantity.
     kind: sql
     args:
-      supplier_id: {required: true}
-      sku: {type: str, desc: "SKU (optional)"}
+      supplier_id: {type: str, desc: "Supplier id (optional if sku is given)"}
+      sku: {type: str, desc: "Product SKU (optional if supplier_id is given)"}
     sql: |
-      SELECT supplier_id, sku, available_stock_units, available_capacity_units,
-             lead_time_days, moq_units, price_gbp_per_unit, position_date
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND ($sku IS NULL OR sku = $sku)
-        AND (available_stock_units > 0 OR available_capacity_units > 0)
-      ORDER BY position_date DESC, sku
+      SELECT * FROM (
+        SELECT sp.supplier_id, s.name AS supplier_name, sp.sku, sp.available_stock_units, sp.available_capacity_units,
+               CASE WHEN sp.available_stock_units >= sp.moq_units THEN 'ship from stock'
+                    WHEN sp.available_stock_units > 0 THEN 'part from stock, rest from production'
+                    WHEN sp.available_capacity_units > 0 THEN 'production only'
+                    ELSE 'none' END AS expedite_route,
+               sp.lead_time_days, sp.moq_units, sp.price_gbp_per_unit, sp.position_date
+        FROM supply_position sp JOIN master.suppliers s ON s.supplier_id = sp.supplier_id
+        WHERE sp.sku IS NOT NULL
+          AND ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND ($sku IS NULL OR sp.sku = $sku)
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      ) t
+      WHERE expedite_route <> 'none'
+      ORDER BY available_stock_units DESC, sku
     limit: 50
-    example: {supplier_id: "SUP-0013"}
+    example: {supplier_id: SUP-0034, sku: SKU-101260}
 
   - name: get_supplier_lead_time_and_moq
     desc: Lead time and MOQ for a supplier by product. Use for order sizing and scheduling.
