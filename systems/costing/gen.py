@@ -182,7 +182,10 @@ def generate(g):
             continue
         a = [round(-r.uniform(0.0, 0.5), 1) for _ in range(3)]
         md, sh = round(r.uniform(-0.5, 0.2), 1), round(r.uniform(-0.2, 0.1), 1)
-        y = [round(r.uniform(-0.6, 0.15), 1) for _ in range(4)]
+        tg = round(a[0] + a[1] + a[2], 1)
+        w = [r.uniform(0.2, 1) for _ in range(4)]
+        y = [round(tg * x / sum(w), 1) for x in w[:3]]
+        y.append(round(tg - sum(y), 1))
         bridge[k] = {"vs_plan": (a[0], a[1], a[2], md, sh), "yoy": tuple(y),
                      "note_vs_plan": "Routine variance to plan.", "note_yoy": "Routine year on year movement."}
 
@@ -294,7 +297,7 @@ def generate(g):
         for i, (band, _, _) in enumerate(bands):
             po = base_outlet.get(dept, 40) * cm * dec_o[i]
             rate("ROU-OUTLET", cat, band, round(po, 1), round(r.uniform(1.2, 2.0), 2), r.randint(25, 55), "low" if i < 2 else "medium", int(size * r.uniform(8, 20)), "aged_stock", cost)
-            rate("ROU-LIQUIDATION", cat, band, round(po * 0.62 * dec_l[i] / dec_o[i] * dec_o[i] ** 0 * 0.9, 1), round(r.uniform(0.5, 1.0), 2), r.randint(10, 25), "medium" if i < 3 else "high", int(size * r.uniform(4, 12)), "aged_stock", cost)
+            rate("ROU-LIQUIDATION", cat, band, round(base_outlet.get(dept, 40) * cm * 0.55 * dec_l[i], 1), round(r.uniform(0.5, 1.0), 2), r.randint(10, 25), "medium" if i < 3 else "high", int(size * r.uniform(4, 12)), "aged_stock", cost)
             rate("ROU-RECYCLING", cat, band, round(r.uniform(5, 9), 1), round(r.uniform(0.3, 0.6), 2), r.randint(35, 60), "low", int(size * r.uniform(1, 5)), "aged_stock", cost)
 
     # ---- FOB history by origin (latest block = average of live costings)

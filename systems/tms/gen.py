@@ -167,7 +167,8 @@ def generate(g):
         carrier = r.choice(road_carriers)
 
         # Generate dates in December 2025 (past peak period)
-        peak_date = g.as_of - timedelta(days=315) + timedelta(days=r.randint(0, 34))
+        # kept inside days 6..34 of the window so a 5-week lookback from any of the next 7 weekdays sees every row (11:Q4-a)
+        peak_date = g.as_of - timedelta(days=315) + timedelta(days=6 + r.randint(0, 34) % 29)
         planned_dep = peak_date
         planned_arr = planned_dep + timedelta(days=r.randint(1, 5))
 
@@ -250,6 +251,8 @@ def generate(g):
                     o, f = float(60 + r.randint(-4, 4)), float(62 + r.randint(-3, 3))
                 elif lane in DISRUPT and wk >= -2:
                     f = f - 14.0
+                if lane in DISRUPT and wk < -2:  # steady pre-disruption fill so the prior period reads the same however many weeks it spans (11:Q1-a)
+                    f = {"CAR-001": 88.0, "CAR-002": 88.0, "CAR-003": 83.5}[cid]
                 carrier_performance.append({
                     "carrier_id": cid, "lane": lane, "period_start": ws, "period_end": ws + timedelta(days=6),
                     "shipments_count": n, "on_time_count": round(n * o / 100), "on_time_pct": round(100 * round(n * o / 100) / n, 1),
@@ -392,6 +395,13 @@ def generate(g):
             "units": units, "weight_kg": float(kg), "cost_gbp": cost, "avoidable": avoid,
             "avoided_by": ({"supplier_late": "earlier supplier follow-up", "demand_forecast_lift": "better forecast",
                             "stockout_recovery": "earlier booking", "carrier_rolled": "earlier booking"}[rc] if avoid else None)})
+
+    # Keep air rows out of the zones where a 90-day window ending on any of the next 7 days would cut or add them (13:Q2-a).
+    for a_ in air_freight:
+        if d0 - timedelta(days=90) <= a_["planned_date"] < d0 - timedelta(days=84):
+            a_["planned_date"] = d0 - timedelta(days=91)
+        elif d0 < a_["planned_date"] <= d0 + timedelta(days=6):
+            a_["planned_date"] = d0 + timedelta(days=7)
 
     # Generate route_plans
     for i in range(200):

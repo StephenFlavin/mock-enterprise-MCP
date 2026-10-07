@@ -204,7 +204,7 @@ tables:
     key: week_start
     cols:
       week_start: {type: date, desc: Week starting Monday}
-      returns_units: {type: int, desc: Expected units arriving at the returns centre, base case}
+      returns_units: {type: int, desc: "Expected units arriving at the returns centre, base case"}
       low_units: {type: int, desc: Low end of the range}
       high_units: {type: int, desc: High end of the range}
       returns_value_gbp: {type: float, desc: Retail value of the expected returns}
@@ -233,21 +233,49 @@ tools:
     example: {sku: "SKU-100056", period_start: "-90d", period_end: "$as_of"}
 
   - name: calculate_early_sales_trigger_thresholds
-    desc: Calculate velocity thresholds for early sales alerts (chase/cancel). Returns thresholds for chase and cancel by forecast confidence.
+    desc: Chase and cancel thresholds for a launch's first weeks, weekly and cumulative units, from comparable launches. Chase above the high curve, cancel below the low curve.
     kind: sql
     args:
-      sku: {required: true, desc: SKU}
-      launch_week: {type: date, required: true, desc: Launch week start (Monday)}
+      sku:
+        required: true
+        desc: "New product SKU, e.g. SKU-103423"
+      launch_week:
+        type: date
+        required: true
+        desc: Launch week start (Monday)
+      weeks:
+        type: int
+        desc: Weeks after launch to watch
+        default: 3
     sql: |
-      SELECT e.sku, e.product_name, e.launch_date,
-             ROUND(AVG(e.units_forecast) * 0.7, 0) AS chase_threshold,
-             ROUND(AVG(e.units_forecast) * 0.4, 0) AS cancel_threshold,
-             ROUND(AVG(e.velocity_index) * 100, 1) AS avg_velocity_pct,
-             'chase_threshold = forecast * 70%; cancel_threshold = forecast * 40%' AS formula
-      FROM early_sales_data e
-      WHERE e.sku = $sku AND e.launch_date = CAST($launch_week AS DATE)
-      GROUP BY e.sku, e.product_name, e.launch_date
-    example: {sku: "SKU-100056", launch_week: "$as_of"}
+      WITH me AS (SELECT category FROM master.products WHERE sku = $sku),
+      comp AS (
+        SELECT p.sku, CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE) AS lw
+        FROM master.products p, me
+        WHERE p.category = me.category AND p.sku <> $sku
+          AND CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE) >= (SELECT MIN(period_date) FROM demand_history)
+          AND CAST(p.launch_date AS DATE) <= CAST($as_of AS DATE) - INTERVAL 28 DAY),
+      curve AS (
+        SELECT date_diff('week', c.lw, h.period_date) + 1 AS wk, c.sku, h.units_sold
+        FROM comp c JOIN demand_history h ON h.sku = c.sku
+        WHERE date_diff('week', c.lw, h.period_date) + 1 BETWEEN 1 AND $weeks),
+      agg AS (
+        SELECT wk, ROUND(AVG(units_sold), 0) AS base_units, ROUND(quantile_cont(units_sold, 0.25), 0) AS cancel_units,
+               ROUND(quantile_cont(units_sold, 0.75), 0) AS chase_units
+        FROM curve GROUP BY wk)
+      SELECT $sku AS sku, a.wk AS week_in_launch,
+             CAST(date_trunc('week', CAST($launch_week AS DATE)) AS DATE) + CAST((a.wk - 1) * 7 AS INTEGER) AS week_start,
+             a.base_units, a.chase_units AS chase_threshold_units, a.cancel_units AS cancel_threshold_units,
+             SUM(a.chase_units) OVER (ORDER BY a.wk) AS cumulative_chase_units,
+             SUM(a.cancel_units) OVER (ORDER BY a.wk) AS cumulative_cancel_units,
+             ROUND(SUM(a.chase_units) OVER (ORDER BY a.wk) * 100.0 / SUM(a.base_units) OVER (ORDER BY a.wk), 0) AS chase_pct_of_base,
+             ROUND(SUM(a.cancel_units) OVER (ORDER BY a.wk) * 100.0 / SUM(a.base_units) OVER (ORDER BY a.wk), 0) AS cancel_pct_of_base,
+             'chase if cumulative sales exceed the 75th percentile of comparable launches; cancel if below the 25th' AS formula
+      FROM agg a ORDER BY a.wk
+    example:
+      sku: SKU-103423
+      launch_week: +14w
+
 
   - name: calculate_lost_demand_for_sku
     desc: Calculate lost demand from stockouts. Takes correction period and returns estimated lost units and impact.
@@ -268,22 +296,37 @@ tools:
     example: {sku: "PF-220", period_start: "-90d", period_end: "-30d"}
 
   - name: calculate_lost_sales_for_product
-    desc: Calculate lost sales from stockouts or demand mismatches. Returns lost units and estimated revenue impact.
+    desc: Lost units, revenue and margin from recorded stockouts for a SKU or style over a period, with stockout days, stores hit and cause.
     kind: sql
     args:
-      sku: {required: true, desc: SKU}
-      period_start: {type: date, required: true, desc: Period start}
-      period_end: {type: date, required: true, desc: Period end}
+      sku:
+        desc: "SKU, e.g. SKU-101904; blank for all SKUs of the style"
+      style_id:
+        desc: "Style id, e.g. STY-5520; blank to use sku"
+      period_start:
+        type: date
+        desc: Period start
+        default: -90d
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
-      SELECT a.sku,
-             COALESCE(SUM(a.units_lost), 0) AS lost_units,
-             ROUND(COALESCE(SUM(a.units_lost), 0) *
-               (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 50) FROM master.products p WHERE p.sku = a.sku), 0) AS lost_margin_gbp,
-             'lost_units * product_margin' AS formula
-      FROM demand_history_adjustments a
-      WHERE a.sku = $sku AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      GROUP BY a.sku
-    example: {sku: "PF-220", period_start: "-60d", period_end: "-30d"}
+      SELECT a.sku, p.style_id,
+             string_agg(DISTINCT a.stockout_cause, '; ') AS stockout_cause,
+             MAX(a.stockout_days) AS stockout_days, MAX(a.stores_affected) AS stores_affected,
+             SUM(a.units_lost) AS lost_units,
+             ROUND(SUM(a.units_lost) * CAST(p.retail_price_gbp AS DOUBLE), 0) AS lost_revenue_gbp,
+             ROUND(SUM(a.units_lost) * (CAST(p.retail_price_gbp AS DOUBLE) - CAST(p.unit_cost_gbp AS DOUBLE)), 0) AS lost_margin_gbp,
+             'lost_revenue = lost_units * retail_price; lost_margin = lost_units * (retail_price - unit_cost)' AS formula
+      FROM demand_history_adjustments a JOIN master.products p ON p.sku = a.sku
+      WHERE ($sku IS NULL OR a.sku = $sku) AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND a.period_end >= CAST($period_start AS DATE) AND a.period_start <= CAST($period_end AS DATE)
+      GROUP BY a.sku, p.style_id, p.retail_price_gbp, p.unit_cost_gbp
+      ORDER BY lost_units DESC
+    limit: 20
+    example: {style_id: STY-5520}
+
 
   - name: calculate_pipeline_risk_score
     desc: Calculate risk score for pipeline products combining supply, demand and execution risk. Returns 0-100 score and key risk drivers.
@@ -399,17 +442,40 @@ tools:
     example: {category: "Dresses"}
 
   - name: create_early_sales_alert
-    desc: Create monitoring alert for new product early sales. Fires when sales cross chase or cancel thresholds. Returns alert id.
+    desc: Create a monitoring alert for a new product's early sales that fires when cumulative units cross a chase or cancel threshold. Returns the alert.
     kind: insert
     table: early_sales_alerts
     id_prefix: ALR-
+    defaults:
+      status: active
     args:
-      sku: {required: true, desc: SKU}
-      product_name: {required: true}
-      alert_type: {required: true, desc: "chase or cancel"}
-      trigger_threshold_pct: {required: true, type: float, desc: "Velocity threshold %"}
-    defaults: {status: active}
-    example: {sku: "SKU-100056", product_name: "Ivory Knitwear", alert_type: chase, trigger_threshold_pct: 70.0}
+      sku:
+        required: true
+        desc: "New product SKU, e.g. SKU-103423"
+      alert_type:
+        required: true
+        desc: chase or cancel
+      trigger_units:
+        required: true
+        type: int
+        desc: Cumulative units by the end of the watch window that fires the alert
+      trigger_threshold_pct:
+        type: float
+        desc: Threshold as % of forecast sales to date
+      launch_date:
+        required: true
+        type: date
+        desc: Launch date the weeks are counted from
+      monitor_weeks:
+        type: int
+        desc: Weeks after launch to watch
+    example:
+      sku: SKU-103423
+      alert_type: chase
+      trigger_units: 400
+      trigger_threshold_pct: 130.0
+      launch_date: +14w
+      monitor_weeks: 3
 
   - name: create_forecast_model_configuration
     desc: Create a test forecast configuration with different parameters (e.g. different history window). Returns config id and parameters.
@@ -426,19 +492,43 @@ tools:
     example: {config_name: "26-week fashion test", history_window_weeks: 26, method_type: exponential_smoothing, item_type: fast_mover, notes: "Testing shorter window for fashion"}
 
   - name: create_forecast_override
-    desc: Add manual override to forecast (uplift, downside or base case). Returns override id and effective forecast.
+    desc: Add a manual forecast override for a SKU or category and weeks, as a percentage uplift or downside, or as base-case units per week. Returns the stored override.
     kind: insert
     table: forecast_overrides
     id_prefix: OVR-
     args:
-      sku: {desc: SKU}
-      category: {desc: Category}
-      week_start: {required: true, type: date, desc: "Week starting Monday"}
-      week_end: {required: true, type: date, desc: "Week ending Sunday"}
-      override_pct: {required: true, type: float, desc: "Percentage uplift/downside, e.g. 25.0"}
-      override_type: {required: true, desc: "uplift, base_case or downside"}
-      reason: {required: true, desc: "Why override is needed"}
-    example: {category: "Kitchenware", week_start: "$as_of", week_end: "+7d", override_pct: 25.0, override_type: uplift, reason: "25% off promotion"}
+      sku:
+        desc: "SKU the override applies to, e.g. SKU-103423; blank for a category-wide override"
+      category:
+        desc: Category
+      week_start:
+        required: true
+        type: date
+        desc: Week starting Monday
+      week_end:
+        required: true
+        type: date
+        desc: Week ending Sunday
+      override_pct:
+        type: float
+        desc: Percentage uplift/downside, e.g. 25.0
+      override_units:
+        type: int
+        desc: Forecast units per week, for a base case
+      override_type:
+        required: true
+        desc: uplift, base_case or downside
+      reason:
+        required: true
+        desc: Why override is needed
+    example:
+      category: Kitchenware
+      week_start: $as_of
+      week_end: +7d
+      override_pct: 25.0
+      override_type: uplift
+      reason: 25% off promotion
+
 
   - name: get_backtest_vs_live_accuracy_evidence
     desc: Compare backtest accuracy to live forecast accuracy. Shows whether backtests are predictive of real performance.
@@ -643,45 +733,64 @@ tools:
     example: {}
 
   - name: get_forecast_bias_by_market
-    desc: Forecast bias by market/region. Shows whether forecasts tend to over or underestimate.
+    desc: Forecast bias by market for a period and optional category, showing whether forecasts over or under-estimate (positive means over-forecast).
     kind: sql
     args:
-      period_start: {type: date, desc: Period start, default: "-13w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      category:
+        desc: Product category, e.g. Outerwear; blank for all
+      period_start:
+        type: date
+        desc: Period start
+        default: -13w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
       SELECT b.market,
              ROUND(AVG(b.bias_pct), 1) AS bias_pct,
              COUNT(*) AS observations,
-             CASE WHEN AVG(b.bias_pct) > 10 THEN 'Overforecasting' WHEN AVG(b.bias_pct) < -10 THEN 'Underforecasting' ELSE 'Balanced' END AS bias_direction
+             CASE WHEN AVG(b.bias_pct) > 10 THEN 'Overforecasting' WHEN AVG(b.bias_pct) < -10 THEN 'Underforecasting' ELSE 'Balanced' END AS bias_direction,
+             mode(b.primary_driver) AS main_driver
       FROM forecast_bias b
-      WHERE b.period_start >= CAST($period_start AS DATE) AND b.period_end <= CAST($period_end AS DATE)
+      WHERE ($category IS NULL OR b.category = $category)
+        AND b.period_end >= CAST($period_start AS DATE) AND b.period_start <= CAST($period_end AS DATE)
       GROUP BY b.market
-      ORDER BY ABS(AVG(b.bias_pct)) DESC
+      ORDER BY AVG(b.bias_pct) DESC
     limit: 20
-    example: {}
+    example:
+      category: Outerwear
+
 
   - name: get_forecast_bias_for_category
-    desc: Forecast bias for a category. Decomposed by drivers (weather, promotion, pricing, new launches).
+    desc: Forecast bias for a category by week and overall (positive means over-forecast). For the split by driver use get_forecast_error_decomposition.
     kind: sql
     args:
-      category: {required: true, desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-13w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      category:
+        required: true
+        desc: Product category
+      period_start:
+        type: date
+        desc: Period start
+        default: -4w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
-      SELECT COALESCE(b.category, e.category) AS category,
-             b.bias_pct,
-             e.error_driver,
-             e.error_pct,
-             e.explanation
+      SELECT COALESCE(CAST(b.period_start AS VARCHAR), 'overall') AS week_start,
+             ROUND(AVG(b.bias_pct), 1) AS bias_pct,
+             COUNT(DISTINCT b.market) AS markets,
+             CASE WHEN AVG(b.bias_pct) > 10 THEN 'Overforecasting' WHEN AVG(b.bias_pct) < -10 THEN 'Underforecasting' ELSE 'Balanced' END AS bias_direction
       FROM forecast_bias b
-      LEFT JOIN forecast_errors e ON b.category = e.category
-        AND b.period_start = e.period_start AND b.period_end = e.period_end
-      WHERE (b.category = $category OR e.category = $category)
-        AND ((b.period_start >= CAST($period_start AS DATE) AND b.period_end <= CAST($period_end AS DATE))
-          OR (e.period_start >= CAST($period_start AS DATE) AND e.period_end <= CAST($period_end AS DATE)))
-      ORDER BY b.bias_pct DESC
+      WHERE b.category = $category
+        AND b.period_end >= CAST($period_start AS DATE) AND b.period_start <= CAST($period_end AS DATE)
+      GROUP BY ROLLUP(b.period_start)
+      ORDER BY GROUPING(b.period_start), b.period_start
     limit: 20
-    example: {category: "Outerwear"}
+    example:
+      category: Outerwear
+
 
   - name: get_forecast_error_by_category
     desc: Forecast error and bias by category and period. Shows MAPE trends over time.
@@ -727,23 +836,35 @@ tools:
     example: {category: "Audio"}
 
   - name: get_forecast_error_decomposition
-    desc: Decompose forecast error by drivers (weather, promotion, pricing, new launches, store cluster).
+    desc: Decompose forecast bias for a category by driver (weather, promotion, pricing, store cluster, new launches) in percentage points, units and explanation.
     kind: sql
     args:
-      category: {required: true, desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-13w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      category:
+        required: true
+        desc: Product category
+      period_start:
+        type: date
+        desc: Period start
+        default: -4w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
       SELECT e.category, e.error_driver,
-             ROUND(AVG(e.error_pct), 1) AS error_pct,
+             ROUND(AVG(e.error_pct), 1) AS bias_points,
+             ROUND(AVG(e.error_pct) * 100.0 / SUM(AVG(e.error_pct)) OVER (), 0) AS share_of_bias_pct,
+             ROUND(SUM(AVG(e.error_pct)) OVER (), 1) AS total_bias_points,
              COALESCE(SUM(e.error_units), 0) AS total_error_units,
-             e.explanation,
-             'Sum of error_pct across drivers should ~= total forecast error' AS note
+             MIN(e.explanation) AS explanation
       FROM forecast_errors e
-      WHERE e.category = $category AND e.period_start >= CAST($period_start AS DATE) AND e.period_end <= CAST($period_end AS DATE)
-      GROUP BY e.category, e.error_driver, e.explanation
-      ORDER BY error_pct DESC
-    example: {category: "Outerwear"}
+      WHERE e.category = $category
+        AND e.period_end >= CAST($period_start AS DATE) AND e.period_start <= CAST($period_end AS DATE)
+      GROUP BY e.category, e.error_driver
+      ORDER BY bias_points DESC
+    example:
+      category: Outerwear
+
 
   - name: get_forecast_model_settings
     desc: Retrieve current forecast model settings by item type and category.
@@ -852,38 +973,91 @@ tools:
     example: {mechanic: "percentage_off"}
 
   - name: get_peak_inbound_forecast
-    desc: Forecast inbound and outbound volumes for the peak period (Black Friday to end of December).
+    desc: Forecast inbound receipts and outbound shipments by DC across the peak (Black Friday to end of December), with the uplift on recent weeks and the busiest inbound week. Total row first.
     kind: sql
     args:
-      region: {desc: "Region, e.g. UK North"}
-      peak_start: {type: date, desc: "Peak start, typically late November", default: "+8w"}
-      peak_end: {type: date, desc: "Peak end, typically end of December", default: "+12w"}
+      region:
+        desc: "DC region, e.g. UK Midlands; blank for all DCs"
+      site_id:
+        desc: "Distribution centre, e.g. DC1; blank for all DCs"
+      peak_start:
+        type: date
+        desc: Peak start, Black Friday week
+        default: +53d
+      peak_end:
+        type: date
+        desc: Peak end, end of December
+        default: +87d
     sql: |
-      SELECT SUM(o.units) AS peak_inbound_units,
-             ROUND(SUM(o.value_gbp), 0) AS peak_inbound_value_gbp,
-             ROUND(SUM(o.units) / ((CAST($peak_end AS DATE) - CAST($peak_start AS DATE)) / 7), 0) AS avg_weekly_units
-      FROM daily_orders o
-      WHERE ($region IS NULL OR o.region = $region)
-        AND o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
+      WITH win AS (
+        SELECT f.* FROM dc_flow_forecast f
+        WHERE ($region IS NULL OR f.region = $region) AND ($site_id IS NULL OR f.site_id = $site_id)
+          AND f.week_start >= CAST(date_trunc('week', CAST($peak_start AS DATE)) AS DATE)
+          AND f.week_start <= CAST($peak_end AS DATE)),
+      recent AS (
+        SELECT f.site_id, SUM(f.inbound_units) AS inb, SUM(f.outbound_units) AS outb
+        FROM dc_flow_forecast f
+        WHERE f.week_start >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 8 WEEK
+          AND f.week_start < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE)
+          AND ($region IS NULL OR f.region = $region) AND ($site_id IS NULL OR f.site_id = $site_id)
+        GROUP BY f.site_id),
+      per_site AS (
+        SELECT w.site_id, w.region, SUM(w.inbound_units) AS peak_inbound_units, SUM(w.outbound_units) AS peak_outbound_units,
+               ROUND(AVG(w.inbound_units), 0) AS avg_weekly_inbound, COUNT(*) AS weeks,
+               CAST(arg_max(w.week_start, w.inbound_units) AS VARCHAR) AS busiest_inbound_week,
+               MAX(w.inbound_units) AS busiest_week_inbound_units,
+               ROUND((AVG(w.inbound_units) / (MAX(r.inb) / 8.0) - 1) * 100, 0) AS inbound_uplift_pct_vs_last_8_weeks
+        FROM win w JOIN recent r USING (site_id) GROUP BY w.site_id, w.region),
+      wk AS (SELECT week_start, SUM(inbound_units) AS inb FROM win GROUP BY week_start),
+      tot AS (
+        SELECT 'ALL' AS site_id, 'All DCs' AS region, SUM(w.inbound_units) AS peak_inbound_units,
+               SUM(w.outbound_units) AS peak_outbound_units,
+               ROUND(SUM(w.inbound_units) / COUNT(DISTINCT w.week_start), 0) AS avg_weekly_inbound,
+               COUNT(DISTINCT w.week_start) AS weeks,
+               CAST((SELECT arg_max(week_start, inb) FROM wk) AS VARCHAR) AS busiest_inbound_week,
+               (SELECT MAX(inb) FROM wk) AS busiest_week_inbound_units,
+               ROUND((SUM(w.inbound_units) / COUNT(DISTINCT w.week_start) / ((SELECT SUM(inb) FROM recent) / 8.0) - 1) * 100, 0) AS inbound_uplift_pct_vs_last_8_weeks
+        FROM win w)
+      SELECT * FROM (SELECT * FROM tot UNION ALL SELECT * FROM per_site) u ORDER BY CASE WHEN u.site_id = 'ALL' THEN 0 ELSE 1 END, u.site_id
+    limit: 10
     example: {}
 
+
   - name: get_peak_order_volume_forecast_by_region
-    desc: Peak order volume forecast by region. Shows regional distribution of peak demand.
+    desc: Peak online order units and value by region with each region's share, busiest day and growth on last year's peak. Use for courier capacity by region.
     kind: sql
     args:
-      peak_start: {type: date, desc: "Peak start", default: "+8w"}
-      peak_end: {type: date, desc: "Peak end", default: "+12w"}
+      peak_start:
+        type: date
+        desc: Peak start, Black Friday
+        default: +53d
+      peak_end:
+        type: date
+        desc: Peak end, last pre-Christmas order day
+        default: +80d
     sql: |
-      SELECT o.region,
-             SUM(o.units) AS units_forecast,
-             ROUND(SUM(o.value_gbp), 0) AS value_gbp,
-             ROUND(SUM(o.units) * 100.0 / SUM(SUM(o.units)) OVER (), 1) AS region_pct
-      FROM daily_orders o
-      WHERE o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
-      GROUP BY o.region
+      WITH cur AS (
+        SELECT o.region, o.order_date, SUM(o.units) AS units, SUM(o.value_gbp) AS value_gbp FROM daily_orders o
+        WHERE o.order_date >= CAST($peak_start AS DATE) AND o.order_date <= CAST($peak_end AS DATE)
+        GROUP BY o.region, o.order_date),
+      tot AS (
+        SELECT region, SUM(units) AS units, SUM(value_gbp) AS value_gbp, arg_max(order_date, units) AS peak_day,
+               MAX(units) AS peak_day_units FROM cur GROUP BY region),
+      ly AS (
+        SELECT o.region, SUM(o.units) AS units FROM daily_orders o
+        WHERE o.order_date >= CAST($peak_start AS DATE) - INTERVAL 364 DAY
+          AND o.order_date <= CAST($peak_end AS DATE) - INTERVAL 364 DAY
+        GROUP BY o.region)
+      SELECT t.region, t.units AS units_forecast, ROUND(t.value_gbp, 0) AS value_gbp,
+             ROUND(t.units * 100.0 / SUM(t.units) OVER (), 1) AS region_pct,
+             CAST(t.peak_day AS VARCHAR) AS busiest_day, t.peak_day_units AS busiest_day_units,
+             l.units AS last_year_units,
+             ROUND((t.units * 1.0 / NULLIF(l.units, 0) - 1) * 100, 1) AS growth_vs_last_year_pct
+      FROM tot t LEFT JOIN ly l USING (region)
       ORDER BY units_forecast DESC
     limit: 15
     example: {}
+
 
   - name: get_peak_volume_profile
     desc: Peak period volume profile by region. Shows weekly demand curve during peak season.
@@ -919,25 +1093,28 @@ tools:
     example: {season: "AW26"}
 
   - name: get_return_forecast_by_week
-    desc: Weekly returns forecast. Shows expected return volumes by week for capacity planning.
+    desc: Weekly returns forecast in units with low and high range, value, cumulative total and driver. Use for returns centre capacity and staffing.
     kind: sql
     args:
-      week_start: {type: date, desc: "Week starting Monday", default: "$as_of"}
-      weeks_ahead: {type: int, desc: "Number of weeks to forecast", default: 4}
+      week_start:
+        type: date
+        desc: First week to show; blank for next week
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to show
+        default: 4
     sql: |
-      SELECT ws.week_start_date,
-             ws.week_start_date + INTERVAL 6 DAY AS week_end,
-             ROUND(COALESCE(SUM(f.units_forecast) * 0.05, 0), 0) AS estimated_returns_units,
-             ROUND(COALESCE(SUM(f.units_forecast) * 0.05 *
-               (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 40) FROM master.products p LIMIT 1), 0), 0) AS estimated_returns_value_gbp
-      FROM (
-        SELECT DISTINCT CAST(DATE_TRUNC('week', CAST($week_start AS DATE) + INTERVAL (ROW_NUMBER() OVER () - 1) DAY) AS DATE) AS week_start_date
-        FROM range(0, $weeks_ahead * 7)
-      ) ws
-      LEFT JOIN forecasts f ON CAST(f.forecast_week AS DATE) = ws.week_start_date
-      GROUP BY ws.week_start_date
-      ORDER BY ws.week_start_date
+      SELECT r.week_start, CAST(r.week_start + INTERVAL 6 DAY AS DATE) AS week_end,
+             r.returns_units, r.low_units, r.high_units, r.returns_value_gbp,
+             SUM(r.returns_units) OVER (ORDER BY r.week_start) AS cumulative_returns_units,
+             r.driver
+      FROM returns_forecast r
+      WHERE r.week_start >= CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE)
+        AND r.week_start < CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      ORDER BY r.week_start
+    limit: 30
     example: {}
+
 
   - name: get_revenue_dependency_by_supplier
     desc: Revenue dependent on each supplier. Shows revenue at risk if supplier fails.
@@ -959,43 +1136,72 @@ tools:
     example: {}
 
   - name: get_sales_forecast_for_style
-    desc: Sales forecast for a style by week. Shows weekly demand, range and confidence.
+    desc: Weekly sales forecast for a style across all its SKUs, base with upside and downside range, value and cumulative base units.
     kind: sql
     args:
-      style_id: {required: true, desc: Style id}
-      forecast_start: {type: date, desc: "Forecast start", default: "$as_of"}
-      weeks_ahead: {type: int, desc: "Number of weeks to forecast", default: 12}
+      style_id:
+        required: true
+        desc: "Style id, e.g. STY-7731"
+      forecast_start:
+        type: date
+        desc: Forecast start
+        default: $as_of
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to forecast
+        default: 12
     sql: |
       SELECT f.forecast_week,
-             f.forecast_type,
-             SUM(f.units_forecast) AS units_forecast
-      FROM forecasts f
-      WHERE f.category IN (SELECT category FROM master.products WHERE style_id = $style_id)
-        AND f.forecast_week >= CAST($forecast_start AS DATE)
-        AND f.forecast_week < CAST($forecast_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
-      GROUP BY f.forecast_week, f.forecast_type
-      ORDER BY f.forecast_week, f.forecast_type
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base') AS units_forecast,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'downside') AS downside_units,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'upside') AS upside_units,
+             ROUND(SUM(f.units_forecast * CAST(p.retail_price_gbp AS DOUBLE)) FILTER (WHERE f.forecast_type = 'base'), 0) AS base_value_gbp,
+             SUM(SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base')) OVER (ORDER BY f.forecast_week) AS cumulative_base_units,
+             COUNT(DISTINCT f.sku) AS skus
+      FROM forecasts f JOIN master.products p ON p.sku = f.sku
+      WHERE p.style_id = $style_id
+        AND f.forecast_week >= CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE)
+        AND f.forecast_week < CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      GROUP BY f.forecast_week
+      ORDER BY f.forecast_week
     limit: 52
-    example: {style_id: "STY-7731"}
+    example:
+      style_id: STY-7731
+
 
   - name: get_sales_history_for_products
-    desc: Sales history for a list of products. Returns weekly sales by SKU.
+    desc: Weekly units and revenue by SKU for a category, style or single SKU, with weeks since launch. Use for comparable-product sales curves.
     kind: sql
     args:
-      category: {desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-26w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      category:
+        desc: Product category, e.g. Bags
+      style_id:
+        desc: "Style id, e.g. STY-8066"
+      sku:
+        desc: "SKU, e.g. SKU-103745"
+      period_start:
+        type: date
+        desc: Period start
+        default: -26w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
-      SELECT h.sku, h.period_date,
-             h.units_sold,
+      SELECT h.sku, p.style_id, h.period_date, h.units_sold,
              ROUND(h.revenue_gbp, 0) AS revenue_gbp,
-             ROUND(h.revenue_gbp / NULLIF(h.units_sold, 0), 2) AS price_gbp
-      FROM demand_history h
-      WHERE ($category IS NULL OR h.category = $category)
-        AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
-      ORDER BY h.sku, h.period_date DESC
+             ROUND(h.revenue_gbp / NULLIF(h.units_sold, 0), 2) AS price_gbp,
+             date_diff('week', CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE), h.period_date) + 1 AS weeks_since_launch
+      FROM demand_history h JOIN master.products p ON p.sku = h.sku
+      WHERE ($category IS NULL OR h.category = $category) AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($sku IS NULL OR h.sku = $sku)
+        AND h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.sku, h.period_date
     limit: 200
-    example: {category: "Dresses"}
+    example:
+      category: Bags
+      period_start: -12w
+
 
   - name: get_site_volume_forecast
     desc: Throughput volume forecast for a DC or store. For capacity and resource planning.
@@ -1014,21 +1220,205 @@ tools:
     example: {site_id: "DC1"}
 
   - name: get_volume_forecast
-    desc: Long-range volume forecast by scenario (base, upside, downside). For strategic planning.
+    desc: Long-range outbound volume forecast by scenario (base, upside, downside) and plan year, optionally for one DC. Use for multi-year capacity and investment cases.
     kind: sql
     args:
-      scenario: {desc: "Scenario: base, upside, downside"}
-      period_start: {type: date, desc: "Forecast period start", default: "$as_of"}
-      period_end: {type: date, desc: "Forecast period end", default: "+52w"}
+      scenario:
+        type: enum
+        values: [base, upside, downside]
+        desc: Volume scenario; blank for all three
+      site_id:
+        desc: "Distribution centre, e.g. DC1; blank for the whole network"
+      period_start:
+        type: date
+        desc: Forecast period start
+        default: $as_of
+      period_end:
+        type: date
+        desc: Forecast period end, default seven years
+        default: +7y
     sql: |
-      SELECT COALESCE(f.forecast_type, 'base') AS scenario,
-             ROUND(SUM(f.units_forecast), 0) AS units_forecast,
-             ROUND(SUM(f.units_forecast) / ((CAST($period_end AS DATE) - CAST($period_start AS DATE)) / 7), 0) AS avg_weekly_units
-      FROM forecasts f
-      WHERE ($scenario IS NULL OR f.forecast_type = $scenario)
-        AND f.forecast_week >= CAST($period_start AS DATE) AND f.forecast_week <= CAST($period_end AS DATE)
-      GROUP BY f.forecast_type
+      WITH q AS (
+        SELECT v.scenario, v.period_start, v.annual_growth_pct, v.units_forecast,
+               CAST(floor(date_diff('day', CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE), v.period_start) / 364.0) + 1 AS INTEGER) AS plan_year
+        FROM long_range_volume v
+        WHERE ($scenario IS NULL OR v.scenario = $scenario) AND ($site_id IS NULL OR v.site_id = $site_id)
+          AND v.period_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND v.period_start <= CAST($period_end AS DATE)),
+      y AS (
+        SELECT scenario, plan_year, CAST(MIN(period_start) AS VARCHAR) AS year_start, SUM(units_forecast) AS units_forecast,
+               ROUND(SUM(units_forecast) / (COUNT(DISTINCT period_start) * 13.0), 0) AS avg_weekly_units,
+               MAX(annual_growth_pct) AS annual_growth_assumption_pct
+        FROM q GROUP BY scenario, plan_year)
+      SELECT y.scenario, y.plan_year, y.year_start, y.units_forecast, y.avg_weekly_units,
+             ROUND((y.units_forecast * 1.0 / FIRST_VALUE(y.units_forecast) OVER (PARTITION BY y.scenario ORDER BY y.plan_year) - 1) * 100, 1) AS growth_vs_year1_pct,
+             y.annual_growth_assumption_pct
+      FROM y ORDER BY CASE y.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END, y.plan_year
+    limit: 40
+    example: {site_id: DC1}
+
+  - name: get_return_forecast_by_week
+    desc: Weekly returns forecast in units with low and high range, value, cumulative total and driver. Use for returns centre capacity and staffing.
+    kind: sql
+    args:
+      week_start:
+        type: date
+        desc: First week to show; blank for next week
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to show
+        default: 4
+    sql: |
+      SELECT r.week_start, CAST(r.week_start + INTERVAL 6 DAY AS DATE) AS week_end,
+             r.returns_units, r.low_units, r.high_units, r.returns_value_gbp,
+             SUM(r.returns_units) OVER (ORDER BY r.week_start) AS cumulative_returns_units,
+             r.driver
+      FROM returns_forecast r
+      WHERE r.week_start >= CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE)
+        AND r.week_start < CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      ORDER BY r.week_start
+    limit: 30
     example: {}
+
+
+  - name: get_revenue_dependency_by_supplier
+    desc: Revenue dependent on each supplier. Shows revenue at risk if supplier fails.
+    kind: sql
+    args:
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      SELECT s.supplier_id, s.name,
+             ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(SUM(h.revenue_gbp) * 100.0 / SUM(SUM(h.revenue_gbp)) OVER (), 1) AS revenue_pct
+      FROM demand_history h
+      JOIN master.products p ON h.sku = p.sku
+      JOIN master.suppliers s ON p.supplier_id = s.supplier_id
+      WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      GROUP BY s.supplier_id, s.name
+      ORDER BY revenue_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_sales_forecast_for_style
+    desc: Weekly sales forecast for a style across all its SKUs, base with upside and downside range, value and cumulative base units.
+    kind: sql
+    args:
+      style_id:
+        required: true
+        desc: "Style id, e.g. STY-7731"
+      forecast_start:
+        type: date
+        desc: Forecast start
+        default: $as_of
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to forecast
+        default: 12
+    sql: |
+      SELECT f.forecast_week,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base') AS units_forecast,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'downside') AS downside_units,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'upside') AS upside_units,
+             ROUND(SUM(f.units_forecast * CAST(p.retail_price_gbp AS DOUBLE)) FILTER (WHERE f.forecast_type = 'base'), 0) AS base_value_gbp,
+             SUM(SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base')) OVER (ORDER BY f.forecast_week) AS cumulative_base_units,
+             COUNT(DISTINCT f.sku) AS skus
+      FROM forecasts f JOIN master.products p ON p.sku = f.sku
+      WHERE p.style_id = $style_id
+        AND f.forecast_week >= CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE)
+        AND f.forecast_week < CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      GROUP BY f.forecast_week
+      ORDER BY f.forecast_week
+    limit: 52
+    example:
+      style_id: STY-7731
+
+
+  - name: get_sales_history_for_products
+    desc: Weekly units and revenue by SKU for a category, style or single SKU, with weeks since launch. Use for comparable-product sales curves.
+    kind: sql
+    args:
+      category:
+        desc: Product category, e.g. Bags
+      style_id:
+        desc: "Style id, e.g. STY-8066"
+      sku:
+        desc: "SKU, e.g. SKU-103745"
+      period_start:
+        type: date
+        desc: Period start
+        default: -26w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
+    sql: |
+      SELECT h.sku, p.style_id, h.period_date, h.units_sold,
+             ROUND(h.revenue_gbp, 0) AS revenue_gbp,
+             ROUND(h.revenue_gbp / NULLIF(h.units_sold, 0), 2) AS price_gbp,
+             date_diff('week', CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE), h.period_date) + 1 AS weeks_since_launch
+      FROM demand_history h JOIN master.products p ON p.sku = h.sku
+      WHERE ($category IS NULL OR h.category = $category) AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($sku IS NULL OR h.sku = $sku)
+        AND h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.sku, h.period_date
+    limit: 200
+    example:
+      category: Bags
+      period_start: -12w
+
+
+  - name: get_site_volume_forecast
+    desc: Throughput volume forecast for a DC or store. For capacity and resource planning.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Site: DC1-DC5 or store"}
+      period_start: {type: date, desc: "Period start", default: "$as_of"}
+      period_end: {type: date, desc: "Period end", default: "+12w"}
+    sql: |
+      SELECT CAST($period_start AS DATE) AS period_start, CAST($period_end AS DATE) AS period_end,
+             COALESCE(SUM(o.units), 0) AS units_forecast,
+             ROUND(COALESCE(SUM(o.value_gbp), 0), 0) AS value_gbp,
+             'Volume used for DC/store capacity planning' AS use_case
+      FROM daily_orders o
+      WHERE o.order_date >= CAST($period_start AS DATE) AND o.order_date <= CAST($period_end AS DATE)
+    example: {site_id: "DC1"}
+
+  - name: get_volume_forecast
+    desc: Long-range outbound volume forecast by scenario (base, upside, downside) and plan year, optionally for one DC. Use for multi-year capacity and investment cases.
+    kind: sql
+    args:
+      scenario:
+        type: enum
+        values: [base, upside, downside]
+        desc: Volume scenario; blank for all three
+      site_id:
+        desc: "Distribution centre, e.g. DC1; blank for the whole network"
+      period_start:
+        type: date
+        desc: Forecast period start
+        default: $as_of
+      period_end:
+        type: date
+        desc: Forecast period end, default seven years
+        default: +7y
+    sql: |
+      SELECT v.scenario,
+             CAST(floor(date_diff('day', CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE), v.period_start) / 364.0) + 1 AS INTEGER) AS plan_year,
+             CAST(MIN(v.period_start) AS VARCHAR) AS year_start,
+             SUM(v.units_forecast) AS units_forecast,
+             ROUND(SUM(v.units_forecast) / (COUNT(DISTINCT v.period_start) * 13.0), 0) AS avg_weekly_units,
+             ROUND((SUM(v.units_forecast) * 1.0 / FIRST_VALUE(SUM(v.units_forecast)) OVER (PARTITION BY v.scenario ORDER BY floor(date_diff('day', CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE), v.period_start) / 364.0)) - 1) * 100, 1) AS growth_vs_year1_pct,
+             MAX(v.annual_growth_pct) AS annual_growth_assumption_pct
+      FROM long_range_volume v
+      WHERE ($scenario IS NULL OR v.scenario = $scenario) AND ($site_id IS NULL OR v.site_id = $site_id)
+        AND v.period_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+        AND v.period_start <= CAST($period_end AS DATE)
+      GROUP BY v.scenario, plan_year
+      ORDER BY CASE v.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END, plan_year
+    limit: 40
+    example: {site_id: DC1}
+
 
   - name: list_forecast_model_external_regressors
     desc: List forecast model external regressors (weather, holidays, social trends, etc.). Shows what external data feeds the model.
@@ -1076,22 +1466,42 @@ tools:
     example: {season: "AW26"}
 
   - name: list_top_selling_skus
-    desc: List top selling SKUs by units or revenue. For inventory optimization.
+    desc: Top selling SKUs ranked by units or revenue over a period, with name, category, average weekly units and supplier lead time.
     kind: sql
     args:
-      metric: {type: enum, values: [units, revenue], desc: "Rank by units or revenue", default: revenue}
-      period_start: {type: date, desc: Period start, default: "-52w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
-      limit_rows: {type: int, desc: Number to return, default: 200}
+      metric:
+        type: enum
+        values: [units, revenue]
+        desc: Rank by units or revenue
+        default: units
+      category:
+        desc: Product category, e.g. Outerwear; blank for all
+      period_start:
+        type: date
+        desc: Period start
+        default: -52w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
+      limit_rows:
+        type: int
+        desc: Number of SKUs to return
+        default: 200
     sql: |
-      SELECT h.sku, SUM(h.units_sold) AS units_sold, ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
-             ROUND(SUM(h.revenue_gbp) / NULLIF(SUM(h.units_sold), 0), 2) AS avg_price_gbp
-      FROM demand_history h
-      WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
-      GROUP BY h.sku
-      ORDER BY CASE WHEN $metric = 'units' THEN SUM(h.units_sold) ELSE SUM(h.revenue_gbp) END DESC
+      SELECT ROW_NUMBER() OVER (ORDER BY CASE WHEN $metric = 'revenue' THEN SUM(h.revenue_gbp) ELSE SUM(h.units_sold) END DESC) AS sales_rank,
+             h.sku, p.name, p.category, SUM(h.units_sold) AS units_sold, ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(AVG(h.units_sold), 0) AS avg_weekly_units, COUNT(*) AS weeks_of_sales,
+             p.lead_time_days AS supplier_lead_time_days
+      FROM demand_history h JOIN master.products p ON p.sku = h.sku
+      WHERE h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+        AND ($category IS NULL OR h.category = $category)
+      GROUP BY h.sku, p.name, p.category, p.lead_time_days
+      ORDER BY sales_rank
+      LIMIT $limit_rows
     limit: 200
-    example: {}
+    example: {limit_rows: 10}
+
 
   - name: run_daily_order_volume_forecast
     desc: Runs daily order volume forecast for e-commerce. Used for daily fulfillment capacity by day.
@@ -1170,25 +1580,47 @@ tools:
     example: {}
 
   - name: run_new_product_forecast
-    desc: Run demand forecast for new product launch. Uses comparable products and external signals.
+    desc: Weekly base, low and high demand forecast for a new product from the launch curves of comparable products in its category. Returns weeks since launch.
     kind: sql
     args:
-      sku: {required: true, desc: "New product SKU"}
-      launch_date: {required: true, type: date, desc: "Launch date"}
-      weeks_to_forecast: {type: int, desc: "Weeks to forecast", default: 12}
+      sku:
+        required: true
+        desc: "New product SKU, e.g. SKU-103423"
+      launch_date:
+        required: true
+        type: date
+        desc: Launch date
+      weeks_to_forecast:
+        type: int
+        desc: Weeks to forecast
+        default: 12
     sql: |
-      SELECT p.sku, p.product_name, p.launch_date,
-             ROUND(COALESCE(SUM(f.units_forecast) * 0.8, 0), 0) AS conservative_forecast_units,
-             ROUND(COALESCE(SUM(f.units_forecast), 0), 0) AS forecast_units,
-             ROUND(COALESCE(SUM(f.units_forecast) * 1.2, 0), 0) AS optimistic_forecast_units,
-             'New product forecast based on comparable products' AS method
-      FROM pipeline_products p
-      LEFT JOIN forecasts f ON p.category = f.category
-        AND f.forecast_week >= p.launch_date
-        AND f.forecast_week < p.launch_date + INTERVAL ($weeks_to_forecast * 7) DAY
-      WHERE p.sku = $sku
-      GROUP BY p.sku, p.product_name, p.launch_date
-    example: {sku: "SKU-100056", launch_date: "$as_of"}
+      WITH me AS (SELECT category FROM master.products WHERE sku = $sku),
+      comp AS (
+        SELECT p.sku, CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE) AS lw
+        FROM master.products p, me
+        WHERE p.category = me.category AND p.sku <> $sku
+          AND CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE) >= (SELECT MIN(period_date) FROM demand_history)
+          AND CAST(p.launch_date AS DATE) <= CAST($as_of AS DATE) - INTERVAL 28 DAY),
+      curve AS (
+        SELECT date_diff('week', c.lw, h.period_date) + 1 AS wk, c.sku, h.units_sold
+        FROM comp c JOIN demand_history h ON h.sku = c.sku
+        WHERE date_diff('week', c.lw, h.period_date) + 1 BETWEEN 1 AND $weeks_to_forecast),
+      agg AS (
+        SELECT wk, ROUND(AVG(units_sold), 0) AS base_units, ROUND(quantile_cont(units_sold, 0.25), 0) AS low_units,
+               ROUND(quantile_cont(units_sold, 0.75), 0) AS high_units, COUNT(DISTINCT sku) AS comparables
+        FROM curve GROUP BY wk)
+      SELECT $sku AS sku, a.wk AS week_in_launch,
+             CAST(date_trunc('week', CAST($launch_date AS DATE)) AS DATE) + CAST((a.wk - 1) * 7 AS INTEGER) AS week_start,
+             a.base_units, a.low_units, a.high_units,
+             SUM(a.base_units) OVER (ORDER BY a.wk) AS cumulative_base_units,
+             a.comparables, 'average of comparable launches; low and high are the 25th and 75th percentile' AS method
+      FROM agg a ORDER BY a.wk
+    limit: 52
+    example:
+      sku: SKU-103423
+      launch_date: +14w
+
 
   - name: run_promotional_volume_forecast
     desc: Runs promotional volume forecast. Estimates units and revenue during promotion.
@@ -1212,23 +1644,32 @@ tools:
     example: {category: "Kitchenware", mechanic: "percentage_off", period_start: "$as_of", period_end: "+7d"}
 
   - name: search_comparable_products
-    desc: Search for comparable products to use for new product forecasting. Returns SKU, category and sales history.
+    desc: Find comparable products by any keyword in name or category, with price, launch date, 52-week units and units in the first 12 weeks on sale.
     kind: sql
     args:
-      name_keywords: {required: true, desc: "Keywords to search product names, e.g. 'backpack canvas'"}
-      category: {desc: Product category}
+      name_keywords:
+        required: true
+        desc: "Keywords matched against product name and category, any word, e.g. 'bag'"
+      category:
+        desc: Product category, e.g. Bags
     sql: |
-      SELECT DISTINCT p.sku, p.style_id, p.name, p.category,
-             COALESCE(SUM(h.units_sold), 0) AS units_sold_52w,
-             'Use sales history of comparable products to forecast new product' AS use_case
-      FROM master.products p
-      LEFT JOIN demand_history h ON p.sku = h.sku AND h.period_date >= CAST($as_of AS DATE) - INTERVAL 52 WEEK
-      WHERE (p.name ILIKE '%' || $name_keywords || '%' OR p.category ILIKE '%' || $name_keywords || '%')
+      WITH kw AS (SELECT unnest(string_split(lower(trim($name_keywords)), ' ')) AS w),
+      hs AS (SELECT MIN(period_date) AS first_week FROM demand_history)
+      SELECT p.sku, p.style_id, p.name, p.category, p.status, CAST(p.retail_price_gbp AS DOUBLE) AS retail_price_gbp,
+             p.launch_date, SUM(h.units_sold) AS units_sold_52w, ROUND(AVG(h.units_sold), 1) AS avg_weekly_units,
+             COUNT(h.units_sold) AS weeks_of_sales,
+             CASE WHEN CAST(p.launch_date AS DATE) >= (SELECT first_week FROM hs)
+                  THEN SUM(h.units_sold) FILTER (WHERE h.period_date < CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE) + INTERVAL 84 DAY) END AS units_first_12_weeks
+      FROM master.products p JOIN demand_history h ON h.sku = p.sku
+      WHERE EXISTS (SELECT 1 FROM kw WHERE kw.w <> '' AND (lower(p.name) LIKE '%' || kw.w || '%' OR lower(p.category) LIKE '%' || kw.w || '%'))
         AND ($category IS NULL OR p.category = $category)
-      GROUP BY p.sku, p.style_id, p.name, p.category
+        AND h.period_date >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 52 WEEK
+      GROUP BY p.sku, p.style_id, p.name, p.category, p.status, p.retail_price_gbp, p.launch_date
       ORDER BY units_sold_52w DESC
     limit: 20
-    example: {name_keywords: "kettle"}
+    example:
+      name_keywords: bag
+
 
   - name: update_demand_history_adjustments
     desc: Update demand history adjustments for stockout-distorted periods. Stores corrected values for model retraining.
@@ -1336,67 +1777,119 @@ tools:
     example: {category: "Womenswear"}
 
   - name: get_demand_variability_by_sku
-    desc: Demand variability by SKU. Shows coefficient of variation, forecast accuracy and reliability.
+    desc: Weekly demand variability by SKU (average, standard deviation, coefficient of variation, forecast error), fastest sellers first. Use top_n for the fastest N.
     kind: sql
     args:
-      category: {desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-52w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      sku:
+        desc: "SKU, e.g. SKU-104669; blank for all"
+      category:
+        desc: Product category
+      top_n:
+        type: int
+        desc: Only the N fastest sellers by units over the period
+      period_start:
+        type: date
+        desc: Period start
+        default: -52w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
     sql: |
-      SELECT h.sku, h.category,
-             ROUND(AVG(h.units_sold), 0) AS avg_weekly_units,
-             ROUND(STDDEV_POP(h.units_sold), 0) AS std_dev,
-             ROUND(STDDEV_POP(h.units_sold) / NULLIF(AVG(h.units_sold), 0) * 100, 1) AS cv_pct,
-             ROUND((SELECT AVG(a.mape_pct) FROM forecast_accuracy a WHERE a.sku = h.sku), 1) AS forecast_mape_pct,
-             CASE WHEN STDDEV_POP(h.units_sold) / NULLIF(AVG(h.units_sold), 0) > 0.5 THEN 'High'
-                  WHEN STDDEV_POP(h.units_sold) / NULLIF(AVG(h.units_sold), 0) > 0.2 THEN 'Medium'
-                  ELSE 'Low' END AS variability_class
-      FROM demand_history h
-      WHERE ($category IS NULL OR h.category = $category)
-        AND h.period_date >= CAST($period_start AS DATE)
-        AND h.period_date <= CAST($period_end AS DATE)
-      GROUP BY h.sku, h.category
-      ORDER BY cv_pct DESC
+      WITH s AS (
+        SELECT h.sku, h.category, SUM(h.units_sold) AS units_sold, AVG(h.units_sold) AS avg_wk,
+               STDDEV_POP(h.units_sold) AS sd, COUNT(*) AS weeks
+        FROM demand_history h
+        WHERE ($category IS NULL OR h.category = $category)
+          AND h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND h.period_date <= CAST($period_end AS DATE)
+        GROUP BY h.sku, h.category HAVING COUNT(*) >= 13),
+      ranked AS (SELECT s.*, ROW_NUMBER() OVER (ORDER BY s.units_sold DESC) AS sales_rank FROM s),
+      err AS (
+        SELECT f.sku, ROUND(AVG(ABS(f.units_forecast - h.units_sold) * 100.0 / NULLIF(h.units_sold, 0)), 1) AS mape
+        FROM forecasts f JOIN demand_history h ON h.sku = f.sku AND h.period_date = f.forecast_week
+        WHERE f.forecast_type = 'base' GROUP BY f.sku)
+      SELECT r.sku, r.sales_rank, r.category, r.units_sold, ROUND(r.avg_wk, 0) AS avg_weekly_units,
+             ROUND(r.sd, 0) AS std_dev, ROUND(r.sd / NULLIF(r.avg_wk, 0) * 100, 1) AS cv_pct,
+             e.mape AS forecast_mape_pct,
+             CASE WHEN r.sd / NULLIF(r.avg_wk, 0) > 0.5 THEN 'High' WHEN r.sd / NULLIF(r.avg_wk, 0) > 0.2 THEN 'Medium' ELSE 'Low' END AS variability_class,
+             p.lead_time_days AS supplier_lead_time_days
+      FROM ranked r JOIN master.products p ON p.sku = r.sku LEFT JOIN err e ON e.sku = r.sku
+      WHERE ($sku IS NULL OR r.sku = $sku) AND ($top_n IS NULL OR r.sales_rank <= $top_n)
+      ORDER BY r.sales_rank
     limit: 100
-    example: {category: "Womenswear"}
+    example: {top_n: 10}
+
 
   - name: get_forecast_by_week_for_product
-    desc: Forecast by week for a product. Shows weekly demand path and scenarios.
+    desc: Weekly forecast for one SKU, base with upside and downside, beside actual units sold for past weeks. Shows forecast accuracy and the demand path ahead.
     kind: sql
     args:
-      sku: {required: true, desc: SKU}
-      period_start: {type: date, desc: Period start, default: "$as_of"}
-      weeks_ahead: {type: int, desc: "Number of weeks to forecast", default: 12}
+      sku:
+        required: true
+      period_start:
+        type: date
+        desc: First week
+        default: -8w
+      period_end:
+        type: date
+        desc: Last week
+        default: +12w
     sql: |
-      SELECT f.sku, f.forecast_week,
-             f.forecast_type,
-             f.units_forecast,
-             ROUND(f.units_forecast * 50, 0) AS value_gbp
-      FROM forecasts f
-      WHERE f.sku = $sku
-        AND f.forecast_week >= CAST($period_start AS DATE)
-        AND f.forecast_week < CAST($period_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
-      ORDER BY f.forecast_week, f.forecast_type
+      WITH fc AS (
+        SELECT f.sku, f.forecast_week,
+               MAX(f.units_forecast) FILTER (WHERE f.forecast_type = 'base') AS units_forecast,
+               MAX(f.units_forecast) FILTER (WHERE f.forecast_type = 'upside') AS upside_units,
+               MAX(f.units_forecast) FILTER (WHERE f.forecast_type = 'downside') AS downside_units
+        FROM forecasts f
+        WHERE f.sku = $sku
+          AND f.forecast_week >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND f.forecast_week <= CAST($period_end AS DATE)
+        GROUP BY f.sku, f.forecast_week)
+      SELECT fc.sku, fc.forecast_week, fc.units_forecast, fc.upside_units, fc.downside_units,
+             h.units_sold AS actual_units,
+             ROUND((h.units_sold - fc.units_forecast) * 100.0 / NULLIF(fc.units_forecast, 0), 1) AS actual_vs_forecast_pct,
+             ROUND(fc.units_forecast * CAST(p.retail_price_gbp AS DOUBLE), 0) AS forecast_value_gbp,
+             SUM(fc.units_forecast) OVER (ORDER BY fc.forecast_week) AS cumulative_forecast_units
+      FROM fc JOIN master.products p ON p.sku = fc.sku
+      LEFT JOIN demand_history h ON h.sku = fc.sku AND h.period_date = fc.forecast_week
+      ORDER BY fc.forecast_week
     limit: 52
-    example: {sku: "SKU-100056"}
+    example:
+      sku: SKU-101904
+
 
   - name: get_peak_volume_forecast_by_lane
-    desc: Peak volume forecast by transport lane. Shows weekly distribution of peak demand.
+    desc: Peak pallets and units forecast per transport lane, with Black Friday week and Christmas week pallets and the busiest week. Busiest lanes first.
     kind: sql
     args:
-      lane: {required: true, desc: "Transport lane, e.g. UK-EU"}
-      peak_start: {type: date, desc: "Peak start", default: "+8w"}
-      peak_end: {type: date, desc: "Peak end", default: "+12w"}
+      lane:
+        desc: "Lane code, e.g. DC1-ST150; blank for all lanes"
+      region:
+        desc: "Destination region of the lane, e.g. UK North; blank for all"
+      peak_start:
+        type: date
+        desc: Peak start, Monday of Black Friday week
+        default: +49d
+      peak_end:
+        type: date
+        desc: Peak end
+        default: +80d
     sql: |
-      SELECT $lane AS lane,
-             o.order_date,
-             SUM(o.units) AS units_forecast,
-             ROUND(SUM(o.value_gbp), 0) AS value_gbp,
-             ROUND(SUM(o.units) * 100.0 / SUM(SUM(o.units)) OVER (), 1) AS daily_pct_of_peak
-      FROM daily_orders o
-      WHERE o.order_date >= CAST($peak_start AS DATE)
-        AND o.order_date <= CAST($peak_end AS DATE)
-      GROUP BY o.order_date
-      ORDER BY o.order_date
-    limit: 100
-    example: {lane: "UK-EU"}
+      SELECT l.lane, l.origin_site_id, l.region,
+             SUM(l.pallets_forecast) AS peak_pallets, ROUND(AVG(l.pallets_forecast), 0) AS avg_weekly_pallets,
+             SUM(l.pallets_forecast) FILTER (WHERE l.week_label = 'black_friday_week') AS black_friday_week_pallets,
+             SUM(l.pallets_forecast) FILTER (WHERE l.week_label = 'christmas_week') AS christmas_week_pallets,
+             MAX(l.pallets_forecast) AS busiest_week_pallets,
+             CAST(arg_max(l.week_start, l.pallets_forecast) AS VARCHAR) AS busiest_week,
+             SUM(l.units_forecast) AS peak_units
+      FROM lane_volume_forecast l
+      WHERE ($lane IS NULL OR l.lane = $lane) AND ($region IS NULL OR l.region = $region)
+        AND l.week_start >= CAST(date_trunc('week', CAST($peak_start AS DATE)) AS DATE)
+        AND l.week_start <= CAST($peak_end AS DATE)
+      GROUP BY l.lane, l.origin_site_id, l.region
+      ORDER BY avg_weekly_pallets DESC, l.lane
+    limit: 30
+    example: {}
+
+
