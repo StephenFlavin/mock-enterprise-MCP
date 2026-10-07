@@ -29,40 +29,118 @@ def generate(g):
     markets = ["UK", "DE", "FR", "US", "IE", "NL"]
     inbound_modes = ["sea", "air", "truck", "rail"]
 
-    # Generate product_sales_fact
+    # Generate product_sales_fact: fortnightly Monday rows per sku/market (weekly for style STY-T-4410)
+    import hashlib
+    from collections import defaultdict
+    from datetime import date as _date, timedelta as _td
+
+    def _h(s):
+        return int(hashlib.md5(s.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+
+    cty_market = {"GB": "UK", "DE": "DE", "US": "US", "IE": "IE", "NL": "NL", "PL": "PL"}
+    stores = defaultdict(list)
+    for s in sites:
+        if s["type"] == "store" and s["country"] in cty_market and s["status"] == "open":
+            stores[cty_market[s["country"]]].append(s["site_id"])
+    prod_by_sku = {p["sku"]: p for p in products}
+    by_cat = defaultdict(list)
+    for p in sorted(products, key=lambda x: x["sku"]):
+        by_cat[p["category"]].append(p)
+
+    mondays = g.weeks(66)
+    fort = [d for i, d in enumerate(mondays) if (len(mondays) - 1 - i) % 2 == 0]
+    FASHION = ["Trousers", "Tops", "T-Shirts", "Shirts", "Knitwear", "Outerwear"]
+    HOME = ["Lighting", "Storage", "Towels", "Bedding", "Cookware", "Drinkware", "Kitchenware"]
+    # year-on-year demand growth by category (UK); other markets move with it
+    YOY = {"Lighting": 0.38, "Storage": 0.24, "Cookware": 0.15, "Bedding": 0.08, "Drinkware": 0.05,
+           "Towels": -0.02, "Kitchenware": 0.0, "Outerwear": 0.42, "Knitwear": 0.06, "Tops": 0.03,
+           "T-Shirts": 0.04, "Shirts": 0.0, "Trousers": 0.05, "Small Appliances": 0.0}
+    MKT_ADJ = {"UK": 0.0, "DE": -0.08, "US": -0.16}
+    PREMIUM_SHARE = {"Knitwear": (0.36, 0.17), "Tops": (0.34, 0.18), "T-Shirts": (0.33, 0.20), "Shirts": (0.30, 0.20)}
+    SA_COST_LY = {"SUP-0013": 0.80}   # last year's landed cost vs today's, small appliances
+
+    plan = []   # (product, markets)
+    for cat, plist in by_cat.items():
+        if cat in FASHION or cat == "Small Appliances":
+            chosen = plist
+            mk = ["UK"]
+        elif cat in HOME:
+            chosen = g.rng.sample(plist, min(4, len(plist)))
+            mk = ["UK", "DE", "US"]
+        else:
+            chosen = g.rng.sample(plist, min(3, len(plist)))
+            mk = ["UK"]
+        for p in chosen:
+            if p["style_id"] == "STY-T-4410":
+                continue
+            plan.append((p, mk))
+    if "PF-220" not in {p["sku"] for p, _ in plan}:
+        plan.append((prod_by_sku["PF-220"], ["UK"]))
+
     sales_fact = []
-    for week in g.weeks(-26):  # 26 weeks back
-        for _ in range(g.rng.randint(20, 40)):  # 20-40 sales records per week
-            sku = g.pick(skus)
-            product = next((p for p in products if p["sku"] == sku), None)
-            market = g.pick(markets)
-            store = next((s for s in sites if s["region"].startswith(market[:2].upper())), g.pick([s for s in sites if s["type"] == "store"]))
+    seen_keys = set()
 
-            units = g.rng.randint(1, 20)
-            price = float(product["retail_price_gbp"]) if product else 50.0
-            cost = float(product["unit_cost_gbp"]) if product else 20.0
+    def add_row(p, d, market, units, md, cost_f=1.0, seg=None, size=None):
+        price = float(p["retail_price_gbp"])
+        site = g.pick(stores[market])
+        key = (d, p["sku"], site, size or p["size"])
+        if key in seen_keys or units < 1:
+            return
+        seen_keys.add(key)
+        gross = units * price
+        sales_fact.append({
+            "date": d, "sku": p["sku"], "style_id": p["style_id"], "category": p["category"], "market": market,
+            "site_id": site, "size": size or p["size"], "units_sold": units,
+            "sales_gbp": round(gross * (1 - md), 2), "cost_gbp": round(units * float(p["unit_cost_gbp"]) * cost_f, 2),
+            "markdown_gbp": round(gross * md, 2),
+            "customer_segment": seg or g.rng.choices(["Standard", "Budget", "Premium", "VIP"], [50, 22, 20, 8])[0]})
 
-            markdown_pct = g.rng.uniform(0, 0.4)  # 0-40% markdown
-            markdown = units * price * markdown_pct
-            sales = units * price * (1 - markdown_pct)
+    hero_n = defaultdict(int)
+    for p, mk in plan:
+        cat, sku = p["category"], p["sku"]
+        lead = int(p["lead_time_days"])
+        launch = _date.fromisoformat(p["launch_date"])
+        base = 8 * (2.718 ** g.rng.gauss(0, 0.6))
+        if cat in FASHION and hero_n[cat] < 3:
+            hero_n[cat] += 1
+            base *= 4
+        if cat == "Small Appliances":
+            base = 30 * (2.718 ** g.rng.gauss(0, 0.25))
+        if sku == "K-1700":
+            base = 70
+        if cat in HOME:
+            base *= 2
+        base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
+        for d in fort:
+            if d < launch:
+                continue
+            age_y = (g.as_of - d).days / 365.0
+            for market in mk:
+                gr = YOY.get(cat, round((_h(cat) - 0.5) * 0.12, 3)) + MKT_ADJ[market]
+                units = base * (1 + gr) ** (-age_y) * (0.5 if market != "UK" else 1.0) * g.rng.uniform(0.88, 1.12)
+                md = max(0.02, base_md + g.rng.uniform(-0.03, 0.03))
+                cost_f = 1.0
+                if cat == "Small Appliances":
+                    ly = age_y > 0.55
+                    if ly:
+                        cost_f = SA_COST_LY.get(p["supplier_id"], 0.97)
+                    md = (0.12 if ly else 0.30) if sku == "K-1700" else 0.14 + g.rng.uniform(-0.01, 0.01)
+                    units = base * (0.92 if (ly and sku == "K-1700") else 1.0) * g.rng.uniform(0.97, 1.03)
+                seg = None
+                if cat in PREMIUM_SHARE:
+                    a, b = PREMIUM_SHARE[cat]
+                    share = b + (a - b) * min(1.0, max(0.0, age_y))
+                    seg = "Premium" if g.rng.random() < share else g.rng.choices(["Standard", "Budget", "VIP"], [60, 30, 10])[0]
+                add_row(p, d, market, max(1, round(units)), md, cost_f, seg)
 
-            size_options = ["XS", "S", "M", "L", "XL", "6", "8", "10", "12", "14", "16"]
-            size = g.pick(size_options)
-
-            sales_fact.append({
-                "date": week,
-                "sku": sku,
-                "style_id": product["style_id"] if product else "STY-0000",
-                "category": product["category"] if product else "General",
-                "market": market,
-                "site_id": store["site_id"],
-                "size": size,
-                "units_sold": units,
-                "sales_gbp": round(sales, 2),
-                "cost_gbp": round(units * cost, 2),
-                "markdown_gbp": round(markdown, 2),
-                "customer_segment": g.pick(["Premium", "Standard", "Budget", "VIP"])
-            })
+    # style STY-T-4410 (white trousers): weekly sales for each size, UK and DE
+    for p in sorted([x for x in products if x["style_id"] == "STY-T-4410"], key=lambda x: x["sku"]):
+        size_w = {"10": 80, "12": 100, "14": 70}.get(p["size"], 60)
+        for d in mondays:
+            if d < _date.fromisoformat(p["launch_date"]):
+                continue
+            for market, mult in (("UK", 1.0), ("DE", 0.35)):
+                add_row(p, d, market, round(size_w * mult * g.rng.uniform(0.9, 1.1)), 0.14 + g.rng.uniform(-0.02, 0.02))
 
     # Generate product_kpi_history
     kpi_history = []
@@ -130,29 +208,33 @@ def generate(g):
                                 "late_units": late
                             })
 
-    # Generate product_markdown_rate
+    # Generate product_markdown_rate: monthly history for fashion and small-appliance SKUs
     markdown_rate = []
-    for sku in g.pick(skus, k=100):
-        product = next((p for p in products if p["sku"] == sku), None)
-        for period_num in range(-12, 0):
-            period_str = f"2026-{((10 + period_num) % 12) + 1:02d}"
-            units = g.rng.randint(10, 500)
-            markdown_pct = g.rng.uniform(0.1, 0.5)
-
-            markdown_rate.append({
-                "sku": sku,
-                "style_id": product["style_id"] if product else "STY-0000",
-                "category": product["category"] if product else "General",
-                "period_type": "monthly",
-                "period": period_str,
-                "units_sold": units,
-                "full_price_units": int(units * (1 - markdown_pct)),
-                "markdown_units": int(units * markdown_pct),
-                "markdown_rate_pct": round(markdown_pct * 100, 1),
-                "avg_markdown_depth_pct": round(g.rng.uniform(10, 40), 1),
-                "lead_time_days": int(product["lead_time_days"]) if product else g.rng.randint(30, 120),
-                "cumulative_markdown_gbp": round(units * g.rng.uniform(5, 30), 2)
-            })
+    months = []
+    y, m = g.as_of.year, g.as_of.month
+    for i in range(12):
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        months.append(_date(y, m, 1))
+    months.reverse()
+    for cat in FASHION + ["Small Appliances"]:
+        for p in by_cat[cat]:
+            lead = int(p["lead_time_days"])
+            base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
+            for mo in months:
+                if mo < _date.fromisoformat(p["launch_date"]):
+                    continue
+                season_bump = 0.07 if mo.month in (1, 7) else 0.0
+                rate = min(0.8, max(0.02, base_md + season_bump + g.rng.uniform(-0.03, 0.03)))
+                units = int(60 * (2.718 ** g.rng.gauss(0, 0.5)))
+                mdu = int(units * rate)
+                markdown_rate.append({
+                    "sku": p["sku"], "style_id": p["style_id"], "category": cat, "period_type": "monthly",
+                    "period": mo, "units_sold": units, "full_price_units": units - mdu, "markdown_units": mdu,
+                    "markdown_rate_pct": round(100.0 * mdu / max(units, 1), 1),
+                    "avg_markdown_depth_pct": round(100 * rate * 0.9 + 8, 1), "lead_time_days": lead,
+                    "cumulative_markdown_gbp": round(mdu * float(p["retail_price_gbp"]) * rate, 2)})
 
     # Generate product_launch_history
     launches = []
@@ -206,41 +288,28 @@ def generate(g):
                     "adjustment_required": abs(wms - erp) > 50 or abs(erp - finance) > 100
                 })
 
-    # Generate product_performance_metrics
+    # Generate product_performance_metrics: one current row per sku with sales (derived from the sales fact)
     perf_metrics = []
-    for sku in g.pick(skus, k=120):
-        product = next((p for p in products if p["sku"] == sku), None)
-        units = g.rng.randint(50, 5000)
-        sales = units * float(product["retail_price_gbp"]) * g.rng.uniform(0.6, 1.0) if product else units * g.rng.uniform(20, 100)
-        cost = units * float(product["unit_cost_gbp"]) if product else units * g.rng.uniform(10, 50)
-        margin = sales - cost
-        markdown_pct = g.rng.uniform(0.1, 0.5)
-
-        velocity_rank = g.rng.randint(1, 5000)
-        strategic_role = g.pick(["core", "growth", "strategic", "clearance"])
-        action_map = {
-            "core": "extend",
-            "growth": "refresh",
-            "strategic": "extend",
-            "clearance": "delete"
-        }
-
+    cut = g.as_of - _td(days=90)
+    agg = defaultdict(lambda: [0, 0.0, 0.0, 0.0])
+    for r in sales_fact:
+        if r["date"] >= cut:
+            a = agg[r["sku"]]
+            a[0] += r["units_sold"]; a[1] += r["sales_gbp"]; a[2] += r["cost_gbp"]; a[3] += r["markdown_gbp"]
+    ranked = sorted(agg, key=lambda s: -agg[s][1])
+    for rank, sku in enumerate(ranked, 1):
+        product = prod_by_sku[sku]
+        u, s_, c_, mdv = agg[sku]
+        hv = _h(product["style_id"])
+        role = "clearance" if product["status"] == "clearance" else ("strategic" if hv < 0.12 else "growth" if hv < 0.35 else "core")
         perf_metrics.append({
-            "sku": sku,
-            "style_id": product["style_id"] if product else "STY-0000",
-            "category": product["category"] if product else "General",
-            "period": "2026-Q3",
-            "units_sold": units,
-            "sales_gbp": round(sales, 2),
-            "margin_gbp": round(margin, 2),
-            "margin_pct": round(100 * margin / sales, 1) if sales > 0 else 0,
-            "markdown_rate_pct": round(markdown_pct * 100, 1),
-            "in_stock_rate_pct": round(g.rng.uniform(70, 99), 1),
-            "velocity_rank": velocity_rank,
-            "strategic_role": strategic_role,
-            "recommend_action": action_map[strategic_role],
-            "return_rate_pct": round(g.rng.uniform(0.5, 5), 1)
-        })
+            "sku": sku, "style_id": product["style_id"], "category": product["category"], "period": "latest",
+            "units_sold": u, "sales_gbp": round(s_, 2), "margin_gbp": round(s_ - c_, 2),
+            "margin_pct": round(100 * (s_ - c_) / s_, 1) if s_ else 0,
+            "markdown_rate_pct": round(100 * mdv / (s_ + mdv), 1) if s_ else 0,
+            "in_stock_rate_pct": round(55 + 44 * _h("is" + sku), 1), "velocity_rank": rank,
+            "strategic_role": role, "recommend_action": "",
+            "return_rate_pct": round(0.5 + 6 * _h("rr" + sku), 1)})
 
     # Generate warehouse_data_catalogue
     catalogue = []

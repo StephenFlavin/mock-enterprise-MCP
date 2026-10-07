@@ -1,131 +1,97 @@
-"""Generate audit records and findings for factories over the past 2 years."""
+"""Background audits, findings and corrective actions for every master factory.
+
+Each factory's latest completed audit matches its master audit_rating (and last_audit_date when it is in the
+past), so scores agree with master data. Factories with a hand-written story in seed/ get no generated audits.
+Background findings are never open-critical, so planted critical findings are the only ones to find.
+"""
 from datetime import datetime, timedelta
+
+STORY = {"FAC-0001", "FAC-0121", "FAC-0087", "FAC-0107", "FAC-0137", "FAC-0097", "FAC-0098"}
+ORDER = ["A", "B", "C", "D"]
+CATS = ["working hours", "wage calculation", "fire safety", "safe working conditions",
+        "freedom of association", "discrimination", "documentation", "waste handling"]
+
+
+def _ts(d):
+    return datetime.combine(d, datetime.min.time()) + timedelta(hours=9)
 
 
 def generate(g):
     r = g.rng
     factories = g.master("factories")
-    employees = g.master("employees")
-
-    # Filter to employees in relevant roles for auditors
-    auditors = [e for e in employees if "audit" in e.get("role", "").lower() or
-                "compliance" in e.get("role", "").lower() or
-                "quality" in e.get("role", "").lower()]
+    auditors = [e for e in g.master("employees")
+                if any(k in e.get("role", "").lower() for k in ("audit", "compliance", "quality", "sustainab"))]
     if not auditors:
-        auditors = employees[:10]  # fallback
+        auditors = g.master("employees")[:10]
+    audits, findings, caps, requests = [], [], [], []
 
-    audits = []
-    audit_findings = []
-    corrective_actions = []
-    audit_requests = []
+    for f in factories:
+        fid = f["factory_id"]
+        if fid in STORY:
+            continue
+        rating = f["audit_rating"] or "B"
+        try:
+            latest = datetime.strptime(f["last_audit_date"][:10], "%Y-%m-%d").date()
+        except ValueError:
+            latest = g.days_ago(300)
+        if latest > g.as_of:
+            latest = g.days_ago(30)
+        n = r.choice([1, 2, 2, 3])
+        dates = [latest - timedelta(days=364 * k) for k in range(n)][::-1]
+        scores = []
+        idx = ORDER.index(rating)
+        for k in range(n - 1):
+            scores.append(ORDER[max(0, min(3, idx + r.choice([-1, 0, 0, 1])))])
+        scores.append(rating)
+        for i, (d, sc) in enumerate(zip(dates, scores)):
+            aid = f"AUD-{len(audits) + 1:06d}"
+            audits.append({
+                "audit_id": aid, "factory_id": fid, "supplier_id": f["supplier_id"], "audit_date": d,
+                "auditor_id": r.choice(auditors)["employee_id"], "audit_type": r.choice(["social", "ethical", "quality"]),
+                "overall_score": sc, "status": "completed",
+                "notes": f"Audit at {f['name']}. " + ("Good compliance overall." if sc in "AB" else "Several areas for improvement noted."),
+                "created_at": _ts(d + timedelta(days=1)),
+            })
+            nf = {"A": r.choice([0, 1]), "B": r.choice([1, 2]), "C": r.choice([2, 3]), "D": r.choice([3, 4])}[sc]
+            for _ in range(nf):
+                fnd = f"FND-{len(findings) + 1:06d}"
+                cat = r.choice(CATS)
+                sev = r.choices(["major", "minor"], [0.3, 0.7])[0]
+                is_last = i == n - 1
+                if is_last and sc in "CD" and r.random() < 0.5:
+                    status = r.choice(["open", "in_progress"])
+                else:
+                    status = "closed"
+                findings.append({
+                    "finding_id": fnd, "audit_id": aid, "factory_id": fid, "category": cat, "severity": sev,
+                    "description": f"{cat.capitalize()}: {sev} gap identified during audit",
+                    "status": status, "is_repeat": False, "found_date": d, "created_at": _ts(d + timedelta(days=1)),
+                })
+                due = d + timedelta(days=r.randint(30, 75))
+                if status == "closed":
+                    if sev == "minor" and r.random() < 0.5:
+                        continue
+                    cs, comp = "closed", min(due, g.as_of) - timedelta(days=r.randint(0, 6))
+                else:
+                    cs = "overdue" if due < g.as_of else r.choice(["open", "in_progress"])
+                    comp = None
+                caps.append({
+                    "corrective_action_id": f"CAP-{len(caps) + 1:06d}", "finding_id": fnd, "factory_id": fid,
+                    "supplier_id": f["supplier_id"], "description": f"Corrective action for {cat}",
+                    "assigned_to": r.choice(auditors)["employee_id"], "due_date": due, "status": cs,
+                    "completed_date": comp, "created_at": _ts(d + timedelta(days=1)),
+                    "updated_at": _ts(comp or min(due, g.as_of)),
+                })
 
-    # Generate audits: 2-4 per factory over past 100 weeks (2 years)
-    for factory in factories[:30]:  # Sample of factories
-        supplier_id = factory["supplier_id"]
-        factory_id = factory["factory_id"]
-        audit_count = r.randint(2, 4)
-
-        for i in range(audit_count):
-            # Spread audits over time
-            weeks_ago = 100 - (i * (100 // audit_count)) + r.randint(-2, 2)
-            audit_date = g.days_ago(weeks_ago * 7)
-
-            audit_id = f"AUD-{len(audits) + 1:06d}"
-            audit_score = r.choices(["A", "B", "C", "D"], [0.4, 0.35, 0.2, 0.05])[0]
-            auditor = r.choice(auditors)
-
-            audit_record = {
-                "audit_id": audit_id,
-                "factory_id": factory_id,
-                "supplier_id": supplier_id,
-                "audit_date": audit_date,
-                "auditor_id": auditor["employee_id"],
-                "audit_type": r.choice(["social", "ethical", "quality"]),
-                "overall_score": audit_score,
-                "status": "completed",
-                "notes": f"Audit conducted at {factory['name']}. {'Good compliance overall.' if audit_score in ['A', 'B'] else 'Several areas for improvement noted.'}",
-                "created_at": datetime.combine(audit_date, datetime.min.time()) + timedelta(days=1)
-            }
-            audits.append(audit_record)
-
-            # Generate findings: 0-8 per audit, more for lower scores
-            finding_count = r.choices([0, 1, 2, 3, 4, 5, 6, 7, 8],
-                                     [0.05, 0.1, 0.15, 0.15, 0.2, 0.15, 0.1, 0.08, 0.02])[0]
-            if audit_score == "C":
-                finding_count = min(8, finding_count + 2)
-            elif audit_score == "D":
-                finding_count = min(8, finding_count + 4)
-
-            for j in range(finding_count):
-                finding_id = f"FND-{len(audit_findings) + 1:06d}"
-                category = r.choice(["working hours", "wage calculation", "fire safety",
-                                    "child labor", "forced labor", "discrimination",
-                                    "freedom of association", "safe working conditions"])
-
-                finding_status = r.choices(["open", "in_progress", "closed", "reopened"],
-                                          [0.3, 0.2, 0.4, 0.1])[0]
-                is_repeat = r.choice([True, False]) if i > 0 and finding_status in ["reopened"] else False
-
-                finding = {
-                    "finding_id": finding_id,
-                    "audit_id": audit_id,
-                    "factory_id": factory_id,
-                    "category": category,
-                    "severity": r.choices(["critical", "major", "minor"], [0.15, 0.35, 0.5])[0],
-                    "description": f"Finding: {category} issue identified during audit",
-                    "status": finding_status,
-                    "is_repeat": is_repeat,
-                    "found_date": audit_date,
-                    "created_at": datetime.combine(audit_date, datetime.min.time()) + timedelta(days=1)
-                }
-                audit_findings.append(finding)
-
-                # Generate corrective actions for open/in_progress findings
-                if finding_status in ["open", "in_progress"]:
-                    cap_id = f"CAP-{len(corrective_actions) + 1:06d}"
-                    assigned = r.choice(auditors)
-                    due_offset = r.randint(14, 90)
-                    due_date = audit_date + timedelta(days=due_offset)
-
-                    cap_status = "overdue" if due_date < g.as_of else r.choice(["open", "in_progress"])
-
-                    cap = {
-                        "corrective_action_id": cap_id,
-                        "finding_id": finding_id,
-                        "factory_id": factory_id,
-                        "supplier_id": supplier_id,
-                        "description": f"Corrective action for: {category}",
-                        "assigned_to": assigned["employee_id"],
-                        "due_date": due_date,
-                        "status": cap_status,
-                        "completed_date": None if cap_status != "closed" else due_date + timedelta(days=1),
-                        "created_at": datetime.combine(audit_date, datetime.min.time()) + timedelta(days=1),
-                        "updated_at": datetime.combine(audit_date, datetime.min.time()) + timedelta(days=1)
-                    }
-                    corrective_actions.append(cap)
-
-    # Generate audit requests
-    for i in range(15):
-        factory = r.choice(factories[:20])
-        aur_id = f"AUR-{i + 1:06d}"
-        requested_date = g.days_ago(r.randint(5, 60))
-        auditor = r.choice(auditors)
-
-        audit_request = {
-            "audit_request_id": aur_id,
-            "factory_id": factory["factory_id"],
-            "supplier_id": factory["supplier_id"],
-            "requested_date": requested_date,
-            "audit_type": r.choice(["social", "ethical", "quality"]),
-            "status": r.choices(["pending", "scheduled", "completed", "cancelled"], [0.2, 0.3, 0.4, 0.1])[0],
-            "requested_by": auditor["employee_id"],
-            "created_at": datetime.combine(requested_date, datetime.min.time())
-        }
-        audit_requests.append(audit_request)
-
-    return {
-        "audits": audits,
-        "audit_findings": audit_findings,
-        "corrective_actions": corrective_actions,
-        "audit_requests": audit_requests
-    }
+    pool = [f for f in factories if f["factory_id"] not in STORY]
+    for i in range(10):
+        f = r.choice(pool)
+        d = g.days_ago(r.randint(5, 60))
+        requests.append({
+            "audit_request_id": f"AUR-{i + 1:06d}", "factory_id": f["factory_id"], "supplier_id": f["supplier_id"],
+            "requested_date": d, "audit_type": r.choice(["social", "ethical", "quality"]),
+            "status": r.choices(["pending", "scheduled", "completed", "cancelled"], [0.3, 0.3, 0.3, 0.1])[0],
+            "requested_by": r.choice(auditors)["employee_id"], "created_at": _ts(d),
+        })
+    return {"audits": audits, "audit_findings": findings, "corrective_actions": caps,
+            "audit_requests": requests, "corrective_action_reminders": []}

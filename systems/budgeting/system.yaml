@@ -157,16 +157,51 @@ tables:
       end_date: {type: date, desc: "Expected end date"}
       status: {type: enum, values: [approved, in_progress, completed, cancelled], desc: "Status"}
       type: {type: enum, values: [cost_saving, revenue, capex, transformation], desc: "Programme type"}
+      annual_benefit_gbp: {type: float, desc: "Planned recurring annual benefit once live, in GBP; 0 if none"}
+      benefit_start_date: {type: date, desc: "Date the benefit starts to flow"}
 
   programme_costs:
-    key: [programme_id, period]
+    key: [programme_id, period_date]
     cols:
       programme_id: {type: str, desc: "Programme"}
-      period: {type: str, desc: "Period (e.g. 2026-10 or FY27)"}
-      forecast_gbp: {type: float, desc: "Forecast spend in GBP"}
-      actual_gbp: {type: float, desc: "Actual spend in GBP"}
-      burn_rate_pct: {type: float, desc: "Burn rate as % of budget"}
+      period_date: {type: date, desc: "A date inside the month; the month is the period"}
+      planned_gbp: {type: float, desc: "Baseline plan spend for the month in GBP (sums to the budget)"}
+      forecast_gbp: {type: float, desc: "Latest forecast spend for the month in GBP"}
+      actual_gbp: {type: float, desc: "Actual spend in GBP; blank for months not yet closed"}
+      burn_rate_pct: {type: float, desc: "Actual spend as % of the plan for the month"}
       updated_at: {type: timestamp, desc: "Last updated"}
+
+  fx_budget_assumptions:
+    key: currency_pair
+    cols:
+      currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
+      budget_rate: {type: float, desc: "Budgeted rate (units of foreign currency per pound)"}
+      hedge_cover_pct: {type: float, desc: "Share of the budgeted exposure assumed hedged, %"}
+      hedged_to: {type: date, desc: "Date the budgeted hedges run to"}
+      annual_exposure_gbp: {type: float, desc: "Budgeted annual purchases in that currency, in GBP at the budget rate"}
+      notes: {type: text, desc: "How the budget treats the currency"}
+
+  capital_budgets:
+    key: budget_id
+    cols:
+      budget_id: {type: str, desc: "Capital budget, e.g. CAPB-GROUP"}
+      scope: {type: enum, values: [group, region], desc: "Whole group or one region"}
+      region: {type: str, desc: "Region (UK North, UK South, ...); blank for the group"}
+      budget_gbp: {type: float, desc: "Capital budget for the year in GBP"}
+      committed_gbp: {type: float, desc: "Already committed or allocated in GBP"}
+      purpose: {type: text, desc: "What the budget is for"}
+
+  capital_options:
+    key: option_id
+    cols:
+      option_id: {type: str, desc: "Capital option, e.g. COPT-01"}
+      option_name: {type: str, desc: "Option, e.g. New regional DC, Store refits"}
+      investment_case_id: {type: str, desc: "Investment case holding its capex and benefits"}
+      proposal_id: {type: str, desc: "Capital proposal id in the project office"}
+      risk_rating: {type: enum, values: [low, medium, high], desc: "Risk rating"}
+      hurdle_rate_pct: {type: float, desc: "Group hurdle rate, %"}
+      risk_adjustment_pct: {type: float, desc: "Points added to the hurdle for this risk rating"}
+      key_risk: {type: text, desc: "Main risk to the return"}
 
   investment_cases:
     key: investment_case_id
@@ -195,6 +230,7 @@ tools:
       cost_centre_id: {}
       category: {type: str, desc: "Expense category, e.g. utilities, maintenance, air freight, staff"}
       category_group: {type: str, desc: "Category group: Facilities, Logistics, People or Technology"}
+      function: {type: str, desc: "Cost centre function, one or several comma separated: Logistics (DC operations), Transport, Stores, E-commerce"}
       period_from: {type: date, default: "-12m", desc: "First month (e.g. this year, 2026-01, -3m)"}
       period_to: {type: date, default: "today", desc: "Last month (e.g. last month, 2026-09)"}
       group_by: {type: enum, values: [cost_centre, category, cost_centre_category, period], default: cost_centre, desc: "How to group the rows"}
@@ -203,41 +239,45 @@ tools:
         SELECT cost_centre_id, category, date_trunc('month', period_date) AS m, SUM(value_gbp) AS budget
         FROM budget_lines GROUP BY ALL),
       act AS (
-        SELECT cost_centre_id, category, date_trunc('month', period_date) AS m, SUM(actual_gbp) AS actual, SUM(one_off_gbp) AS one_off
+        SELECT cost_centre_id, category, date_trunc('month', period_date) AS m, SUM(actual_gbp) AS actual, SUM(one_off_gbp) AS one_off,
+               string_agg(DISTINCT NULLIF(notes, ''), '; ') AS note
         FROM actual_costs GROUP BY ALL),
       j AS (
         SELECT a.cost_centre_id, a.category, COALESCE(ec.category_group, 'Other') AS category_group, a.m,
-               COALESCE(b.budget, 0) AS budget, a.actual, a.one_off
+               COALESCE(b.budget, 0) AS budget, a.actual, a.one_off, a.note
         FROM act a
+        LEFT JOIN master.cost_centres mcc ON mcc.cost_centre_id = a.cost_centre_id
         LEFT JOIN bud b ON b.cost_centre_id = a.cost_centre_id AND b.category = a.category AND b.m = a.m
         LEFT JOIN expense_categories ec ON ec.category = a.category
         WHERE a.m >= date_trunc('month', CAST($period_from AS DATE))
           AND a.m <= date_trunc('month', CAST($period_to AS DATE))
           AND ($cost_centre_id IS NULL OR a.cost_centre_id = $cost_centre_id)
           AND ($category IS NULL OR lower(a.category) = lower($category))
-          AND ($category_group IS NULL OR lower(COALESCE(ec.category_group, 'Other')) = lower($category_group))),
+          AND ($category_group IS NULL OR lower(COALESCE(ec.category_group, 'Other')) = lower($category_group))
+          AND ($function IS NULL OR lower(mcc.function) IN (SELECT lower(trim(x)) FROM unnest(string_split($function, ',')) t(x)))),
       agg AS (
         SELECT
           CASE WHEN $group_by IN ('cost_centre', 'cost_centre_category') THEN j.cost_centre_id ELSE COALESCE($cost_centre_id, 'ALL') END AS cost_centre_id,
           CASE WHEN $group_by IN ('category', 'cost_centre_category') THEN j.category ELSE 'ALL' END AS category,
           CASE WHEN $group_by = 'period' THEN strftime(j.m, '%Y-%m') ELSE 'ALL' END AS period,
-          SUM(j.budget) AS budget_gbp, SUM(j.actual) AS actual_gbp, SUM(j.one_off) AS one_off_gbp
+          SUM(j.budget) AS budget_gbp, SUM(j.actual) AS actual_gbp, SUM(j.one_off) AS one_off_gbp,
+          string_agg(DISTINCT j.note, '; ') AS notes
         FROM j GROUP BY ALL)
-      SELECT cost_centre_id, cost_centre_name, category, period, budget_gbp, actual_gbp, variance_gbp,
-             variance_pct, one_off_gbp, recurring_variance_gbp
+      SELECT cost_centre_id, cost_centre_name, site_id, category, period, budget_gbp, actual_gbp, variance_gbp,
+             variance_pct, one_off_gbp, recurring_variance_gbp, notes
       FROM (
-        SELECT 1 AS ord, a.cost_centre_id, cc.name AS cost_centre_name, a.category, a.period,
+        SELECT 1 AS ord, a.cost_centre_id, cc.name AS cost_centre_name, cc.site_id, a.category, a.period,
                ROUND(a.budget_gbp, 0) AS budget_gbp, ROUND(a.actual_gbp, 0) AS actual_gbp,
                ROUND(a.actual_gbp - a.budget_gbp, 0) AS variance_gbp,
                ROUND((a.actual_gbp - a.budget_gbp) / NULLIF(a.budget_gbp, 0) * 100, 1) AS variance_pct,
                ROUND(a.one_off_gbp, 0) AS one_off_gbp,
-               ROUND(a.actual_gbp - a.budget_gbp - a.one_off_gbp, 0) AS recurring_variance_gbp
+               ROUND(a.actual_gbp - a.budget_gbp - a.one_off_gbp, 0) AS recurring_variance_gbp, a.notes
         FROM agg a LEFT JOIN master.cost_centres cc ON cc.cost_centre_id = a.cost_centre_id
         UNION ALL
-        SELECT 0, 'TOTAL', NULL, 'ALL', 'ALL', ROUND(SUM(budget_gbp), 0), ROUND(SUM(actual_gbp), 0),
+        SELECT 0, 'TOTAL', NULL, NULL, 'ALL', 'ALL', ROUND(SUM(budget_gbp), 0), ROUND(SUM(actual_gbp), 0),
                ROUND(SUM(actual_gbp) - SUM(budget_gbp), 0),
                ROUND((SUM(actual_gbp) - SUM(budget_gbp)) / NULLIF(SUM(budget_gbp), 0) * 100, 1),
-               ROUND(SUM(one_off_gbp), 0), ROUND(SUM(actual_gbp) - SUM(budget_gbp) - SUM(one_off_gbp), 0)
+               ROUND(SUM(one_off_gbp), 0), ROUND(SUM(actual_gbp) - SUM(budget_gbp) - SUM(one_off_gbp), 0), NULL
         FROM agg HAVING count(*) > 1) t
       ORDER BY ord, CASE WHEN $group_by = 'period' THEN period END, variance_gbp DESC
     limit: 100
@@ -582,41 +622,45 @@ tools:
     example: {landed_cost_increase_pct: 7, affected_cogs_share_pct: 40, stock_cover_weeks: 10}
 
   - name: calculate_pl_scenario
-    desc: Full P&L under a scenario with changed sourcing mix. Returns revenue, cogs, margin, EBIT.
+    desc: Full-year P&L (revenue, cost of goods, margin, opex, EBIT) against the current forecast with a share of production moved nearshore, plus changed volume or price.
     kind: py
     fn: calc_pl_scenario
     args:
-      scenario_id: {required: true}
-      base_revenue_gbp: {type: float, default: 1000000, desc: "Base revenue"}
-      volume_change_pct: {type: float, default: 0, desc: "Volume change %"}
-      price_change_pct: {type: float, default: 0, desc: "Price change %"}
-      nearshore_mix_pct: {type: float, default: 0, desc: "% of sourcing from nearshore"}
-    example: {scenario_id: FSC-000001}
+      scenario_id: {type: str, desc: "Saved scenario to take volume, price and nearshore mix from, e.g. FSC-000005"}
+      nearshore_mix_pct: {type: float, desc: "Share of production moved nearshore, %; default from the scenario, else 0"}
+      volume_change_pct: {type: float, desc: "Volume change %; default from the scenario, else 0"}
+      price_change_pct: {type: float, desc: "Price change %; default from the scenario, else 0"}
+      nearshore_cost_change_pct: {type: float, default: 0, desc: "Unit cost change on the moved goods excluding freight, %"}
+      freight_saving_pct: {type: float, default: 45, desc: "Freight cost saved on the moved share, %"}
+      markdown_saving_pct: {type: float, default: 10, desc: "Markdown saved on the moved share, % (shorter lead times)"}
+    example: {nearshore_mix_pct: 20}
   - name: calculate_programme_payback
-    desc: Calculate payback period for a cost-saving or revenue programme.
+    desc: Payback period in months and years for a programme, from its investment and annual benefit (both default from the programme record).
     kind: py
     fn: calc_programme_payback
     args:
       programme_id: {required: true}
-      investment_gbp: {type: float, required: true, desc: "Programme investment in GBP"}
-      annual_benefit_gbp: {type: float, required: true, desc: "Annual benefit from programme in GBP"}
-    example: {programme_id: "PGM-000001", investment_gbp: 200000, annual_benefit_gbp: 100000}
+      investment_gbp: {type: float, desc: "Programme investment in GBP; default is the programme budget"}
+      annual_benefit_gbp: {type: float, desc: "Annual benefit in GBP; default is the programme's planned benefit"}
+    example: {programme_id: "PGM-000001"}
   - name: calculate_programme_savings
-    desc: Total savings from a programme tracking actual versus forecast and run rate.
+    desc: Savings from a programme with its planned annual benefit, monthly run rate, spend to date and savings delivered since the start date.
     kind: py
     fn: calc_programme_savings
     args:
       programme_id: {required: true}
-      start_date: {type: date, default: "-6m"}
+      start_date: {type: date, default: "-6m", desc: "Count savings from this date"}
     example: {programme_id: PGM-000001}
   - name: calculate_investment_required
-    desc: Investment required to achieve a target (e.g. sales growth, market entry). Returns capex needed.
+    desc: Capex required to reach a revenue or benefit target at a target return and payback. Use for market entry or growth cases.
     kind: py
     fn: calc_investment_required
     args:
-      target_gbp: {required: true, type: float, desc: "Target revenue or benefit"}
+      target_gbp: {required: true, type: float, desc: "Target annual revenue or annual benefit in GBP"}
       roi_target_pct: {required: true, type: float, default: 30.0, desc: "Target return on investment %"}
       payback_years: {type: float, default: 3.0, desc: "Desired payback period"}
+      target_type: {type: enum, values: [revenue, annual_benefit], default: revenue, desc: "Whether the target is sales or already a profit benefit"}
+      margin_pct: {type: float, desc: "Margin earned on revenue, %; default is the current forecast gross margin"}
     example: {target_gbp: 5000000, roi_target_pct: 25.0}
   - name: calculate_breakeven_period
     desc: Breakeven period for an investment or initiative. Returns months to recover initial investment.
@@ -628,89 +672,108 @@ tools:
       annual_return_gbp: {type: float, default: 0, desc: "Annual return or saving in GBP"}
     example: {initial_investment_gbp: 500000, annual_return_gbp: 100000}
   - name: get_capital_budget_and_hurdle_rates
-    desc: Capital investment budget, hurdle rate and risk adjustments for decision-making on capex.
+    desc: Group capital budget and what is still unallocated, with each capital option's risk rating, hurdle rate and risk adjustment. Use to compare options on one basis.
     kind: sql
     args:
-      entity_id: {}
+      option_name: {type: str, desc: "Part of an option name, e.g. DC, refit, nearshoring"}
+      risk_rating: {type: enum, values: [low, medium, high], desc: "Only options with this risk rating"}
     sql: |
-      SELECT
-        CAST($as_of AS DATE) AS as_of_date,
-        'Capital budget: £100m (50% allocated), hurdle rate 12%, risk adjustment 2%' AS capital_plan,
-        0.50 AS allocation_rate,
-        0.12 AS hurdle_rate_pct,
-        0.02 AS risk_adjustment_pct,
-        'Return requirement 12% real; inflation 3%; assumes GBP stable' AS assumptions
-    limit: 1
+      SELECT o.option_name, o.investment_case_id, o.proposal_id, ic.capex_gbp, o.risk_rating, o.hurdle_rate_pct,
+             o.risk_adjustment_pct, ROUND(o.hurdle_rate_pct + o.risk_adjustment_pct, 1) AS risk_adjusted_hurdle_pct, o.key_risk,
+             g.budget_gbp AS group_capital_budget_gbp, g.committed_gbp AS allocated_gbp, g.budget_gbp - g.committed_gbp AS unallocated_gbp
+      FROM capital_options o
+      LEFT JOIN investment_cases ic ON ic.investment_case_id = o.investment_case_id
+      CROSS JOIN (SELECT * FROM capital_budgets WHERE scope = 'group') g
+      WHERE ($option_name IS NULL OR o.option_name ILIKE '%' || $option_name || '%')
+        AND ($risk_rating IS NULL OR o.risk_rating = $risk_rating)
+      ORDER BY o.option_id
+    limit: 20
     example: {}
   - name: get_capital_investment_budget_for_region
-    desc: Retrieves capital investment budget allocation for a region (site). Shows available capex for store upgrades and infrastructure.
+    desc: Capital budget for store upgrades and local infrastructure in a region, with the amount committed and still available. Give a region, or a site to find its region.
     kind: sql
     args:
+      region: {type: str, desc: "Region, e.g. UK North, UK South, Scotland, Ireland, EU Central, US"}
       site_id: {}
     sql: |
-      SELECT
-        'Region/Site capital budget' AS metric,
-        COALESCE($site_id, 'Group') AS site_id,
-        CASE WHEN $site_id = 'DC1' THEN 200000 WHEN $site_id = 'DC2' THEN 150000 WHEN $site_id = 'DC3' THEN 120000 ELSE 100000 END AS budget_gbp,
-        'Automation, store upgrades, technology infrastructure' AS allocation_basis,
-        CAST($as_of AS DATE) AS as_of_date
-    limit: 1
-    example: {site_id: DC1}
+      SELECT b.region, b.budget_gbp, b.committed_gbp, b.budget_gbp - b.committed_gbp AS available_gbp, b.purpose,
+             (SELECT count(*) FROM master.sites s WHERE s.region = b.region AND s.type = 'store') AS store_count
+      FROM capital_budgets b
+      WHERE b.scope = 'region'
+        AND ($region IS NULL OR lower(b.region) = lower($region))
+        AND ($site_id IS NULL OR b.region = (SELECT region FROM master.sites WHERE site_id = $site_id))
+      ORDER BY b.region
+    limit: 10
+    example: {region: UK North}
   - name: get_fx_budget_assumptions
-    desc: Budgeted FX rates and hedge assumptions used in forecasts and budget planning.
+    desc: Budgeted FX rate, hedge cover, hedge end date and budgeted exposure by currency pair, with the unhedged amount. Use to explain FX gain or loss against budget.
     kind: sql
-    args: []
+    args:
+      currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
     sql: |
-      SELECT
-        'FX budget assumptions' AS metric,
-        'GBP/USD budget rate: 1.25, hedge cover 75%, hedged to end Q2 2027' AS assumptions,
-        'GBP/EUR budget rate: 1.18, hedge cover 60%, hedged to end Q2 2027' AS eur_assumptions,
-        'Spot rates volatile; forwards locked via forward contracts' AS notes,
-        CAST($as_of AS DATE) AS as_of_date
-      LIMIT 1
-    limit: 1
+      SELECT currency_pair, budget_rate, hedge_cover_pct, hedged_to, annual_exposure_gbp,
+             ROUND(annual_exposure_gbp * hedge_cover_pct / 100, 0) AS hedged_exposure_gbp,
+             ROUND(annual_exposure_gbp * (100 - hedge_cover_pct) / 100, 0) AS unhedged_exposure_gbp, notes
+      FROM fx_budget_assumptions
+      WHERE ($currency_pair IS NULL OR upper(currency_pair) = upper($currency_pair))
+      ORDER BY annual_exposure_gbp DESC
+    limit: 10
     example: {}
   - name: get_programme_budget_vs_actual
-    desc: Programme spend versus budget and forecast. Shows budget adherence and forecast accuracy.
+    desc: Programme budget, plan and actual spend to date, forecast to complete and forecast at completion, with variances. Shows budget adherence.
     kind: sql
     args:
       programme_id: {required: true}
     sql: |
-      SELECT
-        p.programme_id, p.name AS programme_name, p.type, p.status,
-        p.budget_gbp, SUM(pc.forecast_gbp) AS total_forecast_gbp, SUM(pc.actual_gbp) AS total_actual_gbp,
-        ROUND(SUM(pc.actual_gbp) - p.budget_gbp, 2) AS variance_gbp,
-        ROUND((SUM(pc.actual_gbp) - p.budget_gbp) / NULLIF(p.budget_gbp, 0) * 100, 1) AS variance_pct
-      FROM programmes p
-      LEFT JOIN programme_costs pc ON p.programme_id = pc.programme_id
+      WITH pc AS (
+        SELECT programme_id, SUM(planned_gbp) AS plan_total,
+               SUM(CASE WHEN actual_gbp IS NOT NULL THEN planned_gbp END) AS planned_to_date,
+               SUM(actual_gbp) AS actual_to_date,
+               SUM(CASE WHEN actual_gbp IS NULL THEN forecast_gbp END) AS forecast_to_complete,
+               count(*) FILTER (WHERE actual_gbp IS NULL) AS months_remaining
+        FROM programme_costs GROUP BY programme_id)
+      SELECT p.programme_id, p.name AS programme_name, p.type, p.status, p.budget_gbp,
+             ROUND(pc.planned_to_date, 0) AS planned_to_date_gbp, ROUND(pc.actual_to_date, 0) AS actual_to_date_gbp,
+             ROUND(pc.actual_to_date - pc.planned_to_date, 0) AS variance_to_date_gbp,
+             ROUND((pc.actual_to_date - pc.planned_to_date) / NULLIF(pc.planned_to_date, 0) * 100, 1) AS variance_to_date_pct,
+             ROUND(p.budget_gbp - COALESCE(pc.actual_to_date, 0), 0) AS budget_remaining_gbp,
+             ROUND(pc.forecast_to_complete, 0) AS forecast_to_complete_gbp, pc.months_remaining,
+             ROUND(COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0), 0) AS forecast_at_completion_gbp,
+             ROUND(COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0) - p.budget_gbp, 0) AS variance_at_completion_gbp,
+             ROUND((COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0) - p.budget_gbp) / NULLIF(p.budget_gbp, 0) * 100, 1) AS variance_at_completion_pct
+      FROM programmes p LEFT JOIN pc ON pc.programme_id = p.programme_id
       WHERE p.programme_id = $programme_id
-      GROUP BY p.programme_id, p.name, p.type, p.status, p.budget_gbp
     limit: 1
     example: {programme_id: PGM-000001}
   - name: get_burn_rate_history
-    desc: Programme burn rate over time showing forecast versus actual spend and cumulative progress.
+    desc: Programme spend by month, plan versus forecast versus actual, with burn rate against plan and cumulative figures. Future months show plan and forecast only.
     kind: sql
     args:
       programme_id: {required: true}
-      period_from: {type: str, default: "-6m", desc: "Period from"}
+      period_from: {type: date, default: "-6m", desc: "First month (e.g. -6m, 2026-04)"}
     sql: |
-      SELECT
-        programme_id, p.name, period,
-        forecast_gbp, actual_gbp,
-        ROUND(COALESCE(actual_gbp, 0) / forecast_gbp * 100, 1) AS burn_rate_pct,
-        SUM(COALESCE(actual_gbp, 0)) OVER (PARTITION BY programme_id ORDER BY period) AS cumulative_spend_gbp,
-        SUM(forecast_gbp) OVER (PARTITION BY programme_id ORDER BY period) AS cumulative_forecast_gbp
-      FROM programme_costs pc
-      LEFT JOIN programmes p USING (programme_id)
-      WHERE programme_id = $programme_id AND period >= $period_from
-      ORDER BY period ASC
+      SELECT programme_id, name, period, planned_gbp, forecast_gbp, actual_gbp, burn_rate_pct,
+             cumulative_planned_gbp, cumulative_actual_gbp
+      FROM (
+        SELECT pc.programme_id, p.name, strftime(pc.period_date, '%Y-%m') AS period, pc.period_date,
+               ROUND(pc.planned_gbp, 0) AS planned_gbp, ROUND(pc.forecast_gbp, 0) AS forecast_gbp, ROUND(pc.actual_gbp, 0) AS actual_gbp,
+               ROUND(pc.actual_gbp / NULLIF(pc.planned_gbp, 0) * 100, 1) AS burn_rate_pct,
+               ROUND(SUM(pc.planned_gbp) OVER (PARTITION BY pc.programme_id ORDER BY pc.period_date), 0) AS cumulative_planned_gbp,
+               ROUND(SUM(pc.actual_gbp) OVER (PARTITION BY pc.programme_id ORDER BY pc.period_date), 0) AS cumulative_actual_gbp
+        FROM programme_costs pc LEFT JOIN programmes p ON p.programme_id = pc.programme_id
+        WHERE pc.programme_id = $programme_id) t
+      WHERE period_date >= date_trunc('month', CAST($period_from AS DATE))
+      ORDER BY period_date
     limit: 60
     example: {programme_id: PGM-000001}
   - name: run_year_end_shrink_forecast
-    desc: Forecast year-end shrink by store and category. Returns expected shrink % and impact.
+    desc: Forecast year-end shrink % and £ impact from the year-to-date rate, with a peak-season uplift, against the budget target.
     kind: py
     fn: forecast_shrink
     args:
-      ytd_shrink_pct: {type: float, required: true, desc: "Year-to-date shrink % by store"}
-      target_shrink_pct: {type: float, default: 1.5, desc: "Target shrink % for full year"}
-    example: {ytd_shrink_pct: 2.0, target_shrink_pct: 1.5}
+      ytd_shrink_pct: {type: float, required: true, desc: "Year-to-date shrink as % of sales"}
+      target_shrink_pct: {type: float, desc: "Target shrink % for the full year; default is the budget assumption"}
+      months_remaining: {type: int, desc: "Months of the year left including the current one; default from today"}
+      peak_uplift_pct: {type: float, default: 15, desc: "Shrink uplift in the last two months of the year, %"}
+      revenue_base_gbp: {type: float, desc: "Sales the rate applies to; default is the full-year revenue forecast"}
+    example: {ytd_shrink_pct: 0.8}

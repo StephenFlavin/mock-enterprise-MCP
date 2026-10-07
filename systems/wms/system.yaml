@@ -247,6 +247,47 @@ tables:
       trigger_receipt_id: {type: str, desc: "Goods receipt that triggered the task"}
       created_by: {type: str, desc: "Creator, WMS-AUTO for system-created tasks"}
 
+  handling_damage_reports:
+    key: report_id
+    cols:
+      report_id: {type: str, desc: "Handling damage report id, e.g. HDR-000123"}
+      site_id: {type: str, desc: "DC where the damage was logged"}
+      sku: {type: str, desc: "Product damaged"}
+      location_id: {type: str, desc: "Bin or area where the damage happened"}
+      process_stage: {type: enum, values: [receiving, putaway, replenishment, picking, packing, loading], desc: "Warehouse process step where the damage happened"}
+      damage_qty: {type: int, desc: "Units damaged"}
+      cause: {type: text, desc: "What happened, as logged by the operative"}
+      reported_at: {type: timestamp, desc: "When the damage was reported"}
+      reported_by: {type: str, desc: "Employee id of the reporter"}
+
+  wave_configurations:
+    key: config_id
+    cols:
+      config_id: {type: str, desc: "Wave configuration id, e.g. WVC-000001"}
+      site_id: {type: str, desc: "DC the configuration applies to"}
+      channel: {type: str, desc: "Order channel served: ecommerce, store_replenishment or click_collect"}
+      wave_template: {type: str, desc: "Wave template name, e.g. W-ECOM"}
+      release_times: {type: str, desc: "Daily wave release times, e.g. 06:00, 10:00, 13:00"}
+      wave_cutoff_time: {type: str, desc: "Order cut-off for the last wave of the day"}
+      shipping_cutoff: {type: str, desc: "Time picked orders must be packed and staged for the first carrier collection"}
+      waves_per_day: {type: int, desc: "Number of waves released per day"}
+      picking_method: {type: str, desc: "Picking method used, e.g. wave picking with zone batching"}
+      avg_orders_per_wave: {type: int, desc: "Average orders released per wave"}
+      min_wave_size: {type: int, desc: "Minimum orders needed before a wave releases"}
+      release_trigger: {type: str, desc: "What releases a wave: scheduled time or order count"}
+      updated_at: {type: timestamp, desc: "When the configuration was last changed"}
+
+  inventory_status_mapping:
+    key: wms_status
+    cols:
+      wms_status: {type: str, desc: "Inventory status in the WMS, e.g. quarantine"}
+      erp_status: {type: str, desc: "Status the interface maps it to in the ERP"}
+      definition: {type: text, desc: "What the status means"}
+      wms_counts_as_available: {type: bool, desc: "Whether WMS counts stock in this status as available to allocate"}
+      erp_counts_in_book_stock: {type: bool, desc: "Whether ERP still counts stock in this status in its book stock"}
+      note: {type: text, desc: "How the difference arises and when it clears"}
+      sort_order: {type: int, desc: "Display order"}
+
 tools:
   - name: block_location
     desc: Place a hold on a bin location so no picks or putaways are directed to it. Returns the block record.
@@ -304,21 +345,23 @@ tools:
     example: {site_id: DC1}
 
   - name: calculate_pallet_fill_by_pack_spec
-    desc: Units per pallet for a pack specification. Returns pack spec with units per pallet calculation.
+    desc: Units per pallet for each pack specification of a SKU (pack type and material), with pallets needed for an annual volume.
     kind: sql
     args:
       sku: {required: true, desc: "Product SKU"}
-      pack_type: {desc: "Pack type override if multiple pack specs exist"}
+      pack_type: {desc: "Pack type, e.g. carton, tray, pouch"}
+      material: {desc: "Pack material: corrugated, moulded_pulp or recycled_plastic"}
+      annual_units: {type: int, default: 100000, desc: "Annual volume to size pallets for"}
     sql: |
-      SELECT pack_spec_id, sku, pack_type,
-             units_per_pack, packs_per_pallet, units_per_pallet,
-             pallet_height_cm, pallet_weight_kg,
-             'units_per_pallet = units_per_pack * packs_per_pallet' AS formula
+      SELECT pack_spec_id, sku, pack_type, material, units_per_pack, packs_per_pallet,
+             units_per_pack * packs_per_pallet AS units_per_pallet, pallet_height_cm, pallet_weight_kg,
+             $annual_units AS annual_units,
+             CAST(ceil($annual_units * 1.0 / (units_per_pack * packs_per_pallet)) AS BIGINT) AS pallets_per_year,
+             'units_per_pallet = units_per_pack * packs_per_pallet; pallets_per_year = ceil(annual_units / units_per_pallet)' AS formula
       FROM pack_specifications
-      WHERE sku = $sku
-        AND ($pack_type IS NULL OR pack_type = $pack_type)
+      WHERE sku = $sku AND ($pack_type IS NULL OR pack_type = $pack_type) AND ($material IS NULL OR material = $material)
       ORDER BY units_per_pallet DESC
-    limit: 5
+    limit: 10
     example: {sku: PF-220}
 
   - name: cancel_cycle_count_task
@@ -409,13 +452,14 @@ tools:
     kind: insert
     table: stock_transfers
     id_prefix: STR-
-    defaults: {status: draft}
+    defaults: {status: draft, qty_allocated: 0, qty_shipped: 0, qty_received: 0, created_by: "EMP-00112"}
     args:
       from_site_id: {required: true, desc: "Source DC or store"}
       to_site_id: {required: true, desc: "Destination DC or store"}
       sku: {required: true, desc: "Product being transferred"}
       qty_requested: {required: true, type: int, desc: "Quantity to transfer"}
-      reason: {required: true, desc: "Reason for transfer"}
+      reason: {required: true, desc: "Reason for transfer, e.g. rebalance, stockout, outlet, clearance"}
+      created_by: {desc: "Employee id raising the transfer"}
     example: {from_site_id: DC1, to_site_id: DC3, sku: PF-220, qty_requested: 500, reason: rebalance}
 
   - name: draft_cycle_count_sheet
@@ -477,29 +521,32 @@ tools:
     example: {}
 
   - name: get_bonded_warehouse_volumes
-    desc: Stock suitable for bonded storage (customs duty deferral, inward processing relief). Returns bonded-suitable stock.
+    desc: On-hand stock suitable for bonded storage (non-UK origin, non-hazmat pack specs) by DC, category or SKU, with units, pallets and value at cost.
     kind: sql
     args:
       site_id: {desc: "Filter by DC"}
-      date_as_of: {type: date, desc: "Stock balance as at this date (default today)"}
+      category: {desc: "Product category, e.g. Small Appliances"}
+      country_of_origin: {desc: "Origin country code, e.g. CN"}
+      group_by: {desc: "site (default), category or sku", default: site}
     sql: |
-      SELECT m.location_id, m.site_id, sm.sku, p.name AS product_name,
-             p.country_of_origin, p.hs_code,
-             SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) AS on_hand_units,
-             COALESCE(ps.units_per_pallet, 1) AS units_per_pallet,
-             CEIL(SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) / NULLIF(ps.units_per_pallet, 1)) AS pallets_needed,
-             ROUND(SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) * ANY_VALUE(p.unit_cost_gbp), 2) AS stock_value_gbp
-      FROM master.locations m
-      LEFT JOIN stock_movements sm ON m.location_id = sm.location_id AND CAST(sm.moved_at AS DATE) <= COALESCE(CAST($date_as_of AS DATE), CAST($as_of AS DATE))
-      LEFT JOIN master.products p ON sm.sku = p.sku
-      LEFT JOIN pack_specifications ps ON sm.sku = ps.sku
-      WHERE ps.bonded_suitable = true
-        AND ($site_id IS NULL OR m.site_id = $site_id)
-        AND m.status = 'active'
-      GROUP BY m.location_id, m.site_id, sm.sku, p.name, p.country_of_origin, p.hs_code, ps.units_per_pallet
-      HAVING SUM(CASE WHEN sm.qty > 0 THEN sm.qty ELSE 0 END) > 0
+      WITH h AS (
+        SELECT li.site_id, li.sku, p.name AS product_name, p.category, p.country_of_origin, sum(li.qty) AS units,
+               sum(li.qty * p.unit_cost_gbp) AS value_gbp,
+               sum(li.qty * 1.0 / (SELECT max(ps.units_per_pallet) FROM pack_specifications ps WHERE ps.sku = li.sku)) AS pallets
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE li.status = 'on-hand' AND p.country_of_origin <> 'GB'
+          AND EXISTS (SELECT 1 FROM pack_specifications ps WHERE ps.sku = li.sku AND ps.bonded_suitable)
+          AND ($site_id IS NULL OR li.site_id = $site_id) AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND ($country_of_origin IS NULL OR p.country_of_origin = upper($country_of_origin))
+        GROUP BY ALL
+      )
+      SELECT site_id, CASE $group_by WHEN 'category' THEN category WHEN 'sku' THEN sku || ' ' || product_name ELSE 'all categories' END AS breakdown,
+             count(DISTINCT sku) AS skus, sum(units) AS on_hand_units, CAST(ceil(sum(pallets)) AS BIGINT) AS pallets_needed,
+             round(sum(value_gbp), 2) AS stock_value_gbp
+      FROM h
+      GROUP BY ALL
       ORDER BY stock_value_gbp DESC
-    limit: 100
+    limit: 50
     example: {site_id: DC1}
 
   - name: get_cause_code_definitions
@@ -538,27 +585,37 @@ tools:
     example: {site_id: DC1}
 
   - name: get_dc_inbound_delays
-    desc: Retrieve dc inbound delays. Returns delayed goods receipts and their impact.
+    desc: Late goods receipts against PO due date, as receipts or grouped by supplier or DC, with days late and units. Use to find which suppliers and DCs run late.
     kind: sql
     args:
-      site_id: {required: true, desc: "DC site"}
+      site_id: {desc: "DC site"}
+      supplier_id: {}
       days_late_threshold: {type: int, default: 3, desc: "Only receipts this many days late or more"}
-      date_from: {type: date, default: "-90d", desc: "Receipts from or after"}
+      date_from: {type: date, default: -90d, desc: "Receipts from or after"}
+      group_by: {desc: "receipt (default), supplier or site", default: receipt}
     sql: |
-      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name,
-             gr.sku, p.name AS product_name,
-             DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late,
-             gr.qty_received, gr.received_at,
-             c.name AS carrier_name,
-             'days_late = receipt_date - po_due_date' AS formula
-      FROM goods_receipts gr
-      JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
-      JOIN master.products p ON gr.sku = p.sku
-      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
-      LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
-      WHERE gr.site_id = $site_id
-        AND DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) >= $days_late_threshold
-        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+      WITH d AS (
+        SELECT gr.receipt_id, gr.po_id, gr.site_id, pur.supplier_id, s.name AS supplier_name, gr.sku, p.name AS product_name,
+               DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late, gr.qty_received, gr.received_at, c.name AS carrier_name
+        FROM goods_receipts gr
+        JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
+        JOIN master.products p ON gr.sku = p.sku
+        JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
+        LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
+        WHERE ($site_id IS NULL OR gr.site_id = $site_id) AND ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+          AND DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) >= $days_late_threshold
+          AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+      )
+      SELECT receipt_id, po_id, site_id, supplier_id, supplier_name, sku, product_name, days_late, 1 AS late_receipts, qty_received AS units_received,
+             received_at, carrier_name, 'days_late = receipt_date - po_due_date' AS formula
+      FROM d WHERE $group_by NOT IN ('supplier', 'site')
+      UNION ALL
+      SELECT NULL, NULL, gsite, gsup, CASE WHEN gsup IS NOT NULL THEN any_value(supplier_name) END, NULL, NULL, round(avg(days_late), 1),
+             count(DISTINCT po_id), sum(qty_received), max(received_at), NULL,
+             'days_late = receipt_date - po_due_date (average per receipt); late_receipts counts late POs' AS formula
+      FROM (SELECT d.*, CASE WHEN $group_by = 'site' THEN site_id END AS gsite, CASE WHEN $group_by = 'supplier' THEN supplier_id END AS gsup FROM d) g
+      WHERE $group_by IN ('supplier', 'site')
+      GROUP BY gsite, gsup
       ORDER BY days_late DESC
     limit: 50
     example: {site_id: DC1}
@@ -588,13 +645,14 @@ tools:
     example: {site_id: DC1}
 
   - name: get_dc_stock_for_product
-    desc: Current DC stock for a SKU by bin location and inventory status. Returns on-hand quantity per location, largest first.
+    desc: Current DC stock for a SKU by bin location and inventory status, with the total held at each DC. Returns on-hand quantity per location, largest first.
     kind: sql
     args:
       sku: {required: true, desc: "Product SKU"}
       site_id: {desc: "Filter by DC"}
     sql: |
       SELECT l.location_id, l.site_id, l.zone, l.aisle, li.sku, p.name AS product_name, li.status, li.qty AS on_hand, li.lot_number AS batch_number,
+             sum(li.qty) OVER (PARTITION BY li.site_id) AS site_total_qty,
              (SELECT max(m.moved_at) FROM stock_movements m WHERE m.location_id = li.location_id AND m.sku = li.sku) AS last_movement
       FROM location_inventory li
       JOIN master.locations l ON l.location_id = li.location_id
@@ -605,48 +663,50 @@ tools:
     example: {sku: PF-220}
 
   - name: get_dc_stock_history_for_product
-    desc: Retrieve dc stock history for product. Returns stock quantity over time by DC.
+    desc: Daily closing stock for a SKU by DC over a period, with receipts, picks and net movement each day. Use to see whether a DC held stock during a stockout.
     kind: sql
     args:
       sku: {required: true, desc: "Product SKU"}
       site_id: {desc: "Filter by DC"}
-      date_from: {type: date, default: "-90d", desc: "History from or after"}
+      date_from: {type: date, default: -90d, desc: "History from or after"}
       date_to: {type: date, desc: "History up to (default today)"}
     sql: |
-      SELECT CAST(m.moved_at AS DATE) AS date,
-             m.site_id,
-             $sku AS sku,
-             p.name AS product_name,
-             SUM(m.qty) AS net_movement,
-             COALESCE(SUM(CASE WHEN m.movement_type = 'receipt' THEN m.qty ELSE 0 END), 0) AS receipts,
-             COALESCE(SUM(CASE WHEN m.movement_type = 'pick' THEN ABS(m.qty) ELSE 0 END), 0) AS picks,
-             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) AS units
-      FROM stock_movements m
-      JOIN master.products p ON m.sku = p.sku
-      WHERE m.sku = $sku
-        AND ($site_id IS NULL OR m.site_id = $site_id)
-        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
-        AND CAST(m.moved_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
-      GROUP BY CAST(m.moved_at AS DATE), m.site_id, p.name
-      ORDER BY date DESC
-    limit: 100
+      WITH cur AS (
+        SELECT li.site_id, sum(li.qty) AS qty FROM location_inventory li
+        WHERE li.sku = $sku AND ($site_id IS NULL OR li.site_id = $site_id) GROUP BY li.site_id
+      ), d AS (
+        SELECT CAST(x AS DATE) AS day FROM generate_series(CAST($date_from AS DATE), COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE)), INTERVAL 1 DAY) t(x)
+      ), mv AS (
+        SELECT m.site_id, CAST(m.moved_at AS DATE) AS day, sum(m.qty) AS net_movement,
+               sum(CASE WHEN m.movement_type = 'receipt' THEN m.qty ELSE 0 END) AS receipts,
+               sum(CASE WHEN m.movement_type = 'pick' THEN -m.qty ELSE 0 END) AS picks
+        FROM stock_movements m WHERE m.sku = $sku GROUP BY m.site_id, CAST(m.moved_at AS DATE)
+      )
+      SELECT d.day AS date, cur.site_id, $sku AS sku, p.name AS product_name,
+             cur.qty - coalesce((SELECT sum(x.net_movement) FROM mv x WHERE x.site_id = cur.site_id AND x.day > d.day), 0) AS closing_qty,
+             coalesce(mv.net_movement, 0) AS net_movement, coalesce(mv.receipts, 0) AS receipts, coalesce(mv.picks, 0) AS picks
+      FROM d CROSS JOIN cur JOIN master.products p ON p.sku = $sku LEFT JOIN mv ON mv.site_id = cur.site_id AND mv.day = d.day
+      ORDER BY d.day DESC, cur.site_id
+    limit: 200
     example: {sku: SKU-100084}
 
   - name: get_dc_utilisation
-    desc: Retrieve dc utilisation. Returns locations and occupancy by DC and zone from current stock.
+    desc: Occupied and vacant bin locations with utilisation percent by DC and zone, or by DC with group_by site. Use to find underused sites.
     kind: sql
     args:
       site_id: {desc: "Filter by DC"}
+      group_by: {desc: "zone (default) or site", default: zone}
     sql: |
-      SELECT l.site_id, l.zone, count(*) AS locations, count(*) FILTER (WHERE l.status = 'active') AS active_locations,
+      SELECT l.site_id, CASE WHEN $group_by = 'site' THEN 'all zones' ELSE l.zone END AS zone, count(*) AS locations,
+             count(*) FILTER (WHERE l.status = 'active') AS active_locations,
              count(*) FILTER (WHERE l.status = 'blocked') AS blocked_locations,
              count(*) FILTER (WHERE li.location_id IS NOT NULL) AS occupied,
              count(*) - count(*) FILTER (WHERE li.location_id IS NOT NULL) AS vacant,
              round(count(*) FILTER (WHERE li.location_id IS NOT NULL) * 100.0 / count(*), 1) AS utilisation_pct
       FROM master.locations l LEFT JOIN (SELECT DISTINCT location_id FROM location_inventory) li ON li.location_id = l.location_id
       WHERE $site_id IS NULL OR l.site_id = $site_id
-      GROUP BY l.site_id, l.zone
-      ORDER BY l.site_id, l.zone
+      GROUP BY ALL
+      ORDER BY l.site_id, 2
     limit: 50
     example: {site_id: DC1}
 
@@ -706,21 +766,16 @@ tools:
     example: {site_id: DC1, group_by: zone}
 
   - name: get_inventory_status_mapping
-    desc: Mapping between WMS and ERP inventory statuses. Returns status definitions and their meanings.
+    desc: Mapping between WMS and ERP inventory statuses, whether ERP still books each one, and the units and value WMS holds in it now.
     kind: sql
     args: {}
     sql: |
-      SELECT 'on-hand' AS wms_status, 'Stock' AS erp_status, 'Physical stock in warehouse, available for allocation' AS definition
-      UNION ALL
-      SELECT 'reserved' AS wms_status, 'Reserved Stock' AS erp_status, 'Allocated to orders but not yet picked'
-      UNION ALL
-      SELECT 'in-transit' AS wms_status, 'In Transit' AS erp_status, 'Stock in transfer between locations'
-      UNION ALL
-      SELECT 'quarantine' AS wms_status, 'Quarantine' AS erp_status, 'Stock awaiting quality check or blocked'
-      UNION ALL
-      SELECT 'damaged' AS wms_status, 'Damaged' AS erp_status, 'Damaged goods write-off'
-      UNION ALL
-      SELECT 'expired' AS wms_status, 'Obsolete' AS erp_status, 'Expired or obsolete stock'
+      SELECT m.wms_status, m.erp_status, m.definition, m.wms_counts_as_available, m.erp_counts_in_book_stock, m.note,
+             coalesce(h.units, 0) AS wms_units_now, coalesce(h.value_gbp, 0) AS wms_value_gbp_now
+      FROM inventory_status_mapping m
+      LEFT JOIN (SELECT li.status, sum(li.qty) AS units, round(sum(li.qty * p.unit_cost_gbp), 2) AS value_gbp
+                 FROM location_inventory li JOIN master.products p ON p.sku = li.sku GROUP BY li.status) h ON h.status = m.wms_status
+      ORDER BY m.sort_order
     limit: 10
     example: {}
 
@@ -882,26 +937,37 @@ tools:
     example: {reference_id: "ORD-2026-0114215"}
 
   - name: get_reexport_volumes_by_destination
-    desc: Re-export volumes by destination. Shows goods moving to EU/Ireland and other re-export destinations.
+    desc: Re-export volumes by destination country, from UK DCs shipped on to Ireland, EU and other non-UK sites, with units, value at cost and non-UK-origin share.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d", desc: "Look back this many days"}
-      destination: {desc: "Filter by destination country"}
+      date_from: {type: date, default: -90d, desc: "Shipped from this date"}
+      date_to: {type: date, desc: "Shipped up to (default today)"}
+      destination: {desc: "Country code or name (IE, Ireland, NL, DE, US) or group EU"}
+      group_by: {desc: "country (default), site or sku", default: country}
     sql: |
-      SELECT m.site_id AS from_site,
-             CASE WHEN st.to_site_id LIKE 'DC%' THEN 'DC' ELSE 'Store' END AS destination_type,
-             st.to_site_id AS destination_site,
-             m.sku, p.name AS product_name, p.country_of_origin,
-             SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) AS volume_units,
-             ROUND(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) * ANY_VALUE(p.unit_cost_gbp), 2) AS value_gbp,
-             COUNT(DISTINCT st.transfer_id) AS transfer_count
-      FROM stock_transfers st
-      LEFT JOIN stock_movements m ON st.transfer_id = m.reference_id
-      LEFT JOIN master.products p ON m.sku = p.sku
-      WHERE CAST(st.created_at AS DATE) >= CAST($date_from AS DATE)
-        AND st.status IN ('shipped', 'received')
-      GROUP BY m.site_id, st.to_site_id, m.sku, p.name, p.country_of_origin
-      ORDER BY volume_units DESC
+      WITH c(code, country_name, grp) AS (VALUES ('IE','Ireland','Ireland'), ('NL','Netherlands','EU'), ('DE','Germany','EU'), ('US','United States','Rest of world'), ('HK','Hong Kong','Rest of world')),
+      rx AS (
+        SELECT st.transfer_id, st.from_site_id, st.to_site_id, st.sku, st.qty_shipped, d.country AS code, c.country_name, c.grp,
+               p.country_of_origin, p.unit_cost_gbp, p.name AS product_name
+        FROM stock_transfers st
+        JOIN master.sites f ON f.site_id = st.from_site_id AND f.country = 'GB'
+        JOIN master.sites d ON d.site_id = st.to_site_id AND d.country <> 'GB'
+        JOIN c ON c.code = d.country
+        JOIN master.products p ON p.sku = st.sku
+        WHERE st.status IN ('shipped', 'received')
+          AND CAST(st.shipped_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(st.shipped_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+          AND ($destination IS NULL OR upper($destination) IN (upper(c.code), upper(c.country_name), upper(c.grp)))
+      )
+      SELECT grp AS destination_group, country_name AS destination_country,
+             CASE WHEN $group_by = 'site' THEN to_site_id WHEN $group_by = 'sku' THEN sku || ' ' || product_name ELSE country_name END AS breakdown,
+             count(DISTINCT transfer_id) AS transfers, sum(qty_shipped) AS volume_units,
+             round(sum(qty_shipped * unit_cost_gbp), 2) AS value_gbp,
+             sum(qty_shipped) FILTER (WHERE country_of_origin <> 'GB') AS units_non_uk_origin,
+             round(100.0 * sum(qty_shipped * unit_cost_gbp) FILTER (WHERE country_of_origin <> 'GB') / sum(qty_shipped * unit_cost_gbp), 1) AS non_uk_origin_value_pct
+      FROM rx
+      GROUP BY ALL
+      ORDER BY value_gbp DESC
     limit: 50
     example: {}
 
@@ -1046,30 +1112,24 @@ tools:
     example: {location_id: DC1-C-14}
 
   - name: get_stock_movements_for_reexport_goods
-    desc: Stock movements for re-exported goods. Shows movement trail for goods destined for re-export.
+    desc: Stock movement trail for goods re-exported from UK DCs to non-UK sites, by transfer, with bin, zone, quantity and date. Use for audit trail evidence.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d", desc: "From date"}
+      date_from: {type: date, default: -90d, desc: "Transfers shipped from this date"}
+      destination: {desc: "Destination country code, e.g. IE, NL, DE"}
+      sku: {}
     sql: |
-      SELECT st.transfer_id,
-             st.from_site_id,
-             st.to_site_id,
-             st.sku, p.name AS product_name,
-             m.movement_id,
-             m.movement_type,
-             m.qty,
-             m.location_id,
-             l.zone,
-             m.moved_at,
-             st.status,
-             st.reason
+      SELECT st.transfer_id, st.from_site_id, st.to_site_id, d.country AS destination_country, st.sku, p.name AS product_name,
+             p.country_of_origin, m.movement_id, m.movement_type, m.qty, m.location_id, l.zone, m.moved_at, st.status
       FROM stock_transfers st
-      LEFT JOIN stock_movements m ON st.transfer_id = m.reference_id
-      LEFT JOIN master.products p ON st.sku = p.sku
-      LEFT JOIN master.locations l ON m.location_id = l.location_id
-      WHERE CAST(st.created_at AS DATE) >= CAST($date_from AS DATE)
-        AND st.reason IN ('rebalance', 'export')
-      ORDER BY st.created_at DESC, m.moved_at DESC
+      JOIN master.sites f ON f.site_id = st.from_site_id AND f.country = 'GB'
+      JOIN master.sites d ON d.site_id = st.to_site_id AND d.country <> 'GB'
+      JOIN master.products p ON p.sku = st.sku
+      LEFT JOIN stock_movements m ON m.reference_id = st.transfer_id
+      LEFT JOIN master.locations l ON l.location_id = m.location_id
+      WHERE st.status IN ('shipped', 'received') AND CAST(st.shipped_at AS DATE) >= CAST($date_from AS DATE)
+        AND ($destination IS NULL OR upper(d.country) = upper($destination)) AND ($sku IS NULL OR st.sku = $sku)
+      ORDER BY st.shipped_at DESC, st.transfer_id
     limit: 100
     example: {}
 
@@ -1131,53 +1191,47 @@ tools:
     example: {site_id: DC1, date_from: "-56d"}
 
   - name: get_warehouse_handling_damage_reports
-    desc: Handling damage reports. Shows goods damaged during receipt or internal handling.
+    desc: Warehouse handling damage reports (receiving, putaway, picking, packing, loading) with units and cost, as rows or grouped by stage, week, SKU or DC.
     kind: sql
     args:
-      site_id: {required: true, desc: "DC site"}
-      date_from: {type: date, default: "-90d", desc: "From date"}
+      site_id: {desc: "Filter by DC"}
+      sku: {}
+      category: {desc: "Product category, e.g. Small Appliances"}
+      date_from: {type: date, default: -90d, desc: "From date"}
+      group_by: {desc: "report (default), stage, week, sku or site", default: report}
     sql: |
-      SELECT gr.receipt_id,
-             gr.site_id,
-             gr.po_id,
-             gr.sku, p.name AS product_name,
-             gr.damage_qty,
-             gr.short_qty,
-             gr.dock,
-             gr.carrier_id, c.name AS carrier_name,
-             gr.received_at,
-             ROUND(gr.damage_qty * p.unit_cost_gbp, 2) AS damage_value_gbp,
+      WITH h AS (
+        SELECT r.*, p.name AS product_name, p.category, p.unit_cost_gbp
+        FROM handling_damage_reports r JOIN master.products p ON p.sku = r.sku
+        WHERE ($site_id IS NULL OR r.site_id = $site_id) AND ($sku IS NULL OR r.sku = $sku)
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND CAST(r.reported_at AS DATE) >= CAST($date_from AS DATE)
+      )
+      SELECT CASE $group_by WHEN 'stage' THEN process_stage WHEN 'week' THEN CAST(CAST(date_trunc('week', reported_at) AS DATE) AS VARCHAR)
+                            WHEN 'sku' THEN sku || ' ' || product_name WHEN 'site' THEN site_id ELSE report_id END AS grouping,
+             count(*) AS reports, sum(damage_qty) AS damage_qty, round(sum(damage_qty * unit_cost_gbp), 2) AS damage_value_gbp,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(site_id) END AS site_id,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(sku) END AS sku,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(process_stage) END AS process_stage,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(cause) END AS cause,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(reported_at) END AS reported_at,
              'damage_value_gbp = damage_qty * sku_unit_cost' AS formula
-      FROM goods_receipts gr
-      LEFT JOIN master.products p ON gr.sku = p.sku
-      LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
-      WHERE gr.site_id = $site_id
-        AND (gr.damage_qty > 0 OR gr.short_qty > 0)
-        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
-      ORDER BY damage_qty DESC, gr.received_at DESC
+      FROM h
+      GROUP BY 1
+      ORDER BY damage_qty DESC, 1
     limit: 50
-    example: {site_id: DC1}
+    example: {site_id: DC1, category: Small Appliances}
 
   - name: get_wave_configuration
-    desc: Wave and release configuration and cut-off parameters. Shows current picking wave setup and timings.
-    kind: sql
-    args:
-      site_id: {required: true, desc: "DC site"}
-    sql: |
-      SELECT $site_id AS site_id,
-             'E-commerce' AS channel,
-             '06:00' AS wave_release_time,
-             '14:00' AS wave_cutoff_time,
-             '08:00' AS shipping_cutoff,
-             3 AS waves_per_day,
-             'Batch by zone' AS picking_method,
-             15 AS avg_orders_per_wave
-      UNION ALL
-      SELECT $site_id, 'B2B', '08:00', '16:00', '17:00', 2, 'Wave by store', 25
-      UNION ALL
-      SELECT $site_id, 'Store Replenishment', '05:00', '11:00', '12:00', 1, 'Batch by aisle', 40
-    limit: 10
-    example: {site_id: DC1}
+    desc: Wave and release configuration and cut-off parameters by DC and channel. Shows wave times, order cut-off, waves per day, picking method and wave size.
+    kind: select
+    from: wave_configurations
+    filters:
+      site_id: {}
+      channel: {desc: "ecommerce, store_replenishment or click_collect"}
+    order: site_id, channel
+    limit: 20
+    example: {site_id: DC2}
 
   - name: get_wms_inbound_field_schema
     desc: WMS inbound ASN and receipt data model. Documents required and optional fields for inbound processes.
@@ -1243,23 +1297,27 @@ tools:
     example: {reference_id: "ORD-2026-0114215"}
 
   - name: get_wms_stock_by_sku
-    desc: WMS stock for a SKU by DC and inventory status (on-hand, quarantine, damaged), with the DC total, allocated units and available-to-promise. Use to explain ERP versus WMS differences.
+    desc: WMS stock by DC and inventory status with value and available-to-promise. Pass a SKU, or status held to rank all quarantined, damaged and expired stock by value.
     kind: sql
     args:
-      sku: {required: true}
+      sku: {desc: "Product SKU; leave out to rank stock across all SKUs"}
       site_id: {desc: "Filter by DC"}
+      status: {type: str, desc: "on-hand, quarantine, damaged, expired, or held for everything that is not on-hand"}
     sql: |
       WITH s AS (
-        SELECT li.site_id, li.status, count(DISTINCT li.location_id) AS locations, sum(li.qty) AS qty,
-               count(DISTINCT NULLIF(li.lot_number, '')) AS lots, round(sum(li.qty * p.unit_cost_gbp), 2) AS value_gbp
+        SELECT li.sku, li.site_id, li.status, count(DISTINCT li.location_id) AS locations, sum(li.qty) AS qty,
+               count(DISTINCT NULLIF(li.lot_number, '')) AS lots, round(sum(li.qty * p.unit_cost_gbp), 2) AS value_gbp, any_value(p.name) AS product_name
         FROM location_inventory li JOIN master.products p ON p.sku = li.sku
-        WHERE li.sku = $sku AND ($site_id IS NULL OR li.site_id = $site_id)
-        GROUP BY li.site_id, li.status
+        WHERE ($sku IS NULL OR li.sku = $sku) AND ($site_id IS NULL OR li.site_id = $site_id)
+          AND ($status IS NULL OR li.status = $status OR ($status = 'held' AND li.status <> 'on-hand'))
+        GROUP BY li.sku, li.site_id, li.status
       )
-      SELECT $sku AS sku, s.site_id, s.status, s.locations, s.qty, s.lots, s.value_gbp, ds.on_hand AS site_total_on_hand, ds.allocated AS allocated_to_orders,
-             sum(CASE WHEN s.status = 'on-hand' THEN s.qty ELSE 0 END) OVER (PARTITION BY s.site_id) - ds.allocated AS available_to_promise
-      FROM s LEFT JOIN master.dc_stock ds ON ds.sku = $sku AND ds.site_id = s.site_id
-      ORDER BY s.site_id, s.qty DESC
+      SELECT s.sku, s.product_name, s.site_id, s.status, s.locations, s.qty, s.lots, s.value_gbp,
+             ds.on_hand AS site_total_on_hand, ds.allocated AS allocated_to_orders,
+             (SELECT coalesce(sum(x.qty), 0) FROM location_inventory x WHERE x.sku = s.sku AND x.site_id = s.site_id AND x.status = 'on-hand') - ds.allocated AS available_to_promise,
+             round(sum(s.value_gbp) OVER (), 2) AS total_value_in_selection
+      FROM s LEFT JOIN master.dc_stock ds ON ds.sku = s.sku AND ds.site_id = s.site_id
+      ORDER BY s.value_gbp DESC
     limit: 50
     example: {sku: SKU-100007}
 

@@ -383,46 +383,50 @@ def get_margin_phasing_forecast(ctx, landed_cost_increase_pct, affected_cogs_sha
     return out
 
 
-def calc_pl_scenario(ctx, scenario_id, base_revenue_gbp=1000000, volume_change_pct=0, price_change_pct=0, nearshore_mix_pct=0):
-    """Calculate full P&L under a scenario with changed sourcing mix"""
-    # Revenue impact
-    volume_effect = base_revenue_gbp * (volume_change_pct / 100)
-    price_effect = base_revenue_gbp * (price_change_pct / 100)
-    adjusted_revenue = base_revenue_gbp + volume_effect + price_effect
-
-    # Cost impact - nearshoring reduces cost
-    base_cogs_pct = 60.0  # 60% of revenue
-    base_cogs = base_revenue_gbp * (base_cogs_pct / 100)
-
-    # Nearshoring saves ~5% of COGS but has transition cost
-    nearshore_saving = base_cogs * (nearshore_mix_pct / 100) * 0.05
-    transition_cost = nearshore_mix_pct * 50000  # £50k per 1% shift
-
-    adjusted_cogs = base_cogs - nearshore_saving + transition_cost
-
-    # Margin and EBIT
-    gross_profit = adjusted_revenue - adjusted_cogs
-    gross_margin_pct = (gross_profit / adjusted_revenue * 100) if adjusted_revenue > 0 else 0
-
-    # Fixed opex is ~15% of base revenue
-    fixed_opex = base_revenue_gbp * 0.15
-    ebit = gross_profit - fixed_opex
-    ebit_margin_pct = (ebit / adjusted_revenue * 100) if adjusted_revenue > 0 else 0
-
-    return {
-        'scenario_id': scenario_id,
-        'revenue_gbp': round(adjusted_revenue, 2),
-        'cogs_gbp': round(adjusted_cogs, 2),
-        'gross_profit_gbp': round(gross_profit, 2),
-        'gross_margin_pct': round(gross_margin_pct, 1),
-        'opex_gbp': round(fixed_opex, 2),
-        'ebit_gbp': round(ebit, 2),
-        'ebit_margin_pct': round(ebit_margin_pct, 1),
-        'volume_change_pct': volume_change_pct,
-        'price_change_pct': price_change_pct,
-        'nearshore_mix_pct': nearshore_mix_pct,
-        'formula': 'revenue + (volume% + price%) impact; COGS reduced by nearshoring (5% saving); opex = 15% of base'
-    }
+def calc_pl_scenario(ctx, scenario_id=None, volume_change_pct=None, price_change_pct=None, nearshore_mix_pct=None,
+                     nearshore_cost_change_pct=0.0, freight_saving_pct=45.0, markdown_saving_pct=10.0, transition_cost_per_pct_gbp=250000.0):
+    """Full-year P&L under a scenario, against the current forecast, with a share of sourcing moved nearshore."""
+    sc = ctx.q("SELECT * FROM forecast_scenarios WHERE scenario_id = $s", s=scenario_id)[0] if scenario_id else {}
+    vol = float(volume_change_pct if volume_change_pct is not None else (sc.get("demand_change_pct") or 0))
+    price = float(price_change_pct if price_change_pct is not None else (sc.get("price_change_pct") or 0))
+    mix = float(nearshore_mix_pct if nearshore_mix_pct is not None else (sc.get("nearshore_mix_pct") or 0))
+    base = ctx.q("""SELECT revenue_forecast_gbp AS rev, gross_margin_pct AS gm, freight_cost_gbp AS fr, ebit_forecast_gbp AS ebit
+                    FROM forecast_versions WHERE status = 'current' AND forecast_type = 'forecast' ORDER BY forecast_date DESC LIMIT 1""")
+    if not base:
+        return "No current forecast to build the P&L from."
+    rev, gm, fr, ebit = (float(base[0][k]) for k in ("rev", "gm", "fr", "ebit"))
+    md = ctx.q("""SELECT a.assumed_value AS v FROM forecast_assumptions a JOIN forecast_versions f ON f.forecast_version_id = a.forecast_version_id
+                  WHERE f.status = 'current' AND f.forecast_type = 'forecast' AND a.driver = 'Markdown rate' LIMIT 1""")
+    markdown = rev * float(md[0]["v"]) / 100 if md else 0.0
+    cogs = rev * (1 - gm / 100)
+    gp = rev - cogs
+    opex = gp - ebit
+    share = mix / 100
+    vf = 1 + vol / 100
+    s_rev = rev * vf * (1 + price / 100)
+    s_cogs = cogs * vf
+    moved_cogs_ex_freight = (cogs - fr) * vf * share
+    cost_effect = moved_cogs_ex_freight * nearshore_cost_change_pct / 100
+    freight_effect = -fr * vf * share * freight_saving_pct / 100
+    markdown_effect = markdown * vf * share * markdown_saving_pct / 100       # lower markdown lifts revenue
+    s_cogs += cost_effect + freight_effect
+    s_rev += markdown_effect
+    one_off = mix * transition_cost_per_pct_gbp
+    s_gp = s_rev - s_cogs
+    run_ebit = s_gp - opex
+    rows = []
+    def add(line, b, s_, pct=False):
+        rows.append({"line": line, "base_forecast": round(b, 1 if pct else 0), "scenario": round(s_, 1 if pct else 0),
+                     "change": round(s_ - b, 1 if pct else 0)})
+    add("Revenue", rev, s_rev); add("Cost of goods", cogs, s_cogs); add("Gross profit", gp, s_gp)
+    add("Gross margin %", gm, s_gp / s_rev * 100, True); add("Opex", opex, opex)
+    add("EBIT, run rate", ebit, run_ebit)
+    add("One-off transition cost", 0, one_off)
+    add("EBIT, first year after one-offs", ebit, run_ebit - one_off)
+    rows[-1]["formula"] = (f"base = current forecast; volume {vol:+g}%, price {price:+g}%, nearshore mix {mix:g}%: moved cost of goods at {nearshore_cost_change_pct:+g}% unit cost, "
+                           f"freight on the moved share cut {freight_saving_pct:g}%, markdown on the moved share cut {markdown_saving_pct:g}%, "
+                           f"one-off transition cost {transition_cost_per_pct_gbp:,.0f} per point of mix")
+    return rows
 
 
 def calc_breakeven(ctx, initial_investment_gbp, monthly_return_gbp=0, annual_return_gbp=0):
@@ -450,106 +454,93 @@ def calc_breakeven(ctx, initial_investment_gbp, monthly_return_gbp=0, annual_ret
     }
 
 
-def calc_programme_payback(ctx, programme_id, investment_gbp, annual_benefit_gbp):
-    """Calculate payback period for a cost-saving or revenue programme"""
-    if annual_benefit_gbp <= 0:
-        payback_years = 999
-    else:
-        payback_years = investment_gbp / annual_benefit_gbp
+def _programme(ctx, programme_id):
+    rows = ctx.q("SELECT * FROM programmes WHERE programme_id = $p", p=programme_id)
+    return rows[0] if rows else None
 
-    payback_months = payback_years * 12
 
-    return {
-        'programme_id': programme_id,
-        'investment_gbp': round(investment_gbp, 2),
-        'annual_benefit_gbp': round(annual_benefit_gbp, 2),
-        'payback_months': round(payback_months, 1),
-        'payback_years': round(payback_years, 2),
-        'formula': 'Payback = Investment / Annual benefit'
-    }
+def calc_programme_payback(ctx, programme_id, investment_gbp=None, annual_benefit_gbp=None):
+    """Payback of a programme: investment divided by annual benefit; both default from the programme record."""
+    prog = _programme(ctx, programme_id)
+    if not prog:
+        return f"No programme {programme_id}."
+    inv = float(investment_gbp if investment_gbp is not None else prog["budget_gbp"])
+    ben = float(annual_benefit_gbp if annual_benefit_gbp is not None else (prog["annual_benefit_gbp"] or 0))
+    years = inv / ben if ben > 0 else None
+    return {"programme_id": programme_id, "programme_name": prog["name"], "investment_gbp": round(inv, 0),
+            "annual_benefit_gbp": round(ben, 0),
+            "payback_months": round(years * 12, 1) if years else None, "payback_years": round(years, 2) if years else None,
+            "formula": "Payback = investment / annual benefit"}
 
 
 def calc_programme_savings(ctx, programme_id, start_date=None):
-    """Calculate total savings from a programme"""
-    # Get programme data from database
-    progs = ctx.q("SELECT * FROM programmes WHERE programme_id = $p", p=programme_id)
-    if not progs:
-        return {'error': f'Programme {programme_id} not found'}
+    """Savings from a programme: planned annual benefit, run rate, and savings delivered since the start date."""
+    prog = _programme(ctx, programme_id)
+    if not prog:
+        return f"No programme {programme_id}."
+    ben = float(prog["annual_benefit_gbp"] or 0)
+    costs = ctx.q("SELECT SUM(actual_gbp) AS a FROM programme_costs WHERE programme_id = $p", p=programme_id)
+    spent = float(costs[0]["a"] or 0)
+    bstart = str(prog["benefit_start_date"])[:10] if prog["benefit_start_date"] else None
+    since = max(str(start_date)[:10], bstart) if start_date and bstart else (bstart or str(start_date or "")[:10])
+    months_live = 0
+    if since and since < ctx.as_of[:10]:
+        months_live = max(0, (int(ctx.as_of[:4]) - int(since[:4])) * 12 + int(ctx.as_of[5:7]) - int(since[5:7]))
+    run = ben / 12
+    return {"programme_id": programme_id, "programme_name": prog["name"], "type": prog["type"], "status": prog["status"],
+            "programme_budget_gbp": round(float(prog["budget_gbp"]), 0), "spend_to_date_gbp": round(spent, 0),
+            "annual_benefit_gbp": round(ben, 0), "monthly_run_rate_gbp": round(run, 0),
+            "months_delivering": months_live, "savings_delivered_gbp": round(run * months_live, 0),
+            "net_first_year_gbp": round(ben - float(prog["budget_gbp"]), 0),
+            "formula": "annual benefit as planned; delivered = monthly run rate x whole months since the benefit start date (or start_date if later)"}
 
-    prog = progs[0]
 
-    # Get programme costs
-    costs = ctx.q("SELECT SUM(actual_gbp) AS total_actual, SUM(forecast_gbp) AS total_forecast FROM programme_costs WHERE programme_id = $p", p=programme_id)
-
-    total_actual = float(costs[0].get('total_actual') or 0)
-    total_forecast = float(costs[0].get('total_forecast') or 0)
-
-    # Programme savings = budget - actual spend (for cost-saving programmes)
-    if prog['type'] == 'cost_saving':
-        savings = total_forecast - total_actual
+def calc_investment_required(ctx, target_gbp, roi_target_pct=30.0, payback_years=3.0, target_type="revenue", margin_pct=None):
+    """Capex needed for a target: the annual benefit must give the target ROI and pay back in the target years."""
+    if target_type == "revenue":
+        if margin_pct is None:
+            base = ctx.q("""SELECT gross_margin_pct AS gm FROM forecast_versions WHERE status = 'current' AND forecast_type = 'forecast'
+                            ORDER BY forecast_date DESC LIMIT 1""")
+            margin_pct = float(base[0]["gm"]) if base else 30.0
+        benefit = target_gbp * margin_pct / 100
     else:
-        savings = total_actual  # Revenue realized
-
+        margin_pct = None
+        benefit = target_gbp
+    capex_roi = benefit / (roi_target_pct / 100) if roi_target_pct > 0 else benefit
+    capex_payback = benefit * payback_years
+    capex = max(capex_roi, capex_payback)
     return {
-        'programme_id': programme_id,
-        'programme_name': prog['name'],
-        'programme_budget_gbp': round(float(prog['budget_gbp']), 2),
-        'total_forecast_gbp': round(total_forecast, 2),
-        'total_actual_gbp': round(total_actual, 2),
-        'savings_gbp': round(savings, 2),
-        'burn_rate_pct': round((total_actual / prog['budget_gbp'] * 100) if prog['budget_gbp'] > 0 else 0, 1),
-        'formula': 'Savings = Forecast spend - Actual spend (cost programmes) or Actual - Forecast (revenue)'
-    }
+        "target_gbp": round(target_gbp, 0), "target_type": target_type, "margin_pct": margin_pct,
+        "annual_benefit_gbp": round(benefit, 0), "roi_target_pct": roi_target_pct, "payback_target_years": round(payback_years, 1),
+        "capex_for_roi_gbp": round(capex_roi, 0), "capex_for_payback_gbp": round(capex_payback, 0),
+        "capex_required_gbp": round(capex, 0),
+        "implied_payback_years": round(capex / benefit, 2) if benefit > 0 else None,
+        "implied_roi_pct": round(benefit / capex * 100, 1) if capex > 0 else None,
+        "formula": "annual benefit = revenue target x margin (or the benefit itself); capex = max(benefit / ROI, benefit x payback years)"}
 
 
-def calc_investment_required(ctx, target_gbp, roi_target_pct=30.0, payback_years=3.0):
-    """Calculate investment required to achieve a target"""
-    # Back-solve: capex = target / (ROI% / 100)
-    # But also consider payback: annual_return = capex / payback_years
-    # So: capex = target / (ROI% / 100) = annual_return * payback_years
-
-    annual_return_needed = target_gbp
-    capex_from_roi = target_gbp / (roi_target_pct / 100) if roi_target_pct > 0 else target_gbp
-    capex_from_payback = annual_return_needed * payback_years
-
-    # Use the higher of the two (more conservative)
-    capex_required = max(capex_from_roi, capex_from_payback)
-
-    # Calculate implied payback and ROI
-    implied_payback = capex_required / annual_return_needed if annual_return_needed > 0 else 999
-    implied_roi = (annual_return_needed / capex_required * 100) if capex_required > 0 else 0
-
+def forecast_shrink(ctx, ytd_shrink_pct, target_shrink_pct=None, months_remaining=None, peak_uplift_pct=15.0, revenue_base_gbp=None):
+    """Year-end shrink: months already booked at the YTD rate, remaining months at the YTD rate with a peak-season uplift in Nov and Dec."""
+    mo = int(ctx.as_of[5:7])
+    rem = int(months_remaining) if months_remaining is not None else 13 - mo
+    rem = max(0, min(12, rem))
+    if target_shrink_pct is None:
+        t = ctx.q("""SELECT a.assumed_value AS v FROM forecast_assumptions a WHERE a.forecast_version_id = 'FCST-BUD27' AND a.driver = 'Shrink rate' LIMIT 1""")
+        target_shrink_pct = float(t[0]["v"]) if t else 1.0
+    if revenue_base_gbp is None:
+        b = ctx.q("""SELECT revenue_forecast_gbp AS r FROM forecast_versions WHERE status = 'current' AND forecast_type = 'forecast'
+                     ORDER BY forecast_date DESC LIMIT 1""")
+        revenue_base_gbp = float(b[0]["r"]) if b else 0.0
+    total = ytd_shrink_pct * (12 - rem)
+    for i in range(rem):                       # remaining months run up to December; the last two are peak
+        total += ytd_shrink_pct * (1 + (peak_uplift_pct / 100 if i >= rem - 2 else 0))
+    year_end = total / 12
+    impact = revenue_base_gbp * year_end / 100
+    target_impact = revenue_base_gbp * target_shrink_pct / 100
     return {
-        'target_gbp': round(target_gbp, 2),
-        'roi_target_pct': roi_target_pct,
-        'payback_target_years': round(payback_years, 1),
-        'capex_required_gbp': round(capex_required, 2),
-        'annual_return_required_gbp': round(annual_return_needed, 2),
-        'implied_payback_years': round(implied_payback, 2),
-        'implied_roi_pct': round(implied_roi, 1),
-        'formula': 'Capex = max(Target / ROI%, Annual return × Payback years)'
-    }
-
-
-def forecast_shrink(ctx, ytd_shrink_pct, target_shrink_pct=1.5):
-    """Forecast year-end shrink by store and category"""
-    months_remaining = 12 - 10  # Assuming we're in October (month 10)
-
-    # Trend: if YTD is above target, assume shrink continues or improves slightly
-    if ytd_shrink_pct > target_shrink_pct:
-        improvement_factor = 0.1  # 10% improvement in remaining months
-        forecasted_ytd_shrink = ytd_shrink_pct * (1 - (improvement_factor * (months_remaining / 12)))
-    else:
-        forecasted_ytd_shrink = ytd_shrink_pct
-
-    shrink_impact_gbp = 50000000 * (forecasted_ytd_shrink / 100)  # Assume £50m revenue base
-
-    return {
-        'ytd_shrink_pct': round(ytd_shrink_pct, 2),
-        'target_shrink_pct': round(target_shrink_pct, 2),
-        'forecasted_year_end_shrink_pct': round(forecasted_ytd_shrink, 2),
-        'shrink_impact_gbp': round(shrink_impact_gbp, 2),
-        'variance_vs_target_pct': round(forecasted_ytd_shrink - target_shrink_pct, 2),
-        'mitigation_priority': 'high' if forecasted_ytd_shrink > target_shrink_pct * 1.5 else 'medium',
-        'formula': 'Forecasted shrink = YTD × (1 - improvement%) based on performance trend'
-    }
+        "ytd_shrink_pct": round(ytd_shrink_pct, 2), "target_shrink_pct": round(target_shrink_pct, 2), "months_remaining": rem,
+        "forecast_year_end_shrink_pct": round(year_end, 2), "shrink_impact_gbp": round(impact, 0),
+        "target_shrink_gbp": round(target_impact, 0), "variance_vs_target_gbp": round(impact - target_impact, 0),
+        "variance_vs_target_pts": round(year_end - target_shrink_pct, 2), "revenue_base_gbp": round(revenue_base_gbp, 0),
+        "status": "above target" if year_end > target_shrink_pct else "within target",
+        "formula": "year-end % = (YTD rate x months booked + YTD rate x remaining months, last two months uplifted for peak) / 12; impact = % x revenue"}

@@ -235,6 +235,15 @@ def generate(g):
         location_inventory.append({'stock_id': f'LI-{i + 1:06d}', 'location_id': row['location_id'], 'site_id': row['site_id'], 'sku': row['sku'],
                                    'lot_number': f'LOT-{r.randint(1000, 9999)}' if r.random() < 0.4 else '', 'status': row['status'],
                                    'qty': row['qty'], 'updated_at': T(D(r.randint(0, 20)), r.randint(6, 20), r.randint(0, 59))})
+    # network story (03:31:Q4): Leeds (DC3) is underused. Consolidate three in ten of its occupied bins into neighbouring bins in the
+    # same zone (no random draws, same stock), so occupancy falls well below the other DCs.
+    for zname in sorted({loc[x['location_id']]['zone'] for x in location_inventory if x['site_id'] == 'DC3'}):
+        zlocs = sorted({x['location_id'] for x in location_inventory if x['site_id'] == 'DC3' and loc[x['location_id']]['zone'] == zname})
+        keep = [l for i, l in enumerate(zlocs) if i % 10 > 2]
+        move = {l: keep[i % len(keep)] for i, l in enumerate([l for i, l in enumerate(zlocs) if i % 10 <= 2])} if keep else {}
+        for x in location_inventory:
+            if x['site_id'] == 'DC3' and x['location_id'] in move:
+                x['location_id'] = move[x['location_id']]
     # status story (01:8:Q4): a quality hold put about £1.05m of DC1 and DC3 stock into quarantine; WMS leaves it out of
     # available stock but ERP still counts it. Uses its own random stream so nothing else in the data moves.
     qr = random.Random(8044)

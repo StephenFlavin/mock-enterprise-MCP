@@ -20,7 +20,8 @@ tables:
       quantity: {type: int, desc: "Quantity in units"}
       declared_value_gbp: {type: float, desc: "Declared customs value in GBP"}
       duty_amount_gbp: {type: float, desc: "Duty amount in GBP"}
-      status: {type: enum, values: [pending, cleared, queried, amended, rejected], desc: "Declaration status"}
+      claimed_preference: {type: str, desc: "Trade agreement preference claimed, if any"}
+      status: {type: enum, values: [pending, cleared, queried, held, amended, rejected], desc: "Declaration status"}
       declared_at: {type: timestamp, desc: "When declared"}
       cleared_at: {type: timestamp, desc: "When cleared"}
       query_id: {type: str, desc: "Related customs query if any"}
@@ -64,7 +65,11 @@ tables:
       declaration_id: {type: str, desc: "Declaration on hold"}
       supplier_id: {type: str, desc: "Supplier"}
       hold_date: {type: date, desc: "Date of hold"}
-      hold_reason: {type: enum, values: [classification, valuation, origin, dangerous_goods, documentation], desc: "Reason for hold"}
+      hold_reason: {type: enum, values: [classification, valuation, origin, dangerous_goods, documentation, forced_labour], desc: "Reason for hold"}
+      hold_type: {type: enum, values: [hold, detention, seizure], desc: "Routine clearance hold, or legal detention or seizure at the border"}
+      legal_basis: {type: str, desc: "Law or order behind a detention, if any"}
+      destination_country: {type: str, desc: "Market where goods were held"}
+      goods_description: {type: str, desc: "Goods held"}
       resolved_at: {type: date, desc: "When resolved"}
       resolution_notes: {type: str, desc: "How resolved"}
       financial_impact_gbp: {type: float, desc: "Financial impact of hold"}
@@ -77,6 +82,8 @@ tables:
       category: {type: str, desc: "Category name"}
       base_duty_rate_pct: {type: float, desc: "Base MFN duty rate"}
       classification_guidance: {type: text, desc: "Classification guidance"}
+      keywords: {type: str, desc: "Extra search words"}
+      evidence_required: {type: text, desc: "Evidence to hold for this classification, separated by semicolons"}
       updated_at: {type: timestamp, desc: "Last updated"}
 
   tariffs:
@@ -98,6 +105,7 @@ tables:
       change_id: {type: str, desc: "Change, e.g. CHG-000123"}
       hs_code: {type: str, desc: "HS code"}
       origin_country: {type: str, desc: "Country affected"}
+      destination_country: {type: str, desc: "Importing market: GB, EU or US"}
       old_rate_pct: {type: float, desc: "Previous rate"}
       new_rate_pct: {type: float, desc: "New rate"}
       change_date: {type: date, desc: "Date of announcement"}
@@ -121,6 +129,8 @@ tables:
     key: rule_id
     cols:
       rule_id: {type: str, desc: "Rule, e.g. ORG-000123"}
+      destination_country: {type: str, desc: "Importing market"}
+      how_to_qualify: {type: text, desc: "What the exporter must change or provide to qualify"}
       hs_code: {type: str, desc: "HS code"}
       origin_country: {type: str, desc: "Country of origin"}
       trade_agreement: {type: str, desc: "Trade agreement"}
@@ -134,7 +144,9 @@ tables:
     cols:
       country_code: {type: str, desc: "Country, e.g. GB, DE, US"}
       country_name: {type: str, desc: "Country name"}
-      threshold_gbp: {type: float, desc: "De minimis threshold in GBP"}
+      threshold_gbp: {type: float, desc: "Current duty de minimis threshold in GBP (0 = no exemption)"}
+      previous_threshold_gbp: {type: float, desc: "Threshold before the latest change in GBP"}
+      change_notes: {type: text, desc: "What changed and how duty and VAT now apply"}
       effective_from: {type: date, desc: "Effective from"}
       effective_to: {type: date, desc: "Effective to"}
 
@@ -148,12 +160,15 @@ tables:
       destination_country: {type: str, desc: "Destination if specific"}
       restriction_type: {type: enum, values: [prohibited, licensed, limited], desc: "Type of restriction"}
       description: {type: str, desc: "Restriction details"}
+      transport_mode: {type: str, desc: "air, sea or all"}
       updated_at: {type: timestamp, desc: "Last updated"}
 
   binding_rulings:
     key: ruling_id
     cols:
       ruling_id: {type: str, desc: "Ruling, e.g. BRG-000123"}
+      jurisdiction: {type: str, desc: "UK or EU"}
+      ruling_reference: {type: str, desc: "Authority reference, blank for our own applications"}
       status: {type: enum, values: [draft, submitted, approved, rejected], desc: "Status"}
       product_description: {type: str, desc: "Product description"}
       hs_code_applied: {type: str, desc: "Applied HS code"}
@@ -285,6 +300,15 @@ tables:
       approved_date: {type: date, desc: "When approved"}
       created_date: {type: date, desc: "When created"}
 
+  customs_procedure_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Rule, e.g. CPR-000123"}
+      procedure_type: {type: enum, values: [inward_processing, bonded_warehouse], desc: "Procedure"}
+      topic: {type: enum, values: [eligibility, duty_benefit, cash_flow, admin_burden, volume_threshold, conditions, audit_risk], desc: "Topic"}
+      jurisdiction: {type: str, desc: "UK"}
+      rule_text: {type: text, desc: "Rule or condition"}
+
 tools:
   # Stage 1 - 17 read tools for queries
   - name: calculate_volume_share_by_origin
@@ -307,47 +331,52 @@ tools:
     example: {hs_code: "6110"}
 
   - name: check_dangerous_goods_restrictions
-    desc: Dangerous-goods restrictions for a shipment by HS code and lane. Returns prohibited or licensed status.
+    desc: Dangerous-goods restrictions for a shipment lane, optionally by HS code and transport mode. Returns prohibited, licensed or limited status.
     kind: sql
     args:
-      hs_code: {required: true}
-      origin_country: {required: true}
-      destination_country: {required: true}
+      origin_country: {required: true, desc: "Country name, e.g. Bangladesh"}
+      destination_country: {required: true, desc: "Country name or code, e.g. GB"}
+      hs_code: {desc: "HS code, e.g. 8414. Blank returns every restriction on the lane"}
+      transport_mode: {desc: "air or sea. Blank includes all"}
     sql: |
-      SELECT restriction_id, hs_code, restriction_type, description, destination_country, origin_country, material_code
+      SELECT restriction_id, hs_code, material_code, restriction_type, transport_mode, description, origin_country, destination_country
       FROM dangerous_goods_restrictions
-      WHERE hs_code = $hs_code
-        AND ($origin_country IS NULL OR origin_country = $origin_country)
-        AND ($destination_country IS NULL OR destination_country = $destination_country)
+      WHERE lower(origin_country) = lower($origin_country)
+        AND lower(destination_country) = lower($destination_country)
+        AND ($hs_code IS NULL OR hs_code = $hs_code)
+        AND ($transport_mode IS NULL OR transport_mode IN ($transport_mode, 'all'))
+      ORDER BY hs_code, restriction_type
     limit: 20
-    example: {hs_code: "3004", origin_country: India, destination_country: GB}
+    example: {origin_country: Bangladesh, destination_country: GB, hs_code: "8414"}
 
   - name: create_binding_ruling_application
-    desc: Creates a binding tariff ruling application for a product. Returns the new ruling id.
+    desc: Creates a draft binding tariff ruling application for a product with the two candidate codes and arguments. Returns the new ruling id.
     kind: insert
     table: binding_rulings
     id_prefix: BRG-
-    defaults: {status: draft}
+    defaults: {status: draft, jurisdiction: UK}
     args:
       product_description: {required: true}
       hs_code_applied: {required: true}
       hs_code_alternative: {required: true}
       argument_for_applied: {required: true}
       argument_for_alternative: {required: true}
-    example: {product_description: "Padded gilet with detachable liner", hs_code_applied: "6114", hs_code_alternative: "6204", argument_for_applied: "Composite garment", argument_for_alternative: "Separate garments"}
+      duty_difference_pct: {type: float, desc: "Duty rate difference between the two codes in percentage points"}
+      jurisdiction: {type: str, desc: "UK or EU"}
+    example: {product_description: "Padded gilet with detachable liner", hs_code_applied: "6202", hs_code_alternative: "6110", argument_for_applied: "Padded outer garment", argument_for_alternative: "Fleece liner gives knitted character", duty_difference_pct: 0.5}
 
   - name: create_customs_authorisation_application
-    desc: Creates an application for a customs authorisation such as inward processing relief. Returns the new auth id.
+    desc: Creates a draft application for a customs authorisation such as inward processing relief or bonded warehouse. Returns the new auth id.
     kind: insert
     table: customs_authorisations
     id_prefix: AUTH-
     defaults: {status: draft}
     args:
-      auth_type: {required: true}
-      supplier_id: {required: true}
+      auth_type: {required: true, desc: "inward_processing, bonded_warehouse or temporary_admission"}
       description: {required: true}
-      conditions_text: {}
-    example: {auth_type: inward_processing, supplier_id: SUP-0001, description: "IPR for cotton processing", conditions_text: ""}
+      conditions_text: {desc: "Proposed scope and conditions, e.g. goods and re-export destinations"}
+      supplier_id: {desc: "Supplier or processor involved, if any"}
+    example: {auth_type: inward_processing, description: "IPR for goods re-exported to Ireland and the EU", conditions_text: "Re-export to IE and EU within 6 months"}
 
   - name: create_duty_drawback_claim
     desc: Creates a draft duty drawback claim. Returns the new claim id.
@@ -362,91 +391,99 @@ tools:
     example: {declaration_id: DEC-900001, claim_amount_gbp: 2500.00, reason: "Goods re-exported"}
 
   - name: draft_classification_evidence_checklist
-    desc: Drafts evidence checklist for a classification. Returns checklist text.
+    desc: Drafts the evidence checklist to hold for a classification, from the HS code's guidance and required evidence. Returns checklist text.
     kind: draft
     args: [hs_code]
     sql:
       code: SELECT * FROM hs_codes WHERE hs_code = $hs_code
     template: |
       # Classification Evidence Checklist
+      {% if code %}
+      HS Code: {{ code[0].hs_code }} - {{ code[0].description }}
 
-      HS Code: {{ code[0].hs_code }}
+      Evidence to hold:
+      {% for e in code[0].evidence_required.split(';') %}
+      - {{ e.strip() }}
+      {% endfor %}
 
-      Description: {{ code[0].description }}
-
-      Required Evidence:
-      - Product specification sheet
-      - Bill of materials
-      - Manufacturing process documentation
-      - Commercial invoices
-      - Sample if physical examination needed
-
-      Classification Guidance:
-      {{ code[0].classification_guidance }}
-
-      Next Steps:
-      1. Gather all documentation
-      2. Submit to customs authority
-      3. Await decision
-    example: {hs_code: "6110"}
+      Classification guidance: {{ code[0].classification_guidance }}
+      {% else %}
+      HS code {{ hs_code }} is not in the classification table. Use search_hs_codes to find the code.
+      {% endif %}
+    example: {hs_code: "6202"}
 
   - name: draft_corrective_action_plan
-    desc: Drafts corrective action plan for customs issues or factory audit. Returns plan text.
+    desc: Drafts a corrective action plan for a supplier, or a factory via its supplier, from customs holds and queries. Returns plan text.
     kind: draft
-    args: [supplier_id]
+    args:
+      supplier_id: {}
+      factory_id: {}
     sql:
-      supplier: SELECT supplier_id, name FROM master.suppliers WHERE supplier_id = $supplier_id
-      holds: SELECT hold_id, hold_reason, hold_date FROM customs_holds WHERE supplier_id = $supplier_id AND resolved_at IS NULL
+      fac: SELECT f.factory_id, f.name, f.country, f.audit_rating, f.last_audit_date, f.supplier_id FROM master.factories f WHERE f.factory_id = $factory_id
+      supplier: SELECT s.supplier_id, s.name FROM master.suppliers s WHERE s.supplier_id = COALESCE($supplier_id, (SELECT supplier_id FROM master.factories WHERE factory_id = $factory_id))
+      holds: SELECT hold_id, declaration_id, hold_reason, hold_date, financial_impact_gbp, resolution_notes FROM customs_holds WHERE supplier_id = COALESCE($supplier_id, (SELECT supplier_id FROM master.factories WHERE factory_id = $factory_id)) AND resolved_at IS NULL ORDER BY hold_date
+      queries: SELECT hold_reason, count(*) AS n, sum(financial_impact_gbp) AS impact FROM customs_holds WHERE supplier_id = COALESCE($supplier_id, (SELECT supplier_id FROM master.factories WHERE factory_id = $factory_id)) AND resolved_at IS NULL GROUP BY hold_reason ORDER BY n DESC
     template: |
       # Corrective Action Plan
 
       Supplier: {{ supplier[0].name }} ({{ supplier[0].supplier_id }})
+      {% if fac %}
+      Factory: {{ fac[0].name }} ({{ fac[0].factory_id }}), {{ fac[0].country }}, last audit rating {{ fac[0].audit_rating }} on {{ fac[0].last_audit_date }}
+      {% endif %}
 
-      Outstanding Customs Holds:
-      {% for hold in holds %}
-      - {{ hold.hold_id }}: {{ hold.hold_reason }} ({{ hold.hold_date }})
+      Open customs holds ({{ holds | length }}):
+      {% for h in holds %}
+      - {{ h.hold_id }} / {{ h.declaration_id }}: {{ h.hold_reason }}, held {{ h.hold_date }}, impact {{ h.financial_impact_gbp | money }}
       {% endfor %}
+      {% if queries %}
+      Main cause: {{ queries[0].hold_reason }} ({{ queries[0].n }} holds, {{ queries[0].impact | money }}).
+      {% endif %}
 
-      Recommended Actions:
-      1. Review all outstanding holds and query reasons
-      2. Prepare supporting documentation
-      3. Submit responses to customs authority
-      4. Track resolution progress
-      5. Implement preventative measures
+      Actions:
+      1. Supplier: provide the missing proof (origin declaration or supplier statements for the inputs) for every open hold within 14 days.
+      2. Broker: amend the open declarations and answer the customs queries once the proof is in.
+      3. Supplier: hold shipments until documents are checked before dispatch.
+      4. Compliance: review past declarations of this supplier for the same issue and quantify reassessment exposure.
+      5. Review progress weekly until all holds are released.
 
-      Timeline: 30 days to resolution
-    example: {supplier_id: SUP-0001}
+      Timeline: 30 days to close open holds, 90 days to verify controls.
+    example: {supplier_id: SUP-0008}
 
   - name: get_additional_tariffs_and_trade_remedies
-    desc: Additional tariffs and trade remedies by HS code and country. Shows safeguards, anti-dumping, countervailing duties.
+    desc: Additional tariffs and trade remedies (safeguard, anti-dumping, countervailing, reciprocal) by HS code, origin and destination market, current only.
     kind: sql
     args:
       hs_code: {required: true}
-      origin_country: {}
-      destination_country: {default: GB}
+      origin_country: {desc: "Country name, e.g. Vietnam"}
+      destination_country: {desc: "GB, EU or US. Blank returns all markets"}
     sql: |
-      SELECT remedy_id, hs_code, origin_country, remedy_type, additional_rate_pct,
+      SELECT remedy_id, hs_code, origin_country, destination_country, remedy_type, additional_rate_pct,
              effective_from, effective_to, description
       FROM additional_remedies
       WHERE hs_code = $hs_code
         AND ($destination_country IS NULL OR destination_country = $destination_country)
         AND ($origin_country IS NULL OR origin_country = $origin_country)
         AND (effective_to IS NULL OR effective_to >= CAST($as_of AS DATE))
-      ORDER BY effective_from DESC
-    limit: 20
-    example: {hs_code: "6110", destination_country: GB}
+      ORDER BY destination_country, origin_country, effective_from DESC
+    limit: 30
+    example: {hs_code: "6110"}
 
   - name: get_customs_authorisation_conditions
-    desc: Conditions for customs authorisations such as inward processing relief. Returns conditions and validity.
+    desc: Conditions and validity of customs authorisations such as inward processing relief or bonded warehouse, by id, type or status.
     kind: sql
     args:
-      auth_id: {required: true}
+      auth_id: {}
+      auth_type: {type: str, desc: "inward_processing, bonded_warehouse or temporary_admission"}
+      status: {type: str, desc: "e.g. approved, draft"}
     sql: |
-      SELECT auth_id, auth_type, status, conditions_text, valid_from, valid_to, supplier_id
+      SELECT auth_id, auth_type, status, description, conditions_text, valid_from, valid_to
       FROM customs_authorisations
-      WHERE auth_id = $auth_id
-    limit: 1
-    example: {auth_id: AUTH-900001}
+      WHERE ($auth_id IS NULL OR auth_id = $auth_id)
+        AND ($auth_type IS NULL OR auth_type = $auth_type)
+        AND ($status IS NULL OR status = $status)
+      ORDER BY status, valid_from DESC
+    limit: 20
+    example: {auth_type: bonded_warehouse}
 
   - name: get_customs_clearance_status_for_shipments
     desc: Retrieves customs clearance status for shipments by purchase order or date range.
@@ -496,16 +533,16 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: get_de_minimis_thresholds_by_country
-    desc: De minimis thresholds by country. Values below threshold avoid duty/VAT on small shipments.
+    desc: De minimis duty thresholds by destination country with the previous threshold and what changed. Orders under it avoid duty.
     kind: select
     from: de_minimis_thresholds
     filters:
       country_code: {}
       country_name: {op: like}
-    columns: [country_code, country_name, threshold_gbp, effective_from, effective_to]
+    columns: [country_code, country_name, threshold_gbp, previous_threshold_gbp, effective_from, effective_to, change_notes]
     order: country_name
     limit: 50
-    example: {country_code: GB}
+    example: {country_code: US}
 
   - name: get_first_sale_candidates
     desc: Transactions eligible for first-sale valuation. Use for duty minimisation where applicable.
@@ -525,21 +562,25 @@ tools:
     example: {date_from: "-180d"}
 
   - name: get_import_volumes_by_hs_code_and_origin
-    desc: Import volumes by HS code and origin, monthly. Use for due diligence, cost impact and supply chain risk.
+    desc: Import volumes and value by HS code (prefix, e.g. 61 or 6109) and origin over a period, totalled per code and origin. Set monthly for months.
     kind: sql
     args:
-      hs_code: {required: true}
-      origin_country: {}
+      hs_code: {desc: "HS code or prefix, e.g. 6109 or 61. Blank returns all"}
+      origin_country: {desc: "Country name, e.g. China"}
       period_from: {type: date, default: "-12m", desc: "From this period"}
+      monthly: {type: bool, desc: "True for one row per month"}
     sql: |
-      SELECT hs_code, origin_country, period_month, quantity_units, value_gbp, duty_paid_gbp
+      SELECT hs_code, origin_country,
+             CASE WHEN $monthly IS TRUE THEN period_month ELSE 'total' END AS period,
+             sum(quantity_units) AS quantity_units, round(sum(value_gbp), 0) AS value_gbp, round(sum(duty_paid_gbp), 0) AS duty_paid_gbp
       FROM import_volumes
-      WHERE hs_code = $hs_code
+      WHERE ($hs_code IS NULL OR hs_code LIKE $hs_code || '%')
         AND ($origin_country IS NULL OR origin_country = $origin_country)
         AND period_month >= strftime(CAST($period_from AS DATE), '%Y-%m')
-      ORDER BY period_month DESC
+      GROUP BY ALL
+      ORDER BY value_gbp DESC, period DESC
     limit: 100
-    example: {hs_code: "6110"}
+    example: {hs_code: "61"}
 
   - name: get_lead_time_to_destination
     desc: Retrieves lead time to destination by origin, mode and lane. Use for urgency decisions.
@@ -560,45 +601,49 @@ tools:
     example: {origin_port: Dhaka, destination_port: London}
 
   - name: get_required_origin_documents
-    desc: Proof-of-origin documents required to claim preferential rates by trade agreement.
+    desc: Proof-of-origin documents and who issues them, to claim preferential rates by origin, destination and trade agreement.
     kind: sql
     args:
-      origin_country: {required: true}
-      destination_country: {required: true}
+      origin_country: {required: true, desc: "Country name, e.g. Vietnam"}
+      destination_country: {desc: "GB, EU or US. Blank returns all"}
       trade_agreement: {}
     sql: |
       SELECT doc_id, origin_country, destination_country, trade_agreement, document_type,
              required, issuing_body, validity_period_months
       FROM required_origin_documents
       WHERE origin_country = $origin_country
-        AND destination_country = $destination_country
+        AND ($destination_country IS NULL OR destination_country = $destination_country)
         AND ($trade_agreement IS NULL OR trade_agreement = $trade_agreement)
-      ORDER BY required DESC, document_type
-    limit: 20
+      ORDER BY destination_country, required DESC, document_type
+    limit: 30
     example: {origin_country: Vietnam, destination_country: GB}
 
   # Stage 2 - 17 new tools
 
   - name: search_hs_codes
-    desc: Candidate HS codes for a product by description, category or code fragment. Returns code and classification guidance.
-    kind: select
-    from: hs_codes
-    filters:
-      hs_code: {op: like, desc: "HS code or fragment, e.g. 61"}
-      description: {op: like, desc: "Words in description, e.g. knitted apparel"}
+    desc: Candidate HS codes for a product by words in description, category or code fragment. Returns duty rate and classification guidance.
+    kind: sql
+    args:
+      description: {type: str, desc: "Product words, e.g. padded gilet. Any word may match"}
+      hs_code: {desc: "HS code or fragment, e.g. 61"}
       category: {}
-    columns: [hs_code, description, category, base_duty_rate_pct, classification_guidance]
-    order: hs_code
+    sql: |
+      SELECT hs_code, description, category, base_duty_rate_pct, classification_guidance
+      FROM hs_codes
+      WHERE ($hs_code IS NULL OR hs_code LIKE $hs_code || '%')
+        AND ($category IS NULL OR lower(category) = lower($category))
+        AND ($description IS NULL OR list_bool_or([(description || ' ' || keywords) ILIKE '%' || w || '%' FOR w IN string_split(lower(regexp_replace($description, 's?\\b(for|a|the|with|of)\\b', '', 'g')), ' ') IF length(w) > 2]))
+      ORDER BY hs_code
     limit: 20
-    example: {description: knitted}
+    example: {description: gilet}
 
   - name: get_tariff_rates_by_hs_code_and_country
-    desc: Tariff rates by HS code and country pair. Returns base and preferential rates, trade agreement if applicable.
+    desc: Current tariff rates by HS code and country pair. Returns base and preferential rates and trade agreement. Leave countries blank for all.
     kind: sql
     args:
       hs_code: {required: true}
-      origin_country: {}
-      destination_country: {}
+      origin_country: {desc: "Country name, e.g. Vietnam"}
+      destination_country: {desc: "GB, EU or US"}
     sql: |
       SELECT hs_code, origin_country, destination_country, base_rate_pct, preferential_rate_pct,
              trade_agreement, effective_from, effective_to
@@ -612,56 +657,60 @@ tools:
     example: {hs_code: "6110", origin_country: Vietnam, destination_country: GB}
 
   - name: get_tariff_change_history
-    desc: Tariff changes over time for an HS code and origin. Shows old rates, new rates and effective dates.
+    desc: Tariff changes for an HS code with old and new rates, effective dates and reasons. Includes announced future changes.
     kind: sql
     args:
       hs_code: {required: true}
-      origin_country: {}
-      date_from: {type: date, default: "-12m", desc: "From this date"}
+      origin_country: {desc: "Country name, e.g. Vietnam"}
+      destination_country: {desc: "GB, EU or US. Blank returns all"}
+      date_from: {type: date, default: "-12m", desc: "Announced from this date"}
     sql: |
-      SELECT change_id, hs_code, origin_country, old_rate_pct, new_rate_pct,
+      SELECT change_id, hs_code, origin_country, destination_country, old_rate_pct, new_rate_pct,
              change_date, effective_date, reason
       FROM tariff_changes
       WHERE hs_code = $hs_code
         AND ($origin_country IS NULL OR origin_country = $origin_country)
+        AND ($destination_country IS NULL OR destination_country = $destination_country)
         AND change_date >= CAST($date_from AS DATE)
-      ORDER BY change_date DESC
+      ORDER BY destination_country, origin_country, effective_date DESC
     limit: 50
     example: {hs_code: "6110"}
 
   - name: get_rules_of_origin_for_hs_code
-    desc: Rules of origin for an HS code and trade agreement. Returns RVC threshold, required documents and eligibility criteria.
+    desc: Rules of origin for an HS code (chapter-level rules match too) and trade agreement, with how to qualify and proof documents.
     kind: sql
     args:
       hs_code: {required: true}
-      origin_country: {}
+      origin_country: {desc: "Country name, e.g. Vietnam"}
       trade_agreement: {}
     sql: |
-      SELECT rule_id, hs_code, origin_country, trade_agreement, rule_description,
-             value_content_threshold_pct, required_documents, eligibility_criteria
+      SELECT rule_id, hs_code, origin_country, destination_country, trade_agreement, rule_description,
+             value_content_threshold_pct, required_documents, eligibility_criteria, how_to_qualify
       FROM origin_rules
-      WHERE hs_code = $hs_code
+      WHERE $hs_code LIKE hs_code || '%'
         AND ($origin_country IS NULL OR origin_country = $origin_country)
         AND ($trade_agreement IS NULL OR trade_agreement = $trade_agreement)
-      ORDER BY origin_country, trade_agreement
+      ORDER BY origin_country, trade_agreement, length(hs_code) DESC
     limit: 20
     example: {hs_code: "6110", origin_country: Vietnam}
 
   - name: search_preferential_trade_agreements
-    desc: Trade agreements and preferential eligibility by country pair. Shows agreement name and eligible routes.
+    desc: Trade agreements giving preferential rates by origin and destination market, with the preferential rate for an HS code if given.
     kind: sql
     args:
-      origin_country: {}
-      destination_country: {}
+      origin_country: {desc: "Country name, e.g. Vietnam"}
+      destination_country: {desc: "GB, EU or US. Blank returns all"}
+      hs_code: {}
     sql: |
-      SELECT DISTINCT trade_agreement, origin_country, destination_country
+      SELECT trade_agreement, origin_country, destination_country, hs_code, base_rate_pct, preferential_rate_pct
       FROM tariffs
-      WHERE preferential_rate_pct IS NOT NULL
+      WHERE preferential_rate_pct IS NOT NULL AND trade_agreement IS NOT NULL
         AND ($origin_country IS NULL OR origin_country = $origin_country)
         AND ($destination_country IS NULL OR destination_country = $destination_country)
+        AND ($hs_code IS NULL OR hs_code = $hs_code)
         AND (effective_to IS NULL OR effective_to >= CAST($as_of AS DATE))
-      ORDER BY trade_agreement, origin_country
-    limit: 30
+      ORDER BY origin_country, destination_country, hs_code
+    limit: 40
     example: {origin_country: Vietnam, destination_country: GB}
 
   - name: search_preferential_origin_rules
@@ -683,22 +732,25 @@ tools:
     example: {trade_agreement: "UK-Vietnam"}
 
   - name: search_dangerous_goods_restrictions
-    desc: Dangerous-goods restrictions for a lane by origin and destination. Returns restriction type and details.
+    desc: Dangerous-goods restrictions for a lane by origin, destination, HS code, material or mode. Covers lithium batteries, flammables and aerosols.
     kind: sql
     args:
-      origin_country: {}
-      destination_country: {}
+      origin_country: {desc: "Country name, e.g. Bangladesh"}
+      destination_country: {desc: "Country name or code, e.g. GB"}
       hs_code: {}
+      material: {type: str, desc: "Words in material or description, e.g. battery or UN3480"}
+      transport_mode: {desc: "air or sea. Blank includes all"}
     sql: |
-      SELECT restriction_id, hs_code, material_code, restriction_type, description,
-             origin_country, destination_country
+      SELECT restriction_id, hs_code, material_code, restriction_type, transport_mode, description, origin_country, destination_country
       FROM dangerous_goods_restrictions
-      WHERE ($origin_country IS NULL OR origin_country = $origin_country)
-        AND ($destination_country IS NULL OR destination_country = $destination_country)
+      WHERE ($origin_country IS NULL OR lower(origin_country) = lower($origin_country))
+        AND ($destination_country IS NULL OR lower(destination_country) = lower($destination_country))
         AND ($hs_code IS NULL OR hs_code = $hs_code)
-      ORDER BY hs_code, restriction_type
+        AND ($material IS NULL OR (material_code || ' ' || description) ILIKE '%' || $material || '%')
+        AND ($transport_mode IS NULL OR transport_mode IN ($transport_mode, 'all'))
+      ORDER BY origin_country, hs_code, restriction_type
     limit: 30
-    example: {origin_country: India, destination_country: GB}
+    example: {origin_country: Bangladesh, destination_country: GB, material: battery}
 
   - name: list_classification_positions
     desc: Our tariff classifications and valuation positions by SKU or risk rating. Shows classification risk and method used.
@@ -719,58 +771,65 @@ tools:
     example: {risk_rating: high}
 
   - name: search_classification_rulings
-    desc: Binding classification rulings by HS code. Returns ruling history, arguments and decisions.
+    desc: Issued binding classification rulings (UK and EU) by HS code, jurisdiction or product words. Returns code, arguments and decision.
     kind: sql
     args:
       hs_code_applied: {}
-      status: {}
+      jurisdiction: {desc: "UK or EU. Blank returns both"}
+      keyword: {type: str, desc: "Words in product description, e.g. padded gilet"}
+      status: {desc: "Default approved and rejected decisions; pass draft or submitted for our own applications"}
     sql: |
-      SELECT ruling_id, status, product_description, hs_code_applied, hs_code_alternative,
+      SELECT ruling_id, jurisdiction, ruling_reference, status, product_description, hs_code_applied, hs_code_alternative,
              duty_difference_pct, argument_for_applied, argument_for_alternative,
              created_date, submitted_date, decided_date, ruling_decision, effective_from
       FROM binding_rulings
       WHERE ($hs_code_applied IS NULL OR hs_code_applied = $hs_code_applied)
-        AND ($status IS NULL OR status = $status)
+        AND ($jurisdiction IS NULL OR jurisdiction = upper($jurisdiction))
+        AND ($keyword IS NULL OR list_bool_or([product_description ILIKE '%' || w || '%' FOR w IN string_split(lower($keyword), ' ') IF length(w) > 2]))
+        AND (($status IS NULL AND status IN ('approved','rejected')) OR status = $status)
       ORDER BY created_date DESC
     limit: 30
-    example: {hs_code_applied: "6110"}
+    example: {keyword: gilet}
 
   - name: list_customs_holds_by_supplier
-    desc: Customs holds grouped by supplier. Shows count of holds, reasons and financial impact.
+    desc: Customs holds grouped by supplier, most holds first. Shows total and still-open hold counts, reasons and financial impact.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d", desc: "From this date"}
-      resolved: {type: bool, desc: "Include resolved holds, default: unresolved only"}
+      date_from: {type: date, default: "-90d", desc: "Holds from this date"}
+      open_only: {type: bool, desc: "True to count only unresolved holds"}
     sql: |
       SELECT supplier_id, count(*) AS hold_count,
+             count(*) FILTER (WHERE resolved_at IS NULL) AS open_holds,
              string_agg(DISTINCT hold_reason, '; ') AS hold_reasons,
              sum(financial_impact_gbp) AS total_financial_impact_gbp,
              max(hold_date) AS most_recent_hold_date
       FROM customs_holds
-      WHERE hold_date >= CAST($date_from AS DATE)
-        AND ($resolved = true OR resolved_at IS NULL)
+      WHERE hold_date >= CAST($date_from AS DATE) AND hold_type = 'hold'
+        AND ($open_only IS NOT TRUE OR resolved_at IS NULL)
       GROUP BY supplier_id
       ORDER BY hold_count DESC
     limit: 50
-    example: {date_from: "-90d"}
+    example: {date_from: "-60d"}
 
   - name: list_customs_detentions
-    desc: Border detentions and seizures. Returns hold details, reasons and resolution status.
+    desc: Legal border detentions and seizures (e.g. forced-labour orders) with legal basis, goods, outcome and impact. Not routine clearance holds.
     kind: sql
     args:
       supplier_id: {}
-      hold_reason: {}
+      hold_reason: {desc: "e.g. forced_labour, dangerous_goods"}
+      destination_country: {desc: "GB, EU or US"}
       date_from: {type: date, default: "-180d", desc: "From this date"}
     sql: |
-      SELECT hold_id, shipment_id, declaration_id, supplier_id, hold_date, hold_reason,
-             resolved_at, resolution_notes, financial_impact_gbp
+      SELECT hold_id, hold_type, supplier_id, hold_date, destination_country, hold_reason, legal_basis,
+             goods_description, resolved_at, resolution_notes, financial_impact_gbp
       FROM customs_holds
-      WHERE hold_date >= CAST($date_from AS DATE)
+      WHERE hold_date >= CAST($date_from AS DATE) AND hold_type IN ('detention', 'seizure')
         AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
         AND ($hold_reason IS NULL OR hold_reason = $hold_reason)
+        AND ($destination_country IS NULL OR destination_country = $destination_country)
       ORDER BY hold_date DESC
-    limit: 100
-    example: {date_from: "-90d"}
+    limit: 50
+    example: {hold_reason: forced_labour}
 
   - name: list_historic_declarations_by_supplier
     desc: Historic customs declarations for a supplier. Shows all declarations, status, values and duty amounts.
@@ -807,18 +866,19 @@ tools:
     example: {po_id: "PO-2026-004001"}
 
   - name: search_bonded_warehouse_and_ipr_rules
-    desc: Bonded warehouse and inward processing relief rules and conditions. Shows eligibility and compliance requirements.
+    desc: Rules for bonded warehouse and inward processing relief by topic (eligibility, duty benefit, cash flow, admin burden, volume threshold, conditions, audit risk).
     kind: sql
     args:
-      auth_type: {desc: "bonded_warehouse or inward_processing"}
+      procedure_type: {type: str, desc: "bonded_warehouse or inward_processing. Blank returns both"}
+      topic: {type: str, desc: "e.g. admin_burden, audit_risk, volume_threshold"}
     sql: |
-      SELECT auth_id, auth_type, status, supplier_id, description,
-             conditions_text, valid_from, valid_to
-      FROM customs_authorisations
-      WHERE ($auth_type IS NULL OR auth_type = $auth_type)
-      ORDER BY status DESC, valid_from DESC
-    limit: 30
-    example: {auth_type: inward_processing}
+      SELECT rule_id, procedure_type, topic, jurisdiction, rule_text
+      FROM customs_procedure_rules
+      WHERE ($procedure_type IS NULL OR procedure_type = $procedure_type)
+        AND ($topic IS NULL OR topic = $topic)
+      ORDER BY procedure_type, topic
+    limit: 40
+    example: {procedure_type: inward_processing}
 
   - name: send_broker_amendment_request
     desc: Sends customs broker a request to amend open declarations. Returns request id and status.

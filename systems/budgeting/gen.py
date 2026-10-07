@@ -384,7 +384,7 @@ def generate(g):
         ("MRA-0001", "All", "product cost", "Renegotiate FOB prices with the top 20 suppliers", 14200000, 12, 70),
         ("MRA-0002", "Womenswear", "markdown", "Cut markdown depth on autumn knitwear and outerwear", 9600000, 6, 75),
         ("MRA-0003", "All", "freight", "Move non-urgent air freight to sea and consolidate inbound loads", 6100000, 8, 80),
-        ("MRA-0004", "All", "shrink", "Targeted shrink programme in the 40 worst stores", 5000000, 16, 65),
+        ("MRA-0004", "All", "shrink", "Targeted shrink programme in the 40 worst stores", 2400000, 16, 65),
         ("MRA-0005", "Housewares", "price", "Reprice non-key-value lines by 2%", 4200000, 4, 80),
         ("MRA-0006", "All", "fx", "Extend dollar hedge cover from 60% to 80% for next season", 3400000, 3, 85),
         ("MRA-0007", "Electricals", "duty", "Use duty drawback and tariff engineering on electricals", 2400000, 10, 60),
@@ -404,30 +404,66 @@ def generate(g):
     mitigation_levers = [{"lever_id": a, "name": n, "lever_type": t, "estimated_value_gbp": float(v), "lead_time_weeks": lt,
                           "one_time": ot, "value_basis": vb} for a, n, t, v, lt, ot, vb in mitigation_levers]
 
-    # ---------------- programmes (unchanged shape) ----------------
+    # ---------------- programmes ----------------
+    import random as _random
+    r2 = _random.Random(4242)
     programmes, programme_costs = [], []
     programme_types = ["cost_saving", "revenue", "capex", "transformation"]
+    generic_names = ["Margin Recovery", "DC Automation", "Nearshoring Pilot", "Omnichannel", "Analytics Platform",
+                     "Logistics Optimization", "Returns Redesign", "Store Refit Wave 2"]
+
+    def month_list(start, end):
+        y, m = start.year, start.month
+        out = []
+        while (y, m) <= (end.year, end.month):
+            out.append((y, m))
+            y, m = add_months(y, m, 1)
+        return out
+
+    def add_costs(prog_id, months, plan, forecast, actual):
+        for (y, m), p_, f_, a_ in zip(months, plan, forecast, actual):
+            programme_costs.append({"programme_id": prog_id, "period_date": mdate(y, m), "planned_gbp": round(p_, 2),
+                                    "forecast_gbp": round(f_, 2), "actual_gbp": None if a_ is None else round(a_, 2),
+                                    "burn_rate_pct": None if a_ is None else round(a_ / p_ * 100, 1),
+                                    "updated_at": as_of - timedelta(days=5)})
+
     for i in range(8):
         prog_id = f"PGM-{i + 1:06d}"
         budget = r.choice([500000, 1000000, 2000000, 5000000])
+        r.choice(generic_names); r.randint(30, 180); r.randint(30, 365); r.choice(["a", "b", "c"])
+        start = as_of - timedelta(days=r2.randint(30, 180))
+        end = as_of + timedelta(days=r2.randint(60, 365))
+        ptype = programme_types[i % 4]
+        benefit = round(budget * r2.uniform(0.4, 1.2), -3) if ptype in ("cost_saving", "revenue") else 0.0
         programmes.append({
-            "programme_id": prog_id,
-            "name": r.choice(["Margin Recovery", "Shrink Reduction", "DC Automation", "ERP Go-Live", "Nearshoring Pilot", "Omnichannel", "Analytics Platform", "Logistics Optimization"]),
-            "description": "Key strategic initiative", "budget_gbp": budget,
-            "start_date": as_of - timedelta(days=r.randint(30, 180)), "end_date": as_of + timedelta(days=r.randint(30, 365)),
-            "status": r.choice(["approved", "in_progress", "completed"]), "type": programme_types[i % 4]})
-        seen = set()
-        for week in g.weeks(24):
-            period_str = week.strftime("%Y-%m")
-            if (prog_id, period_str) in seen:
-                continue
-            seen.add((prog_id, period_str))
-            forecast = budget / 24 * r.gauss(1.0, 0.2)
-            actual = forecast * r.gauss(1.0, 0.15) if week < as_of else 0
-            programme_costs.append({"programme_id": prog_id, "period": period_str, "forecast_gbp": round(forecast, 2),
-                                    "actual_gbp": round(max(0, actual), 2),
-                                    "burn_rate_pct": round(actual / forecast * 100 if forecast > 0 else 0, 1),
-                                    "updated_at": as_of - timedelta(days=5)})
+            "programme_id": prog_id, "name": generic_names[i], "description": "Key strategic initiative", "budget_gbp": budget,
+            "start_date": start, "end_date": end, "status": "in_progress", "type": ptype,
+            "annual_benefit_gbp": benefit, "benefit_start_date": end if benefit else None})
+        months = month_list(start, end)
+        w = [r2.uniform(0.7, 1.3) for _ in months]
+        plan = [budget * x / sum(w) for x in w]
+        cur = (cy, cm)
+        actual = [p_ * r2.gauss(1.0, 0.1) if mm < cur else None for mm, p_ in zip(months, plan)]
+        add_costs(prog_id, months, plan, plan, actual)
+
+    # story: ERP programme, 13.0m budget, running 9% over plan, forecast 14.2m at completion
+    erp_months = month_list(add_months(cy, cm, -6) and date(*add_months(cy, cm, -6), 1), date(*add_months(cy, cm, 6), 1))
+    erp_plan = [700, 900, 1000, 1150, 1250, 1300, 1300, 1300, 1200, 1150, 1000, 750, 0]
+    erp_act = [720, 940, 1090, 1260, 1390, 1450] + [None] * 7
+    erp_fc = [700, 900, 1000, 1150, 1250, 1300, 1400, 1400, 1300, 1200, 1050, 800, 200]
+    erp_fc[:6] = erp_act[:6]
+    programmes.append({"programme_id": "PGM-900001", "name": "ERP Transformation", "description": "Replace the legacy ERP: finance, supply chain and merchandising, go-live at the end of the plan",
+                       "budget_gbp": 13000000, "start_date": date(*add_months(cy, cm, -6), 6), "end_date": date(*add_months(cy, cm, 5), 26),
+                       "status": "in_progress", "type": "transformation", "annual_benefit_gbp": 3350000.0, "benefit_start_date": date(*add_months(cy, cm, 8), 1)})
+    add_costs("PGM-900001", erp_months, [x * 1000.0 for x in erp_plan], [x * 1000.0 for x in erp_fc],
+              [None if x is None else x * 1000.0 for x in erp_act])
+    # story: shrink programme in the 40 worst stores, approved and about to start
+    sh_months = month_list(date(*add_months(cy, cm, 1), 1), date(*add_months(cy, cm, 5), 1))
+    sh_plan = [260, 420, 480, 380, 260]
+    programmes.append({"programme_id": "PGM-900002", "name": "Shrink Reduction: 40 worst stores", "description": "EAS tagging, CCTV upgrades, stock-count discipline and security training in the 40 highest-shrink stores",
+                       "budget_gbp": 1800000, "start_date": date(*add_months(cy, cm, 1), 1), "end_date": date(*add_months(cy, cm, 5), 28),
+                       "status": "approved", "type": "cost_saving", "annual_benefit_gbp": 2400000.0, "benefit_start_date": date(*add_months(cy, cm, 5), 28)})
+    add_costs("PGM-900002", sh_months, [x * 1000.0 for x in sh_plan], [x * 1000.0 for x in sh_plan], [None] * 5)
 
     # ---------------- investment cases ----------------
     investment_cases = []
@@ -455,6 +491,46 @@ def generate(g):
         "assumptions": "Savings of £3.4m a year from labour and throughput once live; 12-month build; 10-year life; 10% discount rate",
         "build_months": 12, "project_life_years": 10})
 
+    capital = [  # id, title, description, capex, IRR %, build months, life years, risk, option, proposal, key risk
+        ("INV-900002", "New regional DC in the North West", "Adds 400k sq ft of regional capacity to relieve Northampton and Daventry", 22000000, 11.4, 15, 12, "high", "New regional DC", "CAP-000001", "Volume growth of 6% a year may not arrive; 15-month build"),
+        ("INV-900003", "Network automation: Daventry and Leeds DCs", "Goods-to-person picking at Daventry and Leeds to cut labour cost per unit", 11000000, 14.9, 12, 8, "medium", "Network automation", "CAP-000006", "Labour saving starts only after a 12-month build"),
+        ("INV-900004", "Store refit programme, 60 stores", "Refit 60 high-street and retail-park stores to the new format", 9500000, 17.2, 9, 10, "low", "Store refits", "CAP-000002", "Sales uplift of 6% in refitted stores; 4-week closure per store"),
+        ("INV-900005", "E-commerce platform and fulfilment capacity", "Replace checkout and payments platform and add pick capacity for online orders", 8000000, 21.5, 6, 8, "medium", "E-commerce", "CAP-000003", "Online share of sales must reach 28% in two years"),
+        ("INV-900006", "Nearshoring: Turkey and Portugal supplier hubs", "Move 15% of apparel and home volume to nearshore suppliers", 7500000, 16.8, 12, 8, "medium", "Nearshoring", "CAP-000004", "Landed cost within 3% of Far East; 20 suppliers qualified in 18 months"),
+        ("INV-900007", "New markets: Poland and Czechia launch", "Launch the home range online and in 12 concession stores", 6500000, 12.6, 6, 8, "high", "New markets", "CAP-000005", "Brand awareness builds slowly; margin after duties"),
+    ]
+    capital_options = []
+    for n, (iid, title, desc, capex, irr, build, life, risk, opt, prop, krisk) in enumerate(capital):
+        mr = (1 + irr / 100) ** (1 / 12) - 1
+        benefit = capex / ((1 + mr) ** -build * (1 - (1 + mr) ** -(life * 12)) / mr / 12)
+        flows = _cashflows(capex, benefit, life, build_months=build)
+        investment_cases.append({
+            "investment_case_id": iid, "title": title, "description": desc, "site_id": None, "capex_gbp": float(capex),
+            "annual_saving_gbp": round(benefit, 0) if iid == "INV-900003" else 0.0,
+            "annual_revenue_gbp": 0.0 if iid == "INV-900003" else round(benefit, 0),
+            "payback_period_months": round(_payback_months(flows), 1), "npv_gbp": round(_npv(flows, 0.10), 2),
+            "irr_pct": round(_irr(flows) * 100, 1), "status": "proposal", "created_date": as_of - timedelta(days=30 + n),
+            "assumptions": f"{build}-month build, {life}-year life, 10% discount rate; payback counted from first spend; annual benefit is the net profit benefit",
+            "build_months": build, "project_life_years": life})
+        capital_options.append({"option_id": f"COPT-{n + 1:02d}", "option_name": opt, "investment_case_id": iid, "proposal_id": prop,
+                                "risk_rating": risk, "hurdle_rate_pct": 12.0, "risk_adjustment_pct": {"low": 0.0, "medium": 1.0, "high": 2.0}[risk],
+                                "key_risk": krisk})
+    regions = [("UK South", 3000000, 1400000), ("UK Midlands", 2200000, 1200000), ("UK North", 2400000, 1250000),
+               ("Scotland", 1200000, 700000), ("Ireland", 1000000, 600000), ("EU Central", 1500000, 900000), ("US", 900000, 500000)]
+    capital_budgets = [{"budget_id": "CAPB-GROUP", "scope": "group", "region": "", "budget_gbp": 100000000.0, "committed_gbp": 50000000.0,
+                        "purpose": "Group capital plan: GBP 100m for the year, half already allocated to approved projects"}]
+    capital_budgets += [{"budget_id": f"CAPB-R{n + 1:02d}", "scope": "region", "region": rg, "budget_gbp": float(b), "committed_gbp": float(c),
+                         "purpose": "Store upgrades, refits and local infrastructure"} for n, (rg, b, c) in enumerate(regions)]
+    fx_budget_assumptions = [
+        {"currency_pair": "GBP/USD", "budget_rate": 1.25, "hedge_cover_pct": 75.0, "hedged_to": date(2027, 6, 30), "annual_exposure_gbp": 240000000.0,
+         "notes": "Dollar purchases of product and freight budgeted at 1.25 with 75% covered by forwards; the FX gain/loss line assumes the unhedged 25% settles at the budget rate"},
+        {"currency_pair": "GBP/EUR", "budget_rate": 1.18, "hedge_cover_pct": 60.0, "hedged_to": date(2027, 6, 30), "annual_exposure_gbp": 95000000.0,
+         "notes": "Euro purchases budgeted at 1.18 with 60% covered by forwards"},
+        {"currency_pair": "GBP/INR", "budget_rate": 103.5, "hedge_cover_pct": 60.0, "hedged_to": date(2027, 3, 31), "annual_exposure_gbp": 28000000.0,
+         "notes": "Rupee purchases budgeted at 103.5 with 60% covered by collars"}]
+    forecast_assumptions.append({"forecast_version_id": "FCST-BUD27", "driver": "Shrink rate", "assumed_value": 1.0, "actual_value": None,
+                                 "unit": "% of sales", "note": "Budget shrink target"})
+
     return {
         "expense_categories": expense_categories,
         "budget_lines": budget_lines,
@@ -471,4 +547,7 @@ def generate(g):
         "programmes": programmes,
         "programme_costs": programme_costs,
         "investment_cases": investment_cases,
+        "capital_options": capital_options,
+        "capital_budgets": capital_budgets,
+        "fx_budget_assumptions": fx_budget_assumptions,
     }
