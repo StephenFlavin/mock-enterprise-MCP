@@ -11,7 +11,7 @@ def A(name, typ, fmt, mand=False, canon=None, mkt="", rate=0.9):
 MAT = lambda rate=0.93, name="Material Composition": A(name, "text", "e.g. 100% cotton; Stainless steel", True, "Material Composition", "material", rate)
 CARE = lambda rate=0.9, mand=True: A("Care Instructions", "text", "Machine wash 30C; Hand wash only", mand, "Care Instructions", "", rate)
 WGT = lambda rate=0.9, name="Weight", mand=False: A(name, "numeric", "kg", mand, "Weight", "weight", rate)
-COL = lambda rate=0.97: A("Colour", "text", "Master colour name", False, "Colour", "colour", rate)
+COL = lambda rate=0.97, mand=False: A("Colour", "text", "Master colour name", mand, "Colour", "colour", rate)
 DIM = lambda rate=0.72, name="Dimensions", mand=True: A(name, "text", "L x W x H in cm", mand, "Dimensions", "dimensions", rate)
 WARR = lambda rate=0.6: A("Warranty", "numeric", "Years", False, "Warranty", "warranty", rate)
 
@@ -43,7 +43,7 @@ SPECS = {
                  A("Shelf Life", "text", "Months after opening", False, rate=0.8), A("Skin Type", "text", "Dry; Oily; All", False, rate=0.8)],
     "Fragrance": [A("Ingredients", "text", "INCI list", True, rate=0.9), A("Volume (ml)", "numeric", "ml", True, "Capacity", "", 0.95),
                   A("Fragrance Family", "text", "Floral; Woody; Citrus", False, rate=0.85), A("Allergen Declaration", "text", "EU 26 allergens", True, rate=0.8)],
-    "Small Appliances": [MAT(0.93), DIM(0.70), WGT(0.85, mand=True), COL(0.80),
+    "Small Appliances": [MAT(0.93), DIM(0.70), WGT(0.85, mand=True), COL(0.80, True),
                          A("Capacity", "numeric", "litres", False, "Capacity", "", 0.88),
                          A("Voltage & Wattage", "text", "e.g. 230V 2200W", True, "Voltage & Wattage", "voltage_wattage", 0.52),
                          A("Energy Rating", "enum", "A to G", True, "Energy Rating", "energy_label", 0.62),
