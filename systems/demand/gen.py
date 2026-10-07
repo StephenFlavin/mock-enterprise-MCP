@@ -64,8 +64,8 @@ def inbound_multiplier(week_monday):
         bf = black_friday(week_monday.year - 1)
     bf_week = bf - timedelta(days=bf.weekday())
     k = (week_monday - bf_week).days // 7
-    table = {-6: 1.2, -5: 1.45, -4: 1.6, -3: 1.7, -2: 1.65, -1: 1.45, 0: 1.2, 1: 1.0, 2: 0.9, 3: 0.85, 4: 0.8,
-             5: 0.7, 6: 0.9, 7: 1.0}
+    table = {-6: 1.15, -5: 1.3, -4: 1.4, -3: 1.5, -2: 1.6, -1: 1.6, 0: 1.7, 1: 1.6, 2: 1.55, 3: 1.5, 4: 1.2,
+             5: 0.9, 6: 1.0, 7: 1.0}
     return table.get(k, 1.0)
 
 
@@ -124,12 +124,8 @@ def generate(g):
             })
     actual = {(h["sku"], h["period_date"]): h["units_sold"] for h in demand_history}
 
-    # Stockout story: SKU-101904 (style STY-5520) out in 40 stores for 9 days last month (allocation shortfall,
-    # DC held stock). The forecast was fine: it tracked underlying demand (sales plus lost units).
-    lost_by_week = {
-        ("SKU-101904", this_monday - timedelta(weeks=4)): 190,
-        ("SKU-101904", this_monday - timedelta(weeks=3)): 114,
-    }
+    # Stockout story: SKU-101904 (style STY-5520) was out for 9 days in 40 stores last month (allocation shortfall,
+    # DC held stock). Its forecast was fine: a steady trailing-average forecast, shortfall was supply side (see seed adjustments).
 
     # ------------------------------------------------------------------------------------------
     # Forecasts: last 10 weeks (base, as made 4 weeks earlier) and the next 12 weeks (base/upside/downside).
@@ -164,9 +160,12 @@ def generate(g):
             a = actual.get((sku, wk))
             if a is None:
                 continue
-            under = a + lost_by_week.get((sku, wk), 0)
-            sd = 0.03 if sku == "SKU-101904" else 0.10
-            add_forecast(sku, wk, "base", under * r.gauss(1.0, sd), wk - timedelta(days=28))
+            if sku == "SKU-101904":
+                prior = [u for (w2, u, _) in weekly[sku] if wk - timedelta(weeks=6) <= w2 < wk]
+                ref = sum(prior) / len(prior)
+                add_forecast(sku, wk, "base", ref * r.gauss(1.0, 0.03), wk - timedelta(days=28))
+            else:
+                add_forecast(sku, wk, "base", a * r.gauss(1.0, 0.10), wk - timedelta(days=28))
         horizon = 16 if sku == "K-1700" else 12
         for off in range(0, horizon):
             wk = this_monday + timedelta(weeks=off)
@@ -529,7 +528,7 @@ def generate(g):
         units = int(round(base * r.gauss(1.0, 0.01), -1))
         band = 0.15 if base >= 27000 else 0.08
         returns_forecast.append({
-            "week_start": wk,
+            "returns_week": wk,
             "returns_units": units,
             "low_units": int(round(units * (1 - band), -1)),
             "high_units": int(round(units * (1 + band), -1)),

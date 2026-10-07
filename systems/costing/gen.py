@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from datetime import timedelta
 
-NBLK = 14  # 4-week blocks, j=13 is the latest complete block, j=0 is exactly 52 weeks earlier
+NBLK = 17  # 4-week blocks, j=16 is the latest complete block; block j-13 is exactly 52 weeks before block j
 
 # material share, labour, overhead, freight, tooling (% of landed cost) by category
 PROFILES = {
@@ -204,9 +204,9 @@ def generate(g):
             ss = store_share.get(sku, 0.7)
             wk = wk_units.get(sku) or 60.0
             for j in range(NBLK):
-                f = j / 13.0
+                f = (j - 3) / 13.0
                 sf = 1 + 0.25 * math.cos(2 * math.pi * (j % 13) / 13)
-                noise = 1.0 if j in (0, 13) else r.uniform(0.95, 1.05)
+                noise = r.uniform(0.95, 1.05) if 4 <= j <= 12 else 1.0
                 start = as_of - timedelta(days=28 * (NBLK - j))
                 for ch, share in (("store", ss), ("online", 1 - ss)):
                     units = max(5, int(round(wk * 4 * share * sf * noise)))
@@ -218,7 +218,7 @@ def generate(g):
                     net_pct = gm_pct - md_pct - sh_pct
                     margins.append({
                         "margin_id": f"MAR-{mid:06d}", "style_id": p["style_id"], "sku": sku, "category": cat,
-                        "period": f"P-{13 - j}", "channel": ch, "volume_units": units, "revenue_gbp": round(rev, 2),
+                        "period": f"P-{16 - j}", "channel": ch, "volume_units": units, "revenue_gbp": round(rev, 2),
                         "cost_of_goods_gbp": round(rev * (1 - gm_pct / 100), 2), "gross_margin_gbp": round(rev * gm_pct / 100, 2),
                         "gross_margin_pct": round(gm_pct, 2), "markdown_gbp": round(rev * md_pct / 100, 2),
                         "net_margin_gbp": round(rev * net_pct / 100, 2), "net_margin_pct": round(net_pct, 2),
@@ -232,21 +232,21 @@ def generate(g):
     for k, b in bridge.items():
         dept, cat = k
         vp, yy = b["vs_plan"], b["yoy"]
-        for j in range(8, NBLK):
-            f = j / 13.0
+        for j in range(11, NBLK):
+            f = (j - 3) / 13.0
             start = as_of - timedelta(days=28 * (NBLK - j))
             v = [round(x * f, 2) for x in vp]
-            drivers.append({"variance_id": f"VAR-{vid:06d}", "style_id": "", "category": cat, "period": f"P-{13 - j}",
+            drivers.append({"variance_id": f"VAR-{vid:06d}", "style_id": "", "category": cat, "period": f"P-{16 - j}",
                             "total_variance_pct": round(sum(v), 2), "cost_driver_pct": v[1], "fx_driver_pct": 0.0, "mix_driver_pct": v[2],
                             "supplier_driver_pct": 0.0, "markdown_driver_pct": v[3], "other_driver_pct": 0.0, "notes": b["note_vs_plan"],
                             "analysed_at": start + timedelta(days=28), "department": dept, "period_start": start, "basis": "vs_plan",
                             "price_driver_pct": v[0], "shrink_driver_pct": v[4]})
             vid += 1
-        for j in (12, 13):
+        for j in (15, 16):
             start = as_of - timedelta(days=28 * (NBLK - j))
-            sc = 1.0 if j == 13 else 0.92
+            sc = 1.0
             v = [round(x * sc, 2) for x in yy]
-            drivers.append({"variance_id": f"VAR-{vid:06d}", "style_id": "", "category": cat, "period": f"P-{13 - j}",
+            drivers.append({"variance_id": f"VAR-{vid:06d}", "style_id": "", "category": cat, "period": f"P-{16 - j}",
                             "total_variance_pct": round(sum(v), 2), "cost_driver_pct": v[0], "fx_driver_pct": v[1], "mix_driver_pct": v[2],
                             "supplier_driver_pct": v[3], "markdown_driver_pct": 0.0, "other_driver_pct": 0.0, "notes": b["note_yoy"],
                             "analysed_at": start + timedelta(days=28), "department": dept, "period_start": start, "basis": "yoy",
@@ -319,7 +319,7 @@ def generate(g):
     for co, (m, l, o, n, basis) in latest.items():
         gl, gmat = growth_lab.get(co, 0.03), growth_mat.get(co, 0.015)
         for j in range(NBLK):
-            k = (13 - j) / 13.0
+            k = (NBLK - 1 - j) / 13.0
             lab, mat = l / (1 + gl * k), m / (1 + gmat * k)
             tot = lab + mat + o
             fob.append({"origin_country": co, "period_start": as_of - timedelta(days=28 * (NBLK - j)), "avg_fob_cost_gbp": round(tot, 2),
