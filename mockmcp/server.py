@@ -1,6 +1,7 @@
 """Engine (load systems, call tools) and MCP wiring: one low-level Server per system, hosted by one hub."""
 import contextlib
 import logging
+import time
 
 import anyio
 from mcp import types
@@ -15,7 +16,9 @@ log = logging.getLogger("mockmcp")
 
 
 class Engine:
-    def __init__(self, ids: list[str] | None = None):
+    def __init__(self, ids: list[str] | None = None, record: str | None = None):
+        from .eval.record import Recorder
+        self.rec = Recorder.make(record)  # eval: append every served call to a TraceCall JSONL
         self.db = DB()
         self.master = load_system("master")
         self.db.add(self.master)
@@ -49,6 +52,14 @@ class Engine:
 
     def call(self, sid: str, name: str, given: dict | None) -> tuple[str, bool]:
         """Run a tool. Returns (text, is_error). Never raises."""
+        ts = time.time()
+        text, err = self._call(sid, name, given)
+        if self.rec:
+            tool = self.tools.get((sid, name))
+            self.rec.add(sid, name, given or {}, text, err, ts, bool(tool and tool.writes))
+        return text, err
+
+    def _call(self, sid: str, name: str, given: dict | None) -> tuple[str, bool]:
         from .fmt import render
         tool = self.tools.get((sid, name))
         if not tool:
