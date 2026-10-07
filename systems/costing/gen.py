@@ -91,7 +91,7 @@ COTTON_STORY = [("SUP-0064", "SKU-100007", 6.20, 16.0), ("SUP-0001", "SKU-100070
 COTTON_INDEX_RISE = 4.0
 # STORY: standard cost updates effective last month: sku -> (% step, cause)
 STD_COST_STEP = {"SKU-100175": (11.0, "skincare formulation ingredient price rise"), "SKU-100112": (9.0, "aluminium housing price rise"),
-                 "SKU-100224": (10.0, "polyester fabric price rise"), "SKU-100084": (6.0, "supplier labour rate increase")}
+                 "SKU-100224": (10.0, "polyester fabric price rise"), "SKU-100280": (8.0, "copper component price rise")}
 # STORY: SS26 Womenswear knitwear (last season's range): supplier price rise % over the six months, by SKU
 KNIT_RISE = {"SKU-104291": 12.0, "SKU-104298": 9.0, "SKU-104305": 5.0, "SKU-104879": 3.0, "SKU-104886": 2.0, "SKU-104893": -1.0}
 # STORY: PFAS-free waterproofing alternatives live in seed/material_costs.csv
@@ -522,9 +522,10 @@ def generate(g):
                 sup_idx = market * 1.03
             sup_idx = round(sup_idx, 1)
             q = c["total_cost_gbp"] * sup_idx / 100
-            period = (g.as_of - timedelta(days=30 * (5 - i))).strftime("%Y-%m")
+            pdate = g.as_of - timedelta(days=30 * (5 - i))
+            period = pdate.strftime("%Y-%m")
             pt = round((sup_idx - 100) / (market - 100) * 100, 1) if abs(market - 100) >= 0.5 else None
-            hist.append({"supplier_id": c["supplier_id"], "sku": c["sku"], "period": period, "quoted_cost_gbp": round(q, 2),
+            hist.append({"supplier_id": c["supplier_id"], "sku": c["sku"], "period": period, "period_start": pdate.replace(day=1), "quoted_cost_gbp": round(q, 2),
                          "actual_cost_gbp": round(q * r.uniform(0.99, 1.02), 2), "index_price_gbp": market,
                          "market_price_index": market, "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": code})
 
@@ -537,7 +538,7 @@ def generate(g):
             h["quoted_cost_gbp"] = round(h["quoted_cost_gbp"] * (1 + st[0] / 100), 2)
             h["actual_cost_gbp"] = round(h["actual_cost_gbp"] * (1 + st[0] / 100), 2)
             if h["period"] == step_from:
-                h["notes"] = f"Standard cost updated from {step_from}-01: {st[1]}"
+                h["notes"] = f"Standard cost updated: {st[1]}"
     # STORY: last season's (SS26) Womenswear knitwear range cost more than costed: SUP-0043 styles up 5-12% on yarn, SUP-0022 styles about flat.
     # Own Random so the shared generator stream (and every other table) is unchanged.
     sr = random.Random(5826)
@@ -547,9 +548,10 @@ def generate(g):
         for i in range(6):
             sup_idx = round(100 + rise * min(1.0, (i + 1) / 3), 1)
             q = c["total_cost_gbp"] * sup_idx / 100
-            period = (g.as_of - timedelta(days=30 * (5 - i))).strftime("%Y-%m")
+            pdate = g.as_of - timedelta(days=30 * (5 - i))
+            period = pdate.strftime("%Y-%m")
             pt = round((sup_idx - 100) / (mk[i] - 100) * 100, 1) if abs(mk[i] - 100) >= 0.5 else None
-            hist.append({"supplier_id": c["supplier_id"], "sku": sku, "period": period, "quoted_cost_gbp": round(q, 2),
+            hist.append({"supplier_id": c["supplier_id"], "sku": sku, "period": period, "period_start": pdate.replace(day=1), "quoted_cost_gbp": round(q, 2),
                          "actual_cost_gbp": round(q * sr.uniform(0.995, 1.005), 2), "index_price_gbp": mk[i],
                          "market_price_index": mk[i], "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": "WOOL"})
 

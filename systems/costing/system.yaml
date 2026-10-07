@@ -615,6 +615,9 @@ tables:
       commodity:
         type: str
         desc: Commodity behind the market index, e.g. COTTON
+      period_start:
+        type: date
+        desc: First day of the period month
   cost_bridges:
     key: bridge_id
     cols:
@@ -2170,7 +2173,7 @@ tools:
       AND ($category IS NULL OR lower(p.category) = lower($category))
       AND ($season IS NULL OR p.season = $season)
       AND ($sku IS NOT NULL OR h.sku IS NOT NULL)
-    ORDER BY variance_pct DESC, p.sku
+    ORDER BY variance_gbp DESC, p.sku
   limit: 30
   example:
     sku: K-1700
@@ -2212,7 +2215,7 @@ tools:
   example:
     sku: K-1700
 - name: get_expected_recovery_rates
-  desc: Expected recovery on aged or clearance stock by disposal route - recovery % of cost, handling, days to cash, risk and net GBP per unit. Use for provisions and disposal choices.
+  desc: Expected recovery on aged or clearance stock by disposal route - recovery % of cost, handling, days to cash, risk, net GBP per unit. Use for provisions.
   kind: sql
   args:
     category:
@@ -2910,7 +2913,7 @@ tools:
   example:
     min_loss_gbp: 60000
 - name: get_standard_cost_updates
-  desc: Standard cost changes by SKU and month - previous and new standard cost, change in GBP and %, effective date, cause. Filter by period and minimum % to find material updates.
+  desc: Standard cost changes by SKU and month - previous and new cost, change in GBP and %, effective date, cause. Filter by period and minimum % for material updates.
   kind: sql
   args:
     sku: {}
@@ -2926,7 +2929,7 @@ tools:
       desc: Only updates of at least this many % up or down
   sql: |
     WITH x AS (
-      SELECT sch.*, LAG(sch.quoted_cost_gbp) OVER (PARTITION BY sch.sku ORDER BY sch.period) AS prev_cost
+      SELECT sch.*, LAG(sch.quoted_cost_gbp) OVER (PARTITION BY sch.sku ORDER BY sch.period_start) AS prev_cost
       FROM supplier_cost_history sch
     )
     SELECT
@@ -2934,8 +2937,8 @@ tools:
       pc.category,
       pc.season,
       x.supplier_id,
-      x.period,
-      CAST(x.period || '-01' AS DATE) AS effective_date,
+      strftime(x.period_start, '%Y-%m') AS period,
+      x.period_start AS effective_date,
       ROUND(x.prev_cost, 2) AS previous_standard_cost_gbp,
       ROUND(x.quoted_cost_gbp, 2) AS new_standard_cost_gbp,
       ROUND(x.quoted_cost_gbp - x.prev_cost, 2) AS change_gbp,
@@ -2948,10 +2951,10 @@ tools:
     FROM x LEFT JOIN product_costings pc ON pc.sku = x.sku AND pc.status = 'active'
     WHERE ($sku IS NULL OR x.sku = $sku)
       AND x.prev_cost IS NOT NULL
-      AND CAST(x.period || '-01' AS DATE) >= date_trunc('month', CAST($period_from AS DATE))
-      AND ($period_to IS NULL OR CAST(x.period || '-01' AS DATE) <= CAST($period_to AS DATE))
+      AND x.period_start >= date_trunc('month', CAST($period_from AS DATE))
+      AND ($period_to IS NULL OR x.period_start <= CAST($period_to AS DATE))
       AND ($min_change_pct IS NULL OR abs((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0) * 100) >= $min_change_pct)
-    ORDER BY x.period DESC, abs((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0)) DESC, x.sku
+    ORDER BY x.period_start DESC, abs((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0)) DESC, x.sku
   limit: 50
   example:
     sku: K-1700
