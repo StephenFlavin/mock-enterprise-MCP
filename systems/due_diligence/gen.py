@@ -479,6 +479,10 @@ def generate(g):
         "Anonymous post claims workers were not paid overtime; no named source and no corroboration.", 45, "low", "low", False); n += 1
     med(n, "PSP-0003", "prospect", "Pearl River Holdings Ltd", "BVI shell companies used to hide Chinese manufacturers' owners", "Offshore leaks reporting",
         "Reporting on BVI holding companies with nominee directors used by Guangdong manufacturers; Pearl River Holdings is named in the dataset but without allegations.", 110, "low", "medium", False); n += 1
+    med(n, "SUP-0028", "supplier", sup["SUP-0028"]["name"], "Savage Products reported to be missing payments to lenders", "Trade finance press",
+        "Trade finance press reports Savage Products has delayed repayments to two lenders and is seeking to renegotiate its credit facilities; the company has not commented.", 30, "high", "medium", False); n += 1
+    med(n, "SUP-0065", "supplier", sup["SUP-0065"]["name"], "Smith Products cuts shifts as merino orders fall", "Textile industry weekly",
+        "Industry weekly reports Smith Products has cut shifts at its knitting plant and delayed supplier payments after a fall in orders; management says it expects recovery.", 50, "medium", "medium", True); n += 1
     for s in suppliers:
         if s["supplier_id"] in ("SUP-0001", "SUP-0027", "SUP-0002") or r.random() > 0.08:
             continue
