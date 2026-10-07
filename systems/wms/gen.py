@@ -32,7 +32,11 @@ ISSUE_RATE_DC1 = {'pick': [4.8, 4.4, 4.8, 4.5], 'reserve': [4.6, 4.9, 4.4, 4.8],
                   'hazmat': [5.0, 5.2, 4.8, 5.1], 'mezzanine': [14.5, 10.5, 7.5, 6.0]}
 
 BAY_C14 = 'DC1-C-14'
-QUARANTINE_TARGET_GBP = 1_050_000   # stock held in quarantine at DC1 and DC3 (status-mapping part of the ERP-WMS gap)
+# stock held in quarantine at DC1 and DC3 (status-mapping part of the ERP-WMS gap, about GBP 1.05m): (site, sku, units)
+QUALITY_HOLDS = [('DC1', 'SKU-103507', 867), ('DC3', 'SKU-100819', 2939), ('DC1', 'SKU-101687', 1027), ('DC3', 'SKU-104690', 2757),
+                 ('DC1', 'SKU-104270', 663), ('DC3', 'SKU-104053', 2842), ('DC1', 'SKU-102723', 876), ('DC3', 'SKU-103661', 1752),
+                 ('DC1', 'SKU-101715', 1058), ('DC3', 'SKU-101750', 2879), ('DC1', 'SKU-103080', 671), ('DC3', 'SKU-104284', 2650),
+                 ('DC1', 'SKU-101869', 696), ('DC3', 'SKU-106069', 2496), ('DC1', 'SKU-102338', 165)]
 PACK_STORY_SKU = 'SKU-100532'     # Denim Small Appliance: corrugated vs moulded pulp vs recycled plastic pack comparison
 MATERIAL_OF = {'carton': 'corrugated', 'polybag': 'plastic_film', 'hanging': 'hanger', 'tray': 'moulded_pulp', 'pouch': 'recycled_plastic'}
 
@@ -99,13 +103,14 @@ def generate(g):
     pack_specs = []
     for i, p in enumerate(products):
         upp = upp_of(p['sku'])
-        units_per_pack = r.choice([1, 2, 4, 6, 10])
+        pr_ = g.rng_for('packspec', p['sku'])     # per-SKU stream: new master products never shift other rows
+        units_per_pack = pr_.choice([1, 2, 4, 6, 10])
         row = {
             'pack_spec_id': f'PKS-{i + 1:06d}', 'sku': p['sku'], 'pack_type': p['pack_type'] or 'carton',
             'units_per_pack': units_per_pack, 'packs_per_pallet': max(1, upp // units_per_pack),
             'units_per_pallet': max(1, upp // units_per_pack) * units_per_pack,
-            'pallet_height_cm': r.randint(120, 200), 'pallet_weight_kg': round(upp * float(p['weight_kg'] or 1) + 25, 1),
-            'bonded_suitable': p['hazmat'] == 'none', 'created_at': T(D(r.randint(120, 400)), 10), 'updated_at': T(D(r.randint(60, 118)), 10),
+            'pallet_height_cm': pr_.randint(120, 200), 'pallet_weight_kg': round(upp * float(p['weight_kg'] or 1) + 25, 1),
+            'bonded_suitable': p['hazmat'] == 'none', 'created_at': T(D(pr_.randint(120, 400)), 10), 'updated_at': T(D(pr_.randint(60, 118)), 10),
         }
         if p['sku'] in affected:   # pack-spec sync the evening before the allocation failures
             row |= {'pack_type': 'polybag' if p['sku'] == 'PF-220' else 'carton', 'units_per_pack': 4, 'packs_per_pallet': 100 if p['sku'] in ('PF-220', 'K-1700') else max(1, upp // 4),
@@ -249,24 +254,24 @@ def generate(g):
     # status story (01:8:Q4): a quality hold put about £1.05m of DC1 and DC3 stock into quarantine; WMS leaves it out of
     # available stock but ERP still counts it. Uses its own random stream so nothing else in the data moves.
     qr = random.Random(8044)
-    q_by_site = [sorted([x for x in location_inventory if x['status'] == 'on-hand' and x['location_id'] not in story_locs
-                         and x['site_id'] == site and x['qty'] >= 200 and prod[x['sku']]['hazmat'] == 'none'],
-                        key=lambda x: (-x['qty'] * cost[x['sku']], x['stock_id'])) for site in ('DC1', 'DC3')]
-    q_cands = [x for pair in zip(*q_by_site) for x in pair]      # alternate DC1 and DC3, biggest first
-    q_seen, q_value = set(), 0.0
-    for x in q_cands:
-        if q_value >= QUARANTINE_TARGET_GBP:
-            break
-        if x['sku'] in q_seen:
-            continue
-        unit = cost[x['sku']]
-        move = min(int(x['qty'] * 0.5), int(math.ceil((QUARANTINE_TARGET_GBP - q_value) / unit)))
-        q_seen.add(x['sku'])
-        q_value += move * unit
-        x['qty'] -= move
-        location_inventory.append({'stock_id': f'LI-{len(location_inventory) + 1:06d}', 'location_id': x['location_id'], 'site_id': x['site_id'],
-                                   'sku': x['sku'], 'lot_number': f'LOT-QH-{qr.randint(100, 999)}', 'status': 'quarantine', 'qty': move,
-                                   'updated_at': T(D(qr.randint(2, 4)), qr.randint(8, 17), qr.randint(0, 59))})
+    # The 15 holds are fixed lines (qms quotes 16 active holds, 24,488 units, GBP 1,054,351 with the DC1 SKU-100007 hold above), so the
+    # story does not move when the random bin layout does. Each hold comes out of the SKU's largest bin at that DC.
+    for site, sku, move in QUALITY_HOLDS:
+        cands = sorted([x for x in location_inventory if x['status'] == 'on-hand' and x['site_id'] == site and x['sku'] == sku
+                        and x['location_id'] not in story_locs], key=lambda x: (-x['qty'], x['stock_id']))
+        left = move
+        for x in cands:
+            take = min(x['qty'], left)
+            if take <= 0:
+                continue
+            left -= take
+            x['qty'] -= take
+            location_inventory.append({'stock_id': f'LI-{len(location_inventory) + 1:06d}', 'location_id': x['location_id'], 'site_id': x['site_id'],
+                                       'sku': x['sku'], 'lot_number': f'LOT-QH-{qr.randint(100, 999)}', 'status': 'quarantine', 'qty': take,
+                                       'updated_at': T(D(qr.randint(2, 4)), qr.randint(8, 17), qr.randint(0, 59))})
+            if left <= 0:
+                break
+        assert left <= 0, (site, sku, left)
     inv_by_loc = {}
     for row in location_inventory:
         inv_by_loc.setdefault(row['location_id'], []).append(row)

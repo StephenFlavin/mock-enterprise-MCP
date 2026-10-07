@@ -381,6 +381,15 @@ def generate(g):
                           "mode": mode, "origin_port": op, "dest_port": DC_PORT[dest], "container_no": f"{r.choice(['MSKU', 'OOLU', 'CMAU', 'HLXU'])}{r.randint(1000000, 9999999)}" if mode == "sea" else "",
                           "teu": round(tu / 4500, 1) if mode == "sea" else 0.0, "etd": etd, "atd": atd, "eta": eta, "ata": ata, "status": sst})
     out["purchase_orders"], out["po_lines"], out["shipments"] = pos, lines, ships
+    # annual spend = what the POs say: last 12 months of order value in GBP (the draw above is kept so the stream is unchanged)
+    fx_gbp = {"GBP": 1, "EUR": 1.17, "USD": 1.27}
+    spend12 = {}
+    for po in pos:
+        if po["status"] != "cancelled" and as_of - timedelta(365) <= po["order_date"] <= as_of:
+            spend12[po["supplier_id"]] = spend12.get(po["supplier_id"], 0) + po["total_value"] / fx_gbp[po["currency"]]
+    for s in suppliers:
+        if s["supplier_id"] in spend12:
+            s["annual_spend_gbp"] = round(spend12[s["supplier_id"]], -3)
 
     section(13)
     # weekly sales, last 52 weeks

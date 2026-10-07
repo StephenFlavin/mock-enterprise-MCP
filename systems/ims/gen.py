@@ -256,6 +256,7 @@ def generate(g):
     dc2_pairs = [p for p in panel_pairs if p[1] == "DC2"]
     promo_pairs = [p for p in panel_pairs if products[p[0]]["category"] == "Dresses"]
     tracking = {}
+    panel_set = {(a, b, w) for (a, b) in panel_pairs for w in weeks}
 
     def trow(sku, site, d, oos, days, cause, scale=1.0):
         p = positions.get((sku, site))
@@ -380,6 +381,32 @@ def generate(g):
                 oos = k in out
                 cause = ("allocation_shortfall" if _hh("nc", s_, k, wk) < 0.7 else "forecast_under") if oos else None
                 tracking[key] = trow(k, s_, wk, oos, 1 + int(_hh("nd", s_, k, wk) * 6) if oos else 0, cause)
+    # 06:52:Q2 pins the in-stock records of five lines (the data_warehouse sales ranking quotes the same rates): best sellers
+    # SKU-100637 (all in stock) and SKU-100651 (5 of 12), worst sellers SKU-104186 (all), SKU-103283 (14 of 24) and
+    # SKU-103297 (12 of 24). Per week, every gap added or removed here is offset by an ambient gap elsewhere.
+    PIN_IN = {"SKU-100637": None, "SKU-104186": None, "SKU-100651": 5, "SKU-103283": 14, "SKU-103297": 12}
+    pinned = set(PIN_IN)
+    delta = defaultdict(int)  # week -> OOS rows added (+) or removed (-)
+    for sku, n_in in PIN_IN.items():
+        rows = sorted((k for k in tracking if k[0] == sku), key=lambda k: _hh("pin", *k))
+        n_keep = len(rows) if n_in is None else n_in
+        for i, k in enumerate(rows):
+            want_in = i < n_keep
+            if tracking[k]["available"] != want_in:
+                tracking[k] = trow(k[0], k[1], k[2], not want_in, 1 + int(_hh("pd", *k) * 6),
+                                   "forecast_under" if _hh("pc", *k) < 0.5 else "allocation_shortfall", 0.2)
+                delta[k[2]] += -1 if want_in else 1
+    for wk, d in sorted(delta.items()):
+        if d > 0:
+            pool = sorted((k for k, v in tracking.items() if k[2] == wk and not v["available"] and v["stockout_cause"] in base_causes
+                           and k[0] not in keep_out and k[0] not in pinned), key=lambda k: _hh("heal2", *k))
+            for k in pool[:d]:
+                tracking[k] = trow(k[0], k[1], wk, False, 0, None)
+        elif d < 0:
+            pool = sorted((k for k, v in tracking.items() if k[2] == wk and v["available"] and k in panel_set
+                           and k[0] not in keep_out and k[0] not in pinned), key=lambda k: _hh("break2", *k))
+            for k in pool[:-d]:
+                tracking[k] = trow(k[0], k[1], wk, True, 1 + int(_hh("bd", *k) * 6), "forecast_under", 0.2)
     availability = list(tracking.values())
 
     # ================= lost products: two years, ambient small =================
@@ -571,6 +598,28 @@ def generate(g):
         c = net_cover(sku)
         if c:
             scale_demand(sku, c / tgt)
+
+    # 03:22:Q2: the three lines closest to running out (days of stock at one DC; the network cover above is unchanged because the
+    # rest of each SKU's demand is shared out over its other sites).
+    def set_site_days(sku, days_by_site):
+        rows = [p for p in pos_rows if p["sku"] == sku]
+        pinned = {p["site_id"]: p for p in rows if p["site_id"] in days_by_site}
+        if len(pinned) != len(days_by_site):
+            return
+        total = sum(p["weekly_demand"] for p in rows)
+        new_d = {site: round(p["available"] * 7.0 / days_by_site[site], 1) for site, p in pinned.items()}
+        rest_old = total - sum(p["weekly_demand"] for p in pinned.values())
+        f = (total - sum(new_d.values())) / rest_old
+        for p in rows:
+            old_d = p["weekly_demand"]
+            ff = new_d[p["site_id"]] / old_d if p["site_id"] in pinned else f
+            p["weekly_demand"] = round(old_d * ff, 1)
+            p["safety_stock"] = int(p["safety_stock"] * ff)
+            p["reorder_point"] = int(p["reorder_point"] * ff)
+
+    set_site_days("SKU-101260", {"DC2": 10.6})
+    set_site_days("SKU-102884", {"DC5": 13.0})
+    set_site_days("SKU-104536", {"DC2": 16.0, "DC5": 17.9})
 
     # Long-tail / slow-moving lines: chain sales of about 140 units a week or less (was 20 before the x6.8 master scaling). DC issues equal the online units, so
     # network demand equals what the chain really sells; the stock held (from master) is then many weeks of cover.

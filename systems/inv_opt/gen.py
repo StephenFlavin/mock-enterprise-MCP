@@ -14,7 +14,6 @@ TARGET = {a: t for _, a, _, t in SEGMENTS}
 
 
 def generate(g):
-    r = g.rng
     products = {p["sku"]: p for p in g.master("products")}
 
     # ---- demand statistics from 52 weeks of master sales ----
@@ -53,14 +52,14 @@ def generate(g):
     planted_sup = ["SUP-0080", "SUP-0048", "SUP-0013"]
     sup_shift = {}
     for s in sorted({p["supplier_id"] for p in products.values()}):
-        sup_shift[s] = r.uniform(-0.03, 0.03)
+        sup_shift[s] = g.rng_for("supshift", s).uniform(-0.03, 0.03)
     for s, v in zip(planted_sup, (0.44, -0.34, 0.07)):
         sup_shift[s] = v
 
     # ---- planted mis-set policies among the fastest sellers ----
-    pool = top200[:60]
-    low_plants = set(r.sample(pool, 6))
-    high_plants = set(r.sample([k for k in pool if k not in low_plants], 4))
+    # fixed lines (all among the 60 fastest sellers), so the story does not move when master data grows
+    low_plants = {"SKU-100630", "SKU-101911", "SKU-102261", "SKU-102310", "SKU-104774", "SKU-105292"}
+    high_plants = {"SKU-100476", "SKU-102464", "SKU-103927", "SKU-105075"}
 
     z = {p: NormalDist().inv_cdf(p / 100.0) for p in range(50, 100)}
     zrows = [{"service_level_pct": p, "z_score": round(v, 3)} for p, v in z.items()]
@@ -70,6 +69,7 @@ def generate(g):
         s, p = stats[sku], products[sku]
         cls = p["abc_class"]
         sl = TARGET[cls]
+        r = g.rng_for("sku", sku)   # per-SKU stream: new master products never shift other rows
         base_lt = int(p["lead_time_days"])
         # policy as it was set at the last review (older demand and baseline lead time)
         mu_p, sd_p = s["mu"] * r.uniform(0.97, 1.03), s["sd"] * r.uniform(0.96, 1.04)
