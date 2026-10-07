@@ -582,7 +582,10 @@ def generate(g):
         })
 
     demand_history_adjustments = []
+    story_adj_skus = {"PF-220", "K-1700", "SKU-100056", "SKU-100441", "SKU-100539", "SKU-101904"}   # their stockouts are in seed/
     for sku in skus[:50]:
+        if sku in story_adj_skus:
+            continue
         r = g.rng_for("history_adj", sku)
         if r.random() < 0.3:
             period_start = as_of - timedelta(weeks=r.randint(4, 26))

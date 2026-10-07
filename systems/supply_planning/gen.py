@@ -58,6 +58,7 @@ STOCK_OVERRIDE = {
     "SKU-101260": 4641, "SKU-102884": 7642, "SKU-105964": 1926, "SKU-100280": 6422, "SKU-103521": 9200,
     "SKU-101722": 5048,
     "SKU-102961": 5092, "SKU-106251": 10831, "SKU-102352": 10088, "SKU-102338": 12910,
+    "SKU-104599": 16984,   # promotion story line: network stock in the inventory system
 }
 # Long-tail make-to-order candidates: stay stocked until the planner switches them.
 LONG_TAIL_CANDIDATES = {"SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", "SKU-103038"}
@@ -137,15 +138,21 @@ def generate(g):
         last = v[-8:]
         chain[k] = sum(x[1] for x in last) / len(last)
 
+    # Story SKUs sized from master sales: weekly units = what the chain sells, stock = the stated weeks of cover.
+    CHAIN_COVER = {"SKU-105075": 8.4}          # 05:50:Q4 Baxter Trading's biggest line
     demand = {}
     for p in products:
         sku = p["sku"]
         if sku in DEMAND_OVERRIDE:
             demand[sku] = DEMAND_OVERRIDE[sku]
+        elif sku in CHAIN_COVER:
+            demand[sku] = round(chain[sku], 1)
+        elif sku == PROMO_STORY_SKU:
+            demand[sku] = round(chain[sku], 1)      # the demand system's toiletries line: weekly units the chain really sells
         elif 0 < chain.get(sku, 0) <= 20:
             demand[sku] = round(chain[sku], 1)
         else:
-            cover = rd.uniform(8.0, 14.0)
+            cover = g.rng_for("cover", sku).uniform(8.0, 14.0)   # healthy cover on DC stock; per-SKU stream
             demand[sku] = round(max(dc_avail.get(sku, 0) / cover, 5.0), 1)
 
     # ---------- supplier planning terms ----------
@@ -160,15 +167,17 @@ def generate(g):
         quoted_default = (sum(int(x["lead_time_days"]) for x in prods) / len(prods)) if prods else 45.0
         quoted, actual = SUPPLIER_LEAD.get(sid, (round(quoted_default, 1), round(quoted_default + 2.0, 1)))
         tier = s["tier"]
+        ts = g.rng_for("terms", sid)    # per-supplier stream: new master suppliers never shift other rows
         rush = {"strategic": 3.0, "preferred": 4.0, "approved": 5.0, "probation": 7.5}.get(tier, 5.0)
-        qual = {"strategic": 0, "preferred": 0, "approved": rd.choice([1, 2]), "probation": 4}.get(tier, 2)
-        index = round(rd.uniform(0.97, 1.08), 2)
+        qual = {"strategic": 0, "preferred": 0, "approved": ts.choice([1, 2]), "probation": 4}.get(tier, 2)
+        index = round(ts.uniform(0.97, 1.08), 2)
         if sid == "SUP-0008":
             index = 1.00
         if sid == "SUP-0036":
             index = 1.04
         if sid == "SUP-0044":
             index = 1.02
+        setup = 3500 if sid == "SUP-0036" else ts.choice([2500, 3500, 4500, 6000, 8000])   # 03:24:Q2: split sourcing story
         sea, air = FREIGHT.get(s["country"], (0.6, 2.8))
         terms.append({
             "supplier_id": sid,
@@ -177,12 +186,12 @@ def generate(g):
             "planning_lead_days": int(round(quoted)),
             "price_index": index,
             "rush_premium_pct_per_week": rush,
-            "setup_cost_gbp": rd.choice([2500, 3500, 4500, 6000, 8000]),
+            "setup_cost_gbp": setup,
             "qualification_weeks": qual,
             "freight_sea_gbp_per_unit": sea,
             "freight_air_gbp_per_unit": air,
             "change_reason": None,
-            "updated_at": g.days_ago(rd.randint(30, 200)),
+            "updated_at": g.days_ago(ts.randint(30, 200)),
         })
 
     # ---------- planning parameters ----------
@@ -197,7 +206,8 @@ def generate(g):
         lot = int(math.ceil(max(moq, pack) / pack) * pack)
         ss = {"A": 12.0, "B": 15.0, "C": 18.0}.get(p["abc_class"], 15.0)
         policy = "stocked"
-        x = rd.random()
+        pr_ = g.rng_for("pparam", sku)   # per-SKU stream
+        x = pr_.random()
         if sku not in LONG_TAIL_CANDIDATES:
             if w <= 40 and p["abc_class"] == "C" and x < 0.08:
                 policy = "make_to_order"
@@ -208,14 +218,14 @@ def generate(g):
             "planning_param_id": f"SPP-{i + 1:06d}",
             "sku": sku,
             "weekly_demand": w,
-            "network_stock_units": STOCK_OVERRIDE.get(sku, dc_avail.get(sku, 0)),
+            "network_stock_units": int(round(CHAIN_COVER[sku] * w)) if sku in CHAIN_COVER else STOCK_OVERRIDE.get(sku, dc_avail.get(sku, 0)),
             "lead_time_days": lead,
             "pack_size": pack,
             "lot_size": lot,
             "safety_stock_pct": ss,
             "sourcing_policy": policy,
             "reorder_point": int(round(w * (lead / 7.0 + 1) * (1 + ss / 100.0))),
-            "updated_at": g.days_ago(rd.randint(10, 150)),
+            "updated_at": g.days_ago(pr_.randint(10, 150)),
         })
     pp = {x["sku"]: x for x in planning_params}
 
@@ -286,7 +296,7 @@ def generate(g):
 
     # ---------- supply / demand gaps: small ambient gaps; the question stories come from seed ----------
     supply_demand_gaps = []
-    gap_pool = [p for p in products if p["status"] in ("active", "new") and p["category"] != "Trousers"]
+    gap_pool = [p for p in products if p["status"] in ("active", "new") and p["category"] != "Trousers" and p["sku"] in chain]   # lines with sales; launches without sales get no gaps
     for p in rd.sample(gap_pool, 60):
         wk = monday + timedelta(weeks=rd.randint(0, 8))
         fc = int(max(40, demand[p["sku"]] * rd.uniform(0.9, 1.2)))

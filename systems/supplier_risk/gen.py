@@ -43,7 +43,9 @@ STORY_FILING = {
 }
 SOLE_SOURCE = {"SUP-0011": "Towels", "SUP-0014": "Scarves", "SUP-0028": "Footwear", "SUP-0033": "Fragrance",
                "SUP-0065": "Knitwear"}
-CRIT_OVERRIDE = {"SUP-0053": "high", "SUP-0055": "medium", "SUP-0038": "high"}
+# SUP-0044 / SUP-0049 / SUP-0057 hold privileged system connections (cyber story), so they stay critical although they are no longer top-6 by spend
+CRIT_OVERRIDE = {"SUP-0053": "high", "SUP-0055": "medium", "SUP-0038": "high", "SUP-0044": "critical", "SUP-0049": "critical",
+                 "SUP-0057": "critical"}
 WATCH = {}
 # cyber rating / system access / security rating for the critical suppliers (poor ones are the "weakest three")
 CYBER_STORY = {
@@ -56,6 +58,7 @@ CYBER_STORY = {
 # privileged connections that integration rates critical (SUP-0003 admin API, SUP-0049 direct write, SUP-0044 read/write);
 # SUP-0057 is high; applied after the random draws so the rest of the generated data is unchanged
 SEC_OVERRIDE = {"SUP-0003": ("fair", "api_admin", "critical")}
+CYBER_SOURCE = {"SUP-0049": "BitSight"}    # source named in the 05:50:Q8 story
 CYBER_FINDING = {
     "excellent": "No critical findings; MFA enforced, regular penetration testing",
     "good": "Minor patching delays; MFA in place for remote access",
@@ -142,11 +145,14 @@ def generate(g):
     # indirect suppliers (master supplier_type, no product spend or materials) get no generated risk profile
     live = [s for s in sup.values() if s["status"] != "exited" and s.get("supplier_type", "product") != "indirect"]
     spend = {k: float(v["annual_spend_gbp"] or 0) for k, v in sup.items()}
-    top20 = set(sorted(spend, key=spend.get, reverse=True)[:20])
+    by_spend = sorted((k for k in spend if k in {s["supplier_id"] for s in live}), key=lambda k: (-spend[k], k))
+    top20 = set(by_spend[:20])
+    top6 = set([k for k in by_spend if k not in CRIT_OVERRIDE][:6])
 
     # ---- latent health and criticality ----------------------------------------------------------------
     health = {}
     for s in live:
+        r = g.rng_for("health", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in STORY_FIN:
             health[sid] = STORY_FIN[sid]["h"]
@@ -156,13 +162,14 @@ def generate(g):
     crit = {}
     for s in live:
         sid = s["supplier_id"]
-        crit[sid] = ("critical" if spend[sid] >= 6.5e6 or sid in SOLE_SOURCE else "high" if spend[sid] >= 2.5e6
-                     else "medium" if spend[sid] >= 1e6 else "low")
+        crit[sid] = ("critical" if sid in top6 or sid in SOLE_SOURCE else "high" if spend[sid] >= 6.2e6
+                     else "medium" if spend[sid] >= 2.5e6 else "low")
         crit[sid] = CRIT_OVERRIDE.get(sid, crit[sid])
 
     # ---- credit history (quarterly, newest first) ------------------------------------------------------
     credit, credit_latest = [], {}
     for s in live:
+        r = g.rng_for("credit", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in STORY_FIN:
             scores = STORY_FIN[sid]["credit"]
@@ -185,6 +192,7 @@ def generate(g):
     sec_story = {}
     profiles = []
     for s in live:
+        r = g.rng_for("profile", s["supplier_id"])
         sid = s["supplier_id"]
         profiles.append({
             "supplier_id": sid, "criticality_rating": crit[sid], "financial_health_score": round(health[sid]),
@@ -195,6 +203,7 @@ def generate(g):
     # ---- filings ---------------------------------------------------------------------------------------------
     filings = []
     for s in live:
+        r = g.rng_for("filing", s["supplier_id"])
         sid = s["supplier_id"]
         h = health[sid]
         st = STORY_FIN.get(sid, {})
@@ -223,6 +232,7 @@ def generate(g):
     # ---- alerts ------------------------------------------------------------------------------------------------
     alerts, n = [], 0
     for s in live:
+        r = g.rng_for("alert", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in SEEDED_ALERT_SUPPLIERS or sid in ONBOARDING_STORY or sid in STORY_FIN:
             continue
@@ -237,6 +247,7 @@ def generate(g):
                            "severity": sev, "description": r.choice(ALERT_TEXT[typ]),
                            "raised_at": g.days_ago(r.randint(8, 110)), "status": r.choices(["active", "resolved"], [65, 35])[0]})
     for f in facs:  # factories with a D audit rating carry a compliance alert for their supplier
+        r = g.rng_for("alertfac", f["factory_id"])
         if f["audit_rating"] == "D" and f["status"] != "delisted" and f["factory_id"] not in ("FAC-0087",) \
                 and f["supplier_id"] not in SEEDED_ALERT_SUPPLIERS and sup[f["supplier_id"]]["status"] != "exited":
             n += 1
@@ -248,6 +259,7 @@ def generate(g):
     # ---- certifications (derived from the factories' certificates in master) -------------------------------
     certs = []
     for s in live:
+        r = g.rng_for("cert", s["supplier_id"])
         sid = s["supplier_id"]
         held = {}
         for f in fac_by_sup.get(sid, []):
@@ -270,6 +282,7 @@ def generate(g):
     # ---- insurance ---------------------------------------------------------------------------------------------
     insurance, pol = [], 0
     for s in live:
+        r = g.rng_for("insurance", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in SEEDED_INSURANCE:
             continue
@@ -286,6 +299,7 @@ def generate(g):
     # ---- registration + bank -----------------------------------------------------------------------------------
     regs, bank = [], []
     for s in live:
+        r = g.rng_for("reg", s["supplier_id"])
         sid = s["supplier_id"]
         c = s["country"]
         onboarded = date.fromisoformat(s["onboarded_date"])
@@ -320,6 +334,7 @@ def generate(g):
              "safety": ("Fire safety and machinery guarding in order", "Blocked fire exit found at audit"),
              "tax_compliance": ("Tax filings up to date", "Late VAT return flagged by registry")}
     for s in live:
+        r = g.rng_for("compliance", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in STORY_FIN and sid != "SUP-0023" and health[sid] < 55:
             nc_rate = 0.0  # story suppliers' compliance record is only what the seeds say
@@ -342,6 +357,7 @@ def generate(g):
     # ---- cyber + security risk ------------------------------------------------------------------------------------
     cyber, secur, sec_rating = [], [], {}
     for s in live:
+        r = g.rng_for("cyber", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in CYBER_STORY:
             rating, access, sec = CYBER_STORY[sid]
@@ -354,7 +370,7 @@ def generate(g):
         sec_rating[sid] = sec
         d = g.days_ago(r.randint(15, 170))
         cyber.append({"supplier_id": sid, "assessment_date": d, "rating": rating,
-                      "assessment_source": r.choice(["SecurityScorecard", "BitSight", "Recorded Future", "Rapid7"]),
+                      "assessment_source": CYBER_SOURCE.get(sid) or r.choice(["SecurityScorecard", "BitSight", "Recorded Future", "Rapid7"]),
                       "findings": CYBER_FINDING[rating]})
         cyber.append({"supplier_id": sid, "assessment_date": d - timedelta(days=365),
                       "rating": rating if r.random() < 0.7 else r.choice(["good", "fair"]),
@@ -384,6 +400,7 @@ def generate(g):
                 3: "Check credit rating and financial health", 4: "Verify certifications and compliance",
                 5: "Review management team", 6: "Assess environmental and labour practices"}
     for s in live:
+        r = g.rng_for("onboarding", s["supplier_id"])
         sid = s["supplier_id"]
         onboarded = date.fromisoformat(s["onboarded_date"])
         if s["status"] != "active" or onboarded < date(2023, 1, 1) or sid in ONBOARDING_STORY:
@@ -410,6 +427,7 @@ def generate(g):
         by_cat.setdefault(p["category"], {"dept": p["department"], "sups": set()})["sups"].add(p["supplier_id"])
     barred = SEEDED_ALERT_SUPPLIERS | ONBOARDING_STORY | set(SOLE_SOURCE)
     for cat, info in sorted(by_cat.items()):
+        r = g.rng_for("altcap", cat)
         if cat in SOLE_SOURCE.values():
             continue
         cands = [s for s in live if s["status"] == "active" and s["category_focus"] == info["dept"]
@@ -427,6 +445,7 @@ def generate(g):
         styles.setdefault(p["style_id"], []).append(p)
     fac_ok = [f for f in facs if f["status"] in ("approved", "conditional")]
     for sty, plist in sorted(styles.items()):
+        r = g.rng_for("altfac", sty)
         p0 = plist[0]
         if sty in STORY_ALT_STYLES or (p0["supplier_id"], p0["category"]) in sole_pairs:
             continue
@@ -453,6 +472,7 @@ def generate(g):
               "IT": ("EG", ["Nile Delta"]), "MX": ("US", ["Texas"]), "GB": ("GB", [""]), "FR": ("FR", [""]), "DE": ("DE", [""]), "PL": ("PL", [""])}
     raw = []
     for s in live:
+        r = g.rng_for("raw", s["supplier_id"])
         sid = s["supplier_id"]
         if sid in RAW_STORY:
             continue
@@ -464,6 +484,7 @@ def generate(g):
     # ---- logistics providers ---------------------------------------------------------------------------------------------------
     logi = []
     for c in g.master("carriers"):
+        r = g.rng_for("carrier", c["carrier_id"])
         mode = c["mode"]
         cr = "critical" if mode in ("ocean", "forwarder") else "high" if mode in ("air", "rail") else "medium" if mode == "road" else "low"
         if c["carrier_id"] == "CAR-009":

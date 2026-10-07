@@ -15,7 +15,7 @@ def generate(g):
     r = g.rng
     A = g.as_of
     suppliers = g.master("suppliers")
-    products = g.master("products")
+    products = [p for p in g.master("products") if p.get("status") != "new"]   # new launches have no purchases yet
     sup_by = {s["supplier_id"]: s for s in suppliers}
     psup = sorted({p["supplier_id"] for p in products})
 
@@ -145,7 +145,8 @@ def generate(g):
     MULT = {"Knitwear": 1.9, "Outerwear": 1.8, "Footwear": 1.6, "Small Appliances": 1.4, "Smart Home": 1.2, "Bedding": 1.3,
             "Towels": 1.2, "Bags": 1.2, "Dresses": 1.0, "Jewellery": 0.5, "Haircare": 0.5, "Skincare": 0.5,
             "Fragrance": 0.5, "Bodycare": 0.5, "Lighting": 0.9, "Audio": 1.1, "Personal Care": 0.8}
-    SUPMULT = {"SUP-0057": 1.7, "SUP-0074": 2.5, "SUP-0011": 2.1, "SUP-0036": 1.3}
+    # story hotspots: their share of purchased-goods emissions is pinned (annual spend no longer makes them the biggest)
+    HOT = {"SUP-0057": 0.1180, "SUP-0074": 0.0790, "SUP-0011": 0.0570, "SUP-0036": 0.0670, "SUP-0049": 0.0630, "SUP-0038": 0.0590, "SUP-0072": 0.0564}
     MATS = {"Knitwear": ["wool_uk", "cot_in", "poly_asia"], "Outerwear": ["poly_asia", "poly_eu", "nylon"],
             "Footwear": ["nylon", "poly_asia"], "Bags": ["nylon", "poly_asia"], "Backpacks": ["nylon"],
             "Scarves": ["poly_asia", "wool_uk"], "T-Shirts": ["cot_in", "cot_cn", "ocot_in"],
@@ -162,23 +163,26 @@ def generate(g):
     for sid in psup:
         pl = skus_by_sup[sid]
         mean_mult = sum(MULT.get(p["category"], 0.8) for p in pl) / len(pl)
-        raw_sup[sid] = float(sup_by[sid]["annual_spend_gbp"]) / 1000.0 * mean_mult * SUPMULT.get(sid, 1.0) * (0.8 + 0.45 * r.random())
+        raw_sup[sid] = float(sup_by[sid]["annual_spend_gbp"]) / 1000.0 * mean_mult * (0.8 + 0.45 * g.rng_for("rawsup", sid).random())
+    rest = sum(v for s_, v in raw_sup.items() if s_ not in HOT)
+    for s_, share in HOT.items():
+        raw_sup[s_] = share * rest / (1 - sum(HOT.values()))
     k = MAT_TOTAL / sum(raw_sup.values())
     tot_sup = {s: v * k for s, v in raw_sup.items()}
     # suppliers sending primary data (largest hotspots deliberately stay estimated)
-    cand = [s for s in psup if s not in SUPMULT]
-    PRIMARY = {"SUP-0044", "SUP-0049"} | set(r.sample([s for s in cand if s not in ("SUP-0044", "SUP-0049")], 20))
+    cand = [s for s in psup if s not in HOT]
+    PRIMARY = {"SUP-0044", "SUP-0049"} | set(r.sample([s for s in cand if s not in ("SUP-0044", "SUP-0049")], 40))
     hd = [A - timedelta(days=60), A - timedelta(days=240)]
     for sid in psup:
         pl = skus_by_sup[sid]
-        w = [MULT.get(p["category"], 0.8) * (0.7 + 0.6 * r.random()) for p in pl]
+        w = [MULT.get(p["category"], 0.8) * (0.7 + 0.6 * g.rng_for("skuw", p["sku"]).random()) for p in pl]
         sw = sum(w)
         for p, wi in zip(pl, w):
             share = tot_sup[sid] * wi / sw
             if p["department"] in DEPT_EEIO:
                 mkey = DEPT_EEIO[p["department"]]
             elif p["category"] in MATS:
-                mkey = r.choice(MATS[p["category"]])
+                mkey = g.rng_for("mat", p["sku"]).choice(MATS[p["category"]])
             else:
                 mkey = "eeio_app"
             for d in hd:
@@ -201,7 +205,7 @@ def generate(g):
     indirect = [s["supplier_id"] for s in suppliers if s["supplier_type"] == "indirect"]
     for sid in indirect:
         for d in hd:
-            add("3", "indirect_purchases", "Cat 1 Purchased goods: indirect", "upstream", 3400.0 / len(indirect) / 2 * (0.6 + 0.8 * r.random()),
+            add("3", "indirect_purchases", "Cat 1 Purchased goods: indirect", "upstream", 3400.0 / len(indirect) / 2 * (0.6 + 0.8 * g.rng_for("indirect", sid).random()),
                 False, d, F["eeio_home"]["factor_id"], "Spend-based estimate", sup=sid)
     for cat, ghg, stage, total, meas, fkey, note in [
         ("outbound_delivery", "Cat 9 Downstream transport", "downstream", 4200, True, "last_mile", "Carrier-reported parcel emissions"),
@@ -211,6 +215,15 @@ def generate(g):
         ("employee_commuting", "Cat 7 Employee commuting", "upstream", 1500, False, "commute", "Annual staff survey, extrapolated")]:
         for d in [A - timedelta(days=45 + 90 * kk) for kk in range(4)]:
             add("3", cat, ghg, stage, total / 4 * (1 + (r.random() - 0.5) * 0.1), meas, d, F[fkey]["factor_id"], note)
+
+    # pin the FY26 Scope 3 total at 86,135 t (quoted by documents) by scaling the indirect-purchases estimate
+    SCOPE3_TOTAL = 86135.0
+    ind_rows = [e for e in emissions if e["scope"] == "3" and e["category"] == "indirect_purchases"]
+    other3 = sum(e["tonnes_co2e"] for e in emissions if e["scope"] == "3" and e["category"] != "indirect_purchases")
+    ind_sum = sum(e["tonnes_co2e"] for e in ind_rows)
+    for e in ind_rows:
+        e["tonnes_co2e"] = round(e["tonnes_co2e"] * (SCOPE3_TOTAL - other3) / ind_sum, 2)
+    ind_rows[-1]["tonnes_co2e"] = round(ind_rows[-1]["tonnes_co2e"] + SCOPE3_TOTAL - other3 - sum(e["tonnes_co2e"] for e in ind_rows), 2)
 
     # per-supplier FY26 scope 3 totals (for ranking)
     sup_t = {}
@@ -333,13 +346,20 @@ def generate(g):
     ]
 
     # ------------------------------------------------------------------ supplier submissions / requests / sbti
-    top25 = rank[:25]
+    top25 = list(rank[:25])
+    # story slots in the FY26 round (slot sets PEND / OVERDUE / LOWQ below): SUP-0074 overdue, SUP-0038 overdue,
+    # SUP-0011 and SUP-0049 low quality, SUP-0057 / SUP-0036 / SUP-0072 submitted.
+    for sid_, slot_ in (("SUP-0057", 1), ("SUP-0074", 2), ("SUP-0011", 3), ("SUP-0038", 4), ("SUP-0036", 5),
+                        ("SUP-0049", 6), ("SUP-0072", 8)):
+        j_ = top25.index(sid_)
+        top25[slot_ - 1], top25[j_] = top25[j_], top25[slot_ - 1]
     PEND = {2, 4, 7, 9, 12, 15, 18, 22}
     OVERDUE = {2, 4, 9, 15}
     LOWQ = {3, 6, 11, 14, 20}
     supplier_submissions, data_requests = [], []
     sub_by = {}
     for i, sid in enumerate(top25, 1):
+        rs = g.rng_for("submission", sid)
         pend = i in PEND
         overdue = i in OVERDUE
         deadline = A - timedelta(days=12) if overdue else A + timedelta(days=14)
@@ -349,12 +369,12 @@ def generate(g):
             s1_, s2_, s3_ = False, False, False
         else:
             lowq = i in LOWQ
-            q = r.randint(28, 46) if lowq else r.randint(62, 93)
-            comp = round(r.uniform(35, 55) if lowq else r.uniform(72, 98), 1)
-            status = "under_review" if lowq else r.choice(["received", "approved"])
-            subd = A - timedelta(days=r.randint(3, 20))
+            q = rs.randint(28, 46) if lowq else rs.randint(62, 93)
+            comp = round(rs.uniform(35, 55) if lowq else rs.uniform(72, 98), 1)
+            status = "under_review" if lowq else rs.choice(["received", "approved"])
+            subd = A - timedelta(days=rs.randint(3, 20))
             note = "Low quality: Scope 3 missing, estimates not evidenced" if lowq else "Data received"
-            s1_, s2_, s3_ = True, True, (not lowq) and r.random() > 0.4
+            s1_, s2_, s3_ = True, True, (not lowq) and rs.random() > 0.4
         sub_by[sid] = (comp if not pend else None)
         supplier_submissions.append({"submission_id": f"SUB-{i:06d}", "supplier_id": sid, "submission_date": subd,
                                      "deadline_date": deadline, "data_quality_score": q, "completeness_pct": comp,
@@ -370,21 +390,22 @@ def generate(g):
     prio = {}
     for s, t in sup_t.items():
         rd = sub_by.get(s)
-        prio[s] = 100 * (0.5 * t / maxt + 0.3 * float(sup_by[s]["annual_spend_gbp"]) / maxs + 0.2 * (rd if rd is not None else 20) / 100)
+        prio[s] = 100 * (0.7 * t / maxt + 0.1 * float(sup_by[s]["annual_spend_gbp"]) / maxs + 0.2 * (rd if rd is not None else 20) / 100)
     prank = sorted(prio, key=lambda s: -prio[s])
-    forced = {prank[2]: "targets_set", prank[5]: "committed", prank[8]: "targets_set"}
+    forced = {"SUP-0049": "targets_set", "SUP-0038": "targets_set", "SUP-0072": "committed"}
     supplier_sbti = []
     for sid in psup:
+        rs = g.rng_for("sbti", sid)
         if sid in forced:
             st = forced[sid]
         elif sid in prank[:14]:
             st = "none"
         else:
-            st = r.choices(["none", "committed", "targets_set"], [70, 18, 12])[0]
+            st = rs.choices(["none", "committed", "targets_set"], [70, 18, 12])[0]
         supplier_sbti.append({"supplier_id": sid, "sbti_status": st,
                               "target_ambition": "1.5C" if st == "targets_set" else ("committed" if st == "committed" else None),
                               "target_year": 2030 if st == "targets_set" else None,
-                              "status_date": A - timedelta(days=r.randint(60, 600)) if st != "none" else None,
+                              "status_date": A - timedelta(days=rs.randint(60, 600)) if st != "none" else None,
                               "notes": "SBTi target validated" if st == "targets_set" else ("Commitment letter signed, targets due" if st == "committed" else "No SBTi commitment on record")})
 
     # ------------------------------------------------------------------ claims (unchanged story-free register)
