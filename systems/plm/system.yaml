@@ -137,6 +137,8 @@ tables:
       lead_time_days: {type: int, desc: "Lead time"}
       certifications: {type: text, desc: "Certifications"}
       sustainability_score: {type: int, desc: "Sustainability 1-5"}
+      yarn_spec: {type: text, desc: "Yarn details: denier, filament count, fibre type, twist (blank if not recorded)"}
+      construction: {type: text, desc: "Fabric construction: weave/knit structure, thread density, finish (blank if not recorded)"}
 
   product_specifications:
     key: [sku, spec_type]
@@ -244,6 +246,24 @@ tables:
       compliance_status: {type: enum, values: [compliant, review, non_compliant], desc: "Compliance status"}
       test_required: {type: bool, desc: "Testing required"}
       last_audit_date: {type: date, desc: "Last audit date"}
+      notes: {type: text, desc: "Notes"}
+
+  alternative_specifications:
+    key: alt_id
+    desc: Alternative component, material, design and packaging specifications that could replace a product's current spec
+    cols:
+      alt_id: {type: str, desc: "Alternative id, e.g. ALT-900001"}
+      sku: {type: str, desc: "SKU the alternative applies to"}
+      spec_type: {type: enum, values: [component, material, design, packaging, sourcing], desc: "What kind of change it is"}
+      alt_name: {type: str, desc: "Short name of the alternative"}
+      description: {type: text, desc: "What changes versus the current spec"}
+      current_spec: {type: text, desc: "The current spec it would replace"}
+      unit_cost_change_gbp: {type: float, desc: "Change in material cost per unit in GBP (negative = saving)"}
+      origin_country: {type: str, desc: "Country the alternative would be sourced or made in"}
+      tariff_exposed: {type: bool, desc: "Whether the alternative is still imported content subject to a new import tariff"}
+      customer_visible: {type: bool, desc: "Whether customers would notice the change"}
+      lead_time_days: {type: int, desc: "Lead time to switch in days"}
+      validation_status: {type: enum, values: [concept, in_testing, validated], desc: "How far the alternative has been proven"}
       notes: {type: text, desc: "Notes"}
 
 tools:
@@ -575,14 +595,28 @@ tools:
     example: {sku: "SKU-102590"}
 
   - name: get_size_chart_for_range
-    desc: Return size chart for range including measurement specifications and grade curves.
-    kind: select
-    from: product_specifications
-    filters:
-      sku: {}
-      spec_type: {default: size_chart}
-    columns: [sku, spec_name, spec_version, content, applicable_sizes, measurement_points, notes]
-    example: {sku: "SKU-100637", spec_type: "size_chart"}
+    desc: Return the size chart for a SKU, style, category or department, with the bust, waist, hip and length per size and the measurement points. One row per style.
+    kind: sql
+    args:
+      sku: {type: str, desc: "SKU (optional)"}
+      style_id: {type: str, desc: "Style id, e.g. STY-5520 (optional)"}
+      category: {type: str, desc: "Product category, e.g. Dresses (optional)"}
+      department: {type: str, desc: "Department, e.g. Womenswear (optional)"}
+    sql: |
+      SELECT min(t.sku) AS sku, t.style_id, t.department, t.category, p.spec_name, p.spec_version, p.content,
+             p.applicable_sizes, p.measurement_points, p.notes
+      FROM product_specifications p
+      JOIN product_tech_pack t ON t.sku = p.sku
+      WHERE p.spec_type = 'size_chart'
+        AND ($sku IS NULL OR t.sku = $sku)
+        AND ($style_id IS NULL OR t.style_id = $style_id)
+        AND ($category IS NULL OR lower(t.category) = lower($category))
+        AND ($department IS NULL OR lower(t.department) = lower($department))
+      GROUP BY t.style_id, t.department, t.category, p.spec_name, p.spec_version, p.content,
+               p.applicable_sizes, p.measurement_points, p.notes
+      ORDER BY t.style_id
+    limit: 50
+    example: {style_id: "STY-5520"}
 
   - name: get_size_spec_and_grade_rules_for_style
     desc: Return size spec and grade rules for style including measurement points and grade definitions.
@@ -590,7 +624,7 @@ tools:
     args:
       style_id: {required: true}
     sql: |
-      SELECT p.sku, p.spec_type, p.spec_name, p.spec_version,
+      SELECT p.sku, p.spec_type, p.spec_name, p.spec_version, p.content,
              p.applicable_sizes, p.measurement_points, p.grade_definitions, p.notes
       FROM product_specifications p
       JOIN product_tech_pack t ON t.sku = p.sku
@@ -608,20 +642,25 @@ tools:
       fabric_spec_id: {}
       material_id: {}
       style_id: {}
-    columns: [fabric_name, fiber_content, weave, gsm, width_cm, abrasion_cycles, tensile_strength, tear_strength, pilling_resistance]
+    columns: [fabric_spec_id, material_id, fabric_name, fiber_content, yarn_spec, construction, weave, gsm, width_cm, abrasion_cycles, tensile_strength, tear_strength, pilling_resistance]
     order: fabric_name
     example: {style_id: "STY-5520"}
 
   - name: list_candidate_materials
-    desc: List candidate materials in pilot or experimental phase with test status and readiness.
-    kind: select
-    from: candidate_materials
-    filters:
-      readiness_level: {desc: "Pilot, experimental, or proven (optional)"}
-      test_status: {desc: "Test status: planned, in_progress, completed, passed, failed (optional)"}
-      supplier_id: {desc: "Supplier id (optional)"}
-    columns: [candidate_id, material_name, material_type, readiness_level, test_status, cost_savings_pct, weight_reduction_pct, pilot_date_start, notes]
-    order: readiness_level, test_status
+    desc: List candidate materials in pilot or experimental phase with test status, readiness, savings, test plan and results. Archived candidates are left out unless readiness_level is archived.
+    kind: sql
+    args:
+      readiness_level: {type: str, desc: "experimental, pilot, proven or archived (optional)"}
+      test_status: {type: str, desc: "Test status: planned, in_progress, completed, passed, failed (optional)"}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+    sql: |
+      SELECT candidate_id, material_name, material_type, supplier_id, readiness_level, test_status, cost_savings_pct,
+             weight_reduction_pct, pilot_date_start, pilot_date_end, test_plan, test_results, notes
+      FROM candidate_materials
+      WHERE ($readiness_level IS NULL AND readiness_level <> 'archived' OR readiness_level = $readiness_level)
+        AND ($test_status IS NULL OR test_status = $test_status)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      ORDER BY readiness_level, test_status, candidate_id
     limit: 50
     example: {}
 
@@ -790,22 +829,22 @@ tools:
     example: {list_type: restricted}
 
   - name: search_alternative_specifications_for_product
-    desc: Searches for alternative specifications for product from the library by comparing properties.
+    desc: Searches for alternative specifications that could replace a product's current spec, with unit cost change, origin, tariff exposure, whether customers would notice and how proven each is.
     kind: sql
     args:
       sku: {required: true}
-      spec_type: {type: str, desc: "Specification type to search: size_chart, tolerances, grade_rules (optional)"}
+      spec_type: {type: str, desc: "component, material, design, packaging or sourcing (optional)"}
     sql: |
-      SELECT p.sku, p.spec_type, p.spec_name, p.spec_version, p.content,
-             p.applicable_sizes, p.measurement_points, p.notes,
-             t.style_id, t.name, t.category
-      FROM product_specifications p
-      JOIN product_tech_pack t ON t.sku = p.sku
-      WHERE t.sku = $sku
-        AND ($spec_type IS NULL OR p.spec_type = $spec_type)
-      ORDER BY p.spec_type, p.spec_version DESC
+      SELECT a.alt_id, a.sku, t.name AS product_name, a.spec_type, a.alt_name, a.description, a.current_spec,
+             a.unit_cost_change_gbp, a.origin_country, a.tariff_exposed, a.customer_visible, a.lead_time_days,
+             a.validation_status, a.notes
+      FROM alternative_specifications a
+      JOIN product_tech_pack t ON t.sku = a.sku
+      WHERE a.sku = $sku
+        AND ($spec_type IS NULL OR a.spec_type = $spec_type)
+      ORDER BY a.unit_cost_change_gbp, a.alt_id
     limit: 20
-    example: {sku: "SKU-100637"}
+    example: {sku: "K-1700"}
 
   - name: update_grade_rules_for_style
     desc: Updates the grading rules for a style in the tech pack including grade definitions.

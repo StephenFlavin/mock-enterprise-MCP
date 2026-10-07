@@ -295,17 +295,25 @@ def generate(g):
         created, updated = g.days_ago(r.randint(60, 300)), g.days_ago(r.randint(0, 30))
         base = {"sku": sku, "spec_version": 1, "created_at": created, "updated_at": updated, "notes": ""}
         chest = [80 + 4 * i for i in range(len(sizes))]
-        specs.append(base | {
-            "spec_type": "size_chart", "spec_name": f"Size chart {p['style_id']}",
-            "content": json.dumps({"sizes": sizes, "chest_cm": chest, "length_cm": [60 + 2 * i for i in range(len(sizes))]}),
-            "applicable_sizes": json.dumps(sizes), "applicable_fits": json.dumps(["regular"]),
-            "measurement_points": json.dumps(["chest", "waist", "length"]), "shrinkage_tolerances": None, "grade_definitions": None})
-        specs.append(base | {
-            "spec_type": "grade_rules", "spec_name": f"Grade rules {p['style_id']}",
-            "content": json.dumps({"grade_step_cm": {"chest": 4, "length": 2}}),
-            "applicable_sizes": json.dumps(sizes), "applicable_fits": json.dumps(["regular"]),
-            "measurement_points": None, "shrinkage_tolerances": None,
-            "grade_definitions": json.dumps({"A": {"tolerance_cm": 0.5}, "B": {"tolerance_cm": 1.0}})})
+        chart = {"sizes": sizes, "chest_cm": chest, "length_cm": [60 + 2 * i for i in range(len(sizes))]}
+        points = ["chest", "waist", "length"]
+        if dept == "Womenswear":  # UK women's chart: bust/waist/hip per size (steps widen above size 14)
+            bust, waist, hip = [82, 86, 90, 94, 100, 106], [64, 68, 72, 76, 82, 88], [90, 94, 98, 102, 108, 114]
+            chart = {"sizes": sizes, "bust_cm": bust, "waist_cm": waist, "hip_cm": hip, "length_cm": chart["length_cm"]}
+            points = ["bust", "waist", "hip", "length"]
+        # the trouser style T-4410 hand-writes its size chart and grade rules in seed/
+        if p["style_id"] != "STY-T-4410":
+            specs.append(base | {
+                "spec_type": "size_chart", "spec_name": f"Size chart {p['style_id']}", "content": json.dumps(chart),
+                "applicable_sizes": json.dumps(sizes), "applicable_fits": json.dumps(["regular"]),
+                "measurement_points": json.dumps(points), "shrinkage_tolerances": None, "grade_definitions": None})
+        if p["style_id"] != "STY-T-4410":
+            specs.append(base | {
+                "spec_type": "grade_rules", "spec_name": f"Grade rules {p['style_id']}",
+                "content": json.dumps({"grade_step_cm": {"chest": 4, "length": 2}}),
+                "applicable_sizes": json.dumps(sizes), "applicable_fits": json.dumps(["regular"]),
+                "measurement_points": None, "shrinkage_tolerances": None,
+                "grade_definitions": json.dumps({"A": {"tolerance_cm": 0.5}, "B": {"tolerance_cm": 1.0}})})
         pts = [{"point": "chest", "tolerance_cm": 1.0}, {"point": "length", "tolerance_cm": 1.5}]
         if sku in zip_skus:
             nominal = zip_nominal.get(cat, 100)

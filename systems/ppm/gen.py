@@ -301,7 +301,7 @@ def generate(g):
         prm_id = f"PRM-{i:06d}"
         result["programme_milestones"].append({
             "milestone_id": prm_id,
-            "programme_name": g.pick(["Automation", "DC3", "Digital"]),  # ERP milestones are in seed/
+            "programme_name": g.pick(["Automation", "Digital"]),  # ERP and DC3 milestones are in seed/
             "title": g.fake.sentence(),
             "sequence": i,
             "due_date": (g.as_of + timedelta(days=g.rng.randint(30, 300))),
@@ -314,7 +314,7 @@ def generate(g):
         })
 
     # Generate cutover options (4-6)
-    programmes = ["ERP", "Automation", "DC3"]
+    programmes = ["ERP", "Automation"]  # DC3 cutover options are in seed/
     for prog in programmes:
         for opt in ["Big bang", "Phased by region", "Parallel run"]:
             cut_id = f"CUT-{len(result['cutover_options']) + 1:06d}"
@@ -328,6 +328,8 @@ def generate(g):
                 "estimated_duration_days": g.rng.randint(7, 60),
                 "requires_parallel_run": opt == "Parallel run",
                 "rollback_feasible": opt != "Big bang" or g.rng.random() > 0.5,
+                "freeze_window": None,
+                "rollback_notes": None,
                 "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
                 "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
@@ -425,20 +427,24 @@ def generate(g):
         tyc_id = f"TYC-{i:06d}"
         start_date = g.as_of - timedelta(days=g.rng.randint(0, 30))
         end_date = g.as_of + timedelta(days=g.rng.randint(30, 120))
+        total_tests = g.rng.randint(100, 500)
+        failed = int(total_tests * g.rng.uniform(0.02, 0.10))
+        blocked = int(total_tests * g.rng.uniform(0.0, 0.05))
+        passed = total_tests - failed - blocked
         result["test_cycles"].append({
             "cycle_id": tyc_id,
-            "programme_name": g.pick(["ERP", "Automation"]),
+            "programme_name": "Automation",  # ERP test cycles are in seed/
             "cycle_name": g.pick(["UAT Cycle 1", "UAT Cycle 2", "SIT Cycle 1", "Regression"]),
             "status": g.pick(["planning", "active", "completed"]),
             "scheduled_start": start_date,
             "scheduled_end": end_date,
             "actual_start": start_date if g.rng.random() > 0.5 else None,
             "actual_end": None,
-            "total_tests": g.rng.randint(100, 500),
-            "tests_passed": g.rng.randint(50, 400),
-            "tests_failed": g.rng.randint(5, 50),
-            "tests_blocked": g.rng.randint(0, 20),
-            "pass_rate_pct": round(g.rng.uniform(70, 98), 1),
+            "total_tests": total_tests,
+            "tests_passed": passed,
+            "tests_failed": failed,
+            "tests_blocked": blocked,
+            "pass_rate_pct": round(100.0 * passed / total_tests, 1),
             "description": g.fake.sentence(),
             "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
@@ -451,7 +457,7 @@ def generate(g):
     for prog_name in programme_names:
         result["programmes"].append({
             "programme_name": prog_name,
-            "rag_status": g.pick(["red", "amber", "green"]) if prog_name != "ERP" else "red",  # ERP is behind: migration slip
+            "rag_status": g.pick(["red", "amber", "green"]) if prog_name != "ERP" else "green",  # ERP dashboard still shows green although migration is slipping
             "owner_id": pick_employee(),
             "description": g.fake.sentence(),
             "created_at": g.as_of - timedelta(days=g.rng.randint(60, 120)),

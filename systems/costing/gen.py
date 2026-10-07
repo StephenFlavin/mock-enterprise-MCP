@@ -63,17 +63,11 @@ STORY_BRIDGE = {
         "note_vs_plan": "Component cost rises and mix shift to entry price points.",
         "note_yoy": "Buying margin down 2.5 points year on year: factory cost increases 1.0, USD/CNY FX 0.7, mix 0.3, supplier price creep 0.5."},
 }
-# STORY: homeware (department Home) is 1.1 points below plan in the latest period: price investment is the largest driver.
-# Applied after the random draws so the shared generator stream is unchanged.
-HOME_BRIDGE = {
-    "vs_plan": (-0.6, -0.2, -0.1, -0.1, -0.1), "yoy": None,
-    "note_vs_plan": "Price: deeper everyday price investment on core home lines (bedding, towels, cookware) is the largest driver. Cost: small "
-                    "supplier increases on cotton and aluminium. Mix: shift to lower-margin storage. Markdown and shrink: slightly above plan.",
-}
 # STORY: shrink runs highest in small, high-value categories (plan shrink % of revenue), set after the random draws
 SHRINK_STORY = {("Beauty", "Fragrance"): 2.6, ("Accessories", "Jewellery"): 2.2, ("Beauty", "Skincare"): 1.9, ("Electricals", "Audio"): 1.7}
-# STORY: K-1700 (hot-selling kettle) sells online at a lower net margin (delivery promotions): extra markdown points by (sku, channel)
-CHANNEL_MD = {("K-1700", "online"): 5.0}
+# STORY: K-1700 (hot-selling kettle) sells online at a lower net margin (online promotions): extra online markdown points, offset in
+# stores so the SKU's total net margin is unchanged
+ONLINE_MD = {"K-1700": 5.0}
 FORCED_SKUS = ["K-1700", "PF-220", "SKU-101897", "SKU-101904", "SKU-102590", "SKU-100637"]
 STORY_COSTING = {  # sku -> overrides
     "SKU-103157": {"quantity_units": 2000, "weekly_demand_units": 333, "late_sales_lost_pct": 78, "notes": "Winter promo line, 6,000 units across the three sizes of STY-7731"},
@@ -255,10 +249,6 @@ def generate(g):
         bridge[k] = {"vs_plan": (a[0], a[1], a[2], md, sh), "yoy": tuple(y),
                      "note_vs_plan": "Routine variance to plan.", "note_yoy": "Routine year on year movement."}
 
-    for k in sample:
-        if k[0] == "Home":
-            bridge[k] = {**HOME_BRIDGE, "yoy": bridge[k]["yoy"], "note_yoy": bridge[k]["note_yoy"]}
-
     margins, mid = [], 1
     plan_md = {k: PLAN_MD.get(k[0], 6) + r.uniform(-1, 1) for k in sample}
     plan_sh = {k: PLAN_SH.get(k[0], 0.9) + r.uniform(-0.2, 0.2) for k in sample}
@@ -283,7 +273,7 @@ def generate(g):
                     units = max(5, int(round(wk * 4 * share * sf * noise)))
                     rev = units * retail
                     gm_pct = base_gm + T_gross * f
-                    cmd = CHANNEL_MD.get((sku, ch), 0)
+                    cmd = ONLINE_MD.get(sku, 0) * ((1 if ch == "online" else -(1 - ss) / ss) if sku in ONLINE_MD else 0)
                     md_pct = plan_md[k] + off + cmd + vp[3] * -1 * f
                     sh_pct = plan_sh[k] + vp[4] * -1 * f
                     plan_net = base_gm - plan_md[k] - off - cmd - plan_sh[k]
@@ -572,10 +562,10 @@ def generate(g):
                          "actual_cost_gbp": round(q * sr.uniform(0.995, 1.005), 2), "index_price_gbp": mk[i],
                          "market_price_index": mk[i], "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": "WOOL"})
 
-    # STORY: homeware supplier costs creep up about 1.2% over six months (cost is a small part of the 1.1 point margin fall).
+    # STORY: homeware supplier costs rise about 2.6% over six months (cost is the largest driver of the 1.1 point margin fall).
     # Own Random so the shared generator stream is unchanged.
     hr = random.Random(7711)
-    home_path = [100.0, 100.2, 100.5, 100.7, 101.0, 101.2]
+    home_path = [100.0, 100.4, 100.9, 101.4, 102.0, 102.6]
     for (dept, cat), skus in sample.items():
         if dept != "Home":
             continue

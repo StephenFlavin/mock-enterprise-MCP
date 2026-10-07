@@ -2195,12 +2195,12 @@ tools:
   limit: 20
   example: {}
 - name: get_cost_price_changes_for_category
-  desc: Supplier cost price movement for a category or department by month - average cost index, unit cost, month-on-month and cumulative % change.
+  desc: Supplier cost price movement by month for a category, or a whole department when no category is given - cost index, unit cost, monthly and cumulative % change.
   kind: sql
   args:
     category:
       type: str
-      desc: Product category, e.g. Bedding
+      desc: Product category, e.g. Bedding; leave empty to combine the department
     department:
       type: str
       desc: Department, e.g. Home
@@ -2210,19 +2210,21 @@ tools:
       desc: Months starting on or after this date
   sql: |
     WITH m AS (
-      SELECT p.department, p.category, h.period, h.period_start, count(DISTINCT h.sku) AS sku_count,
+      SELECT p.department, CASE WHEN $category IS NULL THEN 'All categories' ELSE any_value(p.category) END AS category,
+             h.period, h.period_start, count(DISTINCT h.sku) AS sku_count,
              avg(h.supplier_price_index) AS idx, avg(h.actual_cost_gbp) AS unit_cost
       FROM supplier_cost_history h JOIN master.products p ON p.sku = h.sku
       WHERE ($category IS NOT NULL OR $department IS NOT NULL)
         AND ($category IS NULL OR lower(p.category) = lower($category))
         AND ($department IS NULL OR lower(p.department) = lower($department))
         AND h.period_start >= CAST($period_from AS DATE)
-      GROUP BY p.department, p.category, h.period, h.period_start
+      GROUP BY p.department, h.period, h.period_start
     )
     SELECT department, category, period, sku_count, ROUND(idx, 1) AS avg_supplier_price_index, ROUND(unit_cost, 2) AS avg_unit_cost_gbp,
            ROUND((idx / lag(idx) OVER w - 1) * 100, 2) AS change_vs_previous_month_pct,
-           ROUND((idx / first_value(idx) OVER (PARTITION BY department, category ORDER BY period_start) - 1) * 100, 2) AS change_since_first_month_pct
-    FROM m WINDOW w AS (PARTITION BY department, category ORDER BY period_start)
+           ROUND((idx / first_value(idx) OVER w0 - 1) * 100, 2) AS change_since_first_month_pct
+    FROM m WINDOW w AS (PARTITION BY department, category ORDER BY period_start),
+                  w0 AS (PARTITION BY department, category ORDER BY period_start)
     ORDER BY department, category, period_start DESC
   limit: 24
   example:
