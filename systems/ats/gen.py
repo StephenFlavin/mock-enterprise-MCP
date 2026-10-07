@@ -1,179 +1,123 @@
-"""Background recruitment data: job requisitions, funnel progression, and agency requests."""
+"""Background recruitment data: requisitions, per-candidate funnel history, agency requests, channel metrics.
+
+Story: DC2 (Daventry) is the hiring outlier. Its interview stage takes ~3x as long as at the other DCs
+(interviewer rota gaps on nights) and fewer candidates survive it, so time to hire is roughly double.
+"""
 from datetime import datetime, timedelta
+
+ROLES = ["Warehouse Operative", "Picker/Packer", "Stock Controller", "Forklift Driver"]
+CHANNELS = ["direct", "agency", "job_board", "referral", "internal"]
+SHIFTS = ["early", "late", "night", "days", "office"]
+STAGES = ["application", "screening", "interview", "offer"]
+
+# mean days spent in each stage, and probability of passing it, per site
+PROFILE = {
+    "DC1": ([4, 6, 7, 4], [0.75, 0.65, 0.60, 0.88]),
+    "DC2": ([5, 7, 22, 6], [0.72, 0.62, 0.50, 0.80]),
+    "DC3": ([4, 5, 6, 4], [0.75, 0.65, 0.62, 0.88]),
+    "DC4": ([4, 6, 8, 5], [0.72, 0.64, 0.58, 0.85]),
+    "DC5": ([4, 6, 7, 4], [0.74, 0.65, 0.60, 0.87]),
+}
 
 
 def generate(g):
     r = g.rng
-    roles = [
-        "Warehouse Operative",
-        "Picker/Packer",
-        "Stock Controller",
-        "Forklift Driver",
-        "Supervisor",
-        "Store Manager",
-    ]
-    recruitment_channels = ["direct", "agency", "job_board", "referral", "internal"]
-    sites = ["DC1", "DC2", "DC3", "DC4", "DC5", "ST001", "ST100", "ST200"]
-    shifts = ["early", "late", "night", "days", "office"]
+    requisitions, funnel, agency_requests, metrics = [], [], [], []
 
-    requisitions = []
-    funnel = []
-    agency_requests = []
-    metrics = []
+    # channel metrics for earlier quarters (current quarter is seeded); lead times were a little shorter earlier
+    base = {"internal": (500, 5, 5), "referral": (800, 12, 10), "direct": (1200, 25, 14),
+            "job_board": (500, 29, 14), "agency": (2000, 4, 2)}
+    mid = 0
+    for period, drift, rec in (("2026-Q1", 0.88, 120), ("2026-Q2", 0.94, 40)):
+        for role in ROLES:
+            for ch in CHANNELS:
+                mid += 1
+                cost, days, onb = base[ch]
+                metrics.append({
+                    "metric_id": f"MET-{mid:06d}", "role": role, "recruitment_channel": ch,
+                    "cost_per_hire_gbp": round(max(100, r.gauss(cost * drift, cost * 0.08)), 2),
+                    "days_to_hire": max(1, round(r.gauss(days * drift, 1.5))),
+                    "onboarding_days": onb, "hires_count": r.randint(2, 15), "period": period,
+                    "recorded_at": g.as_of - timedelta(days=rec),
+                })
 
-    # Generate historical recruitment metrics (for cost and lead time lookups)
-    for idx, role in enumerate(roles):
-        for channel in recruitment_channels:
-            metric_id = f"MET-{idx * len(recruitment_channels) + recruitment_channels.index(channel) + 1:06d}"
-            # Vary costs and lead times by channel
-            if channel == "internal":
-                cost = r.gauss(500, 100)
-                days = r.gauss(5, 2)
-            elif channel == "referral":
-                cost = r.gauss(800, 150)
-                days = r.gauss(12, 3)
-            elif channel == "direct":
-                cost = r.gauss(1200, 300)
-                days = r.gauss(25, 5)
-            elif channel == "job_board":
-                cost = r.gauss(500, 100)
-                days = r.gauss(28, 6)
-            else:  # agency
-                cost = r.gauss(2000, 400)
-                days = r.gauss(4, 1)
+    n_fun = 0
+    n_req = 0
+    for site, (means, passp) in PROFILE.items():
+        for role in ROLES:
+            for _ in range(3):
+                n_req += 1
+                age = r.randint(25, 160)
+                created = g.as_of - timedelta(days=age)
+                req_id = f"REQ-{n_req:06d}"
+                cands = []
+                for _c in range(r.randint(10, 16)):
+                    cage = max(1, age - r.randint(0, 22))   # days since application
+                    applied = datetime.combine(g.as_of - timedelta(days=cage), datetime.min.time()) + timedelta(hours=r.randint(8, 17))
+                    elapsed = 0
+                    days = [None] * 4
+                    stage = "hired"
+                    furthest = "hired"
+                    for i, st in enumerate(STAGES):
+                        d = max(1, round(r.gauss(means[i], means[i] * 0.3)))
+                        if elapsed + d > cage:          # still sitting in this stage
+                            days[i] = cage - elapsed
+                            stage = furthest = st
+                            break
+                        days[i] = d
+                        elapsed += d
+                        if r.random() > passp[i]:       # drops out here
+                            stage, furthest = "rejected", st
+                            break
+                    moved = applied + timedelta(days=elapsed)   # when it entered its current (or final) stage
+                    last = [d for d in days if d is not None][-1]
+                    offer_date = start = None
+                    if furthest in ("offer", "hired"):
+                        offer_date = (applied + timedelta(days=sum(days[:3]))).date()
+                    if stage == "hired":
+                        start = moved.date() + timedelta(days=r.randint(7, 21))
+                    n_fun += 1
+                    cands.append({
+                        "funnel_id": f"FUN-{n_fun:06d}", "requisition_id": req_id,
+                        "candidate_name": g.fake.name(), "recruitment_channel": r.choice(CHANNELS),
+                        "stage": stage, "applied_at": applied, "moved_at": moved,
+                        "offer_date": offer_date, "start_date": start, "days_in_stage": last,
+                        "furthest_stage": furthest,
+                        "application_days": days[0], "screening_days": days[1],
+                        "interview_days": days[2], "offer_days": days[3],
+                        "feedback": {"rejected": f"Not progressed after {furthest}", "hired": "Offer accepted"}.get(stage, f"In {stage}"),
+                    })
+                funnel.extend(cands)
+                hires = [c for c in cands if c["stage"] == "hired"]
+                if hires and age > 70:
+                    status, headcount = "filled", len(hires)
+                    filled = max(c["moved_at"] for c in hires).date()
+                else:
+                    status = "open" if age < 45 else "in_progress"
+                    headcount, filled = r.randint(len(hires) + 1, len(hires) + 5), None
+                requisitions.append({
+                    "requisition_id": req_id, "site_id": site, "role": role,
+                    "headcount_required": headcount, "status": status,
+                    "created_at": datetime.combine(created, datetime.min.time()) + timedelta(hours=9),
+                    "filled_date": filled, "salary_gbp": 21000 + 500 * r.randint(0, 12),
+                    "updated_at": datetime.combine(g.as_of - timedelta(days=r.randint(0, 10)), datetime.min.time()) + timedelta(hours=11),
+                })
 
-            metrics.append({
-                "metric_id": metric_id,
-                "role": role,
-                "recruitment_channel": channel,
-                "cost_per_hire_gbp": max(100, cost),
-                "days_to_hire": max(1, int(days)),
-                "hires_count": r.randint(2, 15),
-                "period": "2026-Q3",
-                "recorded_at": g.as_of - timedelta(days=r.randint(7, 60))
-            })
-
-    # Generate job requisitions
-    for site_idx, site in enumerate(sites[:5]):  # Main sites
-        for role_idx, role in enumerate(roles[:4]):  # Main roles
-            req_id = f"REQ-{site_idx * len(roles) + role_idx + 1:06d}"
-
-            # Some are open, some filled
-            days_old = r.randint(10, 90)
-            created_at = datetime.combine(g.as_of - timedelta(days=days_old), datetime.min.time())
-
-            status = r.choices(["open", "in_progress", "filled"], [0.2, 0.3, 0.5])[0]
-            filled_date = None
-            if status == "filled":
-                days_to_fill = r.randint(15, 60)
-                filled_date = (created_at + timedelta(days=days_to_fill)).date()
-
-            requisitions.append({
-                "requisition_id": req_id,
-                "site_id": site,
-                "role": role,
-                "headcount_required": r.randint(1, 8),
-                "status": status,
-                "created_at": created_at,
-                "filled_date": filled_date,
-                "salary_gbp": 20000 + r.randint(0, 25000),
-                "updated_at": created_at + timedelta(days=r.randint(1, days_old))
-            })
-
-    # Generate recruitment funnel entries for each requisition
-    for req_idx, req in enumerate(requisitions):
-        # Create a funnel for this requisition with multiple candidates
-        num_applicants = r.randint(8, 30)
-        for app_idx in range(num_applicants):
-            funnel_id = f"FUN-{req_idx * 30 + app_idx + 1:06d}"
-
-            # Determine stage progression - more drop off at each stage
-            stage_progression = r.random()
-            if stage_progression < 0.2:
-                stage = "rejected"
-                days_in_stage = r.randint(1, 10)
-            elif stage_progression < 0.5:
-                stage = "application"
-                days_in_stage = r.randint(1, 30)
-            elif stage_progression < 0.65:
-                stage = "screening"
-                days_in_stage = r.randint(2, 20)
-            elif stage_progression < 0.80:
-                stage = "interview"
-                days_in_stage = r.randint(3, 15)
-            elif stage_progression < 0.95:
-                stage = "offer"
-                days_in_stage = r.randint(1, 7)
-            else:
-                stage = "hired"
-                days_in_stage = r.randint(1, 5)
-
-            applied_at = req["created_at"] + timedelta(days=r.randint(0, 10))
-            moved_at = applied_at + timedelta(days=days_in_stage)
-
-            offer_date = None
-            start_date = None
-            if stage in ["offer", "hired"]:
-                offer_date = moved_at.date()
-                start_date = offer_date + timedelta(days=r.randint(7, 21))
-
-            funnel.append({
-                "funnel_id": funnel_id,
-                "requisition_id": req["requisition_id"],
-                "candidate_name": g.fake.name(),
-                "recruitment_channel": r.choice(recruitment_channels),
-                "stage": stage,
-                "applied_at": applied_at,
-                "moved_at": moved_at,
-                "offer_date": offer_date,
-                "start_date": start_date,
-                "days_in_stage": days_in_stage,
-                "feedback": None if stage == "application" else f"Stage: {stage}"
-            })
-
-    # Generate agency labour requests
-    for idx, site in enumerate(sites[:5]):
-        for req_idx in range(r.randint(0, 3)):
-            alr_id = f"ALR-{idx * 3 + req_idx + 1:06d}"
-
-            # Peak season or off-season
-            start_date = g.as_of + timedelta(days=r.randint(0, 60))
-            duration = r.randint(7, 56)  # 1-8 weeks
-            end_date = start_date + timedelta(days=duration)
-
-            positions = r.randint(3, 25)
-            filled = r.randint(int(positions * 0.6), positions)
-
-            status = r.choices(["submitted", "approved", "in_progress", "completed"], [0.1, 0.3, 0.4, 0.2])[0]
-            if status == "submitted":
-                created_date = g.as_of - timedelta(days=r.randint(0, 5))
-            elif status == "approved":
-                created_date = g.as_of - timedelta(days=r.randint(3, 15))
-            elif status == "in_progress":
-                created_date = start_date - timedelta(days=r.randint(1, 10))
-            else:  # completed
-                created_date = end_date - timedelta(days=r.randint(5, 20))
-
-            created_at = datetime.combine(created_date, datetime.min.time())
-            updated_at = created_at + timedelta(days=r.randint(0, 20))
-
+    # background agency labour requests (story requests are seeded)
+    for idx, site in enumerate(PROFILE):
+        for k in range(r.randint(1, 2)):
+            start = g.as_of + timedelta(days=r.randint(-30, 60))
+            end = start + timedelta(days=r.randint(7, 56))
+            positions = r.randint(3, 15)
+            status = "completed" if end < g.as_of else r.choice(["approved", "in_progress"])
+            created = datetime.combine(start - timedelta(days=r.randint(7, 20)), datetime.min.time()) + timedelta(hours=10)
             agency_requests.append({
-                "request_id": alr_id,
-                "site_id": site,
-                "shift": r.choice(shifts),
-                "start_date": start_date,
-                "end_date": end_date,
-                "positions_requested": positions,
-                "positions_filled": filled,
-                "role": r.choice(roles),
-                "status": status,
-                "created_at": created_at,
-                "updated_at": updated_at
+                "request_id": f"ALR-{idx * 2 + k + 1:06d}", "site_id": site, "shift": r.choice(SHIFTS),
+                "start_date": start, "end_date": end, "positions_requested": positions,
+                "positions_filled": positions if status == "completed" else r.randint(positions // 2, positions),
+                "role": r.choice(ROLES), "status": status, "created_at": created,
+                "updated_at": created + timedelta(days=r.randint(1, 5)),
             })
 
-    return {
-        "job_requisitions": requisitions,
-        "recruitment_funnel": funnel,
-        "agency_labour_requests": agency_requests,
-        "recruitment_metrics": metrics
-    }
+    return {"job_requisitions": requisitions, "recruitment_funnel": funnel,
+            "agency_labour_requests": agency_requests, "recruitment_metrics": metrics}
