@@ -1,4 +1,5 @@
 """Supplier Portal: relationships, capacities, stock, quality issues, delays and communications."""
+import random
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
@@ -266,10 +267,26 @@ def generate(g):
             delay_id += 1
 
     # Generate factory operations
+    # Commercial terms are a property of the factory, not of the week: one MOQ / lead time set per factory.
+    # Story factories: Vietnamese denim shortlist (04:33:Q3), seeded CN factories used by other questions.
+    fixed_terms = {"FAC-0066": (3000, 45, 14), "FAC-0070": (5000, 50, 21), "FAC-0017": (2500, 42, 14),
+                   "FAC-0107": (1000, 35, 14), "FAC-0108": (1500, 40, 21)}
+    # Bangladesh factories (04:33:Q4): (utilisation this peak season, same weeks a year earlier, latest material inbound status)
+    bd_story = {
+        "FAC-0057": (94, 86, "on_track"), "FAC-0098": (92, 78, "delayed"), "FAC-0136": (91, 74, "on_track"),
+        "FAC-0138": (96, 93, "critical"), "FAC-0086": (88, 80, "on_track"), "FAC-0150": (83, 81, "on_track"),
+        "FAC-0151": (76, 79, "on_track"), "FAC-0093": (71, 65, "on_track"), "FAC-0094": (64, 70, "on_track"),
+        "FAC-0097": (79, 82, "on_track"), "FAC-0137": (35, 85, "delayed"),
+    }
+    bd_notes = {"delayed": "Greige denim and cotton yarn delayed at port; cutting plan under review",
+                "critical": "Yarn shortage: only 5 days of cover on the main denim lines"}
     fop_id = 1
+    fac_by_id = {f["factory_id"]: f for f in factories}
     for factory in factories:
         if factory["factory_id"] == "FAC-0121":  # seeded story factory
             continue
+        trm = random.Random("fterm-" + factory["factory_id"])
+        terms = fixed_terms.get(factory["factory_id"]) or (trm.randint(5, 50) * 100, trm.randint(21, 56), trm.randint(7, 21))
         for week in range(12):
             period_start = g.days_ago(week * 7)
             period_end = period_start + timedelta(days=6)
@@ -299,7 +316,41 @@ def generate(g):
                 "reported_at": period_start,
                 "created_at": now_ts,
             }
+            fop["moq_units"], fop["moq_lead_time_days"], fop["sample_lead_time_days"] = terms
+            story = bd_story.get(factory["factory_id"])
+            if story:
+                fop["utilisation_pct"] = story[0]
+                fop["production_units"] = int(capacity * story[0] / 100)
+                fop["material_inbound_status"] = story[2] if week == 0 else "on_track"
+                fop["material_inbound_notes"] = bd_notes.get(story[2], "Materials arriving on schedule") if week == 0 else "Materials arriving on schedule"
             factory_operations.append(fop)
+            fop_id += 1
+    # Same weeks a year earlier (52 weeks back), so utilisation can be compared year on year
+    for factory in factories:
+        if factory["factory_id"] == "FAC-0121":
+            continue
+        fid = factory["factory_id"]
+        cur = [x for x in factory_operations if x["factory_id"] == fid]
+        trm = random.Random("fyoy-" + fid)
+        cur_avg = sum(x["utilisation_pct"] for x in cur) / len(cur)
+        trend = trm.uniform(-8, 6)
+        for week in range(12):
+            period_start = g.days_ago((week + 52) * 7)
+            capacity = cur[0]["capacity_units"]
+            if fid in bd_story:
+                util = bd_story[fid][1]
+            else:
+                util = max(35, min(88, round(cur_avg - trend + trm.uniform(-7, 7))))
+            factory_operations.append({
+                "operation_id": f"FOP-{fop_id:06d}", "factory_id": fid, "period_start": period_start,
+                "period_end": period_start + timedelta(days=6), "capacity_units": capacity, "utilisation_pct": util,
+                "production_units": int(capacity * util / 100), "orders_in_progress": trm.randint(2, 15),
+                "material_inbound_status": "on_track", "material_inbound_notes": "Materials arriving on schedule",
+                "moq_units": cur[0]["moq_units"], "moq_lead_time_days": cur[0]["moq_lead_time_days"],
+                "peak_capacity_units": int(capacity * 1.1), "sample_lead_time_days": cur[0]["sample_lead_time_days"],
+                "certification_status": "OEKO-TEX ISO 14001", "data_quality": "verified",
+                "reported_at": period_start, "created_at": now_ts,
+            })
             fop_id += 1
 
     # Generate material supply data
@@ -324,6 +375,9 @@ def generate(g):
                 "sustainability_notes": "Sustainably sourced" if r.random() < 0.4 else "",
                 "last_updated": now_ts,
             }
+            mat["composition"] = {"Organic cotton": "100% Organic Cotton", "Recycled polyester": "100% Recycled Polyester",
+                                  "Cotton blend": "60% Cotton 40% Polyester", "Modal": "100% Modal", "Linen": "100% Linen"
+                                  }[mat["material_name"].rsplit(" ", 2)[0]]
             material_supply.append(mat)
             mat_id += 1
 
@@ -354,6 +408,96 @@ def generate(g):
             }
             supplier_esg.append(esg)
             esg_id += 1
+
+    # Rows the seed already covers for the same supplier and year are not generated twice
+    seeded_esg = {("SUP-0001", 2025), ("SUP-0001", 2026), ("SUP-0013", 2025), ("SUP-0022", 2025), ("SUP-0012", 2025)}
+    supplier_esg[:] = [e for e in supplier_esg if (e["supplier_id"], e["submission_year"]) not in seeded_esg]
+    for e in supplier_esg:  # evidence must agree with what was submitted
+        if e["submission_status"] == "not_submitted":
+            e["audit_evidence_provided"], e["evidence_quality"] = False, "missing"
+        elif e["audit_evidence_provided"]:
+            e["evidence_quality"] = "verified"
+        else:
+            e["evidence_quality"] = "missing" if e["evidence_quality"] == "missing" else "self_reported"
+    # Top 20 active suppliers by spend (05:45:Q2, 05:45:Q3, 05:48:Q3): latest (2025) submission
+    # (renewable %, emissions tCO2e, committed reduction % or None, target year, status, quality score, evidence)
+    esg_story = {
+        "SUP-0044": (62, 18400, 25, 2030, "accepted", 91, "verified"), "SUP-0049": (48, 21000, 20, 2030, "accepted", 88, "verified"),
+        "SUP-0057": (8, 52000, None, None, "submitted", 61, "self_reported"), "SUP-0036": (35, 24500, 15, 2030, "accepted", 84, "verified"),
+        "SUP-0035": (12, 31000, None, None, "submitted", 58, "missing"), "SUP-0072": (20, 9800, 10, 2030, "low_quality", 52, "self_reported"),
+        "SUP-0074": (30, 14200, 18, 2030, "accepted", 79, "self_reported"), "SUP-0027": (5, 17500, None, None, "submitted", 63, "self_reported"),
+        "SUP-0014": (85, 6400, 30, 2028, "accepted", 94, "verified"), "SUP-0011": (40, 11800, 20, 2030, "accepted", 86, "verified"),
+        "SUP-0038": (10, 15300, None, None, "submitted", 57, "missing"), "SUP-0015": (55, 7200, 25, 2030, "accepted", 90, "verified"),
+        "SUP-0033": (92, 3900, 40, 2030, "accepted", 96, "verified"), "SUP-0065": (28, 8800, 12, 2030, "pending_review", 72, "self_reported"),
+        "SUP-0060": (70, 4100, 30, 2030, "accepted", 89, "verified"), "SUP-0039": (22, 6900, 15, 2030, "accepted", 77, "self_reported"),
+        "SUP-0063": (15, 10400, None, None, "submitted", 60, "missing"), "SUP-0046": (33, 8300, 20, 2030, "accepted", 82, "verified"),
+        "SUP-0028": (18, 7600, 10, 2030, "pending_review", 70, "self_reported"), "SUP-0016": (25, 12100, 20, 2030, "accepted", 83, "verified"),
+    }
+    for e in supplier_esg:
+        st = esg_story.get(e["supplier_id"])
+        if st and e["submission_year"] == 2025:
+            e.update({"renewable_pct": st[0], "emissions_tonnes_co2e": st[1], "emissions_reduction_commitment_pct": st[2],
+                      "emissions_reduction_target_year": st[3], "submission_status": st[4], "data_quality_score": st[5],
+                      "evidence_quality": st[6], "audit_evidence_provided": st[6] == "verified",
+                      "submission_type": "esg_full", "follow_up_needed": st[4] == "low_quality",
+                      "notes": "Emissions methodology unclear; scope 2 basis to be confirmed" if st[4] == "low_quality" else "",
+                      "submitted_date": g.days_ago(70)})
+
+    # Forecasts shared with suppliers (04:35:Q5): one row per completed four-week period, own RNG per supplier
+    supplier_forecasts = []
+    fc_id = 1
+    story_bias = {"SUP-0036": [4, 6, 11, 17, 22, 26]}  # oldest to newest of the last six periods: we increasingly over-forecast
+    for supplier in suppliers:
+        if not skus_by_supplier.get(supplier["supplier_id"]):
+            continue
+        frng = random.Random("fc-" + supplier["supplier_id"])
+        base = max(2000, int(float(supplier["annual_spend_gbp"]) / 13 / 18))
+        for k in range(12, 0, -1):
+            actual = int(base * frng.uniform(0.85, 1.15))
+            story = story_bias.get(supplier["supplier_id"])
+            if story and k <= 6:
+                bias = story[6 - k]
+                actual = base
+            else:
+                bias = round(frng.gauss(3, 6), 1)
+            start = g.days_ago(28 * k)
+            supplier_forecasts.append({
+                "forecast_id": f"FCS-{fc_id:06d}", "supplier_id": supplier["supplier_id"], "period_start": start,
+                "period_end": start + timedelta(days=27), "horizon_weeks": 12,
+                "forecast_units": int(actual * (1 + bias / 100)), "actual_units": actual,
+                "shared_at": start - timedelta(days=84),
+            })
+            fc_id += 1
+
+    # Where fabric fibre comes from (04:39:Q5): origin mix of each cotton fabric, by the mill's country
+    origin_pools = {
+        "CN": [("CN", 50), ("US", 20), ("AU", 15), ("BR", 15)], "IN": [("IN", 70), ("US", 15), ("BR", 10), ("AU", 5)],
+        "TR": [("TR", 35), ("US", 25), ("UZ", 20), ("BR", 20)], "BD": [("IN", 35), ("US", 30), ("BR", 20), ("AU", 15)],
+        "VN": [("US", 40), ("BR", 25), ("AU", 20), ("IN", 15)], "PT": [("US", 35), ("BR", 25), ("EG", 20), ("IN", 20)],
+    }
+    default_pool = [("US", 35), ("IN", 30), ("BR", 20), ("AU", 15)]
+    sup_country = {s["supplier_id"]: s["country"] for s in suppliers}
+    material_origins = [
+        {"material_id": "MAT-900001", "origin_country": "IN", "share_pct": 70.0},
+        {"material_id": "MAT-900001", "origin_country": "US", "share_pct": 20.0},
+        {"material_id": "MAT-900001", "origin_country": "AU", "share_pct": 10.0},
+        {"material_id": "MAT-900101", "origin_country": "CN", "share_pct": 45.0},
+        {"material_id": "MAT-900101", "origin_country": "US", "share_pct": 25.0},
+        {"material_id": "MAT-900101", "origin_country": "BR", "share_pct": 15.0},
+        {"material_id": "MAT-900101", "origin_country": "AU", "share_pct": 15.0},
+    ]
+    for mat in material_supply:
+        if mat["material_type"] != "fabric" or "cotton" not in mat["composition"].lower():
+            continue
+        orng = random.Random("orig-" + mat["material_id"])
+        pool = origin_pools.get(sup_country.get(mat["supplier_id"]), default_pool)
+        weights = [max(3, w + orng.randint(-5, 5)) for _, w in pool]
+        weights = weights[: orng.randint(2, len(pool))] if orng.random() < 0.4 else weights
+        tot = sum(weights)
+        shares = [round(100.0 * w / tot, 1) for w in weights]
+        shares[0] = round(shares[0] + 100.0 - sum(shares), 1)
+        for (cty, _), sh in zip(pool, shares):
+            material_origins.append({"material_id": mat["material_id"], "origin_country": cty, "share_pct": sh})
 
     # Generate supplier communications (comments, milestones, access logs)
     com_id = 1
@@ -467,4 +611,6 @@ def generate(g):
         "material_supply": material_supply,
         "supplier_esg": supplier_esg,
         "supplier_communications": supplier_communications,
+        "supplier_forecasts": supplier_forecasts,
+        "material_origins": material_origins,
     }

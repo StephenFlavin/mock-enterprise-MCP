@@ -52,7 +52,7 @@ tables:
       severity: {type: enum, values: [high, medium, low], desc: Issue severity}
       description: {type: text, desc: What went wrong}
       root_cause: {type: str, desc: Supplier root cause analysis}
-      corrective_actions: {type: text, desc: "Actions the supplier will take"}
+      corrective_actions: {type: text, desc: "Actions requested of the supplier, and what it commits to"}
       response_received: {type: bool, desc: Whether supplier has responded}
       response_date: {type: date, desc: When supplier responded}
       response_text: {type: text, desc: Supplier response}
@@ -133,7 +133,7 @@ tables:
       material_id: {type: str, desc: "Material/fabric id, e.g. MAT-000123 or sku"}
       supplier_id: {type: str, desc: Supplier or mill}
       material_name: {type: str, desc: "Fabric name, e.g. 200 GSM cotton drill"}
-      material_type: {type: enum, values: [fabric, trim, zip, button, other], desc: Material type}
+      material_type: {type: enum, values: [fabric, trim, zip, button, packaging, other], desc: Material type}
       lead_time_days: {type: int, desc: Typical lead time}
       moq_units: {type: int, desc: Minimum order quantity}
       price_gbp_per_unit: {type: float, desc: Unit price}
@@ -189,6 +189,8 @@ tables:
       updated_at: {type: timestamp, desc: Last updated}
       amount_gbp: {type: float, desc: "Amount the message is about, e.g. chargeback value"}
       quantity_units: {type: int, desc: "Units the message is about, e.g. units to expedite"}
+      increase_pct: {type: float, desc: "Price increase asked for, percent, on price increase notices"}
+      effective_date: {type: date, desc: "Date a price increase takes effect, on price increase notices"}
 
   part_supply:
     key: part_id
@@ -213,6 +215,25 @@ tables:
       confirmed_ship_date: {type: date, desc: Ship date the supplier confirmed}
       actual_ship_date: {type: date, desc: Date the order actually left the factory}
       days_late: {type: int, desc: "Actual minus confirmed ship date, in days (0 = on time)"}
+
+  supplier_forecasts:
+    key: forecast_id
+    cols:
+      forecast_id: {type: str, desc: "Forecast record, e.g. FCS-000123"}
+      supplier_id: {type: str, desc: Supplier the forecast was shared with}
+      period_start: {type: date, desc: Start of the four-week period forecast}
+      period_end: {type: date, desc: End of the period forecast}
+      horizon_weeks: {type: int, desc: "How many weeks before the period the forecast was shared"}
+      forecast_units: {type: int, desc: Units we forecast to the supplier}
+      actual_units: {type: int, desc: Units actually required in the period}
+      shared_at: {type: date, desc: Date the forecast was shared through the portal}
+
+  material_origins:
+    key: [material_id, origin_country]
+    cols:
+      material_id: {type: str, desc: "Material or fabric, e.g. MAT-900101"}
+      origin_country: {type: str, desc: "Country the fibre comes from, ISO code, e.g. IN"}
+      share_pct: {type: float, desc: "Share of the material's fibre from this country, 0-100"}
 
 tools:
   - name: get_supplier_available_capacity
@@ -308,28 +329,44 @@ tools:
     example: {supplier_id: SUP-0070}
 
   - name: get_supplier_capacity_commitments
-    desc: Supplier capacity committed versus still available, by product category, with next-quarter planned volume. Use to compare suppliers for sourcing awards.
+    desc: Supplier capacity committed versus still available, by product category or material, with annual headroom and next-quarter planned volume. Use to compare suppliers for sourcing awards.
     kind: sql
     args:
       supplier_id: {type: str, desc: "Supplier id (optional)"}
       category: {type: str, desc: "Product category, e.g. Bedding (optional)"}
       sku: {type: str, desc: "Product SKU (optional)"}
+      material_type: {type: str, desc: "Material type, e.g. packaging or fabric (optional; shows materials instead of products)"}
+      material: {type: str, desc: "Words in the material name, e.g. moulded pulp (optional)"}
     sql: |
       WITH latest AS (
-        SELECT sp.*, p.category
+        SELECT sp.supplier_id, sp.total_capacity_units, sp.committed_capacity_units, sp.available_capacity_units,
+               sp.next_quarter_units, sp.lead_time_days, sp.moq_units, sp.position_date, sp.price_gbp_per_unit, p.category AS category
         FROM supply_position sp JOIN master.products p ON p.sku = sp.sku
         WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
           AND ($sku IS NULL OR sp.sku = $sku)
           AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND $material_type IS NULL AND $material IS NULL
         QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+        UNION ALL
+        SELECT sp.supplier_id, sp.total_capacity_units, sp.committed_capacity_units, sp.available_capacity_units,
+               sp.next_quarter_units, sp.lead_time_days, sp.moq_units, sp.position_date, sp.price_gbp_per_unit, m.material_name AS category
+        FROM supply_position sp JOIN material_supply m ON m.material_id = sp.material_id
+        WHERE ($supplier_id IS NULL OR sp.supplier_id = $supplier_id)
+          AND $sku IS NULL AND $category IS NULL
+          AND ($material_type IS NULL OR m.material_type = $material_type)
+          AND ($material IS NULL OR lower(m.material_name) LIKE '%' || lower($material) || '%')
+          AND ($material_type IS NOT NULL OR $material IS NOT NULL)
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.material_id ORDER BY sp.position_date DESC) = 1
       )
       SELECT l.supplier_id, s.name AS supplier_name, l.category, count(*) AS skus,
              sum(l.total_capacity_units) AS total_capacity_units,
              sum(l.committed_capacity_units) AS committed_capacity_units,
              sum(l.available_capacity_units) AS available_capacity_units,
+             sum(l.available_capacity_units) * 12 AS available_capacity_units_per_year,
              round(100.0 * sum(l.committed_capacity_units) / NULLIF(sum(l.total_capacity_units), 0), 1) AS committed_pct,
              sum(l.next_quarter_units) AS next_quarter_units_planned,
-             round(avg(l.lead_time_days)) AS lead_time_days, max(l.moq_units) AS moq_units, max(l.position_date) AS position_date
+             round(avg(l.lead_time_days)) AS lead_time_days, max(l.moq_units) AS moq_units,
+             round(avg(l.price_gbp_per_unit), 2) AS price_gbp_per_unit, max(l.position_date) AS position_date
       FROM latest l JOIN master.suppliers s ON s.supplier_id = l.supplier_id
       GROUP BY l.supplier_id, s.name, l.category
       ORDER BY l.category, committed_pct
@@ -337,15 +374,30 @@ tools:
     example: {category: Bedding}
 
   - name: get_supplier_base_profile_by_country
-    desc: Supplier base profile by country and tier. Use to understand supply chain structure.
-    kind: select
-    from: master.suppliers
-    filters:
-      country: {}
-      tier: {}
-      status: {}
-    columns: [supplier_id, name, country, category_focus, tier, status, annual_spend_gbp]
-    order: annual_spend_gbp
+    desc: "Supplier base by country: supplier count by tier, annual spend, share of spend and factories. Filter by country, tier, status or fibre such as cotton to profile who supplies it."
+    kind: sql
+    args:
+      country: {type: str, desc: "Supplier country code, e.g. IN (optional)"}
+      tier: {type: str, desc: "Supplier tier: strategic, preferred, approved or probation (optional)"}
+      status: {type: str, default: active, desc: "Supplier status, e.g. active"}
+      fibre: {type: str, desc: "Only suppliers whose materials contain this fibre, e.g. cotton (optional)"}
+    sql: |
+      WITH sel AS (
+        SELECT s.* FROM master.suppliers s
+        WHERE ($country IS NULL OR s.country = upper($country))
+          AND ($tier IS NULL OR s.tier = lower($tier))
+          AND ($status IS NULL OR s.status = lower($status))
+          AND ($fibre IS NULL OR s.supplier_id IN (SELECT m.supplier_id FROM material_supply m WHERE m.material_type = 'fabric' AND lower(m.composition) LIKE '%' || lower($fibre) || '%'))
+      )
+      SELECT sel.country, count(*) AS suppliers, sum(sel.annual_spend_gbp) AS annual_spend_gbp,
+             round(100.0 * sum(sel.annual_spend_gbp) / sum(sum(sel.annual_spend_gbp)) OVER (), 1) AS share_of_spend_pct,
+             count(*) FILTER (WHERE sel.tier = 'strategic') AS strategic, count(*) FILTER (WHERE sel.tier = 'preferred') AS preferred,
+             count(*) FILTER (WHERE sel.tier = 'approved') AS approved, count(*) FILTER (WHERE sel.tier = 'probation') AS probation,
+             (SELECT count(*) FROM master.factories f WHERE f.supplier_id IN (SELECT s2.supplier_id FROM sel s2 WHERE s2.country = sel.country)) AS factories,
+             string_agg(sel.supplier_id, ', ' ORDER BY sel.annual_spend_gbp DESC) AS supplier_ids
+      FROM sel
+      GROUP BY sel.country
+      ORDER BY suppliers DESC, annual_spend_gbp DESC, sel.country
     limit: 100
     example: {country: "BD", tier: "approved"}
 
@@ -404,19 +456,27 @@ tools:
     example: {factory_id: "FAC-0121"}
 
   - name: get_factory_capacity_utilisation
-    desc: Factory capacity utilisation by month. Use to identify overbooking or underutilisation.
+    desc: Monthly capacity utilisation per factory, highest first. Filter by factory or country and a minimum utilisation such as 90 to find overbooked factories.
     kind: sql
     args:
-      factory_id: {required: true}
+      factory_id: {}
+      country: {type: str, desc: "Factory country code, e.g. BD (optional)"}
+      min_utilisation_pct: {type: float, default: 0, desc: "Only months whose average utilisation is at least this, e.g. 90"}
       lookback_months: {type: int, default: 12, desc: "How many months of history"}
     sql: |
-      SELECT factory_id, period_start, period_end, capacity_units, production_units, utilisation_pct,
-             orders_in_progress, peak_capacity_units
-      FROM factory_operations
-      WHERE factory_id = $factory_id
-        AND period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
-      ORDER BY period_start DESC
-    limit: 52
+      SELECT o.factory_id, f.name AS factory_name, f.country, CAST(date_trunc('month', o.period_start) AS DATE) AS month,
+             round(avg(o.utilisation_pct), 1) AS utilisation_pct, sum(o.capacity_units) AS capacity_units,
+             sum(o.production_units) AS production_units, round(avg(o.orders_in_progress), 1) AS orders_in_progress,
+             max(o.peak_capacity_units) AS peak_week_capacity_units
+      FROM factory_operations o JOIN master.factories f ON f.factory_id = o.factory_id
+      WHERE ($factory_id IS NULL OR o.factory_id = $factory_id)
+        AND ($country IS NULL OR f.country = upper($country))
+        AND o.period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
+        AND o.period_start <= CAST($as_of AS DATE)
+      GROUP BY o.factory_id, f.name, f.country, CAST(date_trunc('month', o.period_start) AS DATE)
+      HAVING avg(o.utilisation_pct) >= $min_utilisation_pct
+      ORDER BY utilisation_pct DESC, o.factory_id, month
+    limit: 200
     example: {factory_id: "FAC-0107"}
 
   - name: get_factory_material_inbound_status
@@ -435,31 +495,53 @@ tools:
     example: {factory_id: "FAC-0121"}
 
   - name: get_factory_moq_terms
-    desc: Factory MOQ and commitment terms. Use for order sizing decisions.
+    desc: Latest minimum order quantity, MOQ lead time and sample lead time per factory. Filter by factory or country to compare sourcing options.
     kind: sql
     args:
-      factory_id: {required: true}
+      factory_id: {}
+      country: {type: str, desc: "Factory country code, e.g. VN (optional)"}
     sql: |
-      SELECT factory_id, moq_units, moq_lead_time_days, sample_lead_time_days
-      FROM factory_operations
-      WHERE factory_id = $factory_id
-      ORDER BY period_start DESC LIMIT 1
-    limit: 10
-    example: {factory_id: "FAC-0107"}
+      SELECT f.factory_id, f.name AS factory_name, f.country, f.status AS factory_status,
+             o.moq_units, o.moq_lead_time_days, o.sample_lead_time_days, o.certification_status, o.reported_at
+      FROM (
+        SELECT * FROM factory_operations
+        WHERE period_start <= CAST($as_of AS DATE)
+        QUALIFY row_number() OVER (PARTITION BY factory_id ORDER BY period_start DESC) = 1
+      ) o
+      JOIN master.factories f ON f.factory_id = o.factory_id
+      WHERE ($factory_id IS NULL OR o.factory_id = $factory_id)
+        AND ($country IS NULL OR f.country = upper($country))
+      ORDER BY f.country, o.moq_units, f.factory_id
+    limit: 50
+    example: {factory_id: "FAC-0066"}
 
   - name: get_order_readiness_status
-    desc: Production readiness status of an order. Use to track sample approvals and production progress.
+    desc: "Latest production readiness per factory: orders in progress, spare capacity, material inbound status and a readiness call. Use to judge which factories can take pulled-forward orders."
     kind: sql
     args:
-      factory_id: {required: true}
+      factory_id: {}
+      country: {type: str, desc: "Factory country code, e.g. BD (optional)"}
+      min_utilisation_pct: {type: float, default: 0, desc: "Only factories at least this utilised in the latest week, e.g. 90"}
     sql: |
-      SELECT factory_id, period_start, orders_in_progress, production_units,
-             capacity_units, utilisation_pct
-      FROM factory_operations
-      WHERE factory_id = $factory_id
-        AND period_start >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-      ORDER BY period_start DESC
-    limit: 20
+      SELECT o.factory_id, f.name AS factory_name, f.country, o.period_start, o.orders_in_progress, o.utilisation_pct,
+             o.capacity_units, o.production_units, o.capacity_units - o.production_units AS spare_capacity_units,
+             o.peak_capacity_units - o.production_units AS spare_peak_capacity_units,
+             o.material_inbound_status, o.material_inbound_notes,
+             CASE WHEN o.material_inbound_status = 'critical' THEN 'blocked: materials critical'
+                  WHEN o.material_inbound_status = 'delayed' THEN 'at risk: materials delayed'
+                  WHEN o.utilisation_pct >= 95 THEN 'at risk: no spare capacity'
+                  ELSE 'ready' END AS readiness
+      FROM (
+        SELECT * FROM factory_operations
+        WHERE period_start <= CAST($as_of AS DATE)
+        QUALIFY row_number() OVER (PARTITION BY factory_id ORDER BY period_start DESC) = 1
+      ) o
+      JOIN master.factories f ON f.factory_id = o.factory_id
+      WHERE ($factory_id IS NULL OR o.factory_id = $factory_id)
+        AND ($country IS NULL OR f.country = upper($country))
+        AND o.utilisation_pct >= $min_utilisation_pct
+      ORDER BY o.utilisation_pct DESC, o.factory_id
+    limit: 50
     example: {factory_id: "FAC-0107"}
 
   - name: get_fabric_mill_lead_time_and_stock
@@ -511,19 +593,20 @@ tools:
     example: {po_id: "PO-2026-005301", supplier_id: "SUP-0013", claim_type: short_ship, claim_amount_gbp: 1233.5, variance_id: "VAR-900001", notes: "Short by 50 units"}
 
   - name: create_supplier_corrective_action_request
-    desc: Creates a corrective action request against a supplier for a failed sample or test.
+    desc: Creates a corrective action request against a supplier for a failed sample or test, with the actions requested of it. Returns the new request.
     kind: insert
     table: corrective_actions
     id_prefix: CAR-
-    defaults: {status: open}
+    defaults: {status: open, response_received: false}
     args:
       supplier_id: {required: true}
       sku: {required: true}
       issue_type: {required: true}
       severity: {required: true}
       description: {required: true}
+      corrective_actions: {type: str, desc: "Actions requested of the supplier, e.g. dye house audit and root cause analysis"}
       due_date: {type: date, desc: "When supplier must respond"}
-    example: {supplier_id: "SUP-0001", sku: "SKU-101904", issue_type: quality, severity: high, description: "Seam strength below spec", due_date: "+14d"}
+    example: {supplier_id: "SUP-0001", sku: "SKU-101904", issue_type: quality, severity: high, description: "Seam strength below spec", corrective_actions: "Audit sewing line and report root cause", due_date: "+14d"}
 
   - name: draft_supplier_variance_note
     desc: Draft a note to a supplier listing its receipt-versus-ASN variances with claimable value and claim deadlines. Read-only, nothing is sent.
@@ -602,20 +685,26 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_forecast_accuracy_shared_with_supplier
-    desc: Accuracy of forecasts shared with a supplier. Use for forecast review meetings.
+    desc: "Accuracy of the volume forecasts we shared with a supplier, per four-week period: forecast against actual, error and bias. Use for supplier business reviews."
     kind: sql
     args:
       supplier_id: {required: true}
       lookback_months: {type: int, default: 6, desc: "Review period"}
     sql: |
-      SELECT supplier_id, position_date, available_stock_units, moq_units,
-             round(available_capacity_units * 100.0 / NULLIF(total_capacity_units, 0), 1) AS capacity_utilisation_pct
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND position_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
-      ORDER BY position_date DESC
+      SELECT f.supplier_id, s.name AS supplier_name, f.period_start, f.period_end, f.horizon_weeks, f.forecast_units, f.actual_units,
+             f.forecast_units - f.actual_units AS error_units,
+             round(100.0 - 100.0 * abs(f.forecast_units - f.actual_units) / NULLIF(f.actual_units, 0), 1) AS accuracy_pct,
+             round(100.0 * (f.forecast_units - f.actual_units) / NULLIF(f.actual_units, 0), 1) AS bias_pct,
+             CASE WHEN f.forecast_units > f.actual_units THEN 'over-forecast' ELSE 'under-forecast' END AS direction,
+             round(100.0 - 100.0 * sum(abs(f.forecast_units - f.actual_units)) OVER () / NULLIF(sum(f.actual_units) OVER (), 0), 1) AS period_accuracy_pct,
+             'accuracy = 100 - |forecast - actual| / actual; bias > 0 means we over-forecast' AS formula
+      FROM supplier_forecasts f JOIN master.suppliers s ON s.supplier_id = f.supplier_id
+      WHERE f.supplier_id = $supplier_id
+        AND f.period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
+        AND f.period_end < CAST($as_of AS DATE)
+      ORDER BY f.period_start DESC
     limit: 52
-    example: {supplier_id: "SUP-0013"}
+    example: {supplier_id: "SUP-0036"}
 
   - name: get_supplier_comments_on_sample
     desc: Return supplier comments on sample. Use to understand sample feedback.
@@ -646,21 +735,39 @@ tools:
       FROM corrective_actions
       WHERE corrective_action_id = $corrective_action_id
     limit: 10
-    example: {corrective_action_id: "CAR-900001"}
+    example: {corrective_action_id: "CAR-900002"}
 
   - name: compare_capacity_utilisation_year_on_year
-    desc: Capacity utilisation versus prior year. Use to see trends.
+    desc: Factory utilisation per month or quarter against the same weeks a year earlier, with change in points. Filter by factory, country or minimum utilisation.
     kind: sql
     args:
-      factory_id: {required: true}
+      factory_id: {}
+      country: {type: str, desc: "Factory country code, e.g. BD (optional)"}
+      min_utilisation_pct: {type: float, default: 0, desc: "Only periods whose current average utilisation is at least this, e.g. 90"}
       period_type: {type: enum, values: [month, quarter], default: month, desc: "Aggregation period"}
+      lookback_months: {type: int, default: 6, desc: "How many recent months to compare"}
     sql: |
-      SELECT factory_id, period_start, utilisation_pct, capacity_units, production_units
-      FROM factory_operations
-      WHERE factory_id = $factory_id
-        AND period_start >= CAST($as_of AS DATE) - INTERVAL 24 MONTH
-      ORDER BY period_start DESC
-    limit: 26
+      WITH wk AS (
+        SELECT c.factory_id, c.period_start, c.utilisation_pct AS cur_util, p.utilisation_pct AS prior_util,
+               c.production_units AS cur_prod, p.production_units AS prior_prod
+        FROM factory_operations c
+        JOIN factory_operations p ON p.factory_id = c.factory_id AND p.period_start = CAST(c.period_start - INTERVAL 364 DAY AS DATE)
+        WHERE c.period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INT)) MONTH
+          AND c.period_start <= CAST($as_of AS DATE)
+          AND ($factory_id IS NULL OR c.factory_id = $factory_id)
+      )
+      SELECT w.factory_id, f.name AS factory_name, f.country,
+             CAST(CASE WHEN $period_type = 'quarter' THEN date_trunc('quarter', w.period_start) ELSE date_trunc('month', w.period_start) END AS DATE) AS period,
+             round(avg(w.cur_util), 1) AS utilisation_pct, round(avg(w.prior_util), 1) AS utilisation_pct_year_earlier,
+             round(avg(w.cur_util) - avg(w.prior_util), 1) AS change_pts, count(*) AS weeks_compared,
+             sum(w.cur_prod) AS production_units, sum(w.prior_prod) AS production_units_year_earlier
+      FROM wk w JOIN master.factories f ON f.factory_id = w.factory_id
+      WHERE ($country IS NULL OR f.country = upper($country))
+      GROUP BY w.factory_id, f.name, f.country,
+               CAST(CASE WHEN $period_type = 'quarter' THEN date_trunc('quarter', w.period_start) ELSE date_trunc('month', w.period_start) END AS DATE)
+      HAVING avg(w.cur_util) >= $min_utilisation_pct
+      ORDER BY utilisation_pct DESC, w.factory_id, period
+    limit: 200
     example: {factory_id: "FAC-0107"}
 
   - name: calculate_expected_air_requirement
@@ -716,17 +823,44 @@ tools:
     example: {}
 
   - name: get_supplier_emissions_commitments
-    desc: Supplier reduction commitments for emissions and sustainability targets. Use for ESG tracking.
+    desc: Supplier emissions reduction commitments (percentage, target year, reported emissions, tonnes committed) from the latest submission, with a total. Use a supplier id or top suppliers by spend.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      top_suppliers_by_spend: {type: int, desc: "Only the N suppliers with the highest annual spend, e.g. 20 (optional)"}
+      target_year: {type: int, desc: "Only commitments for this target year, e.g. 2030 (optional)"}
     sql: |
-      SELECT supplier_id, submission_year, emissions_reduction_commitment_pct,
-             emissions_reduction_target_year, renewable_pct, submission_status
-      FROM supplier_esg
-      WHERE supplier_id = $supplier_id
-      ORDER BY submission_year DESC
-    limit: 10
+      WITH ranked AS (
+        SELECT s.supplier_id, s.name AS supplier_name, s.annual_spend_gbp, s.status IN ('exited', 'blocked') AS inactive,
+               row_number() OVER (PARTITION BY s.status IN ('exited', 'blocked') ORDER BY s.annual_spend_gbp DESC, s.supplier_id) AS spend_rank
+        FROM master.suppliers s
+      ), latest AS (
+        SELECT e.* FROM supplier_esg e WHERE e.emissions_tonnes_co2e IS NOT NULL
+        QUALIFY row_number() OVER (PARTITION BY e.supplier_id ORDER BY e.submission_year DESC) = 1
+      ), pick AS (
+        SELECT r.spend_rank, r.supplier_id, r.supplier_name, r.annual_spend_gbp, l.submission_year, l.emissions_tonnes_co2e,
+               l.emissions_reduction_commitment_pct, l.emissions_reduction_target_year,
+               round(l.emissions_tonnes_co2e * l.emissions_reduction_commitment_pct / 100.0) AS committed_reduction_tonnes,
+               l.renewable_pct, l.submission_status
+        FROM ranked r LEFT JOIN latest l ON l.supplier_id = r.supplier_id
+        WHERE ($supplier_id IS NULL OR r.supplier_id = $supplier_id)
+          AND ($top_suppliers_by_spend IS NULL OR (NOT r.inactive AND r.spend_rank <= $top_suppliers_by_spend))
+          AND ($target_year IS NULL OR l.emissions_reduction_target_year = $target_year)
+          AND ($supplier_id IS NOT NULL OR $top_suppliers_by_spend IS NOT NULL OR l.supplier_id IS NOT NULL)
+      )
+      SELECT * FROM (
+        SELECT 1 AS grp, spend_rank, supplier_id, supplier_name, annual_spend_gbp, submission_year, emissions_tonnes_co2e,
+               emissions_reduction_commitment_pct, emissions_reduction_target_year, committed_reduction_tonnes, renewable_pct, submission_status
+        FROM pick
+        UNION ALL
+        SELECT 2, NULL, 'TOTAL', count(*) || ' suppliers, ' || count(emissions_reduction_commitment_pct) || ' with a commitment, '
+               || count(emissions_tonnes_co2e) || ' reporting emissions', sum(annual_spend_gbp), NULL, sum(emissions_tonnes_co2e),
+               round(100.0 * sum(committed_reduction_tonnes) / NULLIF(sum(emissions_tonnes_co2e), 0), 1), NULL,
+               sum(committed_reduction_tonnes), NULL, NULL
+        FROM pick
+      ) t
+      ORDER BY grp, spend_rank
+    limit: 60
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_expedite_options
@@ -755,17 +889,32 @@ tools:
     example: {supplier_id: SUP-0034, sku: SKU-101260}
 
   - name: get_supplier_lead_time_and_moq
-    desc: Lead time and MOQ for a supplier by product. Use for order sizing and scheduling.
+    desc: Lead time and MOQ per supplier and product category, with ranges across its SKUs. Filter by supplier, country or category to compare sourcing options.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      country: {type: str, desc: "Supplier country code, e.g. PT (optional)"}
+      category: {type: str, desc: "Product category, e.g. Outerwear (optional)"}
       sku: {type: str, desc: "Product (optional)"}
     sql: |
-      SELECT supplier_id, sku, lead_time_days, moq_units, price_gbp_per_unit, position_date
-      FROM supply_position
-      WHERE supplier_id = $supplier_id
-        AND ($sku IS NULL OR sku = $sku)
-      ORDER BY position_date DESC, sku
+      WITH latest AS (
+        SELECT sp.* FROM supply_position sp
+        WHERE sp.sku IS NOT NULL
+        QUALIFY row_number() OVER (PARTITION BY sp.supplier_id, sp.sku ORDER BY sp.position_date DESC) = 1
+      )
+      SELECT l.supplier_id, s.name AS supplier_name, s.country, s.tier, p.category, count(*) AS skus,
+             min(l.lead_time_days) AS min_lead_time_days, round(avg(l.lead_time_days)) AS avg_lead_time_days,
+             max(l.lead_time_days) AS max_lead_time_days, min(l.moq_units) AS min_moq_units, max(l.moq_units) AS max_moq_units,
+             round(avg(l.price_gbp_per_unit), 2) AS avg_price_gbp_per_unit, max(l.position_date) AS position_date
+      FROM latest l
+      JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      JOIN master.products p ON p.sku = l.sku
+      WHERE ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+        AND ($country IS NULL OR s.country = upper($country))
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+        AND ($sku IS NULL OR l.sku = $sku)
+      GROUP BY l.supplier_id, s.name, s.country, s.tier, p.category
+      ORDER BY avg_lead_time_days, l.supplier_id, p.category
     limit: 50
     example: {supplier_id: "SUP-0013"}
 
@@ -793,20 +942,28 @@ tools:
     example: {sku: SKU-102898}
 
   - name: get_supplier_material_origin_mix
-    desc: Origin mix of supplier materials (e.g. cotton sourcing by country). Use for supply chain transparency.
+    desc: Where materials originate, e.g. cotton by country, as share of supplier capacity with the suppliers and materials involved. Filter by supplier, fibre or material type.
     kind: sql
     args:
-      supplier_id: {required: true}
-      material_type: {type: str, desc: "Material type (optional)"}
+      supplier_id: {type: str, desc: "Supplier or mill id (optional)"}
+      fibre: {type: str, desc: "Fibre in the composition, e.g. cotton (optional)"}
+      material_type: {type: str, desc: "Material type, e.g. fabric (optional)"}
     sql: |
-      SELECT supplier_id, material_id, material_name, material_type,
-             sustainability_notes, composition, certifications
-      FROM material_supply
-      WHERE supplier_id = $supplier_id
-        AND ($material_type IS NULL OR material_type = $material_type)
-      ORDER BY material_name
-    limit: 50
-    example: {supplier_id: "SUP-0013"}
+      SELECT o.origin_country,
+             CASE o.origin_country WHEN 'IN' THEN 'India' WHEN 'US' THEN 'United States' WHEN 'CN' THEN 'China' WHEN 'BR' THEN 'Brazil'
+               WHEN 'AU' THEN 'Australia' WHEN 'TR' THEN 'Turkey' WHEN 'UZ' THEN 'Uzbekistan' WHEN 'EG' THEN 'Egypt' ELSE o.origin_country END AS origin_name,
+             count(DISTINCT m.supplier_id) AS suppliers, count(DISTINCT m.material_id) AS materials,
+             sum(round(o.share_pct * m.capacity_monthly_units / 100.0)) AS origin_capacity_units_month,
+             round(100.0 * sum(o.share_pct * m.capacity_monthly_units) / sum(sum(o.share_pct * m.capacity_monthly_units)) OVER (), 1) AS share_of_capacity_pct,
+             round(avg(o.share_pct), 1) AS avg_share_in_material_pct, string_agg(DISTINCT m.supplier_id, ', ') AS supplier_ids
+      FROM material_origins o JOIN material_supply m ON m.material_id = o.material_id
+      WHERE ($supplier_id IS NULL OR m.supplier_id = $supplier_id)
+        AND ($fibre IS NULL OR lower(m.composition) LIKE '%' || lower($fibre) || '%')
+        AND ($material_type IS NULL OR m.material_type = $material_type)
+      GROUP BY o.origin_country
+      ORDER BY share_of_capacity_pct DESC
+    limit: 30
+    example: {fibre: cotton}
 
   - name: get_supplier_milestone_updates
     desc: Return supplier milestone updates on product launches and samples. Use to track sample progress.
@@ -840,17 +997,39 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_renewable_energy_status
-    desc: Renewable electricity use and targets. Use for ESG and sustainability tracking.
+    desc: Renewable electricity share per supplier from its latest ESG submission, with a spend-weighted total. Use a supplier id, or top active suppliers by spend such as 20.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {type: str, desc: "Supplier id (optional)"}
+      top_suppliers_by_spend: {type: int, desc: "Only the N suppliers with the highest annual spend, e.g. 20 (optional)"}
     sql: |
-      SELECT supplier_id, submission_year, renewable_pct, submission_type, submission_status,
-             audit_evidence_provided, evidence_quality
-      FROM supplier_esg
-      WHERE supplier_id = $supplier_id
-      ORDER BY submission_year DESC
-    limit: 10
+      WITH ranked AS (
+        SELECT s.supplier_id, s.name AS supplier_name, s.country, s.annual_spend_gbp, s.status IN ('exited', 'blocked') AS inactive,
+               row_number() OVER (PARTITION BY s.status IN ('exited', 'blocked') ORDER BY s.annual_spend_gbp DESC, s.supplier_id) AS spend_rank
+        FROM master.suppliers s
+      ), latest AS (
+        SELECT e.* FROM supplier_esg e WHERE e.renewable_pct IS NOT NULL
+        QUALIFY row_number() OVER (PARTITION BY e.supplier_id ORDER BY e.submission_year DESC) = 1
+      ), pick AS (
+        SELECT r.spend_rank, r.supplier_id, r.supplier_name, r.country, r.annual_spend_gbp, l.submission_year, l.renewable_pct,
+               l.submission_type, l.submission_status, l.audit_evidence_provided, l.evidence_quality
+        FROM ranked r LEFT JOIN latest l ON l.supplier_id = r.supplier_id
+        WHERE ($supplier_id IS NULL OR r.supplier_id = $supplier_id)
+          AND ($top_suppliers_by_spend IS NULL OR (NOT r.inactive AND r.spend_rank <= $top_suppliers_by_spend))
+          AND ($supplier_id IS NOT NULL OR $top_suppliers_by_spend IS NOT NULL OR l.supplier_id IS NOT NULL)
+      )
+      SELECT * FROM (
+        SELECT 1 AS grp, spend_rank, supplier_id, supplier_name, country, annual_spend_gbp, submission_year, renewable_pct,
+               submission_type, submission_status, audit_evidence_provided, evidence_quality
+        FROM pick
+        UNION ALL
+        SELECT 2, NULL, 'TOTAL', 'All ' || count(*) || ' suppliers, spend-weighted renewable share (' || count(renewable_pct) || ' reporting)', NULL,
+               sum(annual_spend_gbp), NULL, round(sum(renewable_pct * annual_spend_gbp) / NULLIF(sum(annual_spend_gbp) FILTER (WHERE renewable_pct IS NOT NULL), 0), 1),
+               NULL, NULL, NULL, NULL
+        FROM pick
+      ) t
+      ORDER BY grp, spend_rank
+    limit: 60
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_response_times
@@ -901,17 +1080,24 @@ tools:
     example: {supplier_id: SUP-0070}
 
   - name: get_supplier_data_evidence_status
-    desc: Evidence status for supplier-supplied data (emissions, renewable energy). Use for assurance and audit.
+    desc: "Evidence status of supplier-supplied sustainability data (emissions, renewable energy): verified, self-reported or missing, with supplier counts, spend share and data quality. For one supplier, its history."
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {type: str, desc: "Supplier id (optional; omit for all suppliers)"}
+      submission_year: {type: int, desc: "Reporting year, default the latest year with data (optional)"}
     sql: |
-      SELECT supplier_id, submission_year, audit_evidence_provided, evidence_quality,
-             data_quality_score, follow_up_needed, notes
-      FROM supplier_esg
-      WHERE supplier_id = $supplier_id
-      ORDER BY submission_year DESC
-    limit: 10
+      SELECT CASE WHEN $supplier_id IS NULL THEN 'all suppliers' ELSE e.supplier_id END AS scope, e.submission_year, e.evidence_quality,
+             count(*) AS suppliers, sum(CASE WHEN e.audit_evidence_provided THEN 1 ELSE 0 END) AS with_auditor_evidence,
+             round(100.0 * sum(s.annual_spend_gbp) / sum(sum(s.annual_spend_gbp)) OVER (PARTITION BY e.submission_year), 1) AS share_of_spend_pct,
+             round(avg(e.data_quality_score), 1) AS avg_data_quality_score,
+             sum(CASE WHEN e.follow_up_needed THEN 1 ELSE 0 END) AS follow_up_needed,
+             CASE WHEN $supplier_id IS NULL THEN NULL ELSE max(e.notes) END AS notes
+      FROM supplier_esg e JOIN master.suppliers s ON s.supplier_id = e.supplier_id
+      WHERE ($supplier_id IS NULL OR e.supplier_id = $supplier_id)
+        AND e.submission_year = COALESCE($submission_year, (SELECT x.submission_year FROM supplier_esg x WHERE $supplier_id IS NULL OR x.supplier_id = $supplier_id GROUP BY x.submission_year ORDER BY count(*) DESC, x.submission_year DESC LIMIT 1))
+      GROUP BY CASE WHEN $supplier_id IS NULL THEN 'all suppliers' ELSE e.supplier_id END, e.submission_year, e.evidence_quality
+      ORDER BY e.submission_year DESC, suppliers DESC
+    limit: 20
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supply_dependency_for_supplier
@@ -1004,20 +1190,25 @@ tools:
     example: {material_type: fabric}
 
   - name: search_supplier_price_increase_notices
-    desc: Price increase notices received from suppliers. Use for procurement planning.
+    desc: Price increase notices received from suppliers, with percentage asked, effective date and reason, largest first. Filter by supplier, category or size.
     kind: sql
     args:
       supplier_id: {type: str, desc: "Supplier (optional)"}
+      category: {type: str, desc: "Supplier category focus, e.g. Womenswear (optional)"}
+      min_increase_pct: {type: float, default: 0, desc: "Only notices asking at least this percentage"}
       from_date: {type: date, default: "-180d", desc: "From date"}
       to_date: {type: date, default: "+30d", desc: "To date"}
     sql: |
-      SELECT communication_id, supplier_id, 'price_increase_notice' AS communication_type,
-             title, content, created_at, deadline
-      FROM supplier_communications
-      WHERE communication_type = 'price_increase_notice'
-        AND created_at >= CAST($from_date AS DATE)
-        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
-      ORDER BY created_at DESC
+      SELECT c.communication_id, c.supplier_id, s.name AS supplier_name, s.country, s.category_focus, c.title, c.content,
+             c.increase_pct, c.effective_date, CAST(c.created_at AS DATE) AS received_on
+      FROM supplier_communications c JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+      WHERE c.communication_type = 'price_increase_notice'
+        AND CAST(c.created_at AS DATE) >= CAST($from_date AS DATE)
+        AND CAST(c.created_at AS DATE) <= CAST($to_date AS DATE)
+        AND ($supplier_id IS NULL OR c.supplier_id = $supplier_id)
+        AND ($category IS NULL OR lower(s.category_focus) = lower($category))
+        AND COALESCE(c.increase_pct, 0) >= $min_increase_pct
+      ORDER BY c.increase_pct DESC NULLS LAST, c.created_at DESC
     limit: 100
     example: {}
 
