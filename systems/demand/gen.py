@@ -74,7 +74,6 @@ def monday(d):
 
 
 def generate(g):
-    r = g.rng
     as_of = g.as_of
     this_monday = monday(as_of)
 
@@ -154,6 +153,7 @@ def generate(g):
 
     kettle_curve = [1.00, 1.02, 1.05, 1.10, 1.18, 1.30, 1.45, 1.70, 1.55, 1.40, 1.35, 1.10, 0.85, 0.80, 0.75, 0.70]
     for sku in skus:
+        r = g.rng_for("forecast", sku)   # per-SKU stream: new master products never shift other rows
         cat = prod[sku]["category"]
         hist = [u for (wk, u, _) in weekly[sku] if wk < this_monday][-8:]
         recent = sum(hist) / len(hist)
@@ -194,6 +194,7 @@ def generate(g):
     # Forecast configurations
     # ------------------------------------------------------------------------------------------
     forecast_configs = []
+    r = g.rng_for("configs")
     configs = [
         ("CFG-000001", "52-week baseline", 52, "exponential_smoothing", "fast_mover", "active"),
         ("CFG-000002", "26-week fashion", 26, "exponential_smoothing", "fast_mover", "test"),
@@ -218,6 +219,7 @@ def generate(g):
     forecast_accuracy = []
     for cfg_id in ["CFG-000001", "CFG-000002", "CFG-000003"]:
         for cat in categories[:30]:
+            r = g.rng_for("accuracy", cfg_id, cat)
             for week_offset in range(-12, 0):
                 period_end = as_of + timedelta(weeks=week_offset)
                 forecast_accuracy.append({
@@ -241,6 +243,7 @@ def generate(g):
     for cat in categories[:40]:
         if cat == "Outerwear":
             continue
+        r = g.rng_for("errors", cat)
         for week_offset in range(-12, 0):
             period_end = as_of + timedelta(weeks=week_offset)
             for driver in r.sample(error_drivers, k=r.randint(1, 3)):
@@ -261,6 +264,7 @@ def generate(g):
     for cat in categories[:30]:
         if cat == "Outerwear":
             continue
+        r = g.rng_for("bias", cat)
         for market in r.sample(markets, k=r.randint(2, 4)):
             for week_offset in range(-12, 0):
                 period_end = as_of + timedelta(weeks=week_offset)
@@ -304,6 +308,7 @@ def generate(g):
     for market, mean in market_mean.items():
         for i, wk in enumerate(last4):
             add_bias(market, wk, mean + wiggle[i], market_driver[market])
+        r = g.rng_for("outerwear_bias", market)
         for n in range(5, 14):
             add_bias(market, this_monday - timedelta(weeks=n), r.gauss(2.0, 2.0), "promotion")
 
@@ -334,6 +339,7 @@ def generate(g):
                 "error_pct": round(p, 1),
                 "explanation": explanation[driver],
             })
+    r = g.rng_for("outerwear_errors")
     for n in range(5, 14):
         wk = this_monday - timedelta(weeks=n)
         for driver in r.sample(error_drivers, k=2):
@@ -356,6 +362,7 @@ def generate(g):
     early_sales_alerts = []
     new_products = [p for p in products if p["status"] == "new"][:30]
     for p in new_products:
+        r = g.rng_for("early", p["sku"])
         launch_date = datetime.fromisoformat(p["launch_date"]).date() if p.get("launch_date") else as_of
         for week_offset in range(1, 6):
             week_date = launch_date + timedelta(weeks=week_offset - 1)
@@ -374,6 +381,7 @@ def generate(g):
                 "velocity_index": round(actual_units / forecast_units, 2) if forecast_units > 0 else 0,
             })
     for p in new_products[:10]:
+        r = g.rng_for("alert", p["sku"])
         early_sales_alerts.append({
             "alert_id": f"ALR-{len(early_sales_alerts) + 1:06d}",
             "sku": p["sku"],
@@ -385,6 +393,7 @@ def generate(g):
 
     pipeline_products = []
     for p in products[300:330]:
+        r = g.rng_for("pipeline", p["sku"])
         pipeline_products.append({
             "pipeline_id": f"PL-{len(pipeline_products) + 1:06d}",
             "sku": p["sku"],
@@ -400,6 +409,7 @@ def generate(g):
 
     promotion_effects = []
     for cat in categories[:50]:
+        r = g.rng_for("promo", cat)
         for promo_offset in range(-52, 0, 4):
             promo_start = as_of + timedelta(weeks=promo_offset)
             uplift = r.randint(20, 80)
@@ -422,8 +432,9 @@ def generate(g):
     channel_share = {"web": 0.55, "app": 0.18, "click_collect": 0.15, "marketplace": 0.12}
     region_share = {"UK South": 0.30, "UK North": 0.22, "UK Midlands": 0.17, "Scotland": 0.08, "Ireland": 0.07,
                     "EU Central": 0.16}
-    base_daily = 9500.0
+    base_daily = 24500.0   # online units a day; master online sales are about 170,000 units a week (scaled x6.8 with the master)
     daily_orders = []
+    r = g.rng_for("daily_orders")
     for day_offset in range(-400, 111):
         d = as_of + timedelta(days=day_offset)
         growth = 1.08 ** (day_offset / 365.0)
@@ -432,7 +443,7 @@ def generate(g):
             for reg, rs in region_share.items():
                 units = base_daily * growth * mult * cs * rs * r.gauss(1.0, 0.05)
                 units = max(20, int(round(units)))
-                asp = 31.0 * (0.92 if mult >= 1.9 else 1.0) * r.gauss(1.0, 0.03)
+                asp = 72.0 * (0.92 if mult >= 1.9 else 1.0) * r.gauss(1.0, 0.03)
                 daily_orders.append({
                     "order_date": d,
                     "channel": ch,
@@ -446,8 +457,9 @@ def generate(g):
     # ------------------------------------------------------------------------------------------
     dc_share = {"DC1": 0.38, "DC2": 0.22, "DC3": 0.20, "DC4": 0.12, "DC5": 0.08}
     dc_region = {s["site_id"]: s["region"] for s in sites if s["type"] == "dc"}
-    network_weekly = 170000.0
+    network_weekly = 510000.0   # all-channel DC outbound units a week = master store + online sales (about 510,000)
     dc_flow_forecast = []
+    r = g.rng_for("dc_flow")
     for off in range(-8, 15):
         wk = this_monday + timedelta(weeks=off)
         out_mult = sum(order_multiplier(wk + timedelta(days=i)) for i in range(7)) / 7.0
@@ -489,6 +501,7 @@ def generate(g):
     lane_volume_forecast = []
     for lane in lanes:
         origin, dest = lane.split("-")
+        r = g.rng_for("lane", lane)
         avg = story_avg.get(lane)
         if avg is None:
             avg = r.randint(10, 45)
@@ -531,17 +544,19 @@ def generate(g):
     returns_profile = [11900, 12200, 12000, 12400, 13000, 14000, 15500, 18500, 17000, 16000, 15000, 19500, 29500,
                        34000, 27000, 20500, 16500, 14000, 12800, 12400, 12200, 12000, 11800, 11800, 11700, 11700]
     # profile index 0 is the week starting next Monday. Week of 11 January is index 13 (peak).
+    RETURNS_SCALE = 3.7   # returns follow online units, which are about 3.7x the level the profile was written for
     returns_forecast = []
+    r = g.rng_for("returns")
     for i, base in enumerate(returns_profile):
         wk = this_monday + timedelta(weeks=i + 1)
-        units = int(round(base * r.gauss(1.0, 0.01), -1))
+        units = int(round(base * RETURNS_SCALE * r.gauss(1.0, 0.01), -1))
         band = 0.15 if base >= 27000 else 0.08
         returns_forecast.append({
             "returns_week": wk,
             "returns_units": units,
             "low_units": int(round(units * (1 - band), -1)),
             "high_units": int(round(units * (1 + band), -1)),
-            "returns_value_gbp": int(round(units * 34.0, -2)),
+            "returns_value_gbp": int(round(units * 65.0, -2)),
             "driver": "Christmas gift returns and post-Christmas sale" if 11 <= i <= 15 else (
                 "Black Friday and Cyber Week orders" if 6 <= i <= 10 else "Baseline returns run-rate"),
         })
@@ -552,6 +567,7 @@ def generate(g):
     forecast_overrides = []
     for cat in categories[:20]:
         week_start = this_monday + timedelta(weeks=1)
+        r = g.rng_for("override", cat)
         forecast_overrides.append({
             "override_id": f"OVR-{len(forecast_overrides) + 1:06d}",
             "sku": None,
@@ -567,6 +583,7 @@ def generate(g):
 
     demand_history_adjustments = []
     for sku in skus[:50]:
+        r = g.rng_for("history_adj", sku)
         if r.random() < 0.3:
             period_start = as_of - timedelta(weeks=r.randint(4, 26))
             days = r.randint(1, 4) * 7
@@ -668,6 +685,7 @@ def generate(g):
     category_history = []
     first_weeks = [this_monday - timedelta(weeks=n) for n in range(26, 0, -1)]   # last 26 weeks set the run-rate
     for cat in categories:
+        r = g.rng_for("category_history", cat)
         u8 = [cat_totals.get((cat, w), [0, 0.0]) for w in first_weeks]
         units8 = sum(x[0] for x in u8) / 26.0
         price8 = (sum(x[1] for x in u8) / max(1, sum(x[0] for x in u8))) or 30.0
@@ -697,6 +715,7 @@ def generate(g):
             tgt[(f["category"], f["forecast_week"])] = tgt.get((f["category"], f["forecast_week"]), 0) + f["units_forecast"]
     category_forecasts = []
     for cat in categories:
+        r = g.rng_for("category_forecast", cat)
         wks = [this_monday + timedelta(weeks=i) for i in range(52)]
         base4 = [base_wk.get((cat, w), 0) for w in wks[:4]]
         anchor = (sum(base4) / 4.0) / (sum(seasonal(cat, w) for w in wks[:4]) / 4.0)
@@ -716,6 +735,7 @@ def generate(g):
 
     # Weeks 52-77 (to 18 months ahead): same shape, drawn after everything above so earlier numbers do not move.
     for cat in categories:
+        r = g.rng_for("category_forecast_ext", cat)
         wks0 = [this_monday + timedelta(weeks=i) for i in range(12)]
         base4 = [base_wk.get((cat, w), 0) for w in wks0[:4]]
         anchor = (sum(base4) / 4.0) / (sum(seasonal(cat, w) for w in wks0[:4]) / 4.0)
