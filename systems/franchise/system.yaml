@@ -79,7 +79,7 @@ tables:
 
 tools:
   - name: get_franchise_order_history
-    desc: Order history for a franchise partner, most recent first. Includes status, expected arrival and hold status.
+    desc: Order history for a franchise partner, most recent first, with each order's lines (line number, SKU, core or non-core, qty) and held lines. Use before holding lines.
     kind: sql
     args:
       partner_id: {required: true}
@@ -87,56 +87,70 @@ tools:
       date_from: {type: date, default: "-90d", desc: "Orders from this date onwards"}
     sql: |
       SELECT o.order_id, o.partner_id, o.order_date, o.expected_arrival_date, o.status,
-             o.hold_reason, o.total_units, o.total_value_gbp, o.updated_at,
-             COALESCE(COUNT(l.line_no), 0) AS line_count,
-             COALESCE(SUM(CASE WHEN l.hold_status = 'held' THEN 1 ELSE 0 END), 0) AS lines_held
+             o.total_units, o.total_value_gbp, o.updated_at,
+             COUNT(l.line_no) AS line_count,
+             COUNT(*) FILTER (WHERE h.hold_id IS NOT NULL) AS lines_held,
+             COALESCE(SUM(l.qty_ordered) FILTER (WHERE l.is_core_range), 0) AS core_units,
+             COALESCE(SUM(l.qty_ordered) FILTER (WHERE NOT l.is_core_range), 0) AS non_core_units,
+             string_agg(l.line_no || ':' || l.sku || CASE WHEN l.is_core_range THEN ' core ' ELSE ' non-core ' END
+                        || l.qty_ordered || CASE WHEN h.hold_id IS NOT NULL THEN ' HELD' ELSE '' END, '; ' ORDER BY l.line_no) AS lines
       FROM franchise_orders o
       LEFT JOIN franchise_order_lines l ON o.order_id = l.order_id
+      LEFT JOIN (SELECT DISTINCT order_id, line_no, hold_id FROM order_holds WHERE lifted_at IS NULL) h
+        ON h.order_id = l.order_id AND (h.line_no IS NULL OR h.line_no = l.line_no)
       WHERE o.partner_id = $partner_id
         AND ($status IS NULL OR o.status = $status)
         AND o.order_date >= CAST($date_from AS DATE)
       GROUP BY o.order_id, o.partner_id, o.order_date, o.expected_arrival_date, o.status,
-               o.hold_reason, o.total_units, o.total_value_gbp, o.updated_at
+               o.total_units, o.total_value_gbp, o.updated_at
       ORDER BY o.order_date DESC
     limit: 50
-    example: {partner_id: PTN-012}
+    example: {partner_id: PTN-011}
 
   - name: compare_core_range_cover_vs_forecast
-    desc: Compare stock cover against target. Shows overstock and understock by SKU with core range flag.
+    desc: Compare a partner's stock against target by SKU, with units still on open orders and overstock or understock flag. Filter to core range lines.
     kind: sql
     args:
       partner_id: {required: true}
+      is_core_range: {type: bool, desc: "true for core range lines only, false for non-core only; omit for all"}
     sql: |
-      SELECT s.sku, p.name, s.on_hand, s.available, s.target_stock,
+      SELECT s.sku, p.name, s.is_core_range, s.on_hand, s.available, s.target_stock,
              (s.on_hand - s.target_stock) AS variance,
+             round(100.0 * s.on_hand / NULLIF(s.target_stock, 0)) AS cover_pct_of_target,
+             COALESCE(oo.on_order, 0) AS units_on_open_orders,
              CASE WHEN (s.on_hand - s.target_stock) > 0.2 * s.target_stock THEN 'overstock'
                   WHEN (s.on_hand - s.target_stock) < -0.2 * s.target_stock THEN 'understock'
-                  ELSE 'balanced' END AS position,
-             s.is_core_range
+                  ELSE 'balanced' END AS position
       FROM partner_stock s
       JOIN master.products p ON s.sku = p.sku
+      LEFT JOIN (SELECT o.partner_id, l.sku, SUM(l.qty_ordered - l.qty_received) AS on_order
+                 FROM franchise_orders o JOIN franchise_order_lines l ON o.order_id = l.order_id
+                 WHERE o.status IN ('open', 'shipped') GROUP BY o.partner_id, l.sku) oo
+        ON oo.partner_id = s.partner_id AND oo.sku = s.sku
       WHERE s.partner_id = $partner_id
+        AND ($is_core_range IS NULL OR s.is_core_range = $is_core_range)
       ORDER BY s.is_core_range DESC, variance DESC
     limit: 100
-    example: {partner_id: PTN-012}
+    example: {partner_id: PTN-011}
 
   - name: get_franchise_partner_scorecard
-    desc: Overall scorecard for a franchise partner with sales, margin, compliance and intervention flag.
+    desc: Latest-month scorecard (sales, margin, compliance, stockouts, overstock, intervention flag, open orders) for one franchise partner, or all partners worst compliance first if none given.
     kind: sql
     args:
-      partner_id: {required: true}
+      partner_id: {}
     sql: |
-      SELECT p.partner_id, pt.name AS partner_name, pt.country, pt.status,
+      SELECT pt.partner_id, pt.name AS partner_name, pt.country, pt.status AS partner_status,
              pp.period_end, pp.sales_units, pp.sales_gbp, pp.margin_gbp, pp.margin_pct,
              pp.compliance_score, pp.stockout_incidents, pp.overstock_value_gbp,
              pp.intervention_needed,
-             COALESCE((SELECT COUNT(*) FROM franchise_orders o WHERE o.partner_id = p.partner_id AND o.status = 'open'), 0) AS open_orders
-      FROM (SELECT DISTINCT partner_id FROM partner_performance) p
-      JOIN master.partners pt ON p.partner_id = pt.partner_id
-      LEFT JOIN partner_performance pp ON p.partner_id = pp.partner_id
-        AND pp.period_end = (SELECT MAX(period_end) FROM partner_performance WHERE partner_id = p.partner_id)
-      WHERE p.partner_id = $partner_id
-    example: {partner_id: PTN-012}
+             (SELECT COUNT(*) FROM franchise_orders o WHERE o.partner_id = pt.partner_id AND o.status = 'open') AS open_orders
+      FROM master.partners pt
+      JOIN partner_performance pp ON pt.partner_id = pp.partner_id
+        AND pp.period_end = (SELECT MAX(period_end) FROM partner_performance WHERE partner_id = pt.partner_id)
+      WHERE pt.type = 'franchise' AND ($partner_id IS NULL OR pt.partner_id = $partner_id)
+      ORDER BY pp.compliance_score ASC, pp.overstock_value_gbp DESC
+    limit: 20
+    example: {partner_id: PTN-011}
 
   - name: get_partner_sales_and_margin
     desc: Sales revenue and margin for a franchise partner over last 12 months, by month.
@@ -162,8 +176,8 @@ tools:
       SELECT s.partner_id, s.sku, p.name, s.on_hand, s.available, s.allocated, s.target_stock,
              (s.on_hand - s.target_stock) AS variance,
              s.is_core_range, s.last_stock_check,
-             CASE WHEN s.on_hand > s.target_stock * 1.5 THEN 'overstock'
-                  WHEN s.on_hand < s.target_stock * 0.5 THEN 'understock'
+             CASE WHEN s.on_hand > s.target_stock * 1.2 THEN 'overstock'
+                  WHEN s.on_hand < s.target_stock * 0.8 THEN 'understock'
                   ELSE 'normal' END AS status
       FROM partner_stock s
       JOIN master.products p ON s.sku = p.sku
@@ -189,7 +203,7 @@ tools:
     example: {partner_id: PTN-012}
 
   - name: list_partners_needing_intervention
-    desc: Franchise partners with low compliance, high overstock or recurrent stockouts. Ranked by severity.
+    desc: Active franchise partners with low compliance, high overstock or recurrent stockouts, worst compliance first. Use to pick who needs a performance notice.
     kind: sql
     args:
       min_compliance_score: {type: int, default: 75, desc: "Threshold below which intervention is flagged"}
@@ -206,7 +220,7 @@ tools:
                   GROUP BY partner_id) latest ON pt.partner_id = latest.partner_id
       INNER JOIN partner_performance pp ON latest.partner_id = pp.partner_id
         AND latest.latest_period = pp.period_end
-      WHERE pt.type = 'franchise'
+      WHERE pt.type = 'franchise' AND pt.status <> 'ended'
         AND (pp.intervention_needed = true OR pp.compliance_score < $min_compliance_score
              OR pp.overstock_value_gbp > 50000 OR pp.stockout_incidents > 3)
       ORDER BY pp.compliance_score ASC, pp.overstock_value_gbp DESC
@@ -226,7 +240,7 @@ tools:
     example: {partner_id: PTN-012, notice_type: compliance_warning, content: "Your compliance score has fallen below 75%. Please review inventory procedures."}
 
   - name: update_franchise_order_hold
-    desc: Place or lift a hold on a franchise order. Returns the hold record created.
+    desc: Place a hold on a franchise order, or on one line if line_no is given. Returns the hold record created.
     kind: insert
     table: order_holds
     id_prefix: HLD-

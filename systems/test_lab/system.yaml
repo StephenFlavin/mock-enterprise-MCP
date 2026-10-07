@@ -79,6 +79,8 @@ tables:
       key_findings: {type: text, desc: "Key findings from trial"}
       compared_to_lab_method: {type: str, desc: "Lab test method this trial compares to"}
       wear_pattern: {type: str, desc: "Type of wear observed, e.g. pilling, abrasion, fading"}
+      field_conditions: {type: text, desc: "Real-world conditions the wearers and laundering put the material through"}
+      protocol_changes: {type: text, desc: "Changes to the lab protocol the failure analysis recommends so it predicts this field result"}
       updated_at: {type: timestamp, desc: "Last updated"}
 
   reference_fabrics:
@@ -228,13 +230,13 @@ tools:
     desc: All test results for a material across sample rounds showing trends and failures. For R&D evaluation.
     kind: sql
     args:
-      material_name: {required: true, desc: "Material name"}
+      material_name: {required: true, desc: "Material name, e.g. recycled nylon (not case sensitive)"}
       failure_mode: {desc: "Filter to specific failure type if provided"}
     sql: |
-      SELECT test_result_id, test_method_name, test_value, spec_min, spec_max, pass_fail,
+      SELECT test_result_id, material_name, test_method_id, test_method_name, test_value, spec_min, spec_max, pass_fail,
              failure_mode, sample_id, test_date, tested_by, notes
       FROM test_results
-      WHERE material_name = $material_name
+      WHERE lower(material_name) = lower($material_name)
         AND ($failure_mode IS NULL OR failure_mode = $failure_mode)
       ORDER BY test_date DESC, test_method_id
     limit: 100
@@ -296,13 +298,15 @@ tools:
     kind: sql
     args:
       sku: {required: true}
+      pack_spec_id: {desc: "Limit to one pack spec, e.g. PKS-900001"}
     sql: |
-      SELECT test_result_id, sku, test_method_name, test_value, pass_fail,
-             failure_mode, test_date, notes
+      SELECT test_result_id, sku, pack_spec_id, material_name AS carton, test_method_name, test_value, spec_min, spec_value,
+             pass_fail, failure_mode, test_date, notes
       FROM test_results
       WHERE sku = $sku
+        AND ($pack_spec_id IS NULL OR pack_spec_id = $pack_spec_id)
         AND test_method_id IN ('TMT-0010', 'TMT-0011', 'TMT-0012')
-      ORDER BY test_date DESC
+      ORDER BY test_date DESC, test_method_id
     limit: 30
     example: {sku: "K-1700"}
 
@@ -331,13 +335,13 @@ tools:
     example: {sku: "SKU-103808"}
 
   - name: get_dwr_alternative_test_data
-    desc: Test data for PFAS-free DWR alternatives showing performance ratings and durability. For material evaluation.
+    desc: Test data for PFAS-free DWR alternatives (set pfas_free false for the current PFAS finish) showing spray rating, wash durability, cost, availability, UK/EU/US regulatory status and whether independent test evidence exists. For material evaluation.
     kind: select
     from: dwr_alternatives
     filters:
       pfas_free: {default: true}
       chemical_base: {}
-    columns: [dwr_alternative_id, product_name, chemical_base, spray_rating, wash_durability_cycles, cost_per_metre, regulatory_status_uk, regulatory_status_eu, regulatory_status_us, test_data_available]
+    columns: [dwr_alternative_id, product_name, chemical_base, pfas_free, spray_rating, wash_durability_cycles, cost_per_metre, availability, supplier_id, regulatory_status_uk, regulatory_status_eu, regulatory_status_us, test_data_available, comments]
     order: spray_rating DESC
     limit: 30
     example: {pfas_free: true}
@@ -361,24 +365,30 @@ tools:
       finish_type: {required: true, desc: "Finish type, e.g. DWR, enzyme wash"}
     sql: |
       SELECT test_method_id, name, category, standard, description, specimen_size,
-             duration_minutes, cost_gbp
+             duration_minutes, lead_time_days, cost_gbp
       FROM test_methods
-      WHERE applicable_materials LIKE '%' || $finish_type || '%'
-         OR name LIKE '%' || $finish_type || '%'
+      WHERE applicable_materials ILIKE '%' || $finish_type || '%'
+         OR name ILIKE '%' || $finish_type || '%'
+         OR applies_to ILIKE '%' || $finish_type || '%'
       ORDER BY test_method_id
     limit: 10
     example: {finish_type: "DWR"}
 
   - name: get_wear_trial_results
-    desc: Wear trial results for a material showing field performance vs lab testing. For real-world validation.
-    kind: select
-    from: wear_trials
-    filters:
-      material_name: {required: true}
-    columns: [wear_trial_id, material_name, finish_type, trial_start_date, trial_end_date, performance_rating, wear_pattern, compared_to_lab_method, key_findings]
-    order: trial_end_date DESC
+    desc: Wear trial results for a material and/or finish showing field performance vs lab testing, with the conditions of use. For real-world validation.
+    kind: sql
+    args:
+      material_name: {desc: "Material name, e.g. polyester shell fabric (not case sensitive)"}
+      finish_type: {desc: "Finish or treatment, e.g. DWR"}
+    sql: |
+      SELECT wear_trial_id, material_name, finish_type, trial_start_date, trial_end_date, trial_environment,
+             performance_rating, wear_pattern, compared_to_lab_method, key_findings, field_conditions
+      FROM wear_trials
+      WHERE ($material_name IS NULL OR lower(material_name) = lower($material_name))
+        AND ($finish_type IS NULL OR lower(finish_type) = lower($finish_type))
+      ORDER BY trial_end_date DESC
     limit: 20
-    example: {material_name: "recycled nylon"}
+    example: {material_name: "polyester shell fabric"}
 
   - name: get_standard_test_plan_for_material_type
     desc: Standard test plan for a material type with methods, cost and timeline. For pilot planning.
@@ -492,41 +502,55 @@ tools:
     example: {sample_id: "SMU-900021"}
 
   - name: compare_material_test_data_to_reference_fabrics
-    desc: Compare material test data to reference fabric benchmarks. For durability and sustainability assessment.
+    desc: Each of a material's test results beside the matching benchmark of every reference fabric (abrasion cycles, shrinkage, DWR spray rating) with the percentage difference. For durability assessment.
     kind: sql
     args:
-      material_name: {required: true, desc: "Material name"}
-      test_method_id: {desc: "Specific test to compare"}
+      material_name: {required: true, desc: "Material name, e.g. recycled nylon (not case sensitive)"}
+      test_method_id: {desc: "Specific test to compare, e.g. TMT-0003 for abrasion"}
     sql: |
-      SELECT t.test_result_id, t.material_name, t.test_method_name, t.test_value,
-             r.reference_name, r.abrasion_cycles, r.shrinkage_pct, r.dwr_spray_rating,
-             'Compare: material value vs reference benchmark' AS comparison_note
-      FROM test_results t
-      LEFT JOIN reference_fabrics r ON TRUE
-      WHERE t.material_name = $material_name
-        AND ($test_method_id IS NULL OR t.test_method_id = $test_method_id)
-      ORDER BY t.test_date DESC
+      WITH t AS (
+        SELECT test_result_id, material_name, test_method_id, test_method_name, test_value, spec_min, spec_max, pass_fail,
+               failure_mode, test_date, notes,
+               TRY_CAST(regexp_extract(test_value, '-?[0-9.]+', 0) AS DOUBLE) AS num_value
+        FROM test_results
+        WHERE lower(material_name) = lower($material_name)
+          AND ($test_method_id IS NULL OR test_method_id = $test_method_id)
+      ), c AS (
+        SELECT t.*, r.reference_name, r.material_composition,
+               CASE t.test_method_id WHEN 'TMT-0003' THEN 'abrasion cycles' WHEN 'TMT-0002' THEN 'shrinkage %'
+                    WHEN 'TMT-0007' THEN 'DWR spray rating' END AS benchmark,
+               CASE t.test_method_id WHEN 'TMT-0003' THEN CAST(r.abrasion_cycles AS DOUBLE) WHEN 'TMT-0002' THEN r.shrinkage_pct
+                    WHEN 'TMT-0007' THEN r.dwr_spray_rating END AS reference_value
+        FROM t JOIN reference_fabrics r ON TRUE
+      )
+      SELECT test_result_id, material_name, test_method_name, test_value, spec_min, spec_max, pass_fail, failure_mode,
+             test_date, notes, reference_name, material_composition, benchmark, reference_value,
+             round(100 * (num_value - reference_value) / reference_value, 1) AS pct_vs_reference
+      FROM c
+      WHERE reference_value IS NOT NULL AND reference_value > 0
+      ORDER BY test_date, test_result_id, reference_name
     limit: 50
     example: {material_name: "recycled nylon"}
 
   - name: compare_lab_test_to_wear_trial_conditions
-    desc: Compare lab test method and conditions to real-world wear trial results and findings. For test correlation.
+    desc: A material's lab results (method, conditions, value, pass/fail) side by side with the wear trials that were meant to be predicted by those methods, with the field conditions and outcome. For test correlation.
     kind: sql
     args:
-      material_name: {required: true, desc: "Material name"}
+      material_name: {required: true, desc: "Material name, e.g. polyester shell fabric (not case sensitive)"}
       wear_trial_id: {desc: "Specific wear trial to compare"}
     sql: |
-      SELECT t.test_result_id, t.test_method_name, t.test_value, t.pass_fail,
-             w.wear_trial_id, w.trial_environment, w.performance_rating, w.wear_pattern, w.key_findings,
-             tm.description, tm.standard
+      SELECT t.test_result_id, t.test_method_id, t.test_method_name, t.test_value, t.pass_fail, t.notes AS lab_conditions,
+             tm.standard, tm.description AS method_description,
+             w.wear_trial_id, w.trial_environment, w.performance_rating, w.wear_pattern, w.key_findings, w.field_conditions
       FROM test_results t
-      LEFT JOIN wear_trials w ON t.material_name = w.material_name
       JOIN test_methods tm ON t.test_method_id = tm.test_method_id
-      WHERE t.material_name = $material_name
+      LEFT JOIN wear_trials w ON lower(t.material_name) = lower(w.material_name)
+                              AND w.compared_to_lab_method LIKE '%' || t.test_method_id || '%'
+      WHERE lower(t.material_name) = lower($material_name)
         AND ($wear_trial_id IS NULL OR w.wear_trial_id = $wear_trial_id)
-      ORDER BY t.test_date DESC, w.trial_end_date DESC
+      ORDER BY w.wear_trial_id, t.test_date, t.test_method_id
     limit: 50
-    example: {material_name: "recycled nylon"}
+    example: {material_name: "polyester shell fabric"}
 
   # Write tools
   - name: create_test_request
@@ -563,21 +587,23 @@ tools:
 
   # Draft/report tool
   - name: draft_revised_test_protocol
-    desc: Draft revised test protocol based on lab method analysis. Returns recommendations for test changes.
+    desc: Draft a revised lab test protocol for a material: each lab method it was tested with, its current conditions, the conditions the wear trial exposed it to, and the protocol changes the failure analysis recommends.
     kind: sql
     args:
-      material_name: {required: true, desc: "Material being evaluated"}
-      current_test_method: {desc: "Current test method id"}
+      material_name: {required: true, desc: "Material being evaluated, e.g. polyester shell fabric (not case sensitive)"}
+      current_test_method: {desc: "Current lab test method id, e.g. TMT-0007"}
       wear_trial_id: {desc: "Wear trial to compare against"}
     sql: |
-      SELECT tm.test_method_id, tm.name, tm.description, tm.standard,
+      SELECT DISTINCT tm.test_method_id, tm.name AS current_method, tm.standard, tm.description AS current_conditions,
              w.wear_trial_id, w.trial_environment, w.performance_rating, w.wear_pattern,
-             'Revised protocol should: 1) Increase test duration to match field conditions, ' ||
-             '2) Use same environmental controls as wear trial, ' ||
-             '3) Validate against real-world failure patterns' AS recommendations
-      FROM test_methods tm
-      LEFT JOIN wear_trials w ON $wear_trial_id IS NOT NULL AND w.wear_trial_id = $wear_trial_id
-      WHERE tm.applicable_materials LIKE '%' || $material_name || '%'
-      ORDER BY tm.test_method_id
+             w.field_conditions, w.protocol_changes AS recommended_protocol_changes
+      FROM test_results t
+      JOIN test_methods tm ON t.test_method_id = tm.test_method_id
+      JOIN wear_trials w ON lower(t.material_name) = lower(w.material_name)
+                         AND w.compared_to_lab_method LIKE '%' || t.test_method_id || '%'
+      WHERE lower(t.material_name) = lower($material_name)
+        AND ($current_test_method IS NULL OR t.test_method_id = $current_test_method)
+        AND ($wear_trial_id IS NULL OR w.wear_trial_id = $wear_trial_id)
+      ORDER BY w.wear_trial_id, tm.test_method_id
     limit: 10
-    example: {material_name: "nylon", wear_trial_id: "WTR-000001"}
+    example: {material_name: "polyester shell fabric"}

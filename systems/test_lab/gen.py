@@ -10,7 +10,7 @@ def generate(g):
     # Products, styles and lots that carry planted stories (see seed/): background noise must never touch them
     story_skus = {"SKU-100007", "SKU-100014", "SKU-100021", "SKU-100091", "SKU-100651", "SKU-100658", "SKU-101813",
                   "SKU-103164", "SKU-103199", "SKU-103745", "SKU-103808", "SKU-104123", "SKU-104795", "SKU-104809",
-                  "SKU-105551", "SKU-102590", "K-1700", "PF-220"}
+                  "SKU-105551", "SKU-102590", "SKU-100532", "K-1700", "PF-220"}
     story_styles = {"STY-4012", "STY-7731", "STY-8110", "STY-4420", "STY-4066"}
     products = g.master("products")
     skus = [p["sku"] for p in products[:60] if p["sku"] not in story_skus][:30]
@@ -53,12 +53,12 @@ def generate(g):
          "cost_gbp": 40.0, "applicable_materials": "sample",
          "requires_retest_on_fail": True, "markets": all_markets, "applies_to": "seams, garments, outerwear"},
         {"test_method_id": "TMT-0007", "name": "Water Resistance Spray Test", "category": "fabric",
-         "standard": "ISO 4920", "description": "Spray test for surface wetting resistance, rated 0 to 100",
+         "standard": "ISO 4920", "description": "Spray test for surface wetting resistance, rated 0 to 100. New fabric conditioned at 20C and 65% RH; a finish is normally rated after one soft-water wash",
          "specimen_size": "18x18cm", "duration_minutes": 30, "lead_time_days": 2,
          "cost_gbp": 45.0, "applicable_materials": "fabric,finish",
          "requires_retest_on_fail": True, "markets": all_markets, "applies_to": "water repellency, outerwear, DWR finish"},
         {"test_method_id": "TMT-0008", "name": "DWR Wash Durability", "category": "finish",
-         "standard": "ISO 4920 after ISO 6330 washes", "description": "Spray rating after repeated domestic washing",
+         "standard": "ISO 4920 after ISO 6330 washes", "description": "Spray rating after repeated ISO 6330 4N domestic washes in soft water at 40C, line-dried between washes, new fabric with no abrasion or tumble-drying; reported at 5, 10 and 20 washes",
          "specimen_size": "18x18cm", "duration_minutes": 180, "lead_time_days": 10,
          "cost_gbp": 120.0, "applicable_materials": "DWR,finish",
          "requires_retest_on_fail": True, "markets": all_markets, "applies_to": "water repellency, DWR finish"},
@@ -171,37 +171,50 @@ def generate(g):
          "dwr_wash_durability": 0, "comments": "Standard polyester baseline"},
         {"reference_fabric_id": "REF-0003", "reference_name": "Recycled Nylon Reference",
          "material_composition": "100% recycled nylon", "construction": "plain weave",
-         "abrasion_cycles": 28000, "shrinkage_pct": 2.0, "dwr_spray_rating": 0,
-         "dwr_wash_durability": 0, "comments": "Recycled nylon typical performance"},
+         "abrasion_cycles": 105000, "shrinkage_pct": 2.0, "dwr_spray_rating": 0,
+         "dwr_wash_durability": 0, "comments": "Recycled nylon typical performance (Martindale 12 kPa, as received)"},
         {"reference_fabric_id": "REF-0004", "reference_name": "Premium DWR Cotton",
          "material_composition": "100% cotton DWR", "construction": "plain weave",
-         "abrasion_cycles": 24000, "shrinkage_pct": 2.3, "dwr_spray_rating": 80,
-         "dwr_wash_durability": 30, "comments": "Standard PFAS-based DWR control"},
+         "abrasion_cycles": 24000, "shrinkage_pct": 2.3, "dwr_spray_rating": 100,
+         "dwr_wash_durability": 30, "comments": "Standard PFAS-based (C6) DWR control"},
+        {"reference_fabric_id": "REF-0005", "reference_name": "Virgin Nylon Control",
+         "material_composition": "100% virgin nylon", "construction": "plain weave",
+         "abrasion_cycles": 140000, "shrinkage_pct": 1.5, "dwr_spray_rating": 0,
+         "dwr_wash_durability": 0, "comments": "Virgin nylon baseline (Martindale 12 kPa, as received)"},
     ]
 
     # DWR alternatives
     dwr_alternatives = [
-        {"dwr_alternative_id": "DWR-0001", "product_name": "SilverFlex 300",
-         "chemical_base": "silicone", "pfas_free": True, "spray_rating": 75.0,
-         "wash_durability_cycles": 25, "cost_per_metre": 3.50,
-         "availability": "available", "supplier_id": suppliers[0] if suppliers else "SUP-0001",
-         "regulatory_status_uk": "approved", "regulatory_status_eu": "approved",
-         "regulatory_status_us": "approved", "test_data_available": True,
-         "comments": "Good performance, premium cost"},
-        {"dwr_alternative_id": "DWR-0002", "product_name": "EcoWater Pro",
-         "chemical_base": "polyurethane", "pfas_free": True, "spray_rating": 70.0,
-         "wash_durability_cycles": 20, "cost_per_metre": 2.80,
-         "availability": "available", "supplier_id": suppliers[1] if len(suppliers) > 1 else "SUP-0002",
-         "regulatory_status_uk": "approved", "regulatory_status_eu": "approved",
-         "regulatory_status_us": "pending", "test_data_available": True,
-         "comments": "Cost-effective, adequate durability"},
-        {"dwr_alternative_id": "DWR-0003", "product_name": "BioRepel Pure",
-         "chemical_base": "bio-based", "pfas_free": True, "spray_rating": 65.0,
-         "wash_durability_cycles": 15, "cost_per_metre": 4.20,
-         "availability": "limited", "supplier_id": suppliers[2] if len(suppliers) > 2 else "SUP-0003",
-         "regulatory_status_uk": "approved", "regulatory_status_eu": "approved",
-         "regulatory_status_us": "approved", "test_data_available": False,
-         "comments": "Sustainable but limited evidence"},
+        {"dwr_alternative_id": "DWR-0001", "product_name": "PFAS-free silicone DWR finish",
+         "chemical_base": "silicone", "pfas_free": True, "spray_rating": 80.0,
+         "wash_durability_cycles": 15, "cost_per_metre": 0.51,
+         "availability": "available", "supplier_id": "SUP-0079",
+         "regulatory_status_uk": "restricted: residual cyclic siloxanes D4/D5/D6 must stay below 0.1%",
+         "regulatory_status_eu": "restricted: residual cyclic siloxanes D4/D5/D6 must stay below 0.1%",
+         "regulatory_status_us": "allowed", "test_data_available": True,
+         "comments": "Independent lab data on three production lots (spray 80 after 15 washes). Good repellency, weaker oil and stain resistance. 400,000 m a month available."},
+        {"dwr_alternative_id": "DWR-0002", "product_name": "PFAS-free dendrimer DWR finish",
+         "chemical_base": "dendrimer", "pfas_free": True, "spray_rating": 90.0,
+         "wash_durability_cycles": 25, "cost_per_metre": 0.58,
+         "availability": "limited", "supplier_id": "SUP-0057",
+         "regulatory_status_uk": "allowed", "regulatory_status_eu": "allowed",
+         "regulatory_status_us": "allowed", "test_data_available": False,
+         "comments": "Closest to C6 performance but highest cost. No independent test data: figures are the supplier's own lab results on one lot. Limited production scale (60,000 m a month)."},
+        {"dwr_alternative_id": "DWR-0003", "product_name": "PFAS-free wax DWR finish",
+         "chemical_base": "wax", "pfas_free": True, "spray_rating": 70.0,
+         "wash_durability_cycles": 10, "cost_per_metre": 0.38,
+         "availability": "available", "supplier_id": "SUP-0037",
+         "regulatory_status_uk": "allowed", "regulatory_status_eu": "allowed",
+         "regulatory_status_us": "allowed", "test_data_available": True,
+         "comments": "Independent lab data on two lots (spray 70 after 10 washes). Cheapest alternative but wears off quickly and needs re-proofing. 150,000 m a month available."},
+        {"dwr_alternative_id": "DWR-0004", "product_name": "C6 fluorocarbon DWR finish (current)",
+         "chemical_base": "fluorocarbon", "pfas_free": False, "spray_rating": 100.0,
+         "wash_durability_cycles": 30, "cost_per_metre": 0.42,
+         "availability": "stock", "supplier_id": "SUP-0079",
+         "regulatory_status_uk": "under review: UK REACH PFAS restriction proposal expected",
+         "regulatory_status_eu": "phase-out: universal PFAS restriction from 2027-06-01",
+         "regulatory_status_us": "restricted by state law (California, New York, Maine)", "test_data_available": True,
+         "comments": "Current PFAS-based control finish; falls under the PFAS restriction."},
     ]
 
     # Standard test plans
@@ -214,15 +227,16 @@ def generate(g):
          "test_methods": "TMT-0001,TMT-0002,TMT-0004", "pass_fail_criteria": "All tests pass",
          "typical_cost_gbp": 150.0, "typical_duration_days": 12,
          "notes": "For new cotton suppliers"},
-        {"plan_id": "PLN-0003", "material_type": "nylon", "purpose": "Durability assessment",
-         "test_methods": "TMT-0003,TMT-0004,TMT-0008", "pass_fail_criteria": "Abrasion >25000 cycles",
-         "typical_cost_gbp": 240.0, "typical_duration_days": 18,
-         "notes": "For technical fabrics"},
+        {"plan_id": "PLN-0003", "material_type": "nylon", "purpose": "Pilot evaluation of new nylon fibres",
+         "test_methods": "TMT-0003,TMT-0004,TMT-0024,TMT-0001,TMT-0002",
+         "pass_fail_criteria": "Tensile >= 450 N; abrasion >= 25000 cycles (100000 for outerwear and bag fabrics); tear >= 18 N; rubbing fastness grade >= 4; shrinkage <= 3.0%",
+         "typical_cost_gbp": 285.0, "typical_duration_days": 14,
+         "notes": "Per candidate material, one lot, standard conditions; add wash-conditioned abrasion for technical fabrics"},
         {"plan_id": "PLN-0004", "material_type": "blended", "purpose": "New material evaluation",
-         "test_methods": "TMT-0001,TMT-0002,TMT-0003,TMT-0004,TMT-0007",
-         "pass_fail_criteria": "Meet all test minimums for category",
-         "typical_cost_gbp": 275.0, "typical_duration_days": 21,
-         "notes": "Comprehensive protocol for blends"},
+         "test_methods": "TMT-0003,TMT-0002,TMT-0024,TMT-0025,TMT-0001",
+         "pass_fail_criteria": "Abrasion >= 20000 cycles; shrinkage after 5 washes <= 3.0%; tensile >= 400 N; pilling grade >= 3.5; rubbing fastness grade >= 4",
+         "typical_cost_gbp": 295.0, "typical_duration_days": 14,
+         "notes": "Per candidate material, one lot; for fibre blends and novel fibre mixes such as cork-cotton"},
     ]
 
     # Generate test requests
@@ -246,7 +260,7 @@ def generate(g):
             "sku": r.choice(skus) if test_type in ["pack", "product"] else None,
             "sample_id": r.choice(sample_ids_for_requests) if test_type == "sample" else None,
             "lot_id": r.choice(lot_ids_for_requests) if test_type == "lot" else None,
-            "material_name": r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"])
+            "material_name": r.choice(["cotton", "polyester", "nylon", "viscose", "wool", "silk"])
                             if test_type == "material" else None,
             "test_methods": ",".join(test_methods_list),
             "requested_by": r.choice(employees),
@@ -279,7 +293,7 @@ def generate(g):
         sku = r.choice(skus) if r.random() > 0.3 else None
         sample_id = r.choice(sample_ids_to_use) if r.random() > 0.4 else None
         lot_id = r.choice(lot_ids_to_use) if r.random() > 0.3 else None
-        material_name = r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"]) \
+        material_name = r.choice(["cotton", "polyester", "nylon", "viscose", "wool", "silk"]) \
                        if r.random() > 0.4 else None
 
         fail = r.random() < 0.13
@@ -340,7 +354,7 @@ def generate(g):
     wear_trials = []
     for i in range(15):
         wear_trial_id = f"WTR-{i+1:06d}"
-        material = r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool"])
+        material = r.choice(["cotton", "polyester", "nylon", "viscose", "wool"])
         trial_start = as_of - timedelta(days=r.randint(60, 180))
         trial_end = trial_start + timedelta(days=r.randint(30, 90))
         perf_rating = r.choices(["excellent", "good", "adequate", "poor", "failed"],

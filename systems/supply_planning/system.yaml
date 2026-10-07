@@ -687,6 +687,7 @@ tools:
       secondary_supplier_id: {required: true, desc: "Second supplier for the split option, e.g. SUP-0036"}
       split_pct: {type: float, default: 50, desc: "% of units from the second supplier (50 = 50/50, 40 = 60/40)"}
       expedite_weeks: {type: int, default: 2, desc: "Weeks to compress lead time when expediting"}
+      qualification_weeks: {type: int, desc: "Weeks the second supplier needs to qualify (default: its recorded time)"}
     sql: |
       WITH p AS (SELECT sku, unit_cost_gbp, retail_price_gbp, category, lead_time_days FROM master.products WHERE sku = $sku),
       pri AS (SELECT t.*, s.otif_pct_12m, s.risk_rating FROM supplier_planning_terms t JOIN master.suppliers s USING (supplier_id) WHERE t.supplier_id = $supplier_id),
@@ -705,9 +706,9 @@ tools:
         SELECT 2, 'Split ' || CAST(round(100 - $split_pct) AS INTEGER) || '/' || CAST(round($split_pct) AS INTEGER) || ' with ' || $secondary_supplier_id,
                round($gap_units * $split_pct / 100.0 * p.unit_cost_gbp * (sec.price_index - pri.price_index) + sec.setup_cost_gbp
                      + $gap_units * $split_pct / 100.0 * (sec.freight_sea_gbp_per_unit - pri.freight_sea_gbp_per_unit), 0),
-               CAST(round(sl.sec_lead_days + 7 * sec.qualification_weeks) AS INTEGER),
+               CAST(round(sl.sec_lead_days + 7 * coalesce($qualification_weeks, sec.qualification_weeks)) AS INTEGER),
                round((100 - $split_pct) / 100.0 * pri.otif_pct_12m + $split_pct / 100.0 * sec.otif_pct_12m, 1),
-               'Second supplier risk ' || sec.risk_rating || ', OTIF ' || CAST(sec.otif_pct_12m AS VARCHAR) || '%; qualification ' || CAST(sec.qualification_weeks AS VARCHAR) || ' weeks; quality variance between mills'
+               'Second supplier risk ' || sec.risk_rating || ', OTIF ' || CAST(sec.otif_pct_12m AS VARCHAR) || '%; qualification ' || CAST(coalesce($qualification_weeks, sec.qualification_weeks) AS VARCHAR) || ' weeks; quality variance between mills'
         FROM p, pri, sec, sl
         UNION ALL
         SELECT 3, 'Shift promotion timing',

@@ -30,10 +30,11 @@ def generate(g):
         partner_id = partner["partner_id"]
 
         # Generate 3-8 orders per partner
-        num_orders = r.randint(3, 8)
+        # PTN-011 (Dubai) orders are fully seeded: no generated noise
+        num_orders = 0 if partner_id == "PTN-011" else r.randint(2, 4)
         for o in range(num_orders):
-            days_ago = r.randint(-14, 90)  # Mix of future and past orders
-            order_date_val = g.as_of + timedelta(days=days_ago)
+            days_ago = r.randint(1, 90)  # past orders only
+            order_date_val = g.as_of - timedelta(days=days_ago)
             # Convert to datetime for time operations
             order_date = datetime.combine(order_date_val, datetime.min.time())
             order_id = f"FRO-{len(orders) + 1:06d}"
@@ -51,7 +52,7 @@ def generate(g):
                 unit_cost = float(prod["unit_cost_gbp"]) if prod["unit_cost_gbp"] else 0.0
                 total_value += qty * unit_cost
 
-                received = 0 if days_ago > -7 else r.randint(0, qty)
+                received = 0 if days_ago < 7 else r.randint(0, qty)
                 hold_status = "none"
 
                 order_lines.append({
@@ -64,7 +65,7 @@ def generate(g):
                     "is_core_range": is_core
                 })
 
-            status = "open" if days_ago > -7 else r.choices(["open", "shipped", "received"], [20, 40, 40])[0]
+            status = "open" if days_ago < 7 else r.choices(["open", "shipped", "received"], [20, 40, 40])[0]
             expected_arrival = order_date + timedelta(days=r.randint(10, 30))
 
             orders.append({
@@ -79,32 +80,7 @@ def generate(g):
                 "updated_at": order_date + timedelta(days=r.randint(0, 3))
             })
 
-        # Generate stock positions
-        for prod in r.sample(products, min(40, len(products))):
-            sku = prod["sku"]
-            is_core = sku in core_range_skus
-
-            # Core range should have more realistic stock
-            if is_core:
-                on_hand = r.randint(50, 300)
-                target = r.randint(100, 200)
-            else:
-                on_hand = r.randint(10, 200)
-                target = r.randint(30, 100)
-
-            available = max(0, on_hand - r.randint(0, on_hand // 3))
-            allocated = on_hand - available
-
-            partner_stock.append({
-                "partner_id": partner_id,
-                "sku": sku,
-                "on_hand": on_hand,
-                "available": available,
-                "allocated": allocated,
-                "target_stock": target,
-                "is_core_range": is_core,
-                "last_stock_check": (g.as_of - timedelta(days=r.randint(1, 14))).isoformat()
-            })
+        # Stock positions are fully seeded (seed/partner_stock.csv)
 
         # Generate performance for last 3 months
         for month_offset in range(3):

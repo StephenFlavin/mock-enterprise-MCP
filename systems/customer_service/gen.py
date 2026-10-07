@@ -1,168 +1,185 @@
-"""Background customer service data: contacts, damage claims, complaints, and notification rules."""
+"""Customer service data: WISMO contacts (missed-scan spike), glass damage claims, zip complaints, data-error contacts."""
 from datetime import datetime, timedelta
+
+WISMO_ISSUES = ["Missed scan", "Delayed delivery", "Tracking gap", "No tracking update", "Wrong tracking info"]
+# 28-day blocks, most recent first: (first day ago, last day ago, issue counts). Recent block is +30% on the prior one,
+# and almost all of the rise is missed scans.
+WISMO_BLOCKS = [
+    (1, 28, [75, 52, 28, 17, 10]),    # 182
+    (29, 56, [28, 49, 28, 21, 14]),   # 140
+    (57, 84, [27, 49, 28, 21, 15]),   # 140
+]
+WEEKDAY_WEIGHT = [1.3, 1.1, 1.0, 1.0, 1.0, 0.8, 0.8]
+CHANNELS = ["email", "chat", "phone"]
+HANDLING = {"email": 4.2, "chat": 3.1, "phone": 7.8}
+
+# Glass breakage claims: (sku, claims in days 1-30 ago, claims in days 31-60 ago, claims in days 61-90 ago). 14 vs 10 = +40%.
+GLASS_ITEMS = [
+    ("K-1700", 6, 3, 3),
+    ("SKU-104123", 3, 2, 2),
+    ("SKU-100532", 2, 2, 1),
+    ("SKU-100091", 2, 1, 1),
+    ("SKU-104795", 1, 2, 1),
+]
+GLASS_TYPES = ["Broken glass", "Broken glass", "Broken glass", "Cracked glass"]
+OTHER_DAMAGE = ["Torn seams", "Water damage", "Dented packaging", "Crushed carton"]
+
+# Zip strength complaints on trouser style STY-T-4410 (lot LOT-900016 is SKU-100651): (sku, days ago list, safety flags)
+ZIP_COMPLAINTS = [
+    ("SKU-100651", [78, 66, 52, 41, 33, 24, 17, 11, 7, 4, 2], {7: "slider", 2: "edge"}),
+    ("SKU-100637", [70, 45, 21, 9], {9: "pinch"}),
+    ("SKU-100644", [58, 26, 13], {}),
+    ("SKU-101904", [47, 30, 15], {}),
+    ("SKU-101911", [38], {}),
+]
+ZIP_TEXT = ["Zip broke after a few wears", "Zip slider came off the trousers", "Zip teeth separated on first use",
+            "Zip stuck and would not move", "Zip pull snapped off", "Zip burst open when sitting down",
+            "Zip failed after one wash", "Fly zip would not stay closed"]
+SAFETY_TEXT = {"slider": "Zip slider snapped off with a sharp edge, cut my finger",
+               "edge": "Zip burst open and the broken metal edge scratched my child's leg",
+               "pinch": "Zip failed and jammed, pinched skin and caused a bleeding cut"}
+OTHER_DEFECTS = [("Colour mismatch", "Colour not as shown on the website"), ("Fit issue", "Sizing runs much smaller than the chart"),
+                 ("Material quality", "Fabric feels thin and has started pilling"), ("Stitching defect", "Seam came apart at the first wash")]
+
+# Product data errors behind returns and complaints: (category, error type, count in last 90 days, issue text, preferred skus)
+DATA_ERRORS = [
+    ("Cookware", "compatibility", 34, "Compatibility wrong on listing: pan not suitable for induction hob",
+     ["SKU-100805", "SKU-100812", "SKU-100819"]),
+    ("Cookware", "dimensions", 16, "Dimensions wrong on listing: pan diameter smaller than stated", []),
+    ("Cookware", "materials", 12, "Material not as described: not stainless steel as listed", []),
+    ("Bedding", "dimensions", 22, "Dimensions wrong on listing: duvet size smaller than stated", []),
+    ("Small Appliances", "compatibility", 14, "Compatibility wrong on listing: plug and voltage not as stated", []),
+    ("Lighting", "compatibility", 10, "Compatibility wrong on listing: bulb fitting does not match", []),
+    ("Outerwear", "materials", 12, "Material not as described: fabric content differs from listing", []),
+    ("Footwear", "dimensions", 9, "Dimensions wrong on listing: size guide inaccurate", []),
+]
+RESOLUTION_FACTOR = {"compatibility": 0.55, "dimensions": 0.4, "materials": 0.25}
 
 
 def generate(g):
     r = g.rng
-
-    # Get master orders to base contacts on
-    orders = g.master("orders")
+    as_of = g.as_of
     products = g.master("products")
+    by_sku = {p["sku"]: p for p in products}
+    by_cat = {}
+    for p in products:
+        by_cat.setdefault(p["category"], []).append(p["sku"])
+    apparel = [p["sku"] for p in products if p["category"] in
+               ("Trousers", "Dresses", "Shirts", "Blouses", "Tops", "T-Shirts", "Outerwear", "Knitwear")]
 
-    # Create references for lookups
-    sku_to_product = {p["sku"]: p for p in products}
-    all_skus = [p["sku"] for p in products]
-    glass_skus = [p["sku"] for p in products if p.get("category", "").lower() in ["glassware", "tableware"] or "glass" in p.get("name", "").lower()]
-    # If no glass SKUs found by category, use kettle and small appliances
-    if not glass_skus:
-        glass_skus = [p["sku"] for p in products if "kettle" in p.get("name", "").lower() or "glass" in p.get("name", "").lower()]
-    if not glass_skus:
-        glass_skus = [p["sku"] for p in products if p.get("category", "").lower() == "small appliances"][:5]
-
-    # All tables
-    contacts = []
-    damage_claims = []
-    complaints = []
-    notification_rules = []
-
-    # Generate notification rules first
-    rule_types = [
-        ("missed_scan_alert", "Alert on missed tracking scans"),
-        ("delivery_promise_alert", "Alert on missed delivery promises"),
-        ("tracking_gap_alert", "Alert on tracking information gaps"),
-    ]
-
-    for idx, (rule_type, rule_name) in enumerate(rule_types):
-        rule_id = f"NTF-{idx + 1:06d}"
-        notification_rules.append({
-            "rule_id": rule_id,
-            "rule_name": rule_name,
-            "rule_type": rule_type,
-            "status": "inactive",  # Will be activated in seed data for story
-            "enabled_at": None,
-            "estimated_contacts_prevented": 0,
-            "last_modified": g.as_of,
-        })
-
-    # Generate customer service contacts
-    # Base contacts on orders from last 90 days
-    contact_reasons = ["wismo", "damage", "complaint", "return", "other"]
-    wismo_issues = ["Missed scan", "Delayed delivery", "Tracking gap", "Wrong tracking info", "No tracking update"]
-    contact_types = ["email", "chat", "phone"]
-
-    contact_id_counter = 0
-    claim_id_counter = 0
-    complaint_id_counter = 0
-
-    for order in orders:
-        order_date = datetime.fromisoformat(order["order_date"])
-        days_since = (g.as_of - order_date.date()).days
-
-        # Only generate contacts for recent orders (within 60 days)
-        if not 0 <= days_since <= 60:
+    orders_by_date = {}
+    for o in g.master("orders"):
+        if o["status"] in ("cancelled", "placed", "picking"):
             continue
+        orders_by_date.setdefault(o["order_date"], []).append(o["order_id"])
 
-        # ~5-8% of orders generate a customer service contact
-        if r.random() > 0.07:
-            continue
+    def pick_order(dt):
+        for _ in range(30):
+            d = (dt - timedelta(days=r.randint(2, 12))).date().isoformat()
+            if orders_by_date.get(d):
+                return r.choice(orders_by_date[d])
+        return r.choice(orders_by_date[sorted(orders_by_date)[-1]])
 
-        # Generate 1-3 contacts per order that does have an issue
-        num_contacts = r.randint(1, 3) if r.random() > 0.7 else 1
+    def stamp(days_ago, hour_weights=True):
+        d = datetime.combine(as_of - timedelta(days=days_ago), datetime.min.time())
+        return d + timedelta(hours=r.randint(7, 21), minutes=r.randint(0, 59))
 
-        for _ in range(num_contacts):
-            contact_id_counter += 1
-            contact_id = f"CSC-{contact_id_counter:06d}"
+    contacts, claims, complaints = [], [], []
+    n = {"c": 0, "s": 900000}
 
-            # Most are WISMO (70%), then damage (15%), complaint (10%), other (5%)
-            if r.random() < 0.70:
-                reason = "wismo"
-                issue = r.choice(wismo_issues)
-            elif r.random() < 0.15:
-                reason = "damage"
-                issue = "Item arrived damaged"
-            elif r.random() < 0.10:
-                reason = "complaint"
-                issue = "Product quality issue"
+    def add_contact(dt, reason, issue, sku=None, order_id=None, error=None, cost_extra=0.0, story=False, ctype=None):
+        if story:
+            n["s"] += 1
+            cid = f"CSC-{n['s']:06d}"
+        else:
+            n["c"] += 1
+            cid = f"CSC-{n['c']:06d}"
+        ctype = ctype or r.choices(CHANNELS, [0.5, 0.3, 0.2])[0]
+        resp = round(r.uniform(0.5, 36), 1)
+        age = (as_of - dt.date()).days
+        status = "resolved" if age > 6 and r.random() < 0.95 else r.choices(["resolved", "open", "escalated"], [0.6, 0.3, 0.1])[0]
+        resolved = dt + timedelta(hours=resp + r.uniform(1, 60)) if status == "resolved" else None
+        cost = HANDLING[ctype] * r.uniform(0.85, 1.2) + cost_extra
+        contacts.append({
+            "contact_id": cid, "contact_date": dt, "order_id": order_id or pick_order(dt), "sku": sku, "reason": reason,
+            "issue": issue, "data_error_type": error, "contact_type": ctype, "status": status,
+            "response_time_hours": resp, "resolved_at": resolved, "cost_gbp": round(cost, 2)})
+        return cid, contacts[-1]["order_id"]
+
+    # ---- WISMO: blocks of 28 days, weekday-weighted exact allocation
+    for first, last, counts in WISMO_BLOCKS:
+        issues = [i for i, c in zip(WISMO_ISSUES, counts) for _ in range(c)]
+        r.shuffle(issues)
+        days = list(range(first, last + 1))
+        w = [WEEKDAY_WEIGHT[(as_of - timedelta(days=d)).weekday()] for d in days]
+        total = sum(counts)
+        raw = [total * x / sum(w) for x in w]
+        alloc = [int(x) for x in raw]
+        for i in sorted(range(len(days)), key=lambda i: raw[i] - alloc[i], reverse=True)[: total - sum(alloc)]:
+            alloc[i] += 1
+        k = 0
+        for d, c in zip(days, alloc):
+            for _ in range(c):
+                add_contact(stamp(d), "wismo", issues[k])
+                k += 1
+
+    # ---- general background contacts (not WISMO): returns, other
+    for _ in range(70):
+        add_contact(stamp(r.randint(1, 84)), "return", "Return inquiry")
+    for _ in range(45):
+        add_contact(stamp(r.randint(1, 84)), "other", r.choice(["Change delivery address", "Account query", "Promo code not applied", "Invoice request"]))
+
+    # ---- damage claims: glass breakage up 40%, flat background of other damage
+    def add_claim(days_ago, sku, dtype, story):
+        dt = stamp(days_ago)
+        p = by_sku[sku]
+        cid, oid = add_contact(dt, "damage", "Item arrived damaged", sku=sku, story=story)
+        amount = float(p["retail_price_gbp"]) * r.choice([1, 1, 1, 2])
+        n["claim"] = n.get("claim", 0) + 1
+        claims.append({
+            "claim_id": f"CLM-{900000 + n['claim']:06d}" if story else f"CLM-{n['claim']:06d}",
+            "order_id": oid, "contact_id": cid, "sku": sku, "item_name": p["name"], "damage_type": dtype,
+            "claim_amount_gbp": round(amount, 2), "claim_date": dt,
+            "status": "paid" if days_ago > 25 else r.choice(["new", "investigating", "approved", "paid"])})
+
+    for sku, recent, prior, older in GLASS_ITEMS:
+        for count, lo, hi in ((recent, 3, 28), (prior, 33, 58), (older, 63, 88)):
+            for d in sorted(r.sample(range(lo, hi + 1), count)):
+                add_claim(d, sku, r.choice(GLASS_TYPES), True)
+    apparel_or_home = [s for s in apparel] + by_cat["Bedding"]
+    for _ in range(55):
+        add_claim(r.randint(1, 88), r.choice(apparel_or_home), r.choice(OTHER_DAMAGE), False)
+
+    # ---- complaints
+    def add_complaint(days_ago, sku, defect, text, severity, safety, story):
+        dt = stamp(days_ago)
+        cid, oid = add_contact(dt, "complaint", f"Product quality: {defect}", sku=sku, story=story)
+        n["cmp"] = n.get("cmp", 0) + 1
+        complaints.append({
+            "complaint_id": f"CMP-{900000 + n['cmp']:06d}" if story else f"CMP-{n['cmp']:06d}",
+            "complaint_date": dt, "order_id": oid, "contact_id": cid, "sku": sku, "defect_type": defect,
+            "description": text, "severity": severity, "safety_related": safety,
+            "status": "investigating" if days_ago < 30 else r.choice(["investigating", "resolved", "resolved"])})
+
+    for sku, days, flags in ZIP_COMPLAINTS:
+        for d in days:
+            if d in flags:
+                add_complaint(d, sku, "Zip strength", SAFETY_TEXT[flags[d]], "critical" if flags[d] != "pinch" else "high", True, True)
             else:
-                reason = "return"
-                issue = "Return inquiry"
+                add_complaint(d, sku, "Zip strength", r.choice(ZIP_TEXT), r.choice(["high", "high", "medium"]), False, True)
+    for _ in range(46):
+        defect, text = r.choice(OTHER_DEFECTS)
+        add_complaint(r.randint(1, 88), r.choice(apparel), defect, text, r.choice(["low", "low", "medium", "high"]), False, False)
 
-            # Contact date is 2-14 days after order (when they notice the issue)
-            days_after_order = r.randint(2, 14)
-            contact_dt = datetime.combine(order_date.date(), datetime.min.time()) + timedelta(days=days_after_order)
-            contact_dt += timedelta(hours=r.randint(0, 23), minutes=r.randint(0, 59))
+    # ---- product data errors behind returns / complaints
+    for cat, error, count, issue, preferred in DATA_ERRORS:
+        for _ in range(count):
+            sku = r.choice(preferred) if preferred and r.random() < 0.6 else r.choice(by_cat[cat])
+            price = float(by_sku[sku]["retail_price_gbp"])
+            extra = price * RESOLUTION_FACTOR[error] * r.uniform(0.8, 1.2)
+            add_contact(stamp(r.randint(3, 88)), "complaint" if error == "materials" else "return", issue,
+                        sku=sku, error=error, cost_extra=extra, story=False)
 
-            # First response typically 1-48 hours
-            response_hours = r.uniform(0.5, 48)
-
-            status = r.choices(["resolved", "open", "escalated"], [0.85, 0.10, 0.05])[0]
-            resolved_at = None
-            if status == "resolved":
-                resolved_at = contact_dt + timedelta(hours=response_hours + r.uniform(1, 72))
-
-            contacts.append({
-                "contact_id": contact_id,
-                "contact_date": contact_dt,
-                "order_id": order["order_id"],
-                "reason": reason,
-                "issue": issue,
-                "contact_type": r.choice(contact_types),
-                "status": status,
-                "response_time_hours": round(response_hours, 1),
-                "resolved_at": resolved_at,
-            })
-
-            # If damage reason, create a damage claim
-            if reason == "damage":
-                claim_id_counter += 1
-                claim_id = f"CLM-{claim_id_counter:06d}"
-
-                # Pick a random SKU, preferring glass/appliance items for damage claims
-                sku = r.choice(glass_skus if glass_skus else all_skus)
-                product = sku_to_product.get(sku, {})
-
-                damage_types = ["Broken glass", "Dented packaging", "Water damage", "Torn seams", "Cracked item"]
-                claim_amount = r.uniform(15, 150)
-
-                damage_claims.append({
-                    "claim_id": claim_id,
-                    "order_id": order["order_id"],
-                    "contact_id": contact_id,
-                    "sku": sku,
-                    "item_name": product.get("name", "Product"),
-                    "damage_type": r.choice(damage_types),
-                    "claim_amount_gbp": round(claim_amount, 2),
-                    "claim_date": contact_dt,
-                    "status": r.choices(["new", "investigating", "approved", "paid"], [0.3, 0.4, 0.2, 0.1])[0],
-                })
-
-            # If complaint reason, create a complaint
-            if reason == "complaint":
-                complaint_id_counter += 1
-                complaint_id = f"CMP-{complaint_id_counter:06d}"
-
-                # Pick a random SKU for complaints
-                sku = r.choice(all_skus)
-                product = sku_to_product.get(sku, {})
-
-                defect_types = ["Zip strength", "Colour mismatch", "Fit issue", "Material quality", "Stitching defect"]
-                severity_dist = r.choices(["low", "medium", "high", "critical"], [0.4, 0.35, 0.2, 0.05])[0]
-
-                complaints.append({
-                    "complaint_id": complaint_id,
-                    "complaint_date": contact_dt,
-                    "order_id": order["order_id"],
-                    "contact_id": contact_id,
-                    "sku": sku,
-                    "defect_type": r.choice(defect_types),
-                    "description": f"Customer reported {issue.lower()} with product.",
-                    "severity": severity_dist,
-                    "status": r.choices(["new", "investigating", "resolved"], [0.4, 0.4, 0.2])[0],
-                })
-
-    return {
-        "customer_service_contacts": contacts,
-        "damage_claims": damage_claims,
-        "complaints": complaints,
-        "notification_rules": notification_rules,
-    }
+    rules = []  # seeded in seed/notification_rules.csv
+    return {"customer_service_contacts": contacts, "damage_claims": claims, "complaints": complaints,
+            "notification_rules": rules}

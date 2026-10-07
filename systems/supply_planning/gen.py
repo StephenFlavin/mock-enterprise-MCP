@@ -378,6 +378,8 @@ def generate(g):
         if not po or l["sku"] not in cat_of:
             continue
         due = g.as_of.__class__.fromisoformat(po["due_date"])
+        if (due - monday).days < 0:  # already due: assume received or stale
+            continue
         wk = max(0, (due - monday).days // 7)
         if wk < 12:
             inbound_units[(po["dest_site_id"], cat_of[l["sku"]], wk)] += int(l["qty_ordered"])
