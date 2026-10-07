@@ -156,7 +156,8 @@ def generate(g):
             bq, bc, br, bh, bf, bcomp = prof
         else:
             bq, bc = RISK_Q[risk] + r.gauss(0, 3), r.gauss(76, 6)
-            br, bh, bf, bcomp = r.gauss(80, 5), clamp(r.gauss(42, 8), 22, 64), r.gauss(70, 7), RISK_C[risk] + r.gauss(0, 3)
+            br, bh, bf, bcomp = r.gauss(80, 5), clamp(r.gauss(42, 8), 22, 64), r.gauss(70, 7), min(93, RISK_C[risk] + r.gauss(0, 3))
+            bq = min(94, bq)
         agreed = round(agreed_mean.get(sid, r.randint(28, 80)))
         actual = actual_mean.get(sid, agreed)
         for idx, month in enumerate(months):

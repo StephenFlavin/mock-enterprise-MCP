@@ -343,6 +343,30 @@ def generate(g):
                delay_fn=lambda i: r.randint(61, 105),
                route_fn=lambda p, reason, d: r.choices(["recycled", "liquidated"], [75, 25])[0])
 
+    # ---- product data errors: "not as described" returns carry what was wrong in the product data -----------------
+    # Separate RNG and relabelling only (no rows added or removed), so every other story and total is unchanged.
+    import random
+    dr = random.Random(5906)
+    compat_cats = {"Cookware", "Smart Home", "Lighting", "Small Appliances", "Audio", "Personal Care"}
+    dim_cats = {"Storage", "Bedding", "Towels", "Drinkware", "Bags"}
+    mat_cats = {"Knitwear", "Outerwear", "Footwear", "Jewellery", "Scarves", "Trousers", "Shirts", "Dresses",
+                "Blouses", "Tops", "T-Shirts", "Nightwear", "Babywear", "Schoolwear"}
+    err_w = {"compat": (["COMPAT_WRONG", "DIMENSIONS_WRONG", "MATERIAL_WRONG", None], [45, 20, 15, 20]),
+             "dim": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG", None], [55, 15, 2, 28]),
+             "mat": (["MATERIAL_WRONG", "DIMENSIONS_WRONG", None], [40, 12, 48]),
+             "other": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG", None], [22, 18, 8, 52])}
+    convert = {"Cookware": 0.7, "Smart Home": 0.5, "Lighting": 0.5, "Storage": 0.5, "Drinkware": 0.4,
+               "Small Appliances": 0.25}
+    for x in rows:
+        if x["sku"] in story_skus or x["defect_code"]:
+            continue
+        if x["return_reason_code"] == "CHANGED_MIND" and dr.random() < convert.get(x["category"], 0):
+            x["return_reason_code"] = "NOT_AS_DESCRIBED"
+        if x["return_reason_code"] == "NOT_AS_DESCRIBED":
+            c = x["category"]
+            kind = "compat" if c in compat_cats else "dim" if c in dim_cats else "mat" if c in mat_cats else "other"
+            x["defect_code"] = dr.choices(*err_w[kind])[0]
+
     # ---- order and number ------------------------------------------------------------------------------------
     rows.sort(key=lambda x: (x["return_date"], x["order_id"], x["sku"]))
     for i, row in enumerate(rows, 1):
@@ -418,6 +442,13 @@ def generate(g):
          "measured_from_date": as_of - timedelta(days=56)},
         {"pack_type": "recycled_plastic", "category": "Small Appliances", "material": "recycled PET clamshell",
          "basis": "supplier pilot shipments", "damage_rate_pct": 3.1, "sample_size": 420,
+         "measured_from_date": as_of - timedelta(days=56)},
+        # new Personal Care product SKU-100091: rigid box vs flexible pouch, supplier test shipments
+        {"pack_type": "rigid_box", "category": "Personal Care", "material": "rigid plastic box",
+         "basis": "supplier pilot shipments", "damage_rate_pct": 2.1, "sample_size": 520,
+         "measured_from_date": as_of - timedelta(days=56)},
+        {"pack_type": "pouch", "category": "Personal Care", "material": "recycled plastic flexible pouch",
+         "basis": "supplier pilot shipments", "damage_rate_pct": 6.4, "sample_size": 560,
          "measured_from_date": as_of - timedelta(days=56)},
     ]
 

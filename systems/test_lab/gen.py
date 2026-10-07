@@ -279,7 +279,7 @@ def generate(g):
         sku = r.choice(skus) if r.random() > 0.3 else None
         sample_id = r.choice(sample_ids_to_use) if r.random() > 0.4 else None
         lot_id = r.choice(lot_ids_to_use) if r.random() > 0.3 else None
-        material_name = r.choice(["cotton", "nylon", "recycled nylon", "wool", "silk", "viscose"]) \
+        material_name = r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"]) \
                        if r.random() > 0.4 else None
 
         fail = r.random() < 0.13

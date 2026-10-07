@@ -191,6 +191,18 @@ def generate(g):
         add_inspection(lot, "final", fu, fdf, d - 3)
         lot["status"], lot["lot_disposition"] = st, disp
 
+    # ---- 06:53:Q1 size 14 trousers (SKU-100651, STY-T-4410) run small at the hip at FAC-0072; the lot LOT-900004 reading is seeded ----
+    for d, hip, inseam in ((70, 94.2, 81.2), (56, 94.6, 80.8), (42, 94.1, 81.1), (28, 94.4, 80.9)):
+        lot = new_lot("SKU-100651", "FAC-0072", d, qty=1200)
+        ins = add_inspection(lot, "final", 150, 4, d - 3)
+        lot["status"], lot["lot_disposition"] = "released", "release"
+        for mtype, actual, spec, tol in (("hip_width", hip, 95.5, 1.0), ("inseam", inseam, 81.0, 1.5)):
+            n["msr"] += 1
+            measurements.append({"measurement_id": f"MSR-{910000 + n['msr']}", "inspection_id": ins["inspection_id"], "lot_id": lot["lot_id"],
+                                 "measurement_type": mtype, "actual_value": actual, "spec_value": spec,
+                                 "tolerance_lower": round(spec - tol, 1), "tolerance_upper": round(spec + tol, 1), "unit": "cm",
+                                 "pass": abs(actual - spec) <= tol, "created_at": ins["inspected_at"]})
+
     # ---- 05:42:Q1 earlier pink lots on the old recipe passed (the seven failing lots are in seed/) -------------------------
     for i, (batch, sku, d, grade) in enumerate([("BATCH-POL-PINK-P01", "SKU-100007", 84, 4.0), ("BATCH-POL-PINK-P02", "SKU-100014", 77, 5.0)]):
         lot = new_lot(sku, "FAC-0121", d, qty=1000 + 100 * i, batch=batch)

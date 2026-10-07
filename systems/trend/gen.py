@@ -21,6 +21,7 @@ LEAD = {  # weeks a market leads the UK (negative = lags)
     "Home": {"UK": 0, "US": -4, "Germany": 14},
     "General": {"UK": 0, "US": 0, "Germany": 0},
 }
+LEAD_OVERRIDE = {("oversized outerwear", "US"): 14, ("oversized outerwear", "Germany"): -4}  # US is already past peak
 SCALE = {"UK": 1.0, "US": 0.92, "Germany": 0.88}
 MENTION_SCALE = {"UK": 1.0, "US": 2.0, "Germany": 0.7}
 
@@ -28,7 +29,7 @@ TERMS = {
     # Womenswear
     "quiet luxury": ("Womenswear", (-31, 16, 14, 86), 12, (60, 56)),
     "bold maximalism": ("Womenswear", (40, 30, 8, 80), 20, (70, 76)),
-    "oversized outerwear": ("Womenswear", (4, 24, 18, 80), 36, (74, 62)),
+    "oversized outerwear": ("Womenswear", (4, 16, 18, 80), 36, (74, 62)),
     "chocolate brown": ("Womenswear", (25, 22, 15, 78), 22, (72, 76)),
     "butter yellow": ("Womenswear", (-14, 10, 10, 82), 28, (80, 58)),
     "boucle knitwear": ("Womenswear", (30, 36, 20, 70), 12, (68, 70)),
@@ -110,7 +111,7 @@ def generate(g):
     for term, (cat, (tp, w, base, peak), per_pt, (s0, s1)) in TERMS.items():
         cat_of[term] = cat
         for m in MARKETS:
-            lead = LEAD[cat][m]
+            lead = LEAD_OVERRIDE.get((term, m), LEAD[cat][m])
             prev = None
             for k in range(52, -1, -1):
                 t = -k
