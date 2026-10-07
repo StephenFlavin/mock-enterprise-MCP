@@ -2,13 +2,10 @@
 from datetime import datetime, timedelta
 
 WISMO_ISSUES = ["Missed scan", "Delayed delivery", "Tracking gap", "No tracking update", "Wrong tracking info"]
-# 28-day blocks, most recent first: (first day ago, last day ago, issue counts). Recent block is +30% on the prior one,
-# and almost all of the rise is missed scans.
-WISMO_BLOCKS = [
-    (1, 28, [75, 52, 28, 17, 10]),    # 182
-    (29, 56, [28, 49, 28, 21, 14]),   # 140
-    (57, 84, [27, 49, 28, 21, 15]),   # 140
-]
+# WISMO per day ramps from 5/day (56+ days ago) to 8.5/day (yesterday): last 28 days are ~+30% on the 28 days before.
+# Missed-scan share of WISMO ramps from 20% to ~42% and drives most of the rise.
+WISMO_DAYS = 84
+OTHER_MIX = [0.35, 0.20, 0.15, 0.10]  # delayed, tracking gap, no update, wrong info (share of non-missed-scan)
 WEEKDAY_WEIGHT = [1.3, 1.1, 1.0, 1.0, 1.0, 0.8, 0.8]
 CHANNELS = ["email", "chat", "phone"]
 HANDLING = {"email": 4.2, "chat": 3.1, "phone": 7.8}
@@ -106,22 +103,21 @@ def generate(g):
             "response_time_hours": resp, "resolved_at": resolved, "cost_gbp": round(cost, 2)})
         return cid, contacts[-1]["order_id"]
 
-    # ---- WISMO: blocks of 28 days, weekday-weighted exact allocation
-    for first, last, counts in WISMO_BLOCKS:
-        issues = [i for i, c in zip(WISMO_ISSUES, counts) for _ in range(c)]
-        r.shuffle(issues)
-        days = list(range(first, last + 1))
-        w = [WEEKDAY_WEIGHT[(as_of - timedelta(days=d)).weekday()] for d in days]
-        total = sum(counts)
-        raw = [total * x / sum(w) for x in w]
-        alloc = [int(x) for x in raw]
-        for i in sorted(range(len(days)), key=lambda i: raw[i] - alloc[i], reverse=True)[: total - sum(alloc)]:
-            alloc[i] += 1
-        k = 0
-        for d, c in zip(days, alloc):
-            for _ in range(c):
-                add_contact(stamp(d), "wismo", issues[k])
-                k += 1
+    # ---- WISMO: smooth ramp, weekday-weighted, missed-scan share rising
+    carry = 0.0
+    acc = [0.0] * len(WISMO_ISSUES)
+    for age in range(WISMO_DAYS, 0, -1):
+        rate = 5.0 + 3.5 * max(0.0, (56 - age) / 55.0)
+        carry += rate * WEEKDAY_WEIGHT[(as_of - timedelta(days=age)).weekday()] / 0.99
+        count, carry = int(carry), carry - int(carry)
+        ms = 0.20 + 0.22 * max(0.0, (56 - age) / 55.0)
+        weights = [ms] + [(1 - ms) * x / sum(OTHER_MIX) for x in OTHER_MIX]
+        for _ in range(count):  # stratified (low variance) allocation of issues
+            for i, wt in enumerate(weights):
+                acc[i] += wt
+            k = max(range(len(acc)), key=lambda i: acc[i])
+            acc[k] -= 1.0
+            add_contact(stamp(age), "wismo", WISMO_ISSUES[k])
 
     # ---- general background contacts (not WISMO): returns, other
     for _ in range(70):
@@ -143,7 +139,7 @@ def generate(g):
             "status": "paid" if days_ago > 25 else r.choice(["new", "investigating", "approved", "paid"])})
 
     for sku, recent, prior, older in GLASS_ITEMS:
-        for count, lo, hi in ((recent, 3, 28), (prior, 33, 58), (older, 63, 88)):
+        for count, lo, hi in ((recent, 7, 24), (prior, 37, 54), (older, 63, 88)):
             for d in sorted(r.sample(range(lo, hi + 1), count)):
                 add_claim(d, sku, r.choice(GLASS_TYPES), True)
     apparel_or_home = [s for s in apparel] + by_cat["Bedding"]
@@ -177,7 +173,7 @@ def generate(g):
             sku = r.choice(preferred) if preferred and r.random() < 0.6 else r.choice(by_cat[cat])
             price = float(by_sku[sku]["retail_price_gbp"])
             extra = price * RESOLUTION_FACTOR[error] * r.uniform(0.8, 1.2)
-            add_contact(stamp(r.randint(3, 88)), "complaint" if error == "materials" else "return", issue,
+            add_contact(stamp(r.randint(3, 80)), "complaint" if error == "materials" else "return", issue,
                         sku=sku, error=error, cost_extra=extra, story=False)
 
     rules = []  # seeded in seed/notification_rules.csv

@@ -66,11 +66,9 @@ tools:
     args:
       weeks_back: {type: int, desc: "Number of weekly periods to return", default: 8}
     sql: |
-      WITH c AS (
-        SELECT GREATEST(CAST($as_of AS DATE) - CAST(contact_date AS DATE) - 1, 0) // 7 AS idx
-        FROM customer_service_contacts WHERE reason = 'wismo' AND CAST(contact_date AS DATE) <= CAST($as_of AS DATE)
-      ),
-      b AS (SELECT idx, count(*) AS n FROM c GROUP BY idx),
+      WITH d AS (SELECT CAST(contact_date AS DATE) AS dt FROM customer_service_contacts WHERE reason = 'wismo'),
+      m AS (SELECT max(dt) AS last_day FROM d),
+      b AS (SELECT CAST(CAST(m.last_day - d.dt AS INTEGER) // 7 AS INTEGER) AS idx, count(*) AS n FROM d, m GROUP BY idx),
       w AS (
         SELECT idx, n,
           LEAD(n) OVER (ORDER BY idx) AS prev_week,
@@ -80,13 +78,13 @@ tools:
       ),
       x AS (SELECT *, LEAD(roll4, 4) OVER (ORDER BY idx) AS prior_roll4, LEAD(roll4_n, 4) OVER (ORDER BY idx) AS prior_roll4_n FROM w)
       SELECT
-        CAST($as_of AS DATE) - 7 * (idx + 1) AS week_start,
-        CAST($as_of AS DATE) - 7 * idx - 1 AS week_end,
+        m.last_day - CAST(7 * idx + 6 AS INTEGER) AS week_start,
+        m.last_day - CAST(7 * idx AS INTEGER) AS week_end,
         n AS contacts,
         ROUND(100.0 * (n - prev_week) / NULLIF(prev_week, 0), 1) AS pct_change_vs_prior_week,
         CASE WHEN roll4_n = 4 THEN roll4 END AS last_4_weeks_contacts,
         CASE WHEN roll4_n = 4 AND prior_roll4_n = 4 THEN ROUND(100.0 * (roll4 - prior_roll4) / NULLIF(prior_roll4, 0), 1) END AS pct_change_vs_prior_4_weeks
-      FROM x
+      FROM x, m
       WHERE idx < $weeks_back
       ORDER BY idx
     limit: 20
@@ -98,7 +96,7 @@ tools:
     args:
       date_from: {type: date, desc: "Start of the period, which runs to today; compared with the same length before it", default: "-28d"}
     sql: |
-      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST($as_of AS DATE) - CAST($date_from AS DATE) AS span),
+      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span),
       cur AS (
         SELECT c.issue, count(*) AS n, count(DISTINCT c.order_id) AS orders
         FROM customer_service_contacts c, p
@@ -108,7 +106,7 @@ tools:
       prev AS (
         SELECT c.issue, count(*) AS n
         FROM customer_service_contacts c, p
-        WHERE c.reason = 'wismo' AND CAST(c.contact_date AS DATE) >= p.d0 - p.span AND CAST(c.contact_date AS DATE) < p.d0
+        WHERE c.reason = 'wismo' AND CAST(c.contact_date AS DATE) >= p.d0 - CAST(p.span AS INTEGER) AND CAST(c.contact_date AS DATE) < p.d0
         GROUP BY c.issue
       )
       SELECT
@@ -132,7 +130,7 @@ tools:
       damage_type: {type: str, desc: "Damage type words, e.g. 'glass' for breakage or 'dented'"}
       sku: {}
     sql: |
-      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST($as_of AS DATE) - CAST($date_from AS DATE) AS span),
+      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span),
       cur AS (
         SELECT d.sku, count(*) AS n, round(sum(d.claim_amount_gbp), 2) AS total, round(avg(d.claim_amount_gbp), 2) AS avg_claim, mode(d.damage_type) AS main_type
         FROM damage_claims d, p
@@ -143,7 +141,7 @@ tools:
       prev AS (
         SELECT d.sku, count(*) AS n
         FROM damage_claims d, p
-        WHERE CAST(d.claim_date AS DATE) >= p.d0 - p.span AND CAST(d.claim_date AS DATE) < p.d0
+        WHERE CAST(d.claim_date AS DATE) >= p.d0 - CAST(p.span AS INTEGER) AND CAST(d.claim_date AS DATE) < p.d0
           AND ($damage_type IS NULL OR d.damage_type ILIKE '%' || $damage_type || '%') AND ($sku IS NULL OR d.sku = $sku)
         GROUP BY d.sku
       ),
