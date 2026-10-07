@@ -193,6 +193,15 @@ def generate(g):
                 for d in sorted(r.sample(range(7), k)):
                     a, b = r.choice([("09:00", "15:00"), ("09:00", "17:00"), ("12:00", end), ("16:00", end), ("13:00", end)])
                     spec.append((s, d, a, b, r.choice(["till", "till", "shelf"])))
+        # real stores never leave one person alone on the tills on a Thursday afternoon
+        def thursday_tills():
+            return [x for x in spec if x[1] == 3 and x[4] == "till" and x[2] <= "15:00" < x[3]]
+        crew = [s for s in by_site[site] if s["role"] in ("Team Leader", "Sales Assistant") and s["status"] in ("active", "agency")]
+        for s in crew:
+            if len(thursday_tills()) >= 2:
+                break
+            if not any(x[0] is s and x[1] == 3 and x[4] == "till" for x in spec):
+                spec = [x for x in spec if not (x[0] is s and x[1] == 3)] + [(s, 3, "09:00", "17:00", "till")]
         return spec
 
     def st159_override(spec):
@@ -206,6 +215,7 @@ def generate(g):
         out.append((cam, 3, "12:00", "18:00", "till"))
         return out
 
+    stable = {}
     for site in ["ST214", "ST150"] + rota_stores:
         weeks = range(-13, 2) if site in ("ST214", "ST150") else range(-8, 2)
         for n in weeks:
@@ -221,10 +231,10 @@ def generate(g):
             elif site == "ST150":
                 add_shifts(rota, spec150)
             else:
-                spec = generic_spec(site)
-                if site == "ST159":
-                    spec = st159_override(spec)
-                add_shifts(rota, spec)
+                if site not in stable:  # real rotas repeat week after week
+                    spec = generic_spec(site)
+                    stable[site] = st159_override(spec) if site == "ST159" else spec
+                add_shifts(rota, stable[site])
 
     # a few shifts changed after publication in past weeks (swaps), at random generic stores
     for sh in r.sample([x for x in shifts if not x["shift_id"].startswith("SFT-9") and x["shift_date"] < mon0], 40):
@@ -298,7 +308,7 @@ def generate(g):
             elif sid == "ST150":
                 pct, hours = month_pct[sid][mi] + r.uniform(-0.05, 0.05), hours150 + r.choice([-4, 0, 0, 4])
             else:
-                pct = (month_pct[sid][mi] if sid in month_pct else base_pct[sid]) + r.uniform(-0.15, 0.15)
+                pct = month_pct[sid][mi] + r.uniform(-0.04, 0.04) if sid in month_pct else base_pct[sid] + r.uniform(-0.15, 0.15)
                 hours = None
             if hours is None:  # paid hours follow the establishment (with overtime), sales follow from the labour %
                 hours = sum(x["contract_hours"] for x in by_site[sid] if x["status"] in ("active", "agency")) * r.uniform(0.97, 1.07)

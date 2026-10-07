@@ -139,12 +139,17 @@ def generate(g):
     # ---- price changes on top SKUs: older history only; last week's moves are in seed/price_changes.csv ----
     reasons = ["Promotion", "Seasonal", "Competitor match", "Clearance", "New season"]
     price_changes = []
+    seen_pc = set()
     for sku in top[:100]:
         for _ in range(r.randint(1, 2)):
             old = float(products[sku]["retail_price_gbp"])
             pct = round(r.uniform(-15, 8), 1)
+            when = g.date_between(120, 40)
+            if (sku, when) in seen_pc:
+                continue
+            seen_pc.add((sku, when))
             price_changes.append({
-                "sku": sku, "changed_at": g.date_between(120, 40), "old_price_gbp": old,
+                "sku": sku, "changed_at": when, "old_price_gbp": old,
                 "new_price_gbp": round(old * (1 + pct / 100), 2), "change_pct": pct, "reason": r.choice(reasons),
             })
 

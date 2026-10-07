@@ -28,17 +28,17 @@ STORY = {
     "ST214": dict(shrink=ramp(0.92, 1.01), avail=ramp(96.1, 94.2), labour=ramp(11.7, 12.2), spv=10.2, plan=80000.0,
                   var=[1.4, 1.1, 0.6, 0.5, 0.3, 0.2, -2.6, -3.9, -5.1, -6.2, -7.0, -7.8], mplan=32.0, mgap=-1.0),
     # UK North's three weakest stores
-    "ST143": dict(shrink=ramp(2.0, 2.8), avail=ramp(94.5, 92.3), labour=ramp(11.8, 12.1), spv=9.5, plan=36000.0,
+    "ST143": dict(shrink=ramp(2.0, 2.8), avail=ramp(94.5, 92.3), labour=ramp(11.8, 12.1), spv=9.5, plan=36000.0, actual=24900.0,
                   var=[-1, -3, -4, -6, -8, -10, -12, -15, -19, -23, -27, -30.8], mplan=32.5, mact=26.1),
-    "ST142": dict(shrink=ramp(1.2, 1.9), avail=ramp(95.2, 94.0), labour=ramp(11.5, 11.8), spv=10.0, plan=34900.0,
+    "ST142": dict(shrink=ramp(1.2, 1.9), avail=ramp(95.2, 94.0), labour=ramp(11.5, 11.8), spv=10.0, plan=34900.0, actual=28400.0,
                   var=[0, -1, -2, -3, -5, -7, -9, -11, -13, -15, -17, -18.6], mplan=31.5, mact=28.2),
-    "ST150": dict(shrink=ramp(1.6, 2.2), avail=ramp(95.0, 94.4), labour=ramp(13.6, 14.6), spv=11.0, plan=68900.0,
+    "ST150": dict(shrink=ramp(1.6, 2.2), avail=ramp(95.0, 94.4), labour=ramp(13.6, 14.6), spv=11.0, plan=68900.0, actual=64300.0,
                   var=[-1.0, -1.5, -2, -2.5, -3, -3.5, -4, -4.5, -5, -5.5, -6, -6.7], mplan=33.0, mact=31.0),
     # cluster B's weakest availability
     "ST215": dict(shrink=ramp(0.84, 0.86), avail=ramp(94.6, 93.5), labour=ramp(11.2, 11.4), spv=11.5, plan=None,
                   var=None, mplan=None),
 }
-NORTH_MU = 0.35  # mean sales variance of UK North stores outside the three weak ones
+NORTH_MU = 0.05  # mean sales variance of UK North stores outside the three weak ones
 
 AIDED_SKUS = ["SKU-100007", "K-1700", "SKU-100014"]  # ST214's three best-selling lines with shelf gaps
 
@@ -100,6 +100,8 @@ def generate(g):
             else:
                 var = round(min(4.0, max(-3.0, r.gauss(0.5, 1.4))), 1)
             actual = round(plan * (1 + var / 100), 2)
+            if i == 11 and st.get("actual"):
+                actual = st["actual"]
             vgbp = round(actual - plan, 2)
             vpct = round(vgbp / plan * 100, 1)
             if st.get("mact") is not None:
@@ -127,8 +129,8 @@ def generate(g):
 
     # ---------------- backroom constraints ----------------
     backroom = []
-    for s in stores:
-        total = 500 + int(int(s["sqft"]) * 0.15)
+    for s in [x for x in sites if x["type"] == "store"]:
+        total = round(int(s["sqft"]) * 0.05 * r.uniform(0.8, 1.2))
         backroom.append({"site_id": s["site_id"], "total_backroom_sqft": total,
                          "available_sqft": round(total * r.uniform(0.3, 0.7)),
                          "racking_capacity_pallets": r.randint(50, 200), "bulk_floor_capacity_pallets": r.randint(20, 80),

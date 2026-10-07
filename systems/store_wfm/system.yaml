@@ -112,7 +112,7 @@ tools:
     example: {site_id: ST214, date_from: "-28d", task_category: receiving}
 
   - name: get_staff_rota_for_stores
-    desc: Dated shifts across many stores, filtered by region, weekday, task or time of day. Use to compare rotas or find who was on shift when.
+    desc: Rotas across many stores grouped by recurring shift (store, colleague, weekday, times, task) with times rostered. Filter by region, weekday, task or time of day.
     kind: sql
     args:
       region: {desc: "Region of the stores, e.g. UK North"}
@@ -122,14 +122,15 @@ tools:
       task_category: {desc: "Only this task, e.g. till, stock, receiving"}
       on_shift_at: {type: str, desc: "Only shifts covering this time of day, e.g. 15:00"}
     sql: |
-      SELECT r.site_id, st.name AS store_name, sh.shift_date, dayname(sh.shift_date) AS weekday,
-             sh.staff_id, s.name, s.employee_id, s.role, sh.start_time, sh.end_time, sh.task_category, sh.status
+      SELECT r.site_id, st.name AS store_name, sh.staff_id, s.name, s.employee_id, s.role, dayname(sh.shift_date) AS weekday,
+             sh.start_time, sh.end_time, sh.task_category, count(*) AS times_rostered,
+             min(sh.shift_date) AS first_date, max(sh.shift_date) AS last_date
       FROM rota_shifts sh
       JOIN staff_rotas r ON r.rota_id = sh.rota_id
       JOIN store_staff s ON s.staff_id = sh.staff_id
       JOIN master.sites st ON st.site_id = r.site_id
       WHERE st.type = 'store'
-        AND r.status <> 'draft'
+        AND r.status IN ('approved', 'published', 'archived')
         AND r.week_start >= date_trunc('week', CAST($date_from AS DATE))
         AND r.week_start <= date_trunc('week', CAST($date_to AS DATE))
         AND sh.status <> 'cancelled'
@@ -137,12 +138,13 @@ tools:
         AND ($weekday IS NULL OR lower(dayname(sh.shift_date)) = lower($weekday))
         AND ($task_category IS NULL OR lower(sh.task_category) = lower($task_category))
         AND ($on_shift_at IS NULL OR (sh.start_time <= $on_shift_at AND sh.end_time > $on_shift_at))
-      ORDER BY r.site_id, sh.shift_date, sh.start_time
-    limit: 600
+      GROUP BY ALL
+      ORDER BY r.site_id, isodow(min(sh.shift_date)), sh.start_time, s.name
+    limit: 300
     example: {region: UK North, weekday: Thursday, task_category: till, on_shift_at: "15:00"}
 
   - name: get_store_staff_schedules
-    desc: Who is rostered, grouped by recurring shift pattern (weekday, times, task) with how many times each was worked. Use to spot who covers which hours.
+    desc: Who is rostered at one store, grouped by recurring shift (weekday, times, task) with how many times worked. Use to see who covers which hours.
     kind: sql
     args:
       site_id: {required: true}

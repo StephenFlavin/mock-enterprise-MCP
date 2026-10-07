@@ -76,7 +76,7 @@ tables:
 
 tools:
   - name: get_audit_findings_for_factory
-    desc: Findings for a factory, or for all factories of a supplier, by severity and status, worst first, with repeat flag and audit grade. Give factory_id or supplier_id. Filter by category, severity or status.
+    desc: Findings for a factory or all of a supplier's factories, worst first, with repeat flag and audit grade. Give factory_id or supplier_id; filter by category, severity or status.
     kind: sql
     args:
       factory_id: {desc: "Factory id; required unless supplier_id is given"}
@@ -355,7 +355,7 @@ tools:
         WHERE factory_id = $factory_id AND status = 'completed'
         ORDER BY audit_date DESC LIMIT $last_n_audits
       ),
-      fx AS (
+      ff AS (
         SELECT af.*, r.audit_date FROM audit_findings af JOIN recent r ON af.audit_id = r.audit_id
         WHERE af.factory_id = $factory_id
       )
@@ -364,11 +364,11 @@ tools:
              count(*) FILTER (WHERE status = 'closed') AS closed_findings,
              count(*) FILTER (WHERE status = 'reopened') AS reopened_findings,
              count(*) FILTER (WHERE is_repeat) AS flagged_repeat,
-             bool_or(status = 'closed' AND audit_date < (SELECT max(audit_date) FROM fx f2 WHERE f2.category = fx.category)) AS closed_then_returned,
+             bool_or(status = 'closed' AND audit_date < (SELECT max(audit_date) FROM ff f2 WHERE f2.category = ff.category)) AS closed_then_returned,
              CASE min(CASE severity WHEN 'critical' THEN 1 WHEN 'major' THEN 2 ELSE 3 END)
                   WHEN 1 THEN 'critical' WHEN 2 THEN 'major' ELSE 'minor' END AS worst_severity,
              string_agg(finding_id, ', ' ORDER BY audit_date, finding_id) AS finding_ids
-      FROM fx
+      FROM ff
       GROUP BY category
       HAVING count(DISTINCT audit_id) > 1 OR count(*) FILTER (WHERE status = 'reopened' OR is_repeat) > 0
       ORDER BY audits_with_finding DESC, worst_severity, category

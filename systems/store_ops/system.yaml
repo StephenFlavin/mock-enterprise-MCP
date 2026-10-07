@@ -286,7 +286,7 @@ tools:
     example: {site_id: ST214}
 
   - name: compare_store_kpis_within_cluster
-    desc: One store against its whole cluster on shrink, availability, labour cost, margin and sales vs plan, with rank, cluster average and gap value. Use to find the biggest gap.
+    desc: One store against its whole cluster on shrink, availability and labour cost, with rank, cluster average and gap value in pounds a month. Use to find the biggest gap.
     kind: sql
     args:
       site_id: {required: true, desc: "Store id"}
@@ -298,17 +298,13 @@ tools:
         SELECT s.site_id FROM master.sites s
         WHERE s.type = 'store' AND s.cluster = (SELECT cluster FROM master.sites WHERE site_id = $site_id)),
       base AS (
-        SELECT k.site_id, k.sales_gbp, k.shrink_pct, k.availability_pct, k.labour_cost_pct, k.margin_pct,
-               p.variance_pct AS sales_vs_plan_pct
+        SELECT k.site_id, k.sales_gbp, k.shrink_pct, k.availability_pct, k.labour_cost_pct
         FROM store_kpis k
-        JOIN plan_vs_actual p ON p.site_id = k.site_id AND p.month = k.month
         WHERE k.month = (SELECT month FROM m) AND k.site_id IN (SELECT site_id FROM grp)),
       long AS (
         SELECT site_id, sales_gbp, 'shrink_pct' AS metric, shrink_pct AS v, 'lower' AS better FROM base UNION ALL
         SELECT site_id, sales_gbp, 'availability_pct', availability_pct, 'higher' FROM base UNION ALL
-        SELECT site_id, sales_gbp, 'labour_cost_pct', labour_cost_pct, 'lower' FROM base UNION ALL
-        SELECT site_id, sales_gbp, 'margin_pct', margin_pct, 'higher' FROM base UNION ALL
-        SELECT site_id, sales_gbp, 'sales_vs_plan_pct', sales_vs_plan_pct, 'higher' FROM base),
+        SELECT site_id, sales_gbp, 'labour_cost_pct', labour_cost_pct, 'lower' FROM base),
       ranked AS (
         SELECT *, rank() OVER (PARTITION BY metric ORDER BY CASE WHEN better = 'lower' THEN v ELSE -v END) AS rnk,
                count(*) OVER (PARTITION BY metric) AS of_stores,
@@ -368,7 +364,8 @@ tools:
       SELECT $site_id AS site_id, (SELECT month FROM m) AS month, r.metric, r.v AS store_value,
              round(r.peer_avg, 2) AS peer_avg, round(r.v - r.peer_avg, 2) AS gap_vs_peer_avg,
              r.better || ' is better' AS direction, r.rnk AS rank_1_is_best, r.of_stores AS stores_compared,
-             round(greatest(CASE WHEN r.better = 'lower' THEN r.v - r.peer_avg ELSE r.peer_avg - r.v END, 0) / 100 * r.sales_gbp) AS gap_value_gbp_per_month,
+             CASE WHEN r.metric IN ('shrink_pct', 'availability_pct', 'labour_cost_pct')
+                  THEN round(greatest(CASE WHEN r.better = 'lower' THEN r.v - r.peer_avg ELSE r.peer_avg - r.v END, 0) / 100 * r.sales_gbp) END AS gap_value_gbp_per_month,
              (SELECT string_agg(site_id, ', ' ORDER BY peer_score DESC, sqft_diff) FROM peers) AS peers_used
       FROM ranked r
       WHERE r.site_id = $site_id
@@ -621,7 +618,7 @@ tools:
         AND ($site_id IS NULL OR r.site_id = $site_id)
         AND ($control_type IS NULL OR lower(p.control_type) = lower($control_type))
       GROUP BY ALL
-      ORDER BY pounds_saved_per_pound_spent DESC, r.site_id
+      ORDER BY pounds_saved_per_pound_spent DESC, 1, r.prog_id
     limit: 50
     example: {}
 
@@ -667,7 +664,7 @@ tools:
     args:
       country: {default: GB, desc: "Country code of the stores in scope, e.g. GB for all UK stores"}
       participation_rate_pct: {type: float, desc: "Assumed customer participation %; default is the pilot average"}
-      rollout_store_count: {type: int, desc: "Number of stores to roll out to; default is every open store in the country"}
+      rollout_store_count: {type: int, desc: "Number of stores to roll out to; default is every store in the country"}
       pilot_site_id: {desc: "Base volumes on this one pilot store; default is the average of all pilots"}
     sql: |
       WITH pil AS (
@@ -678,7 +675,7 @@ tools:
       sc AS (
         SELECT count(*) AS stores_in_scope, count(*) FILTER (WHERE b.take_back_space_available) AS stores_with_space
         FROM master.sites s LEFT JOIN backroom_constraints b ON b.site_id = s.site_id
-        WHERE s.type = 'store' AND s.status = 'open'
+        WHERE s.type = 'store'
           AND s.country = CASE WHEN upper($country) IN ('UK', 'UNITED KINGDOM') THEN 'GB' ELSE upper($country) END),
       pr AS (SELECT annual_cost_gbp FROM shrink_control_programmes WHERE control_type = 'TakeBack' ORDER BY prog_id LIMIT 1),
       inp AS (
