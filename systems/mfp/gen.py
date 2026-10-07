@@ -65,6 +65,13 @@ def generate(g):
         dept_of.setdefault(p["category"], p["department"])
     avg_price = {k: sum(v) / len(v) for k, v in price.items()}
 
+    # master purchase volumes per category and origin country (about 18 months of POs): planned buys follow that scale
+    prod_key = {p["sku"]: (p["category"], p["country_of_origin"]) for p in products}
+    po_units = defaultdict(float)
+    for ln in g.master("po_lines"):
+        if ln["sku"] in prod_key:
+            po_units[prod_key[ln["sku"]]] += float(ln["qty_ordered"])
+
     # ---- planned buys (generated: every category x origin x season, 2026 and 2027; footwear 2027 is seeded)
     planned_buys = []
     for year in (2026, 2027):
@@ -74,7 +81,7 @@ def generate(g):
             for country, costs in sorted(by_country.items()):
                 for season, period in (("SS", 2), ("AW", 7)):
                     r = g.rng_for("planned_buy", year, cat, country, season)
-                    units = r.randrange(2000, 16000, 500)
+                    units = max(500, int(round(po_units[(cat, country)] / 1.5 / 2 * r.uniform(0.65, 0.9) / 500.0)) * 500)
                     unit_cost = round(sum(costs) / len(costs) * r.uniform(1.12, 1.22), 2)
                     mark = avg_price[cat] / (sum(costs) / len(costs)) * r.uniform(0.97, 1.03)
                     planned_buys.append({

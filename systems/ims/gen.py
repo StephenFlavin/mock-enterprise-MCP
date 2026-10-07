@@ -34,13 +34,14 @@ def generate(g):
 
     positions = {}  # (sku, site) -> dict
 
-    def pos(sku, site, on_hand, allocated, demand, age_days, hold=0, cover_floor=None):
+    def pos(sku, site, on_hand, allocated, demand, age_days, hold=0, cover_floor=None, rr=None):
+        rr = rr or r
         pr = products[sku]
         pos_ = {
             "sku": sku, "site_id": site, "location_id": "", "on_hand": int(on_hand), "allocated": int(allocated),
             "available": int(on_hand - allocated), "hold_qty": hold, "reorder_point": 0, "safety_stock": 0,
             "weekly_demand": round(demand, 1), "received_date": g.days_ago(age_days),
-            "updated_at": g.days_ago(r.randint(0, min(age_days, 6))),
+            "updated_at": g.days_ago(rr.randint(0, min(age_days, 6))),
         }
         lt = float(pr["lead_time_days"] or 60) / 7
         pos_["safety_stock"] = int(round(demand * 1.5))
@@ -54,11 +55,12 @@ def generate(g):
         if sku not in products:
             continue
         cat = products[sku]["category"]
-        cover = min(40, max(5.0, r.lognormvariate(math.log(11 * cat_mult.get(cat, 1.0)), 0.4)))
+        dr = g.rng_for("dcpos", sku, d["site_id"])  # per-entity stream: new master rows never shift other positions
+        cover = min(40, max(5.0, dr.lognormvariate(math.log(11 * cat_mult.get(cat, 1.0)), 0.4)))
         avail = int(d["available"])
         demand = max(avail / cover, 1.0)
-        age = r.randint(5, 110) if r.random() > (0.35 if cat in cat_mult else 0.08) else r.randint(190, 420)
-        pos(sku, d["site_id"], int(d["on_hand"]), int(d["allocated"]), demand, age)
+        age = dr.randint(5, 110) if dr.random() > (0.35 if cat in cat_mult else 0.08) else dr.randint(190, 420)
+        pos(sku, d["site_id"], int(d["on_hand"]), int(d["allocated"]), demand, age, rr=dr)
 
     # ---- store positions: each sku ranged in 12 stores
     stories_store = {}  # (sku, site) overrides applied later
@@ -66,16 +68,17 @@ def generate(g):
         if sku not in chain_store:
             continue
         cat = pr["category"]
-        ranged = r.sample(store_ids, 12)
+        sr = g.rng_for("storepos", sku)  # per-SKU stream: new master rows never shift other positions
+        ranged = sr.sample(store_ids, 12)
         w = [sqft[s] for s in ranged]
         tot = sum(w)
         for s, wi in zip(ranged, w):
             demand = max(chain_store[sku] * wi / tot, 0.5)
-            cover = min(20.0, max(4.8, r.lognormvariate(math.log(7 * cat_mult.get(cat, 1.0)), 0.3)))
+            cover = min(20.0, max(4.8, sr.lognormvariate(math.log(7 * cat_mult.get(cat, 1.0)), 0.3)))
             avail = max(int(round(demand * cover)), 3)
-            alloc = int(avail * r.uniform(0, 0.1))
-            age = r.randint(3, 90) if r.random() > (0.3 if cat in cat_mult else 0.06) else r.randint(190, 380)
-            pos(sku, s, avail + alloc, alloc, demand, age)
+            alloc = int(avail * sr.uniform(0, 0.1))
+            age = sr.randint(3, 90) if sr.random() > (0.3 if cat in cat_mult else 0.06) else sr.randint(190, 380)
+            pos(sku, s, avail + alloc, alloc, demand, age, rr=sr)
 
     def force(sku, site, avail, demand, allocated=0, age=10, hold=0):
         p = pos(sku, site, avail + allocated, allocated, demand, age, hold)
@@ -93,7 +96,7 @@ def generate(g):
     force("SKU-103892", "ST214", 12, 5.0, 2, 10)
 
     # STY-5520 stockout story: SKU-101904 in 40 stores
-    story_stores = r.sample([s for s in store_ids if s != "ST214"], 39) + ["ST214"]
+    story_stores = g.rng_for("story5520").sample([s for s in store_ids if s != "ST214"], 39) + ["ST214"]
     for s in story_stores:
         force("SKU-101904", s, r.randint(25, 45), r.uniform(5, 7), 0, r.randint(5, 20))
     # at risk of stockout in next 4 weeks (list_projected_stockouts)
@@ -178,14 +181,15 @@ def generate(g):
             continue
     seen = set()
     for s in dict.fromkeys(store_ids[:60] + ["ST165", "ST214", "ST215", "ST216"]):
-        base = r.uniform(0.7, 1.1)
+        sh = g.rng_for("shrink", s)
+        base = sh.uniform(0.7, 1.1)
         for wk in range(0, 40):
             monday = g.as_of - timedelta(days=g.as_of.weekday()) - timedelta(weeks=wk + 1)
             for cat in cats:
-                v = r.uniform(20, 90) * base
-                rate = round(r.uniform(0.5, 1.1) * base, 2)
-                peer = round(r.uniform(-0.15, 0.15), 2)
-                cause = r.choice(["shrink", "theft", "picking error", "receiving error"])
+                v = sh.uniform(20, 90) * base
+                rate = round(sh.uniform(0.5, 1.1) * base, 2)
+                peer = round(sh.uniform(-0.15, 0.15), 2)
+                cause = sh.choice(["shrink", "theft", "picking error", "receiving error"])
                 if cat == "Knitwear" and wk < 5:  # story: knitwear theft spike over the last month
                     v *= 1.45
                     rate = round(rate + 0.45, 2)
@@ -198,14 +202,13 @@ def generate(g):
     # UK North patch: every northern store has shrink history (own random stream, so nothing else moves).
     # Region norm is about 1.0-1.1%; Preston High Street 2 (ST143), Preston High Street (ST142) and Leeds Shopping Centre
     # (ST150) run at 2.1% or more. Durham (ST144) is healthy.
-    import random as _random
-    nr = _random.Random(8173)
     north = [x["site_id"] for x in sites if x["type"] == "store" and x["region"] == "UK North" and x["status"] == "open"]
     have = {x["site_id"] for x in shrink}
     north_bad = {"ST143": 2.6, "ST142": 2.3, "ST150": 2.2}
     for s_ in north:
         if s_ in have:
             continue
+        nr = g.rng_for("northshrink", s_)
         base = north_bad.get(s_, 0.8 if s_ == "ST144" else nr.uniform(0.68, 0.86))
         size = min(max(sqft[s_] / 20000.0, 0.5), 1.6)
         for wk in range(0, 40):
@@ -234,12 +237,12 @@ def generate(g):
             continue
         by_site[site].append(sku)
     for s in panel_sites:
-        lst = [k for k in by_site[s] if k not in ("K-1700", "PF-220", "SKU-101904")]
-        for k in r.sample(lst, min(len(lst), 28)):
+        lst = sorted(k for k in by_site[s] if k not in ("K-1700", "PF-220", "SKU-101904"))
+        for k in g.rng_for("panel", s).sample(lst, min(len(lst), 28)):
             panel_pairs.append((k, s))
     for dc in ("DC1", "DC2", "DC3", "DC4", "DC5"):
-        lst = by_site[dc]
-        for k in r.sample(lst, min(len(lst), 60)):
+        lst = sorted(by_site[dc])
+        for k in g.rng_for("panel", dc).sample(lst, min(len(lst), 60)):
             panel_pairs.append((k, dc))
     weeks = g.weeks(12)  # Mondays, oldest first
     rate_by_week = [4.0] * 7 + [4.6, 5.4, 6.0, 6.5, 6.5]
@@ -469,10 +472,8 @@ def generate(g):
             p["reorder_point"], p["safety_stock"] = 4944, 560
 
     # (3b) SKU-103227 (container CONT-000068 story): ST186 is the clear first store to run out, 3.9 weeks of cover.
-    for p in pos_rows:
-        if p["sku"] == "SKU-103227" and p["site_id"] == "ST186":
-            p["available"] = int(3.9 * p["weekly_demand"])
-            p["on_hand"] = p["available"] + p["allocated"]
+    pos_rows = [p for p in pos_rows if not (p["sku"] == "SKU-103227" and p["site_id"] == "ST186")]
+    pos_rows.append(mkrow("SKU-103227", "ST186", int(3.9 * 112.1), 112.1, 0, 20))
 
     # (4) DC1 stock is held in bins: spread each SKU over one or two bins in aisles A-F
     recent = {"DC1-A-01-01", "DC1-A-02-01"}
@@ -664,7 +665,7 @@ def generate(g):
         a[2] += 1
     plan = []
     for (site, cat), (val, close, _) in agg.items():
-        f = 0.68 if cat in cat_mult else r.uniform(0.95, 1.08)
+        f = 0.68 if cat in cat_mult else g.rng_for("plan", site, cat).uniform(0.95, 1.08)
         plan.append({"site_id": site, "category": cat, "plan_value_gbp": round(val * f, 2),
                      "plan_cover_weeks": 10.7, "plan_closing_units": int(close * f), "period_end": season_end})
 

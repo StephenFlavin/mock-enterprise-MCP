@@ -25,6 +25,11 @@ def generate(g):
     by_id = {s["supplier_id"]: s for s in suppliers}
     sourcing_staff = [e["employee_id"] for e in g.master("employees") if e["department"] == "Sourcing"]
     clamp = lambda v, lo, hi: max(lo, min(hi, v))
+    product_live = [s for s in live if s.get("supplier_type", "product") == "product"]   # indirect suppliers have no spend and no scorecard story
+
+    def pick(cands, k, tag):
+        """k suppliers chosen by a per-supplier draw, so adding master suppliers never reshuffles the others."""
+        return sorted(cands, key=lambda s: (g.rng_for(tag, s["supplier_id"]).random(), s["supplier_id"]))[:k]
     as_of = g.as_of
 
     months = []                                   # the last 12 completed months, oldest first
@@ -77,6 +82,7 @@ def generate(g):
         n = len(plist)
         ag_sum = ac_sum = 0
         for i, po in enumerate(plist):
+            r = g.rng_for("leadtime", po["po_id"])
             odate, ddate = date.fromisoformat(po["order_date"]), date.fromisoformat(po["due_date"])
             agreed = max(14, (ddate - odate).days)
             late = int((i + 1) * frac) > int(i * frac)
@@ -149,6 +155,7 @@ def generate(g):
     RISK_Q = {"low": 87, "medium": 82, "high": 76, "critical": 68}
     RISK_C = {"low": 88, "medium": 83, "high": 77, "critical": 69}
     for s in live:
+        r = g.rng_for("scorecard", s["supplier_id"])
         sid, risk = s["supplier_id"], s["risk_rating"]
         otif = float(s["otif_pct_12m"])
         prof = PROFILE.get(sid)
@@ -185,7 +192,8 @@ def generate(g):
                 "updated_at": month + timedelta(days=45) if month + timedelta(days=45) <= as_of else as_of})
 
     # ------------------------------------------------------------------ management cost per supplier
-    for s in live:
+    for s in product_live:
+        r = g.rng_for("mgmt", s["supplier_id"])
         sid, spend = s["supplier_id"], float(s["annual_spend_gbp"])
         heavy = 1.7 if sid in ("SUP-0005", "SUP-0048", "SUP-0045", "SUP-0043") else 1.0
         hours = int((70 + 26 * (spend / 1e5) ** 0.5 + r.randint(-12, 18)) * heavy)
@@ -226,7 +234,8 @@ def generate(g):
             "other": ["Master data not refreshed"]}
     issue_no = 0
     STORY_SUPPLIERS = {"SUP-0053", "SUP-0012", "SUP-0001", "SUP-0055", "SUP-0070", "SUP-0046"}
-    for s in r.sample([x for x in live if x["supplier_id"] not in STORY_SUPPLIERS], 26):
+    for s in pick([x for x in product_live if x["supplier_id"] not in STORY_SUPPLIERS], 26, "issue-pick"):
+        r = g.rng_for("issues", s["supplier_id"])
         mypos = [p["po_id"] for p in purchase_orders if p["supplier_id"] == s["supplier_id"]] or ["a recent PO"]
         for _ in range(r.randint(1, 2)):
             itype = r.choice(list(ISSUE_TEXT))
@@ -249,7 +258,8 @@ def generate(g):
             "cost": ("Cost per unit vs index", "+4%", "at index"), "capacity": ("Committed capacity headroom", "8%", "15%"),
             "compliance": ("Open audit findings", "7", "0"), "sustainability": ("Renewable energy share", "10%", "40%")}
     plan_no = 0
-    for s in r.sample([x for x in live if x["supplier_id"] not in STORY_SUPPLIERS], 10):
+    for s in pick([x for x in product_live if x["supplier_id"] not in STORY_SUPPLIERS], 10, "plan-pick"):
+        r = g.rng_for("plans", s["supplier_id"])
         ptype = r.choice(list(PLAN))
         metric, base, target = PLAN[ptype]
         start = g.days_ago(r.randint(60, 300))
@@ -267,7 +277,8 @@ def generate(g):
 
     # ------------------------------------------------------------------ performance reviews
     review_no = 0
-    for s in r.sample(live, 15):
+    for s in pick(product_live, 15, "review-pick"):
+        r = g.rng_for("reviews", s["supplier_id"])
         for r_idx in range(r.randint(1, 2)):
             review_no += 1
             scheduled = as_of + timedelta(days=r.randint(-75, 25))
@@ -282,8 +293,9 @@ def generate(g):
 
     # ------------------------------------------------------------------ engagement programmes (emissions story rows are in seed/)
     eng_no = 0
-    for s in r.sample([x for x in live if x["supplier_id"] not in STORY_SUPPLIERS and x["supplier_id"] not in
-                       ("SUP-0057", "SUP-0036", "SUP-0074", "SUP-0044", "SUP-0035", "SUP-0011", "SUP-0013", "SUP-0072")], 8):
+    for s in pick([x for x in product_live if x["supplier_id"] not in STORY_SUPPLIERS and x["supplier_id"] not in
+                   ("SUP-0057", "SUP-0036", "SUP-0074", "SUP-0044", "SUP-0035", "SUP-0011", "SUP-0013", "SUP-0072")], 8, "eng-pick"):
+        r = g.rng_for("engagement", s["supplier_id"])
         eng_no += 1
         prog = r.choice(["sustainability", "innovation", "quality"])
         status = r.choice(["active", "completed", "inactive"])
@@ -299,6 +311,7 @@ def generate(g):
 
     # Generate factory capacity data
     for i, supplier in enumerate(suppliers[:20]):
+        r = g.rng_for("capacity", supplier["supplier_id"])
         num_factories = r.randint(1, 3)
         for factory_idx in range(num_factories):
             for month_offset in range(-3, 4):
@@ -333,9 +346,9 @@ def generate(g):
     factory_capacity[:] = [row for row in factory_capacity if row["supplier_id"] not in vn_suppliers]
     all_factories = g.master("factories")
     cat_of = {s["supplier_id"]: s["category_focus"] for s in suppliers}
-    cr = random.Random(5002)
     PINNED = {"SUP-0016": ["FAC-0085", "FAC-0096", "FAC-0084"]}   # Menswear: Murphy Mill (PT), Brown Plant (CN), Slater Dyehouse (PT, small)
     for sid in sorted(vn_suppliers):
+        cr = g.rng_for("vn-alt", sid)
         cands = [f for f in all_factories if f["country"] != "VN" and f["status"] == "approved" and f["audit_rating"] in ("A", "B")
                  and cat_of.get(f["supplier_id"]) == vn_suppliers[sid]["category_focus"]]
         if sid in PINNED:
@@ -370,6 +383,7 @@ def generate(g):
     ]
 
     for i, provider in enumerate(providers):
+        r = g.rng_for("3pl", provider["name"])
         integrations.append({
             "provider_id": f"3PL-{i + 1:03d}",
             "provider_name": provider["name"],
