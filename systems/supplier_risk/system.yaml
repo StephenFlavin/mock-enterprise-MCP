@@ -17,6 +17,7 @@ tables:
       watch_status: {type: enum, values: [none, watch, escalated], desc: "Current watch or escalation status"}
       watch_reason: {type: text, desc: "Why the supplier is on watch or escalated"}
       updated_at: {type: date, desc: "Date the profile last changed"}
+      region: {type: str, desc: "Region where its production is concentrated, e.g. Southern Vietnam, Chattogram, Guangdong"}
 
   supplier_risk_alerts:
     key: alert_id
@@ -938,7 +939,7 @@ tools:
     example: {category: Cookware}
 
   - name: get_supplier_concentration_exposure
-    desc: Spend concentration by supplier within a department or country, with share of spend, country share and criticality.
+    desc: Spend concentration by supplier, optionally within a department or country, with share of total spend, running total, country share and criticality.
     kind: sql
     args:
       category_focus: {desc: "Department, e.g. Home, Kids, Electricals"}
@@ -946,11 +947,13 @@ tools:
     sql: |
       WITH base AS (
         SELECT s.supplier_id, s.name, s.country, s.category_focus, s.annual_spend_gbp AS spend_gbp
-        FROM master.suppliers s
-        WHERE s.status <> 'exited' AND ($category_focus IS NULL OR lower(s.category_focus) = lower($category_focus))
-          AND ($country IS NULL OR s.country = upper($country))),
+        FROM master.suppliers s WHERE s.status <> 'exited'),
+      all_s AS (
+        SELECT *, sum(spend_gbp) OVER () AS total, sum(spend_gbp) OVER (PARTITION BY country) AS country_total FROM base),
       t AS (
-        SELECT *, sum(spend_gbp) OVER () AS total, sum(spend_gbp) OVER (PARTITION BY country) AS country_total FROM base)
+        SELECT * FROM all_s
+        WHERE ($category_focus IS NULL OR lower(category_focus) = lower($category_focus))
+          AND ($country IS NULL OR country = upper($country)))
       SELECT t.supplier_id, t.name, t.country, t.category_focus, t.spend_gbp,
              round(100.0 * t.spend_gbp / t.total, 1) AS pct_of_spend,
              round(100.0 * sum(t.spend_gbp) OVER (ORDER BY t.spend_gbp DESC) / t.total, 1) AS cumulative_pct,
@@ -1012,18 +1015,20 @@ tools:
     example: {raw_material: cotton}
 
   - name: list_suppliers_in_affected_regions
-    desc: Suppliers in a country affected by geopolitical, weather or other risks, with spend, criticality, factories, capacity and active alerts.
+    desc: Suppliers in an affected country or production region, with spend, criticality, factories, capacity and active alerts. Use region for a named area such as Southern Vietnam.
     kind: sql
     args:
       country: {type: str, desc: "Affected country code, e.g. VN"}
+      region: {type: str, desc: "Affected production region or part of it, e.g. Southern Vietnam, Chattogram"}
       category_focus: {desc: "Department, e.g. Home"}
     sql: |
-      SELECT s.supplier_id, s.name, s.country, s.category_focus, s.annual_spend_gbp, p.criticality_rating,
+      SELECT s.supplier_id, s.name, s.country, p.region, s.category_focus, s.annual_spend_gbp, p.criticality_rating,
              (SELECT count(*) FROM master.factories f WHERE f.supplier_id = s.supplier_id AND f.status <> 'delisted') AS factories,
              (SELECT sum(f.capacity_units_month) FROM master.factories f WHERE f.supplier_id = s.supplier_id AND f.status <> 'delisted') AS capacity_units_month,
              (SELECT count(*) FROM supplier_risk_alerts a WHERE a.supplier_id = s.supplier_id AND a.status = 'active') AS active_alerts
       FROM master.suppliers s LEFT JOIN supplier_profiles p USING (supplier_id)
       WHERE s.status <> 'exited' AND ($country IS NULL OR s.country = upper($country))
+        AND ($region IS NULL OR p.region ILIKE '%' || $region || '%')
         AND ($category_focus IS NULL OR lower(s.category_focus) = lower($category_focus))
       ORDER BY s.annual_spend_gbp DESC
     limit: 50

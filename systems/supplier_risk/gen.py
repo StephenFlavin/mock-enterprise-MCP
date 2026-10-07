@@ -47,12 +47,15 @@ CRIT_OVERRIDE = {"SUP-0053": "high", "SUP-0055": "medium", "SUP-0038": "high"}
 WATCH = {}
 # cyber rating / system access / security rating for the critical suppliers (poor ones are the "weakest three")
 CYBER_STORY = {
-    "SUP-0049": ("poor", "financial", "critical"), "SUP-0057": ("poor", "order_placement", "critical"),
+    "SUP-0049": ("poor", "financial", "critical"), "SUP-0057": ("poor", "order_placement", "high"),
     "SUP-0044": ("poor", "inventory", "critical"), "SUP-0036": ("fair", None, "medium"), "SUP-0072": ("fair", None, "medium"),
     "SUP-0035": ("good", None, "low"), "SUP-0011": ("good", None, "low"), "SUP-0014": ("good", None, "low"),
     "SUP-0028": ("fair", None, "medium"), "SUP-0033": ("good", None, "low"), "SUP-0065": ("fair", None, "medium"),
     "SUP-0023": ("fair", None, "medium"),
 }
+# privileged connections that integration rates critical (SUP-0003 admin API, SUP-0049 direct write, SUP-0044 read/write);
+# SUP-0057 is high; applied after the random draws so the rest of the generated data is unchanged
+SEC_OVERRIDE = {"SUP-0003": ("fair", "api_admin", "critical")}
 CYBER_FINDING = {
     "excellent": "No critical findings; MFA enforced, regular penetration testing",
     "good": "Minor patching delays; MFA in place for remote access",
@@ -81,6 +84,20 @@ CERT_ISSUER = {"OEKO-TEX": "Hohenstein Institute (OEKO-TEX)", "GOTS": "Control U
 BANKS = {"CN": "Bank of China", "VN": "Vietcombank", "TR": "Ziraat Bankasi", "IN": "State Bank of India",
          "BD": "Dutch-Bangla Bank", "IT": "Intesa Sanpaolo", "PT": "Banco Comercial Portugues", "MX": "BBVA Mexico",
          "GB": "Barclays UK", "FR": "BNP Paribas", "DE": "Deutsche Bank", "PL": "PKO Bank Polski"}
+CITY_REGION = {"Dongguan": "Guangdong", "Shaoxing": "Zhejiang", "Qingdao": "Shandong", "Ningbo": "Zhejiang",
+               "Ho Chi Minh City": "Southern Vietnam", "Hai Phong": "Northern Vietnam", "Da Nang": "Central Vietnam",
+               "Istanbul": "Marmara", "Bursa": "Marmara", "Izmir": "Aegean", "Tiruppur": "Tamil Nadu", "Ludhiana": "Punjab",
+               "Surat": "Gujarat", "Dhaka": "Dhaka", "Chattogram": "Chattogram", "Prato": "Tuscany", "Como": "Lombardy",
+               "Biella": "Piedmont", "Porto": "Northern Portugal", "Braga": "Northern Portugal", "Guimaraes": "Northern Portugal",
+               "Puebla": "Puebla", "Leon": "Guanajuato", "Leicester": "East Midlands", "Manchester": "North West England",
+               "Lyon": "Auvergne-Rhone-Alpes", "Lille": "Hauts-de-France", "Stuttgart": "Baden-Wurttemberg",
+               "Mönchengladbach": "North Rhine-Westphalia", "Lodz": "Lodz", "Poznan": "Greater Poland"}
+# production city (and so region) of the suppliers named in risk events: the typhoon near Ho Chi Minh City, the Bay of Bengal cyclone
+CITY_STORY = {"SUP-0002": "Ho Chi Minh City", "SUP-0008": "Ho Chi Minh City", "SUP-0034": "Ho Chi Minh City",
+              "SUP-0035": "Ho Chi Minh City", "SUP-0048": "Ho Chi Minh City", "SUP-0063": "Ho Chi Minh City",
+              "SUP-0069": "Ho Chi Minh City", "SUP-0016": "Hai Phong", "SUP-0056": "Hai Phong", "SUP-0055": "Da Nang",
+              "SUP-0045": "Chattogram", "SUP-0052": "Chattogram", "SUP-0080": "Chattogram", "SUP-0073": "Dhaka",
+              "SUP-0050": "Dhaka", "SUP-0023": "Dongguan"}
 CITIES = {"CN": ["Dongguan", "Shaoxing", "Qingdao", "Ningbo"], "VN": ["Ho Chi Minh City", "Hai Phong", "Da Nang"],
           "TR": ["Istanbul", "Bursa", "Izmir"], "IN": ["Tiruppur", "Ludhiana", "Surat"], "BD": ["Dhaka", "Chattogram"],
           "IT": ["Prato", "Como", "Biella"], "PT": ["Porto", "Braga", "Guimaraes"], "MX": ["Puebla", "Leon"],
@@ -284,6 +301,15 @@ def generate(g):
                      "sort_code": f"{r.randint(10, 99)}-{r.randint(10, 99)}-{r.randint(10, 99)}", "bank_country": c,
                      "currency": s["currency"], "verified": ok, "last_verified_at": g.days_ago(r.randint(10, 300)) if ok else None})
 
+    region_of = {}
+    for rg in regs:
+        city = CITY_STORY.get(rg["supplier_id"]) or rg["registered_address"].rsplit(", ", 1)[1]
+        rg["registered_address"] = rg["registered_address"].rsplit(", ", 1)[0] + ", " + city
+        region_of[rg["supplier_id"]] = CITY_REGION[city]
+    region_of["SUP-0023"] = CITY_REGION[CITY_STORY["SUP-0023"]]
+    for p in profiles:
+        p["region"] = region_of.get(p["supplier_id"])
+
     # ---- compliance records (supplier or factory level) ----------------------------------------------------------
     comp, n = [], 0
     texts = {"labour": ("Working hours and wages within policy", "Overtime above legal limit on 3 of the last 6 weeks"),
@@ -320,6 +346,8 @@ def generate(g):
             rating = r.choices(["excellent", "good", "fair"], [24, 48, 28])[0]
             access = r.choice(["read_only", "inventory", "order_placement"]) if r.random() < 0.22 else None
             sec = {"poor": "high", "fair": "medium", "good": "low", "excellent": "low"}[rating]
+            if sid in SEC_OVERRIDE:  # keeps the random draws above unchanged
+                rating, access, sec = SEC_OVERRIDE[sid]
         sec_rating[sid] = sec
         d = g.days_ago(r.randint(15, 170))
         cyber.append({"supplier_id": sid, "assessment_date": d, "rating": rating,
