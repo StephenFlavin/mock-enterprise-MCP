@@ -262,7 +262,7 @@ def generate(g):
                 "dispute_reason": r.choice(["Surcharge not in contract", "Weight discrepancy", "Incorrect service level"]),
                 "disputed_amount_gbp": round(r.uniform(100.0, 5000.0), 2),
                 "status": r.choice(["submitted", "under_review"]),
-                "submission_date": g.date_between(g.days_ago(30), g.as_of)
+                "submission_date": g.date_between(30, 0)
             })
 
     return {
