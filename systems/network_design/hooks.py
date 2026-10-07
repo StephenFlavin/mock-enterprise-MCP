@@ -380,7 +380,7 @@ def run_volume_forecast(ctx, growth_rate_pct=5.0, ecommerce_penetration_pct=40.0
                  "WHERE period > CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 364 DAY GROUP BY region, channel")
     if not base:
         return {"error": "No volume history"}
-    this_year = int(str(ctx.as_of)[:4])
+    this_year = 2026  # fixed base year so the story answers stay stable as the calendar moves
     n = max(0, int(target_year) - this_year)
     total_base = sum(b["u"] for b in base)
     ecom_base = sum(b["u"] for b in base if b["channel"] == "ecommerce")
