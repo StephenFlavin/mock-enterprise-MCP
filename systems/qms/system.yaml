@@ -11,12 +11,13 @@ tables:
     cols:
       lot_id: {type: str, desc: "Production lot, e.g. LOT-000123"}
       sku: {type: str, desc: "SKU"}
+      batch_id: {type: str, desc: "Material or dye batch the lot was made from, e.g. BATCH-POL-PINK-001"}
       factory_id: {type: str, desc: "Factory that produced the lot"}
       po_id: {type: str, desc: "Purchase order"}
       qty_produced: {type: int, desc: "Units produced"}
       produced_at: {type: date, desc: "Production date"}
       status: {type: enum, values: [produced, in_inspection, released, reworked, rejected], desc: "Lot status"}
-      lot_disposition: {type: enum, values: [pending, released, rework, reject], desc: "QA disposition"}
+      lot_disposition: {type: enum, values: [pending, release, rework, reject], desc: "QA disposition"}
       created_at: {type: timestamp, desc: "When lot was created"}
       updated_at: {type: timestamp, desc: "Last updated"}
 
@@ -29,10 +30,11 @@ tables:
       inspection_type: {type: enum, values: [inline, final, pre_production, sample], desc: "Inspection type"}
       units_inspected: {type: int, desc: "Units in sample"}
       defects_found: {type: int, desc: "Number of defects"}
-      pass_fail: {type: enum, values: [pass, fail, conditional], desc: "Pass/fail result"}
+      pass_fail: {type: enum, values: [pending, pass, fail, conditional], desc: "Result; pending for a booked inspection not yet done"}
       scheduled_at: {type: timestamp, desc: "Scheduled inspection time (if booking)"}
       inspected_at: {type: timestamp, desc: "When inspection was performed"}
       created_at: {type: timestamp, desc: "When record created"}
+      notes: {type: text, desc: "Booking reason or inspector notes"}
 
   inspection_measurements:
     key: measurement_id
@@ -68,6 +70,8 @@ tables:
       hold_id: {type: str, desc: "Quality hold, e.g. HLD-000123"}
       sku: {type: str, desc: "SKU on hold"}
       lot_id: {type: str, desc: "Lot on hold (if specific)"}
+      site_id: {type: str, desc: "DC where the held stock sits (if known)"}
+      qty_held: {type: int, desc: "Units held (if known)"}
       hold_reason: {type: text, desc: "Why hold was placed"}
       status: {type: enum, values: [active, released, expired], desc: "Hold status"}
       related_incident_id: {type: str, desc: "Related incident if any"}
@@ -80,6 +84,8 @@ tables:
     cols:
       investigation_id: {type: str, desc: "Investigation, e.g. INV-000123"}
       related_incident_id: {type: str, desc: "Related incident"}
+      sku: {type: str, desc: "SKU under investigation (if specific)"}
+      supplier_id: {type: str, desc: "Supplier under investigation (if specific)"}
       scope: {type: text, desc: "What is being investigated"}
       status: {type: enum, values: [open, in_progress, on_hold, closed], desc: "Investigation status"}
       findings: {type: text, desc: "Root cause and findings"}
@@ -92,12 +98,28 @@ tables:
       car_id: {type: str, desc: "Corrective action request, e.g. CAR-000123"}
       supplier_id: {type: str, desc: "Supplier"}
       factory_id: {type: str, desc: "Factory if specific"}
+      sku: {type: str, desc: "SKU the request is about (if specific)"}
       issue_description: {type: text, desc: "The quality issue"}
       requested_action: {type: text, desc: "What supplier should do"}
       status: {type: enum, values: [draft, sent, acknowledged, in_progress, closed], desc: "CAR status"}
       created_at: {type: timestamp, desc: "When created"}
-      sent_at: {type: timestamp, desc: "When sent to supplier"}
+      sent_on: {type: timestamp, desc: "When sent to supplier (blank while draft)"}
+      due_date: {type: date, desc: "Date the supplier must respond by"}
       updated_at: {type: timestamp, desc: "Last updated"}
+
+  supplier_notifications:
+    key: notification_id
+    cols:
+      notification_id: {type: str, desc: "Quality notification, e.g. SPN-000123"}
+      supplier_id: {type: str, desc: "Supplier notified"}
+      factory_id: {type: str, desc: "Factory concerned (if specific)"}
+      lot_id: {type: str, desc: "Production lot concerned (if specific)"}
+      incident_id: {type: str, desc: "Related quality incident (if any)"}
+      issue_description: {type: text, desc: "What the supplier is told went wrong"}
+      requested_action: {type: text, desc: "Action requested from the supplier"}
+      status: {type: enum, values: [sent], desc: "Notification status"}
+      sent_at: {type: timestamp, desc: "When the notification was sent"}
+      created_at: {type: timestamp, desc: "When recorded"}
 
   factory_quality_scorecards:
     key: scorecard_id
@@ -111,7 +133,7 @@ tables:
       pass_rate_pct: {type: float, desc: "Pass rate percentage"}
       critical_defects: {type: int, desc: "Number of critical issues"}
       on_time_delivery_pct: {type: float, desc: "On-time delivery %"}
-      risk_score: {type: float, desc: "Composite risk score 0-100"}
+      risk_score: {type: float, desc: "Weekly risk score 0-100: 6 x defect rate + 9 x critical defects + 0.3 x late-delivery %"}
       created_at: {type: timestamp, desc: "When created"}
 
   pack_damage_tracking:
@@ -119,23 +141,14 @@ tables:
     cols:
       damage_id: {type: str, desc: "Damage record"}
       sku: {type: str, desc: "SKU"}
-      pack_type: {type: str, desc: "Packaging type, e.g. polybag, carton, rigid_box"}
+      pack_type: {type: str, desc: "Packaging type or material, e.g. polybag, carton, rigid_box, corrugated, moulded_pulp"}
+      channel: {type: enum, values: [store, ecommerce], desc: "Sales channel the units shipped to"}
       period: {type: date, desc: "Reporting period (week start)"}
       units_shipped: {type: int, desc: "Units shipped in this pack type"}
       units_damaged: {type: int, desc: "Units damaged on arrival"}
       damage_rate_pct: {type: float, desc: "Damage percentage"}
       damage_type: {type: str, desc: "E.g. crushed, water_damaged, leaking"}
       created_at: {type: timestamp, desc: "When recorded"}
-
-  disposition_decisions:
-    key: decision_id
-    cols:
-      decision_id: {type: str, desc: "Disposition decision record, e.g. DSP-000123"}
-      lot_id: {type: str, desc: "Production lot"}
-      disposition: {type: enum, values: [release, rework, reject], desc: "QA disposition decision"}
-      decided_by: {type: str, desc: "QA decision maker"}
-      decision_notes: {type: text, desc: "Notes on the decision"}
-      created_at: {type: timestamp, desc: "When decision was recorded"}
 
   quality_reviews:
     key: review_id
@@ -144,6 +157,7 @@ tables:
       style_id: {type: str, desc: "Style under review"}
       review_type: {type: str, desc: "E.g. fit, durability, appearance"}
       status: {type: enum, values: [open, in_progress, closed], desc: "Review status"}
+      reason: {type: text, desc: "Why the review was requested"}
       findings: {type: text, desc: "Review findings"}
       created_at: {type: timestamp, desc: "When opened"}
       updated_at: {type: timestamp, desc: "Last updated"}

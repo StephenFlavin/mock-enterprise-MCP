@@ -115,9 +115,9 @@ OUTER_W = {
 }
 
 
-def ratings_for(r, n, mean):
+def ratings_for(r, n, mean, sd=1.2):
     """n integer ratings 1..5 whose sum is exactly round(mean * n)."""
-    vals = [min(5, max(1, round(mean + r.gauss(0, 0.9)))) for _ in range(n)]
+    vals = [min(5, max(1, round(mean + r.gauss(0, sd)))) for _ in range(n)]
     target = max(n, min(5 * n, round(mean * n)))
     guard = 0
     while sum(vals) != target and guard < 1000:
@@ -169,10 +169,12 @@ def generate(g):
     def story(sku, style, plan, texter, pack=None):
         """plan: [(k, n, mean)]; texter(rating, k) -> (theme, text); pack: (weeks, pool) forces one packaging complaint a week."""
         for k, n, mean in plan:
-            rows = [(rt,) + tuple(texter(rt, k)) for rt in ratings_for(r, n, mean)]
+            rows = [(rt,) + tuple(texter(rt, k)) for rt in ratings_for(r, n, mean + r.uniform(-0.1, 0.1))]
             rows.sort(key=lambda x: x[0])
-            if pack and k in pack[0] and rows and rows[0][0] <= 4:
-                rows[0] = (rows[0][0],) + tuple(r.choice(pack[1]))
+            if pack and k in pack[0]:
+                i = next((i for i, x in enumerate(rows) if 2 <= x[0] <= 4), None)
+                if i is not None:
+                    rows[i] = (rows[i][0],) + tuple(r.choice(pack[1]))
             for rt, theme, text in rows:
                 add(sku, style, rt, theme, text, when(k), country="GB" if r.random() < 0.9 else None)
 
@@ -270,17 +272,18 @@ def generate(g):
                ("availability", "Had to wait for size 14 to come back in stock")]
     a_size = [("sizing", "Runs a little small, size up"), ("sizing", "Smaller than expected across the chest")]
     for k in range(1, 27):
-        n = 5 if k <= 13 else 3
-        for rt in ratings_for(r, n, 4.1):
-            if rt <= 3:
-                th, tx = r.choice(a_avail) if r.random() < 0.65 else r.choice(a_size)
-                sku = "SKU-100084" if th == "availability" else r.choice(["SKU-100070", "SKU-100077"])
-                rt2 = 3 if th == "availability" else rt
-            else:
-                th, tx = r.choice(a_pos)
-                sku = r.choices(["SKU-100070", "SKU-100077", "SKU-100084"], [40, 35, 25])[0]
-                rt2 = rt
-            add(sku, "STY-4056", rt2, th, tx, when(k), country="GB")
+        n = 4 if k <= 13 else 3
+        for rt in ratings_for(r, n, 4.4):
+            th, tx = r.choice(a_pos)
+            sku = r.choices(["SKU-100070", "SKU-100077", "SKU-100084"], [40, 35, 25])[0]
+            add(sku, "STY-4056", rt, th, tx, when(k), country="GB")
+        if k <= 13:
+            for i in range(2):
+                th, tx = r.choice(a_avail)
+                add("SKU-100084", "STY-4056", 3 if r.random() < 0.7 else 4, th, tx, when(k), country="GB")
+            if k % 3 == 0:
+                th, tx = r.choice(a_size)
+                add(r.choice(["SKU-100070", "SKU-100077"]), "STY-4056", 3, th, tx, when(k), country="GB")
 
     # SKU-100014 / SKU-100007 / SKU-100021 blouses (STY-4012): 100014 is the outlier; polybag tears
     b_pos = [("quality", "Lovely soft blouse, looks smart"), ("colour", "Blush colour is lovely"),
@@ -340,12 +343,14 @@ def generate(g):
                     elif rt <= 2:
                         th, tx = r.choice(neg or pos)
                     else:
-                        th, tx = r.choice([("fit", "Okay jacket, nothing special")])
+                        th, tx = r.choice(neg) if neg else ("fit", "Okay jacket, nothing special")
                     seg = r.choices(SEGMENTS, SEG_W)[0]
                     add(r.choice(skus), style, rt, th, tx, when(k), seg=seg)
 
     # Top returned styles that have launched: dominant complaint theme
     ret_story = {
+        "STY-8683": ("expectation", 3.4, ["Not as described, nothing like the product page", "Looks completely different to the photos", "Texture and scent are not what the listing promised", "Smaller than the picture suggests, not as advertised"],
+                     ["Lovely product", "Does what it says"]),
         "STY-5094": ("quality", 3.2, ["Strap snapped within a month", "Zip failed after two weeks", "Stitching on the handle came apart", "Lining ripped on first use"],
                      ["Well made and roomy", "Good quality for the price"]),
         "STY-4123": ("sizing", 3.3, ["Runs very small, had to return", "Sizing is nothing like the chart, far too tight", "Ordered my usual size and it was too small", "Much smaller than the age on the label"],
@@ -356,7 +361,7 @@ def generate(g):
     for style, (th, mean, negs, poss) in ret_story.items():
         prods = by_style[style]
         sku = next((p["sku"] for p in prods if p["status"] == "active"), prods[0]["sku"])
-        for k in range(1, 27, 1 if True else 2):
+        for k in range(1, 27):
             if k > 13 and k % 2:
                 continue
             for rt in ratings_for(r, 2, mean if k <= 13 else 4.1):
@@ -383,7 +388,7 @@ def generate(g):
         for lo, hi in [(1, 89), (91, 180)]:
             n = r.randint(4, 8)
             mean = max(3.0, min(4.8, base + r.uniform(-0.1, 0.1)))
-            for rt in ratings_for(r, n, mean):
+            for rt in ratings_for(r, n, mean, 0.9):
                 seg = r.choices(SEGMENTS, SEG_W)[0]
                 country = r.choices(COUNTRIES, COUNTRY_W)[0]
                 if grp is OUTER:
@@ -435,7 +440,8 @@ def generate(g):
         ("CMPD-005-K01", "Argos", "Small appliances", "Argos 1.7L Glass Kettle", 64.99, "active", "1.7L glass; rapid boil", "K-1700", 4.0, 3050),
     ]
     LB_NEG = [("leaking", "Leaked all over my bag in the first week"), ("leaking", "Lid does not seal, soup leaked everywhere"),
-              ("leaking", "Not leakproof despite the claims"), ("leaking", "Liner seam leaks when it tips"),
+              ("leaking", "Not leakproof despite the claims"), ("leaking", "Liner seam leaks when it tips"), ("leaking", "Soup leaked out of the lid in my rucksack"),
+              ("leaking", "Leaks from the seal every time I carry it"), ("leaking", "Lid is not watertight, dressing leaked everywhere"),
               ("insulation", "Food only stays cool for a couple of hours"), ("insulation", "Ice pack barely helps, lunch warm by noon"),
               ("durability", "Zip broke after a month"), ("durability", "Clasp snapped off"), ("size", "Too small for an adult lunch"),
               ("value", "Overpriced for the quality")]
@@ -477,9 +483,9 @@ def generate(g):
     cn = 0
     for pid, cname, cat, pname, price, status, feat, sku, mean, cnt in comp:
         pos, neg = special.get(pid, pools.get(cat, pools["Lunch boxes"]))
-        n = 18 if cat in ("Lunch boxes", "Wellness & recovery") else 10
+        n = 30 if cat in ("Lunch boxes", "Wellness & recovery") else 12
         late = status == "discontinued"
-        sample = ratings_for(r, n, mean)
+        sample = ratings_for(r, n, mean, 1.5)
         for rt in sample:
             if rt >= 4:
                 th, tx = r.choice(pos)
@@ -488,7 +494,7 @@ def generate(g):
             else:
                 th, tx = r.choice(neg) if r.random() < 0.5 else (r.choice(pos)[0], r.choice(NEUTRAL))
             cn += 1
-            days = r.randint(60, 150) if late else r.randint(2, 150)
+            days = r.randint(50, 89) if late else r.randint(2, 89)
             d = as_of - timedelta(days=days)
             creviews.append({"competitor_review_id": f"CREV-{cn:06d}", "competitor_product_id": pid, "rating": rt, "review_text": tx,
                              "theme": th, "created_at": datetime(d.year, d.month, d.day, r.randint(7, 22), r.randint(0, 59))})

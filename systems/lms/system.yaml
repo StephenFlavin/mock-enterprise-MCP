@@ -532,9 +532,19 @@ tools:
     sql: |
       SELECT sp.site_id, sp.pattern_name, sp.early_shift_hours, sp.late_shift_hours,
              sp.night_shift_hours, sp.overtime_hours_avg,
-             round(sp.early_shift_hours + sp.late_shift_hours + sp.night_shift_hours, 0) AS total_weekly_hours
+             round(sp.early_shift_hours + sp.late_shift_hours + sp.night_shift_hours, 0) AS total_weekly_hours,
+             round(sum(CASE WHEN lh.shift_type = 'early' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS early_overtime_hours_per_week,
+             round(sum(CASE WHEN lh.shift_type = 'late' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS late_overtime_hours_per_week,
+             round(sum(CASE WHEN lh.shift_type = 'night' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS night_overtime_hours_per_week
       FROM shift_patterns sp
+      LEFT JOIN labour_hours lh
+        ON lh.site_id = sp.site_id AND lh.week_start >= CAST($as_of AS DATE) - INTERVAL 56 DAY
       WHERE ($site_id IS NULL OR sp.site_id = $site_id)
+      GROUP BY sp.site_id, sp.pattern_name, sp.early_shift_hours, sp.late_shift_hours,
+               sp.night_shift_hours, sp.overtime_hours_avg
       ORDER BY site_id
     limit: 20
     example: {site_id: DC1}
@@ -544,18 +554,22 @@ tools:
     kind: sql
     args:
       site_id: {}
-      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping], desc: "Process (default all)"}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping, returns], desc: "Process (default all)"}
+      role: {type: enum, values: [operative, team_lead], desc: "Role (default all). Actual rates are measured for operatives only."}
     sql: |
       SELECT ps.site_id, ps.process_type, ps.role, ps.standard_units_per_hour,
-             round(avg(lp.units_per_hour), 1) AS actual_units_per_hour
+             CASE WHEN ps.role = 'operative' THEN round(sum(lp.units_handled) / sum(lp.labour_hours), 1) END AS actual_units_per_hour,
+             CASE WHEN ps.role = 'operative' THEN round(100.0 * sum(lp.units_handled) / sum(lp.labour_hours)
+                  / ps.standard_units_per_hour, 1) END AS pct_of_standard
       FROM productivity_standards ps
       LEFT JOIN labour_productivity lp
         ON lp.site_id = ps.site_id AND lp.process_type = ps.process_type
         AND lp.week_start >= CAST($as_of AS DATE) - INTERVAL 56 DAY
       WHERE ($site_id IS NULL OR ps.site_id = $site_id)
         AND ($process_type IS NULL OR ps.process_type = $process_type)
+        AND ($role IS NULL OR ps.role = $role)
       GROUP BY ps.site_id, ps.process_type, ps.role, ps.standard_units_per_hour
-      ORDER BY site_id, process_type
+      ORDER BY site_id, process_type, role DESC
     limit: 50
     example: {site_id: DC1}
 
@@ -564,7 +578,6 @@ tools:
     kind: sql
     args:
       site_id: {}
-      week_start: {type: date, desc: "Monday of week (default last 8 weeks)"}
       date_from: {col: week_start, op: ">=", type: date, default: "-56d"}
       date_to: {col: week_start, op: "<=", type: date, default: "+0d"}
     sql: |

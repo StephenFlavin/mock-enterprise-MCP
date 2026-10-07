@@ -8,7 +8,7 @@ import math
 from datetime import datetime, timedelta
 
 # ---- cost model -------------------------------------------------------------------------------------------------
-SEA_KG = {"CN": 0.95, "VN": 1.0, "BD": 1.1, "IN": 0.9, "MX": 1.2}
+SEA_KG = {"CN": 1.9, "VN": 2.0, "BD": 2.2, "IN": 1.8, "MX": 2.4}
 AIR_KG = {"CN": 4.6, "VN": 4.8, "BD": 5.2, "IN": 4.4}
 ROAD_KG = {"TR": 0.55, "PT": 0.42, "IT": 0.38, "PL": 0.3, "DE": 0.28, "FR": 0.28, "GB": 0.14}
 RAIL_KG = 0.8
@@ -46,7 +46,7 @@ def duty_rate(p, origin, days_ago):
 def freight_index(mode, days_ago):
     """Market rate index by order age: container rates ramp up over the last four months."""
     if mode in ("sea", "rail"):
-        return 1.0 if days_ago > 120 else 1.4 if days_ago > 60 else 2.1 if days_ago > 30 else 2.6
+        return 1.0 if days_ago > 120 else 1.4 if days_ago > 60 else 2.6 if days_ago > 30 else 3.0
     if mode == "air":
         return 1.0 if days_ago > 90 else 1.15
     return 1.0 if days_ago > 90 else 1.08

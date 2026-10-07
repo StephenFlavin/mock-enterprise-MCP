@@ -220,31 +220,38 @@ def generate(g):
                         "packet_loss_pct": round(loss, 2),
                     })
 
-    # Generate WMS system performance
+    # WMS performance for the three UK DCs, last 28 days, all healthy and in line with each other
+    # (the Daventry productivity story is labour, not systems)
+    pr = random.Random(20261006)
     wms_perf = []
-    for site in g.pick(sites_list, k=4):
-        for day_offset in range(30, 0, -1):
-            measure_date = g.days_ago(day_offset)
+    n_perf = 100000
+    site_base = {"DC1": (84, 920), "DC2": (88, 860), "DC3": (79, 640)}
+    for site, (base, tput) in site_base.items():
+        for day in range(28, 0, -1):
+            avg = base * pr.uniform(0.93, 1.07)
+            n_perf += 1
             wms_perf.append({
-                "perf_id": f"WMS-{g.rng.randint(900000, 999999)}",
-                "site_id": site["site_id"],
-                "measurement_date": measure_date,
-                "avg_response_time_ms": g.rng.uniform(50, 500),
-                "p95_response_time_ms": g.rng.uniform(200, 1000),
-                "p99_response_time_ms": g.rng.uniform(500, 2000),
-                "error_count": g.rng.randint(0, 50),
-                "incident_count": g.rng.randint(0, 5),
-                "throughput_orders_per_hour": g.rng.uniform(100, 1000),
-                "status": g.rng.choice(["healthy", "degraded", "critical"]) if g.rng.random() < 0.1 else "healthy",
+                "perf_id": f"WMS-{n_perf:06d}",
+                "site_id": site,
+                "measurement_date": g.days_ago(day),
+                "avg_response_time_ms": round(avg, 1),
+                "p95_response_time_ms": round(avg * pr.uniform(2.5, 2.9), 1),
+                "p99_response_time_ms": round(avg * pr.uniform(4.8, 5.6), 1),
+                "error_count": pr.randint(2, 9),
+                "incident_count": 1 if pr.random() < 0.12 else 0,
+                "throughput_orders_per_hour": round(tput * pr.uniform(0.93, 1.07), 0),
+                "status": "healthy",
             })
 
     # Generate asset CMDB - use real assets from master
     asset_cmdb = []
     master_assets = g.master("assets")
-    asset_sample = g.pick(master_assets, k=min(20, len(master_assets)))
+    story_assets = {"AST-DC1-SRT", "AST-DC1-CNV", "AST-DC1-CNV-M01", "AST-DC2-SHT", "AST-DC2-SHT-01", "AST-DC2-SHT-02",
+                    "AST-DC2-SRT", "AST-DC3-SRT"}
+    asset_sample = g.pick([a for a in master_assets if a["asset_id"] not in story_assets], k=12)
     for i, asset in enumerate(asset_sample):
         asset_cmdb.append({
-            "asset_entry_id": f"CMB-{900000 + i:06d}",
+            "asset_entry_id": f"CMB-{910000 + i:06d}",
             "asset_id": asset["asset_id"],
             "asset_name": asset["name"],
             "asset_type": asset["asset_class"],
@@ -255,69 +262,29 @@ def generate(g):
             "rpo_minutes": g.rng.choice([5, 15, 30, 60]),
         })
 
-    # Generate system dependencies
-    system_deps = []
-    dep_pairs = [
-        ("WMS", "Database", "database"),
-        ("WMS", "ERP", "API"),
-        ("Website", "WMS", "API"),
-        ("POS", "Payment Gateway", "API"),
-        ("Order API", "WMS", "message queue"),
-        ("Stock Feed", "Website", "file transfer"),
-    ]
-    for i, (source, target, dep_type) in enumerate(dep_pairs):
-        system_deps.append({
-            "dependency_id": f"DEP-{900000 + i:06d}",
-            "source_system": source,
-            "target_system": target,
-            "dependency_type": dep_type,
-            "criticality": g.rng.choice(["critical", "high", "medium"]),
-            "rto_minutes": g.rng.choice([15, 30, 60, 120]),
-            "rpo_minutes": g.rng.choice([5, 15, 30]),
-            "recovery_tier": g.rng.randint(1, 3),
-        })
+    # System dependencies and backup/recovery status are hand-written in seed/ (warehouse systems only)
+    system_deps, backup_recovery = [], []
 
-    # Generate backup and recovery
-    backup_recovery = []
-    system_names = ["WMS Database", "ERP Database", "Website Database", "Order API", "Cache Cluster", "Message Queue"]
-    for i, sys_name in enumerate(system_names):
-        restore_tested = g.rng.random() > 0.2
-        backup_recovery.append({
-            "system_name": sys_name,
-            "system_type": g.rng.choice(["database", "application", "file storage"]),
-            "rto_minutes": g.rng.choice([15, 30, 60, 120, 240]),
-            "rpo_minutes": g.rng.choice([5, 15, 30, 60]),
-            "last_backup_date": g.days_ago(g.rng.randint(0, 7)),
-            "last_backup_size_gb": g.rng.uniform(50, 1000),
-            "last_restore_test_date": g.days_ago(g.rng.randint(0, 90)) if restore_tested else None,
-            "last_restore_test_duration_minutes": g.rng.randint(30, 240) if restore_tested else None,
-            "backup_status": g.rng.choice(["healthy", "at_risk", "failed"]) if g.rng.random() < 0.05 else "healthy",
-            "restore_tested": restore_tested,
-        })
-
-    # Generate vendor software
+    # Vendor software: WMS, ERP, AMR and EDI entries are in seed/vendor_software.csv; other infrastructure software here
     vendor_software = []
     vendors_software = [
-        ("WMS System", "Blue Yonder", "9.2", "9.3", "3"),
-        ("ERP System", "SAP", "4.7", "4.8", "2"),
         ("Database", "Oracle", "21c", "23c", "1"),
         ("Message Queue", "Apache Kafka", "3.5", "3.6", "0"),
         ("API Gateway", "Kong", "3.1", "3.2", "1"),
         ("Cache", "Redis", "7.0", "7.1", "0"),
     ]
     for i, (sw_name, vendor, version, latest_ver, issues) in enumerate(vendors_software):
-        support_end = g.days_ago(g.rng.randint(-365, 0))
         vendor_software.append({
-            "software_id": f"VSW-{900000 + i:06d}",
+            "software_id": f"VSW-{910000 + i:06d}",
             "software_name": sw_name,
             "vendor_name": vendor,
             "installed_version": version,
             "system_or_location": g.rng.choice(["DC1", "DC2", "DC3", "HQ", "All"]),
             "installation_date": g.days_ago(g.rng.randint(365, 1095)),
-            "support_end_date": support_end,
+            "support_end_date": g.days_ago(-g.rng.randint(120, 700)),
             "latest_available_version": latest_ver,
             "security_issues": int(issues),
-            "criticality": "critical" if int(issues) > 2 else g.rng.choice(["high", "medium", "low"]),
+            "criticality": g.rng.choice(["medium", "low"]),
         })
 
     # Model alert rules are hand-written in seed/model_alert_rules.csv

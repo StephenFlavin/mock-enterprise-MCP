@@ -210,7 +210,7 @@ def generate(g):
 
     # ---- shift patterns (fixed per site) --------------------------------------------------------------------
     patterns = []
-    for site, name, e, l, nt, ot in [('DC1', 'two-shift', 120, 120, 0, 15), ('DC2', 'three-shift', 80, 80, 80, 12),
+    for site, name, e, l, nt, ot in [('DC1', 'two-shift', 120, 120, 0, 15), ('DC2', 'three-shift', 80, 80, 80, 22),
                                      ('DC3', 'flexible', 60, 70, 40, 18)]:
         patterns.append({'site_id': site, 'pattern_name': name, 'early_shift_hours': e, 'late_shift_hours': l,
                          'night_shift_hours': nt, 'overtime_hours_avg': ot, 'updated_at': as_of})

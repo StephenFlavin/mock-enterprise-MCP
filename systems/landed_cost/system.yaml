@@ -294,8 +294,8 @@ tools:
 
   - name: get_landed_cost_history
     desc: >
-      Monthly landed cost per unit and components (FOB, freight, duty, insurance, handling, FX rate) for a SKU, supplier or the top N sellers.
-      Shows the trend and what drove it.
+      Monthly landed cost per unit and components (FOB, freight, duty, insurance, handling) for a SKU, supplier or the top N sellers.
+      Components as % of FOB strip out product mix, so they show what drove the trend.
     kind: sql
     args:
       sku: {}
@@ -308,7 +308,9 @@ tools:
         SELECT DATE_TRUNC('month', CAST(l.updated_at AS DATE)) AS month, count(*) AS po_lines, sum(l.units) AS units,
                avg(l.fob_unit_gbp) AS fob, avg(l.freight_unit_gbp) AS fr, avg(l.duty_unit_gbp) AS du,
                avg(l.insurance_unit_gbp) AS ins, avg(l.handling_unit_gbp) AS ha, avg(l.landed_cost_unit_gbp) AS lc,
-               avg(l.fx_rate) AS fx
+               sum(l.fob_unit_gbp * l.units) AS fob_v, sum(l.freight_unit_gbp * l.units) AS fr_v,
+               sum(l.duty_unit_gbp * l.units) AS du_v, sum((l.insurance_unit_gbp + l.handling_unit_gbp) * l.units) AS ih_v,
+               sum(l.landed_cost_unit_gbp * l.units) AS lc_v
         FROM landed_cost_summary l
         WHERE ($sku IS NULL OR l.sku = $sku)
           AND ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
@@ -323,8 +325,10 @@ tools:
       SELECT month, po_lines, units, round(fob, 2) AS avg_fob_unit_gbp, round(fr, 2) AS avg_freight_unit_gbp,
              round(du, 2) AS avg_duty_unit_gbp, round(ins, 3) AS avg_insurance_unit_gbp, round(ha, 3) AS avg_handling_unit_gbp,
              round(lc, 2) AS avg_landed_cost_unit_gbp,
-             round(100.0 * (lc / lag(lc) OVER (ORDER BY month) - 1), 1) AS landed_change_vs_prev_month_pct,
-             round(fx, 4) AS avg_fx_rate
+             round(100.0 * fr_v / fob_v, 2) AS freight_pct_of_fob, round(100.0 * du_v / fob_v, 2) AS duty_pct_of_fob,
+             round(100.0 * ih_v / fob_v, 2) AS insurance_handling_pct_of_fob,
+             round(100.0 * (lc_v / fob_v - 1), 2) AS landed_over_fob_pct,
+             round(100.0 * ((lc_v / fob_v) / lag(lc_v / fob_v) OVER (ORDER BY month) - 1), 1) AS landed_over_fob_change_vs_prev_month_pct
       FROM m ORDER BY month DESC
     limit: 12
     example: {top_n_by_sales: 100}
@@ -489,7 +493,7 @@ tools:
         AND l.updated_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY
       GROUP BY l.sku, p.name, l.origin_country
     limit: 5
-    example: {sku: "SKU-100007", origin_country: "CN", tariff_rate_pct: 15.0}
+    example: {sku: "K-1700", origin_country: "CN", tariff_rate_pct: 6.0}
 
   - name: calculate_tariff_contingency_by_origin
     desc: >

@@ -446,7 +446,7 @@ tools:
       WHERE ($asset_id IS NULL OR asset_id = $asset_id)
         AND ($asset_type IS NULL OR asset_type = $asset_type)
         AND ($criticality IS NULL OR criticality = $criticality)
-      ORDER BY criticality DESC
+      ORDER BY CASE criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, rto_minutes, asset_id
     limit: 50
     example: {}
 
@@ -461,7 +461,7 @@ tools:
       FROM system_dependencies
       WHERE ($source_system IS NULL OR source_system = $source_system)
         AND ($criticality IS NULL OR criticality = $criticality)
-      ORDER BY recovery_tier ASC, criticality DESC
+      ORDER BY recovery_tier ASC, CASE criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, target_system
     limit: 50
     example: {}
 
@@ -531,14 +531,19 @@ tools:
     example: {site_id: DC1}
 
   - name: get_wms_system_performance
-    desc: WMS response times and incident counts for a site. Returns response times, error rate and incidents.
+    desc: WMS response times, error counts and incident counts for a site, newest day first, with the period average and totals on every row.
     kind: sql
     args:
       site_id: {required: true}
       date_from: {type: date, default: "-30d", desc: "Performance data from this date onward"}
     sql: |
       SELECT perf_id, site_id, measurement_date, avg_response_time_ms, p95_response_time_ms, p99_response_time_ms,
-             error_count, incident_count, throughput_orders_per_hour, status
+             error_count, incident_count, throughput_orders_per_hour, status,
+             round(avg(avg_response_time_ms) OVER (), 1) AS period_avg_response_ms,
+             round(avg(p95_response_time_ms) OVER (), 1) AS period_avg_p95_ms,
+             sum(error_count) OVER () AS period_total_errors,
+             sum(incident_count) OVER () AS period_total_incidents,
+             count(*) FILTER (WHERE status <> 'healthy') OVER () AS period_days_not_healthy
       FROM wms_system_performance
       WHERE site_id = $site_id
         AND measurement_date >= CAST($date_from AS DATE)
@@ -599,16 +604,16 @@ tools:
     desc: Applications, versions and vendors in the CMDB. Returns software, vendor, version and support end date.
     kind: sql
     args:
-      software_name: {}
-      vendor_name: {}
+      software_name: {type: str, desc: "Software name or part of it, e.g. WMS System, EDI Gateway"}
+      vendor_name: {type: str, desc: "Vendor name or part of it, e.g. Blue Yonder, Orbis EDI"}
       criticality: {type: enum, values: [critical, high, medium, low]}
     sql: |
       SELECT software_id, software_name, vendor_name, installed_version, system_or_location, installation_date,
              support_end_date, latest_available_version, security_issues, criticality
       FROM vendor_software
-      WHERE ($software_name IS NULL OR software_name = $software_name)
-        AND ($vendor_name IS NULL OR vendor_name = $vendor_name)
+      WHERE ($software_name IS NULL OR software_name ILIKE '%' || $software_name || '%')
+        AND ($vendor_name IS NULL OR vendor_name ILIKE '%' || $vendor_name || '%')
         AND ($criticality IS NULL OR criticality = $criticality)
-      ORDER BY criticality DESC, security_issues DESC
+      ORDER BY CASE criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, security_issues DESC, software_id
     limit: 50
     example: {}
