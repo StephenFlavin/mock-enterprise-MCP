@@ -235,7 +235,7 @@ def generate(g):
             short = got < ordered
             if po["status"] not in DONE:
                 advised = ordered
-            elif short and po["supplier_id"] == "SUP-0034":
+            elif short and po["supplier_id"] == "SUP-0072":
                 advised = ordered                                   # supplier advised the full quantity but it did not arrive
             elif short:
                 advised = got                                       # supplier honestly advised the short quantity

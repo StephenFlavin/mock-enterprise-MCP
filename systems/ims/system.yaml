@@ -389,6 +389,7 @@ tools:
       SELECT i.sku, i.site_id, i.on_hand, i.allocated, i.available, i.hold_qty,
              COALESCE(r.reserved, 0) AS reserved_for_channel,
              greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS sellable,
+             sum(greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0)) OVER () AS total_sellable_all_rows,
              p.name, p.category
       FROM inventory_positions i
       JOIN master.products p USING (sku)
@@ -488,16 +489,20 @@ tools:
     example: {sku: K-1700}
 
   - name: get_franchise_stock_position
-    desc: Stock position at a franchise partner, with target stock and over or under stock per SKU.
+    desc: Stock position at a franchise partner, with target stock and over or under stock per SKU. Can be limited to core range lines or to low, ok or overstocked lines.
     kind: sql
     args:
       partner_id: {required: true}
+      is_core_range: {desc: "true for core range lines only, false for non-core"}
+      status: {type: enum, values: [low, ok, overstocked], desc: "Only lines with this stock status"}
     sql: |
       SELECT f.sku, p.name, p.category, f.on_hand, f.available, f.target_stock, f.is_core_range,
              f.on_hand - f.target_stock AS over_under_target,
              CASE WHEN f.on_hand < 0.5 * f.target_stock THEN 'low' WHEN f.on_hand > 1.5 * f.target_stock THEN 'overstocked' ELSE 'ok' END AS status
       FROM franchise_stock f JOIN master.products p USING (sku)
-      WHERE f.partner_id = $partner_id ORDER BY f.is_core_range DESC, over_under_target
+      WHERE f.partner_id = $partner_id AND ($is_core_range IS NULL OR f.is_core_range = $is_core_range)
+        AND ($status IS NULL OR $status = CASE WHEN f.on_hand < 0.5 * f.target_stock THEN 'low' WHEN f.on_hand > 1.5 * f.target_stock THEN 'overstocked' ELSE 'ok' END)
+      ORDER BY f.is_core_range DESC, over_under_target
     limit: 100
     example: {partner_id: PTN-011}
 
@@ -654,17 +659,17 @@ tools:
     example: {sku: K-1700}
 
   - name: get_stock_adjustments_for_region
-    desc: Retrieves stock adjustments for region. Shows adjustments across stores by cause.
+    desc: Retrieves stock adjustments for region. Shows adjustments across the region's stores by cause, with the employee who raised each and the hour of day.
     kind: sql
     args:
       region: {required: true}
       date_from: {type: date, default: "-30d", desc: "From this date"}
     sql: |
       SELECT a.adjustment_id, a.sku, a.site_id, s.region, a.cause_code,
-             a.quantity_delta, a.value_impact_gbp, a.reason_notes, a.created_at
+             a.quantity_delta, a.value_impact_gbp, a.user_id, hour(a.created_at) AS hour_of_day, a.reason_notes, a.created_at
       FROM inventory_adjustments a
       JOIN master.sites s ON a.site_id = s.site_id
-      WHERE s.region = $region AND a.created_at >= CAST($date_from AS DATE)
+      WHERE s.region = $region AND s.type = 'store' AND a.created_at >= CAST($date_from AS DATE)
       ORDER BY a.created_at DESC
     limit: 1000
     example: {region: "UK North"}
@@ -746,13 +751,18 @@ tools:
     args:
       date_from: {type: date, default: "-270d", desc: "From this date"}
     sql: |
-      SELECT s.site_id,
-             round(sum(s.shrink_value_gbp), 2) AS ytd_shrink_value_gbp,
-             sum(s.shrink_units) AS ytd_shrink_units,
-             round(avg(s.shrink_rate_pct), 1) AS avg_shrink_rate_pct
-      FROM shrink_analysis s
-      WHERE s.analysis_week >= CAST($date_from AS DATE)
-      GROUP BY ALL ORDER BY ytd_shrink_value_gbp DESC
+      WITH st AS (
+        SELECT s.site_id,
+               round(sum(s.shrink_value_gbp), 2) AS ytd_shrink_value_gbp,
+               sum(s.shrink_units) AS ytd_shrink_units,
+               round(avg(s.shrink_rate_pct), 1) AS avg_shrink_rate_pct
+        FROM shrink_analysis s
+        WHERE s.analysis_week >= CAST($date_from AS DATE)
+        GROUP BY ALL
+      )
+      SELECT st.*, round(sum(st.ytd_shrink_value_gbp) OVER (), 2) AS network_ytd_shrink_value_gbp,
+             round(avg(st.avg_shrink_rate_pct) OVER (), 2) AS network_avg_shrink_rate_pct
+      FROM st ORDER BY ytd_shrink_value_gbp DESC
     example: {}
 
   - name: get_self_checkout_shrink_by_store
@@ -961,19 +971,22 @@ tools:
     example: {site_id: DC1, min_value_gbp: 500, date_from: "-100d"}
 
   - name: list_inventory_adjustments_and_cutoffs
-    desc: Posted adjustments plus in-transit store transfers that affect stock balances around a period end.
+    desc: Posted adjustments plus in-transit store transfers that affect stock balances around a period end. Adjustments show when they were posted and whether that was in a later month than they were raised (a cut-off timing difference); transfers show the sending and receiving site.
     kind: sql
     args:
       site_id: {}
       date_from: {type: date, default: "-30d", desc: "From this date"}
     sql: |
       SELECT 'adjustment' AS item_type, a.adjustment_id AS ref, a.sku, a.site_id, a.quantity_delta AS units,
-             a.value_impact_gbp AS value_gbp, a.cause_code AS detail, a.created_at AS item_date
+             a.value_impact_gbp AS value_gbp, a.cause_code AS detail, a.created_at AS item_date,
+             a.posted_at AS posted_at, date_trunc('month', a.posted_at) > date_trunc('month', a.created_at) AS posted_in_later_period,
+             a.reason_notes AS notes
       FROM inventory_adjustments a
       WHERE ($site_id IS NULL OR a.site_id = $site_id) AND a.created_at >= CAST($date_from AS DATE) AND a.status = 'posted'
       UNION ALL
       SELECT 'in_transit_transfer', t.transfer_id, t.sku, t.to_site_id, t.quantity_shipped,
-             round(t.quantity_shipped * p.unit_cost_gbp, 2), 'shipped from ' || t.from_site_id, t.shipped_date
+             round(t.quantity_shipped * p.unit_cost_gbp, 2), 'shipped from ' || t.from_site_id, t.shipped_date,
+             NULL, NULL, t.reason
       FROM store_transfers t JOIN master.products p USING (sku)
       WHERE t.status = 'shipped' AND ($site_id IS NULL OR t.to_site_id = $site_id OR t.from_site_id = $site_id)
       ORDER BY item_date DESC
@@ -1050,18 +1063,24 @@ tools:
     example: {sku: K-1700, site_id: DC2, safety_stock: 400}
 
   - name: get_stock_position_by_site
-    desc: Operational stock units and value by site and status. Shows overall inventory position.
+    desc: Operational stock units and value by site and status (on hand, allocated, available, on hold, and units shipped out but not yet received). Shows overall inventory position.
     kind: sql
     args:
       site_id: {}
     sql: |
       SELECT i.site_id,
              sum(i.on_hand) AS total_on_hand,
+             sum(i.allocated) AS total_allocated,
              sum(i.available) AS total_available,
              sum(i.hold_qty) AS total_on_hold,
-             round(sum(i.on_hand * COALESCE(p.unit_cost_gbp, 0)), 2) AS total_value_gbp
+             round(sum(i.on_hand * COALESCE(p.unit_cost_gbp, 0)), 2) AS total_value_gbp,
+             COALESCE(max(t.units), 0) AS units_in_transit_out,
+             COALESCE(max(t.value), 0) AS value_in_transit_out_gbp
       FROM inventory_positions i
       LEFT JOIN master.products p USING (sku)
+      LEFT JOIN (SELECT t.from_site_id AS site_id, sum(t.quantity_shipped) AS units, round(sum(t.quantity_shipped * q.unit_cost_gbp), 2) AS value
+                 FROM store_transfers t JOIN master.products q USING (sku) WHERE t.status = 'shipped' GROUP BY ALL) t
+             ON t.site_id = i.site_id
       WHERE $site_id IS NULL OR i.site_id = $site_id
       GROUP BY ALL
     example: {site_id: DC1}
@@ -1076,6 +1095,7 @@ tools:
     sql: |
       SELECT i.sku, i.site_id, i.available AS wms_available,
              greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS website_sellable,
+             i.hold_qty AS hold_qty, COALESCE(r.reserved, 0) AS reserved_for_channel,
              i.available - greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS variance_units,
              round(100.0 * (i.available - greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0)) / NULLIF(i.available, 0), 1) AS variance_pct,
              i.updated_at AS wms_last_movement
@@ -1488,16 +1508,20 @@ tools:
     example: {sku: PF-220}
 
   - name: get_stock_confirmation_status_for_promotion
-    desc: Stock confirmation status per promotion SKU. Shows required, confirmed and gap units.
+    desc: Stock confirmation status per promotion SKU. Shows required, confirmed and gap units. Filter by promotion start date to see only the promotions starting in a window.
     kind: sql
     args:
       promotion_id: {}
       sku: {}
+      date_from: {type: date, desc: "Only promotions starting on or after this date, e.g. today"}
+      date_to: {type: date, desc: "Only promotions starting on or before this date, e.g. +42d for the next six weeks"}
     sql: |
       SELECT ps.promotion_id, ps.sku, p.name, ps.hero_item, ps.promo_start, ps.promo_end, ps.required_units, ps.confirmed_units,
              ps.required_units - ps.confirmed_units AS gap_units, ps.status
       FROM promotion_stock ps JOIN master.products p USING (sku)
       WHERE ($promotion_id IS NULL OR ps.promotion_id = $promotion_id) AND ($sku IS NULL OR ps.sku = $sku)
+        AND ($date_from IS NULL OR ps.promo_start >= CAST($date_from AS DATE))
+        AND ($date_to IS NULL OR ps.promo_start <= CAST($date_to AS DATE))
       ORDER BY gap_units DESC
     limit: 100
     example: {}
@@ -1524,19 +1548,21 @@ tools:
     example: {site_id: DC1}
 
   - name: get_stock_position_at_order_date
-    desc: Stock position for a SKU around an order date, from availability tracking. Give an order id or a site.
+    desc: Stock position for a SKU in the week of an order (7 days either side), from availability tracking. Give a retail order id, or the order date (for example a wholesale order) with the fulfilling site.
     kind: sql
     args:
       sku: {required: true}
       order_id: {}
+      order_date: {type: date, desc: "Date the order was placed, for orders not held in the retail order master, e.g. -14d"}
       site_id: {}
     sql: |
-      WITH o AS (SELECT order_id, CAST(order_date AS DATE) AS order_date, fulfil_site_id FROM master.orders WHERE order_id = $order_id)
+      WITH o AS (SELECT order_id, CAST(order_date AS DATE) AS order_date, fulfil_site_id FROM master.orders WHERE order_id = $order_id),
+      d AS (SELECT COALESCE((SELECT order_date FROM o), CAST($order_date AS DATE)) AS order_date)
       SELECT $sku AS sku, a.site_id, a.tracking_date, a.quantity_available, a.demand_units, a.stockout_days, a.available AS in_stock,
-             o.order_id, o.order_date
-      FROM availability_tracking a LEFT JOIN o ON TRUE
+             a.stockout_cause, (SELECT order_id FROM o) AS order_id, d.order_date
+      FROM availability_tracking a CROSS JOIN d
       WHERE a.sku = $sku AND (a.site_id = COALESCE($site_id, (SELECT fulfil_site_id FROM o), a.site_id))
-        AND (o.order_date IS NULL OR a.tracking_date BETWEEN o.order_date - INTERVAL 7 DAY AND o.order_date + INTERVAL 7 DAY)
+        AND (d.order_date IS NULL OR a.tracking_date BETWEEN d.order_date - INTERVAL 7 DAY AND d.order_date + INTERVAL 7 DAY)
       ORDER BY a.tracking_date DESC
     limit: 60
     example: {sku: K-1700, site_id: ST214}

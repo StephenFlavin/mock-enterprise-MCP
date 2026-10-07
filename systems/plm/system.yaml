@@ -284,20 +284,21 @@ tools:
     example: {sku: K-1700}
 
   - name: get_bill_of_materials_with_suppliers
-    desc: BOM with component and material suppliers
+    desc: BOM for a SKU with each component's material supplier, supplier country, factory and factory country. Use to trace where components come from.
     kind: sql
     args:
       sku: {required: true}
     sql: |
-      SELECT b.sku, b.line_no, b.component_type, b.component_name, b.material_name,
-             s.name AS supplier_name, f.name AS factory_name,
-             b.quantity, b.unit, b.unit_cost_gbp, b.lead_time_days
+      SELECT b.sku, b.line_no, b.component_type, b.component_id, b.component_name, b.material_name,
+             b.supplier_id, s.name AS supplier_name, s.country AS supplier_country,
+             b.factory_id, f.name AS factory_name, f.country AS factory_country,
+             b.quantity, b.unit, b.unit_cost_gbp, b.lead_time_days, b.notes
       FROM bill_of_materials b
       LEFT JOIN master.suppliers s ON s.supplier_id = b.supplier_id
       LEFT JOIN master.factories f ON f.factory_id = b.factory_id
       WHERE b.sku = $sku
       ORDER BY b.line_no
-    example: {sku: K-1700}
+    example: {sku: SKU-101813}
 
   - name: get_blended_fabric_volumes_by_category
     desc: Volumes of blended fabrics by category
@@ -323,35 +324,49 @@ tools:
     example: {}
 
   - name: get_dye_lot_and_process_changes_for_lots
-    desc: Dye lot, mill, dye house and process changes
+    desc: Dye lots with mill, dye house, colour, rubbing and wash fastness, test status and process changes, newest first. Filter by SKU, style, batch, colour or result.
     kind: sql
     args:
-      material_id: {type: str, desc: "Material id (optional)"}
-      dye_date_from: {type: date, default: "-60d", desc: "Dye date on or after"}
+      sku: {desc: "SKU the fabric batch was used for, e.g. SKU-100007 (optional)"}
+      style_id: {desc: "Style of the garment, e.g. STY-4012 (optional)"}
+      batch_id: {type: str, desc: "Material batch id, e.g. BATCH-POL-PINK-001 (optional)"}
+      color: {type: str, desc: "Colour word, e.g. pink (optional)"}
+      test_status: {type: str, desc: "Fastness test status: passed, failed, in_progress (optional)"}
+      dye_date_from: {type: date, default: "-120d", desc: "Dye date on or after"}
     sql: |
-      SELECT d.dye_lot_id, d.batch_id, d.fabric_material, d.mill_id, d.dye_house,
+      SELECT d.dye_lot_id, d.batch_id, mb.used_in_skus AS skus, d.fabric_material, d.mill_id, d.dye_house,
              d.color_description, d.dye_date, d.process_name, d.process_changes,
              d.temperature_c, d.duration_minutes, d.fastness_rubbing, d.fastness_washing,
              d.test_status, d.notes
       FROM dye_lots d
-      WHERE ($material_id IS NULL OR d.fabric_material = $material_id)
+      LEFT JOIN material_batches mb ON mb.batch_id = d.batch_id
+      WHERE ($batch_id IS NULL OR d.batch_id = $batch_id)
+        AND ($color IS NULL OR d.color_description ILIKE '%' || $color || '%')
+        AND ($test_status IS NULL OR d.test_status = $test_status)
+        AND ($sku IS NULL OR mb.used_in_skus LIKE '%"' || $sku || '"%')
+        AND ($style_id IS NULL OR EXISTS (SELECT 1 FROM master.products p
+                                          WHERE p.style_id = $style_id AND mb.used_in_skus LIKE '%"' || p.sku || '"%'))
         AND d.dye_date >= CAST($dye_date_from AS DATE)
       ORDER BY d.dye_date DESC
     limit: 50
-    example: {}
+    example: {style_id: "STY-4012"}
 
   - name: get_fabric_origin_by_style
-    desc: Fabric origin by style
+    desc: Fabric origin by style - mill and origin country of each fabric, its supplier, and the country where the garment is cut and sewn.
     kind: sql
     args:
       style_id: {required: true}
     sql: |
-      SELECT DISTINCT f.fabric_name, f.fiber_content, f.mill_id, f.mill_country,
-             f.origin_country, f.supplier_id, f.color, f.gsm, f.width_cm, f.certifications
+      SELECT DISTINCT f.style_id, f.fabric_name, f.fiber_content, f.mill_id, f.mill_country,
+             f.origin_country AS fabric_origin_country, f.supplier_id,
+             t.factory_id AS garment_factory_id, fa.country AS garment_made_in_country,
+             f.color, f.gsm, f.width_cm, f.certifications
       FROM fabric_specs f
+      LEFT JOIN (SELECT style_id, min(factory_id) AS factory_id FROM product_tech_pack GROUP BY style_id) t ON t.style_id = f.style_id
+      LEFT JOIN master.factories fa ON fa.factory_id = t.factory_id
       WHERE f.style_id = $style_id
       ORDER BY f.fabric_name
-    example: {style_id: "STY-4102"}
+    example: {style_id: "STY-6132"}
 
   - name: get_fabric_specs_from_materials_library
     desc: Return fabric specs from materials library.
@@ -365,16 +380,19 @@ tools:
     example: {style_id: "STY-4102"}
 
   - name: get_material_batch_traceability
-    desc: Upstream and downstream batch traceability
+    desc: Upstream and downstream traceability of a material batch - material, supplier, factory, dates, test result, upstream notes and the products that used it.
     kind: sql
     args:
       batch_id: {required: true}
     sql: |
       SELECT mb.batch_id, mb.material_id, ml.name AS material_name,
-             mb.supplier_id, s.name AS supplier_name, mb.factory_id, f.name AS factory_name,
+             mb.supplier_id, s.name AS supplier_name, s.country AS supplier_country,
+             mb.factory_id, f.name AS factory_name, f.country AS factory_country,
              mb.batch_date, mb.quantity_kg, mb.color_lot, mb.dye_house,
              mb.test_status, mb.test_date, mb.traceability_notes,
-             mb.used_in_skus AS products_using_batch
+             (SELECT string_agg(p.sku || ' (' || p.name || ')', '; ' ORDER BY p.sku)
+                FROM master.products p
+               WHERE mb.used_in_skus LIKE '%"' || p.sku || '"%') AS products_using_batch
       FROM material_batches mb
       LEFT JOIN material_library ml ON ml.material_id = mb.material_id
       LEFT JOIN master.suppliers s ON s.supplier_id = mb.supplier_id
@@ -383,18 +401,21 @@ tools:
     example: {batch_id: "BATCH-LEATHER-002"}
 
   - name: get_material_batches_for_product
-    desc: Material batches used by a product
+    desc: Material batches used by a SKU - supplier, factory and country, batch date, test status and traceability notes. Filter test_status=failed for suspect batches.
     kind: sql
     args:
       sku: {required: true}
+      test_status: {type: str, desc: "Batch test status: passed, failed, in_progress, on_hold (optional)"}
     sql: |
-      SELECT DISTINCT mb.batch_id, mb.material_id, ml.name AS material_name,
-             mb.supplier_id, s.name AS supplier_name, mb.factory_id,
-             mb.batch_date, mb.quantity_kg, mb.test_status, mb.dye_house, mb.color_lot
+      SELECT mb.batch_id, mb.material_id, ml.name AS material_name,
+             mb.supplier_id, s.name AS supplier_name, mb.factory_id, f.name AS factory_name, f.country AS factory_country,
+             mb.batch_date, mb.quantity_kg, mb.test_status, mb.test_date, mb.dye_house, mb.color_lot, mb.traceability_notes
       FROM material_batches mb
       JOIN material_library ml ON ml.material_id = mb.material_id
       LEFT JOIN master.suppliers s ON s.supplier_id = mb.supplier_id
-      WHERE mb.used_in_skus LIKE '%' || $sku || '%'
+      LEFT JOIN master.factories f ON f.factory_id = mb.factory_id
+      WHERE mb.used_in_skus LIKE '%"' || $sku || '"%'
+        AND ($test_status IS NULL OR mb.test_status = $test_status)
       ORDER BY mb.batch_date DESC
     limit: 50
     example: {sku: SKU-100301}
@@ -442,20 +463,20 @@ tools:
     example: {sku: "PF-220"}
 
   - name: get_product_bill_of_materials
-    desc: Product materials and composition
+    desc: Product bill of materials by SKU, with each component's material, composition, quantity, unit cost and notes on construction. Use for materials and composition questions.
     kind: sql
     args:
       sku: {required: true}
     sql: |
-      SELECT b.sku, b.line_no, b.component_type, b.component_name, b.material_name,
+      SELECT b.sku, b.line_no, b.component_type, b.component_id, b.component_name, b.material_name,
              b.quantity, b.unit, b.unit_cost_gbp, b.notes
       FROM bill_of_materials b
       WHERE b.sku = $sku
       ORDER BY b.line_no
-    example: {sku: K-1700}
+    example: {sku: SKU-100952}
 
   - name: get_product_bom_and_cost_breakdown
-    desc: BOM and cost breakdown showing component costs and contribution to total
+    desc: BOM and cost breakdown for a SKU - each component's cost per unit, its share of total material cost, and the total. Use to find the costliest parts.
     kind: sql
     args:
       sku: {required: true}
@@ -463,11 +484,13 @@ tools:
       SELECT b.line_no, b.component_type, b.component_name, b.material_name,
              b.quantity, b.unit, b.unit_cost_gbp,
              ROUND(b.quantity * b.unit_cost_gbp, 2) AS line_cost_gbp,
-             ROUND(100.0 * b.quantity * b.unit_cost_gbp / SUM(b.quantity * b.unit_cost_gbp) OVER(), 1) AS pct_of_total
+             ROUND(100.0 * b.quantity * b.unit_cost_gbp / SUM(b.quantity * b.unit_cost_gbp) OVER(), 1) AS pct_of_total,
+             ROUND(SUM(b.quantity * b.unit_cost_gbp) OVER(), 2) AS total_material_cost_gbp,
+             b.notes
       FROM bill_of_materials b
       WHERE b.sku = $sku
       ORDER BY line_cost_gbp DESC
-    example: {sku: K-1700}
+    example: {sku: SKU-102590}
 
   - name: get_product_design_attributes
     desc: Return product design attributes and features for performance analysis.
@@ -481,25 +504,25 @@ tools:
     example: {sku: SKU-100574}
 
   - name: get_product_specification_tolerances
-    desc: Spec tolerances for a product including shrinkage, measurement and construction tolerances.
+    desc: Spec tolerances for a SKU - shrinkage, measurement and construction tolerances such as zip strength, with nominal value and allowed range.
     kind: select
     from: product_specifications
     filters:
       sku: {}
       spec_type: {default: tolerances}
     columns: [sku, spec_type, spec_name, spec_version, shrinkage_tolerances, measurement_points, notes]
-    example: {sku: "SKU-100637", spec_type: "tolerances"}
+    example: {sku: "SKU-100651", spec_type: "tolerances"}
 
   - name: get_product_specifications
-    desc: Product specification and materials including tech pack details and composition.
+    desc: Product specification records for a SKU - size chart, grade rules, tolerances and test requirements with content and notes. Filter by spec_type.
     kind: select
     from: product_specifications
     filters:
       sku: {}
       spec_type: {}
-    columns: [sku, spec_type, spec_name, spec_version, content, applicable_sizes, applicable_fits]
-    order: spec_type, spec_version DESC
-    example: {sku: "K-1700"}
+    columns: [sku, spec_type, spec_name, spec_version, content, applicable_sizes, applicable_fits, notes]
+    order: sku, spec_type, spec_version DESC
+    example: {sku: "SKU-102590"}
 
   - name: get_size_chart_for_range
     desc: Return size chart for range including measurement specifications and grade curves.
@@ -553,32 +576,51 @@ tools:
     example: {}
 
   - name: list_co_development_projects
-    desc: Co-development projects with suppliers showing scope, status and investment terms.
-    kind: select
-    from: co_development_projects
-    filters:
+    desc: Co-development projects with suppliers - scope, status, investment and IP ownership terms. Filter by supplier, status or IP wording to find exposed projects.
+    kind: sql
+    args:
       supplier_id: {desc: "Supplier partner (optional)"}
       status: {desc: "Project status: planning, active, completed, terminated (optional)"}
       category: {desc: "Product category (optional)"}
-    columns: [project_id, project_name, supplier_id, status, start_date, target_date, investment_gbp, cost_savings_gbp, materials_developed, ip_ownership]
-    order: start_date DESC
+      ip_ownership: {type: str, desc: "Words in the IP terms, e.g. supplier owns, joint, not yet agreed (optional)"}
+    sql: |
+      SELECT c.project_id, c.project_name, c.supplier_id, s.name AS supplier_name, c.status, c.category, c.scope,
+             c.start_date, c.target_date, c.investment_gbp, c.cost_savings_gbp, c.materials_developed,
+             c.ip_ownership, c.notes
+      FROM co_development_projects c
+      LEFT JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+      WHERE ($supplier_id IS NULL OR c.supplier_id = $supplier_id)
+        AND ($status IS NULL OR c.status = $status)
+        AND ($category IS NULL OR c.category ILIKE '%' || $category || '%')
+        AND ($ip_ownership IS NULL OR c.ip_ownership ILIKE '%' || $ip_ownership || '%')
+      ORDER BY c.start_date DESC
     limit: 50
-    example: {}
+    example: {status: active}
 
   - name: list_products_by_material
-    desc: Products using a material showing SKUs, styles and quantities.
+    desc: Products using a material, by material id or fibre (e.g. polyester) - SKU, style, category, fabric quantity per unit and material cost per unit. Filter by category.
     kind: sql
     args:
-      material_id: {required: true}
+      material_id: {type: str, desc: "Material id, e.g. MAT-POL-100 (optional if fibre given)"}
+      fibre: {type: str, desc: "Fibre word in the material, e.g. polyester (optional)"}
+      category: {type: str, desc: "Product category, e.g. Blouses (optional)"}
+      status: {type: str, desc: "Product status: active, new, clearance, discontinued (optional)"}
     sql: |
-      SELECT DISTINCT b.sku, t.style_id, t.name, t.category, t.supplier_id, t.status,
-             COUNT(*) OVER (PARTITION BY b.sku) AS component_count
+      SELECT b.sku, t.style_id, t.name, t.category, t.status, b.component_id AS material_id, m.fiber_content,
+             b.quantity, b.unit, b.unit_cost_gbp,
+             round(b.quantity * b.unit_cost_gbp, 2) AS material_cost_per_unit_gbp,
+             count(*) OVER (PARTITION BY t.category) AS products_in_category
       FROM bill_of_materials b
       JOIN product_tech_pack t ON t.sku = b.sku
-      WHERE b.component_id = $material_id OR b.material_name ILIKE '%' || (SELECT name FROM material_library WHERE material_id = $material_id) || '%'
-      ORDER BY t.name
+      JOIN material_library m ON m.material_id = b.component_id
+      WHERE ($material_id IS NULL OR b.component_id = $material_id)
+        AND ($fibre IS NULL OR m.fiber_content ILIKE '%' || $fibre || '%')
+        AND ($category IS NULL OR t.category ILIKE $category)
+        AND ($status IS NULL OR t.status = $status)
+        AND ($material_id IS NOT NULL OR $fibre IS NOT NULL)
+      ORDER BY t.category, material_cost_per_unit_gbp DESC, b.sku
     limit: 100
-    example: {material_id: "MAT-POL-100"}
+    example: {material_id: "MAT-POL-100", category: Blouses}
 
   - name: list_products_by_origin_country_and_material
     desc: Products by material and origin country showing sourcing and composition details.
@@ -600,17 +642,32 @@ tools:
     example: {material_id: "MAT-POL-100", origin_country: "CN"}
 
   - name: list_products_by_regulated_category
-    desc: Products by regulated category showing compliance status and audit history.
-    kind: select
-    from: product_regulated_categories
-    filters:
-      category_name: {desc: "Regulated category, e.g. kids_sleepwear, toys, electronics (optional)"}
-      region: {desc: "Region: UK, EU, US, AU (optional)"}
-      compliance_status: {desc: "Compliance status: compliant, review, non_compliant (optional)"}
-    columns: [sku, category_name, region, regulations, compliance_status, test_required, last_audit_date]
-    order: category_name, compliance_status
+    desc: Products in a regulated category (e.g. kids_sleepwear, food_contact_materials, battery_products) with regions, rules, worst compliance status and notes. Filter by region or status.
+    kind: sql
+    args:
+      category_name: {type: str, desc: "Regulated category: kids_sleepwear, childrens_drinkware, food_contact_materials, battery_products, leather_chromium_vi, waterproof_textiles (optional)"}
+      region: {type: str, desc: "Region: UK, EU, US or AU (optional)"}
+      compliance_status: {type: str, desc: "Compliance status: compliant, review, non_compliant (optional)"}
+      sku: {desc: "SKU (optional)"}
+    sql: |
+      SELECT r.sku, t.style_id, t.name, r.category_name,
+             string_agg(DISTINCT r.region, ', ') AS regions,
+             string_agg(DISTINCT replace(replace(replace(r.regulations, '[', ''), ']', ''), '"', ''), '; ') AS regulations,
+             CASE WHEN bool_or(r.compliance_status = 'non_compliant') THEN 'non_compliant'
+                  WHEN bool_or(r.compliance_status = 'review') THEN 'review' ELSE 'compliant' END AS compliance_status,
+             bool_or(r.test_required) AS test_required,
+             string_agg(DISTINCT CASE WHEN r.notes <> '' THEN r.region || ': ' || r.notes END, ' | ') AS notes,
+             count(*) OVER (PARTITION BY r.category_name) AS lines_in_category
+      FROM product_regulated_categories r
+      JOIN product_tech_pack t ON t.sku = r.sku
+      WHERE ($category_name IS NULL OR lower(r.category_name) = lower($category_name))
+        AND ($region IS NULL OR upper(r.region) = upper($region))
+        AND ($compliance_status IS NULL OR r.compliance_status = $compliance_status)
+        AND ($sku IS NULL OR r.sku = $sku)
+      GROUP BY r.sku, t.style_id, t.name, r.category_name
+      ORDER BY CASE WHEN bool_or(r.compliance_status = 'non_compliant') THEN 0 WHEN bool_or(r.compliance_status = 'review') THEN 1 ELSE 2 END, r.category_name, r.sku
     limit: 100
-    example: {category_name: "Electronics"}
+    example: {category_name: kids_sleepwear}
 
   - name: list_products_using_component
     desc: Products using the same component showing BOM details and suppliers.
@@ -629,23 +686,22 @@ tools:
     example: {component_id: "MAT-ZIPPER"}
 
   - name: list_products_using_material
-    desc: Products using a material or supplier lot showing SKUs and composition details.
+    desc: Products using a material or a specific supplier batch (e.g. leather batch) - SKU, style, category, status, batch test result. Give a batch id to find what else used the same lot.
     kind: sql
     args:
-      material_id: {type: str, desc: "Material id (optional)"}
-      batch_id: {type: str, desc: "Material batch id (optional)"}
+      material_id: {type: str, desc: "Material id, e.g. MAT-LEATHER (optional)"}
+      batch_id: {type: str, desc: "Material batch id, e.g. BATCH-LEATHER-002 (optional)"}
     sql: |
-      SELECT DISTINCT b.sku, t.style_id, t.name, t.category, t.status,
-             CASE WHEN mb.batch_id IS NOT NULL THEN mb.batch_id ELSE 'Various' END AS batch_id,
-             mb.batch_date, b.quantity, b.unit, b.material_name
-      FROM bill_of_materials b
-      JOIN product_tech_pack t ON t.sku = b.sku
-      LEFT JOIN material_batches mb ON mb.used_in_skus LIKE '%' || b.sku || '%'
-      WHERE ($material_id IS NULL OR b.component_id = $material_id OR b.material_name ILIKE '%' || (SELECT name FROM material_library WHERE material_id = $material_id LIMIT 1) || '%')
+      SELECT t.sku, t.style_id, t.name, t.category, t.status, mb.batch_id, mb.material_id,
+             mb.test_status AS batch_test_status, mb.supplier_id, mb.factory_id, mb.batch_date
+      FROM material_batches mb
+      JOIN product_tech_pack t ON mb.used_in_skus LIKE '%"' || t.sku || '"%'
+      WHERE ($material_id IS NULL OR mb.material_id = $material_id)
         AND ($batch_id IS NULL OR mb.batch_id = $batch_id)
-      ORDER BY t.name
+        AND ($material_id IS NOT NULL OR $batch_id IS NOT NULL)
+      ORDER BY mb.batch_id, t.sku
     limit: 100
-    example: {material_id: "MAT-POL-100"}
+    example: {batch_id: "BATCH-LEATHER-002"}
 
   - name: list_products_using_substance
     desc: Products containing a substance showing SKUs, concentration and compliance status.

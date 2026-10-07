@@ -221,7 +221,7 @@ tools:
       factory_id: {required: true}
       dest_site_id: {required: true}
       total_units: {required: true, type: int, desc: "Units ordered"}
-      total_value: {type: float, desc: "PO value in GBP (units x unit cost)"}
+      total_value: {required: true, type: float, desc: "PO value in GBP (units x unit cost)"}
       mode: {type: enum, values: [sea, air, road, rail], default: sea, desc: "Inbound mode"}
       due_date: {type: date, default: "+60d", desc: "Required in DC by"}
       ship_date: {type: date, default: "+40d", desc: "Planned ex-factory date"}
@@ -1105,10 +1105,12 @@ tools:
     example: {factory_id: "FAC-0021"}
 
   - name: list_open_orders_at_factory
-    desc: Open orders at a factory by ship and delivery date, with units as a share of monthly factory capacity.
+    desc: Open orders not yet shipped at a factory by ship date, with units and the ship-month load as a share of monthly capacity.
     kind: sql
     args:
       factory_id: {required: true}
+      ship_from: {type: date, desc: "Only orders shipping on or after this date, e.g. Q4 or +30d"}
+      ship_to: {type: date, desc: "Only orders shipping on or before this date"}
     sql: |
       WITH rc AS (
         SELECT po_id,
@@ -1136,9 +1138,12 @@ tools:
       )
       SELECT dl.po_id, dl.supplier_id, s.name AS supplier_name, dl.order_date, dl.ship_date, dl.due_date, dl.status, dl.total_units,
              round(dl.total_value, 2) AS total_value, dl.currency, f.capacity_units_month,
-             round(100.0 * dl.total_units / NULLIF(f.capacity_units_month, 0), 1) AS pct_of_monthly_capacity
+             round(100.0 * dl.total_units / NULLIF(f.capacity_units_month, 0), 1) AS pct_of_monthly_capacity,
+       strftime(dl.ship_date, '%Y-%m') AS ship_month,
+       round(100.0 * sum(dl.total_units) OVER (PARTITION BY date_trunc('month', dl.ship_date)) / NULLIF(f.capacity_units_month, 0), 1) AS ship_month_load_pct
       FROM dl LEFT JOIN master.suppliers s ON s.supplier_id = dl.supplier_id LEFT JOIN master.factories f ON f.factory_id = dl.factory_id
       WHERE dl.factory_id = $factory_id AND dl.status IN ('open','confirmed')
+        AND ($ship_from IS NULL OR dl.ship_date >= CAST($ship_from AS DATE)) AND ($ship_to IS NULL OR dl.ship_date <= CAST($ship_to AS DATE))
       ORDER BY dl.ship_date
     limit: 50
     example: {factory_id: "FAC-0021"}
@@ -1233,6 +1238,8 @@ tools:
       style_id: {}
       sku: {}
       category: {desc: "Product category, e.g. Bedding"}
+      season: {type: str, desc: "Product season, e.g. AW26 for the autumn range"}
+      shipment_stage: {type: enum, values: ["In transit", "Not yet shipped"], desc: "In transit = already shipped; Not yet shipped = still cancellable at the factory"}
     sql: |
       WITH rc AS (
         SELECT po_id,
@@ -1258,13 +1265,15 @@ tools:
                     THEN greatest(datediff('day', due_date, confirmed_delivery_date), COALESCE(days_overdue, 0), 0) END AS delay_days
         FROM d0
       )
-      SELECT dl.po_id, pl.line_no, pl.sku, pr.name AS product_name, pr.style_id, pl.qty_ordered, pl.qty_received,
+      SELECT dl.po_id, pl.line_no, pl.sku, pr.name AS product_name, pr.style_id, pr.category, pr.season, pl.qty_ordered, pl.qty_received,
              pl.qty_ordered - pl.qty_received AS qty_outstanding, round(pl.unit_cost, 2) AS unit_cost, dl.currency,
              dl.supplier_id, dl.factory_id, dl.order_date, dl.due_date, dl.status,
              CASE dl.status WHEN 'shipped' THEN 'In transit' ELSE 'Not yet shipped' END AS shipment_stage
       FROM master.po_lines pl JOIN dl ON dl.po_id = pl.po_id LEFT JOIN master.products pr ON pr.sku = pl.sku
       WHERE dl.status IN ('open','confirmed','shipped') AND pl.qty_ordered > 0
         AND ($style_id IS NULL OR pr.style_id = $style_id) AND ($sku IS NULL OR pl.sku = $sku) AND ($category IS NULL OR pr.category = $category)
+        AND ($season IS NULL OR pr.season = $season)
+        AND ($shipment_stage IS NULL OR CASE dl.status WHEN 'shipped' THEN 'In transit' ELSE 'Not yet shipped' END = $shipment_stage)
       ORDER BY dl.due_date
     limit: 100
     example: {style_id: "STY-5520"}
@@ -1380,18 +1389,23 @@ tools:
     example: {supplier_id: "SUP-0022", dest_site_id: "DC4"}
 
   - name: list_advance_shipping_notices
-    desc: Supplier ASNs with advised quantity versus quantity received per PO line, for a supplier or PO.
+    desc: Supplier ASN lines with advised versus received quantity and variance, for a supplier or PO. Use variance=short to find short-received lines.
     kind: sql
     args:
       supplier_id: {}
       po_id: {}
       date_from: {type: date, default: "-56d", desc: "ASNs advised on or after this date"}
+      status: {type: enum, values: [delivered, received], default: delivered, desc: "delivered = goods received, so variances are real; received = ASN logged, goods still in transit"}
+      variance: {type: enum, values: [any, short, over], default: any, desc: "short = received below advised (negative variance); over = received above advised"}
     sql: |
-      SELECT a.asn_id, a.po_id, a.supplier_id, a.asn_number, a.advised_at, a.expected_delivery_date, a.status,
-             l.po_line_no, l.sku, l.qty_advised, l.qty_received, l.qty_received - l.qty_advised AS variance_units, l.batch_no
-      FROM advance_shipping_notices a JOIN asn_line_items l ON l.asn_id = a.asn_id
-      WHERE a.status <> 'cancelled' AND ($supplier_id IS NULL OR a.supplier_id = $supplier_id) AND ($po_id IS NULL OR a.po_id = $po_id)
+      SELECT a.asn_id, a.po_id, a.supplier_id, s.name AS supplier_name, a.asn_number, a.advised_at, a.expected_delivery_date, a.status,
+             l.po_line_no, l.sku, l.qty_advised, l.qty_received, l.qty_received - l.qty_advised AS variance_units,
+             round(100.0 * (l.qty_received - l.qty_advised) / NULLIF(l.qty_advised, 0), 1) AS variance_pct, l.batch_no
+      FROM advance_shipping_notices a JOIN asn_line_items l ON l.asn_id = a.asn_id LEFT JOIN master.suppliers s ON s.supplier_id = a.supplier_id
+      WHERE a.status <> 'cancelled' AND a.status = $status AND ($supplier_id IS NULL OR a.supplier_id = $supplier_id) AND ($po_id IS NULL OR a.po_id = $po_id)
         AND CAST(a.advised_at AS DATE) >= CAST($date_from AS DATE)
+        AND ($variance IS NULL OR $variance = 'any' OR ($variance = 'short' AND l.qty_received < l.qty_advised)
+             OR ($variance = 'over' AND l.qty_received > l.qty_advised))
       ORDER BY a.advised_at DESC, a.asn_id, l.line_no
     limit: 100
     example: {}
@@ -1665,15 +1679,17 @@ tools:
     args:
       sku: {}
       category: {desc: "Product category, e.g. Small Appliances"}
+      supplier_id: {}
       date_from: {type: date, default: "-365d", desc: "Orders placed on or after this date"}
     sql: |
-      SELECT ph.sku, pr.name AS product_name, pr.category, count(*) AS orders, round(avg(ph.quoted_unit_cost), 2) AS avg_quoted_unit_cost,
+      SELECT ph.sku, pr.name AS product_name, pr.category, pr.supplier_id, count(*) AS orders, round(avg(ph.quoted_unit_cost), 2) AS avg_quoted_unit_cost,
              round(avg(ph.actual_unit_cost), 2) AS avg_actual_unit_cost, min(ph.currency) AS currency,
              round(100.0 * (sum(ph.actual_unit_cost * ph.qty_ordered) / sum(ph.quoted_unit_cost * ph.qty_ordered) - 1), 2) AS variance_pct,
              round(sum((ph.actual_unit_cost / ph.quoted_unit_cost - 1) * ph.qty_ordered * pr.unit_cost_gbp), 0) AS approx_variance_gbp
       FROM po_price_history ph JOIN master.products pr ON pr.sku = ph.sku
-      WHERE ($sku IS NULL OR ph.sku = $sku) AND ($category IS NULL OR pr.category = $category) AND ph.order_date >= CAST($date_from AS DATE)
-      GROUP BY ph.sku, pr.name, pr.category
+      WHERE ($sku IS NULL OR ph.sku = $sku) AND ($category IS NULL OR pr.category = $category) AND ($supplier_id IS NULL OR pr.supplier_id = $supplier_id)
+        AND ph.order_date >= CAST($date_from AS DATE)
+      GROUP BY ph.sku, pr.name, pr.category, pr.supplier_id
       ORDER BY approx_variance_gbp DESC
     limit: 30
     example: {category: "Small Appliances"}

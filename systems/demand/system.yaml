@@ -120,7 +120,9 @@ tables:
       category: {type: str, desc: Category}
       supply_risk: {type: enum, values: [low, medium, high], desc: Supply-chain risk}
       demand_risk: {type: enum, values: [low, medium, high], desc: Demand/sales risk}
-      risk_score: {type: float, desc: "Overall risk score 0-100"}
+      execution_risk: {type: enum, values: [low, medium, high], desc: "Launch execution risk (draft is highest, in production lowest)"}
+      risk_score: {type: float, desc: "Overall risk score 0-100: mean of supply, demand and execution risk (low 20, medium 50, high 80)"}
+      planned_weekly_units: {type: int, desc: Planned steady-state units per week once the launch ramp is complete}
       status: {type: enum, values: [draft, approved, in_production, launched], desc: Status}
 
   promotion_effects:
@@ -236,6 +238,18 @@ tables:
       mape_pct: {type: float, desc: "Backtest MAPE %"}
       bias_pct: {type: float, desc: "Backtest bias %"}
       items_backtested: {type: int, desc: Items or series in the backtest}
+
+  lead_time_accuracy:
+    key: [category, lead_time_band]
+    cols:
+      category: {type: str, desc: Product category}
+      segment: {type: enum, values: [fashion, other], desc: "fashion = the categories in the 26-week fashion test configuration"}
+      lead_time_band: {type: str, desc: "Supplier lead time band, e.g. 5-8 weeks"}
+      lead_days_from: {type: int, desc: "Shortest lead time in the band (days)"}
+      lead_days_to: {type: int, desc: "Longest lead time in the band (days)"}
+      mape_pct: {type: float, desc: "Forecast error (MAPE %) for SKUs with this lead time"}
+      bias_pct: {type: float, desc: "Forecast bias %, positive = over-forecast"}
+      skus: {type: int, desc: SKUs measured}
 
   forecast_run_metrics:
     key: run_id
@@ -533,25 +547,41 @@ tools:
     example: {config_id: CFG-000001, change_date: -8w}
 
   - name: compare_forecast_accuracy_by_history_window
-    desc: Compare forecast accuracy for different history windows (26-week vs 52-week). Returns MAPE by window for the same items.
+    desc: Backtest MAPE with a 26-week versus a 52-week history window by category, with the change and which categories benefit. Fashion categories come first with a fashion total.
     kind: sql
     args:
-      category: {desc: "Product category"}
-      period_start: {type: date, desc: Evaluation period start, default: "-52w"}
-      period_end: {type: date, desc: Evaluation period end, default: "$as_of"}
+      category: {desc: "Product category, e.g. Knitwear; blank for every category"}
+      segment: {type: enum, values: [fashion, other], desc: "fashion = the categories in the 26-week fashion test configuration; blank for all"}
     sql: |
-      SELECT
-             c.history_window_weeks,
-             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
-             COUNT(DISTINCT a.sku) AS skus_evaluated,
-             'Lower history window better for fashion, higher for stable categories' AS insight
-      FROM forecast_configs c
-      LEFT JOIN forecast_accuracy a ON c.config_id = a.config_id
-        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      WHERE ($category IS NULL OR a.category = $category)
-      GROUP BY c.history_window_weeks
-      ORDER BY c.history_window_weeks
-    example: {category: "Outerwear"}
+      WITH fashion AS (
+        SELECT unnest(string_split(replace(categories, ', ', ','), ',')) AS category
+        FROM forecast_configs WHERE config_id = 'CFG-000002'),
+      per AS (
+        SELECT b52.category,
+               CASE WHEN b52.category IN (SELECT category FROM fashion) THEN 'fashion' ELSE 'other' END AS segment,
+               b52.mape_pct AS mape_52w_pct, b26.mape_pct AS mape_26w_pct,
+               ROUND(b26.mape_pct - b52.mape_pct, 1) AS change_pts, b52.items_backtested AS items
+        FROM forecast_backtests b52
+        JOIN forecast_configs c52 ON c52.config_id = b52.config_id AND c52.history_window_weeks = 52 AND c52.item_type = 'fast_mover'
+        JOIN forecast_backtests b26 ON b26.category = b52.category AND b26.forecast_level = b52.forecast_level
+        JOIN forecast_configs c26 ON c26.config_id = b26.config_id AND c26.history_window_weeks = 26 AND c26.item_type = 'fast_mover'
+        WHERE b52.forecast_level = 'category'
+          AND ($category IS NULL OR b52.category = $category)),
+      sel AS (SELECT * FROM per WHERE ($segment IS NULL OR segment = $segment)),
+      tot AS (
+        SELECT '(all ' || segment || ' categories)' AS category, segment,
+               ROUND(SUM(mape_52w_pct * items) / SUM(items), 1) AS mape_52w_pct,
+               ROUND(SUM(mape_26w_pct * items) / SUM(items), 1) AS mape_26w_pct,
+               ROUND(SUM(mape_26w_pct * items) / SUM(items) - SUM(mape_52w_pct * items) / SUM(items), 1) AS change_pts,
+               SUM(items) AS items
+        FROM sel GROUP BY segment)
+      SELECT u.category, u.segment, u.mape_52w_pct, u.mape_26w_pct, u.change_pts, u.items AS items_backtested,
+             CASE WHEN u.change_pts < 0 THEN '26-week better' ELSE '26-week worse' END AS verdict,
+             'MAPE: lower is better; change_pts negative = 26-week window improves accuracy' AS note
+      FROM (SELECT * FROM tot UNION ALL SELECT * FROM sel) u
+      ORDER BY CASE WHEN u.category LIKE '(all%' THEN 0 ELSE 1 END, u.segment, u.change_pts
+    limit: 40
+    example: {segment: fashion}
 
   - name: compare_forecast_accuracy_by_level
     desc: Compare live forecast accuracy at different aggregation levels (store-SKU, cluster, SKU, category, regional) for an item type or category. Returns MAPE, bias and items by level.
@@ -612,18 +642,20 @@ tools:
       monitor_weeks: 3
 
   - name: create_forecast_model_configuration
-    desc: Create a test forecast configuration with different parameters (e.g. different history window). Returns config id and parameters.
+    desc: Create a test forecast configuration with a different history window or parameters, for named categories. Returns the new config id and its settings.
     kind: insert
     table: forecast_configs
     id_prefix: CFG-
+    defaults: {status: test}
     args:
-      config_name: {required: true, desc: "Name, e.g. '26-week history'"}
+      config_name: {required: true, desc: "Name, e.g. 26-week fashion test"}
       history_window_weeks: {required: true, type: int, desc: "Historical weeks to use, e.g. 26 or 52"}
       method_type: {required: true, desc: "Method like exponential_smoothing"}
       item_type: {required: true, desc: "fast_mover, slow_mover or new_product"}
+      categories: {desc: "Categories the configuration applies to, comma separated, e.g. Dresses, Knitwear; or all"}
+      parameters: {desc: "Model parameters, e.g. alpha=0.3; outlier_capping=on"}
       notes: {desc: Configuration notes}
-    defaults: {status: test}
-    example: {config_name: "26-week fashion test", history_window_weeks: 26, method_type: exponential_smoothing, item_type: fast_mover, notes: "Testing shorter window for fashion"}
+    example: {config_name: 26-week fashion test, history_window_weeks: 26, method_type: exponential_smoothing, item_type: fast_mover, categories: "Dresses, Knitwear", notes: Testing shorter window for fashion}
 
   - name: create_forecast_override
     desc: Add a manual forecast override for a SKU or category and weeks, as a percentage uplift or downside, or as base-case units per week. Returns the stored override.
@@ -966,27 +998,25 @@ tools:
     example: {category: "Dresses"}
 
   - name: get_forecast_error_by_lead_time
-    desc: Forecast error by supplier lead time. Shows whether shorter lead times improve accuracy.
+    desc: Forecast error (MAPE) and bias by supplier lead time band of four weeks, with the change from the next shorter band. Shows what a shorter lead time buys in accuracy.
     kind: sql
     args:
-      category: {desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-52w"}
-      period_end: {type: date, desc: Period end, default: "$as_of"}
+      category: {desc: "Product category, e.g. Outerwear; blank for all categories"}
+      segment: {type: enum, values: [fashion, other], desc: "fashion or other categories; blank for all"}
     sql: |
-      SELECT
-             CASE WHEN CAST(p.lead_time_days AS INT) < 30 THEN 'Short (< 30d)'
-                  WHEN CAST(p.lead_time_days AS INT) < 60 THEN 'Medium (30-60d)'
-                  ELSE 'Long (> 60d)' END AS lead_time_bucket,
-             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
-             COUNT(DISTINCT a.sku) AS skus,
+      WITH a AS (
+        SELECT l.lead_time_band, MIN(l.lead_days_from) AS d_from, MAX(l.lead_days_to) AS d_to,
+               ROUND(SUM(l.mape_pct * l.skus) / SUM(l.skus), 1) AS mape_pct,
+               ROUND(SUM(l.bias_pct * l.skus) / SUM(l.skus), 1) AS bias_pct,
+               SUM(l.skus) AS skus
+        FROM lead_time_accuracy l
+        WHERE ($category IS NULL OR l.category = $category) AND ($segment IS NULL OR l.segment = $segment)
+        GROUP BY l.lead_time_band)
+      SELECT a.lead_time_band, a.d_from AS lead_days_from, a.d_to AS lead_days_to, a.mape_pct, a.bias_pct, a.skus,
+             ROUND(a.mape_pct - LAG(a.mape_pct) OVER (ORDER BY a.d_from), 1) AS mape_change_vs_next_shorter_band_pts,
              'Shorter lead times typically = better forecast accuracy' AS insight
-      FROM forecast_accuracy a
-      JOIN master.products p ON a.sku = p.sku
-      WHERE ($category IS NULL OR a.category = $category)
-        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      GROUP BY lead_time_bucket, CAST(p.lead_time_days AS INT)
-      ORDER BY CAST(p.lead_time_days AS INT)
-    example: {category: "Audio"}
+      FROM a ORDER BY a.d_from
+    example: {category: Outerwear}
 
   - name: get_forecast_error_decomposition
     desc: Decompose forecast bias for a category by driver (weather, promotion, pricing, store cluster, new launches) in percentage points, units and explanation.
@@ -1296,23 +1326,31 @@ tools:
 
 
   - name: get_revenue_dependency_by_supplier
-    desc: Revenue dependent on each supplier. Shows revenue at risk if supplier fails.
+    desc: Revenue dependent on each supplier over a period, with its share of total revenue, SKU count and average weekly revenue, largest first. Filter by supplier or supplier country to size exposure.
     kind: sql
     args:
+      supplier_id: {desc: "Supplier, e.g. SUP-0013; blank for all"}
+      country: {desc: "Supplier country code, e.g. VN; blank for all"}
       period_start: {type: date, desc: Period start, default: "-52w"}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
-      SELECT s.supplier_id, s.name,
-             ROUND(SUM(h.revenue_gbp), 0) AS revenue_gbp,
-             ROUND(SUM(h.revenue_gbp) * 100.0 / SUM(SUM(h.revenue_gbp)) OVER (), 1) AS revenue_pct
-      FROM demand_history h
-      JOIN master.products p ON h.sku = p.sku
-      JOIN master.suppliers s ON p.supplier_id = s.supplier_id
-      WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
-      GROUP BY s.supplier_id, s.name
-      ORDER BY revenue_gbp DESC
+      WITH rev AS (
+        SELECT p.supplier_id, SUM(CAST(w.revenue_gbp AS DOUBLE)) AS revenue_gbp, COUNT(DISTINCT w.sku) AS skus,
+               COUNT(DISTINCT w.week_start) AS weeks
+        FROM master.sales_weekly w JOIN master.products p ON w.sku = p.sku
+        WHERE CAST(w.week_start AS DATE) >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND CAST(w.week_start AS DATE) <= CAST($period_end AS DATE)
+        GROUP BY p.supplier_id),
+      tot AS (SELECT SUM(revenue_gbp) AS total FROM rev)
+      SELECT s.supplier_id, s.name, s.country, ROUND(r.revenue_gbp, 0) AS revenue_gbp,
+             ROUND(r.revenue_gbp * 100.0 / t.total, 1) AS revenue_pct, r.skus,
+             ROUND(r.revenue_gbp / NULLIF(r.weeks, 0), 0) AS avg_weekly_revenue_gbp,
+             ROUND(SUM(r.revenue_gbp) OVER () * 100.0 / t.total, 1) AS listed_suppliers_revenue_pct
+      FROM rev r JOIN master.suppliers s ON s.supplier_id = r.supplier_id CROSS JOIN tot t
+      WHERE ($supplier_id IS NULL OR s.supplier_id = $supplier_id) AND ($country IS NULL OR s.country = $country)
+      ORDER BY r.revenue_gbp DESC
     limit: 50
-    example: {}
+    example: {country: VN}
 
   - name: get_sales_forecast_for_style
     desc: Weekly sales forecast for a style across all its SKUs, base with upside and downside range, value and cumulative base units.
@@ -1761,21 +1799,45 @@ tools:
     example: {pipeline_id: "PL-900001"}
 
   - name: get_demand_forecast_variability
-    desc: Forecast error and demand variability by time window. Shows forecast uncertainty.
+    desc: Demand variability and forecast error for a supplier, category or fashion range over a window, with weekly demand, spread and downside weeks. Use to size commitments and demand risk.
     kind: sql
     args:
+      supplier_id: {desc: "Supplier whose SKUs to include, e.g. SUP-0079; blank for all"}
+      category: {desc: "Product category, e.g. Outerwear; blank for all"}
+      segment: {type: enum, values: [fashion, other], desc: "fashion = the categories in the 26-week fashion test configuration; blank for all"}
       period_start: {type: date, desc: Period start, default: "-26w"}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
-      SELECT 'Forecast Variability' AS metric,
-             ROUND(AVG(a.mape_pct), 1) AS avg_error_pct,
-             ROUND(AVG(a.bias_pct), 1) AS avg_bias_pct,
-             ROUND(STDDEV_POP(a.mape_pct), 1) AS mape_std_dev,
-             COUNT(DISTINCT a.sku) AS skus_analyzed,
-             'Demand uncertainty increases with forecast horizon' AS note
-      FROM forecast_accuracy a
-      WHERE a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-    example: {}
+      WITH fashion AS (
+        SELECT unnest(string_split(replace(categories, ', ', ','), ',')) AS category
+        FROM forecast_configs WHERE config_id = 'CFG-000002'),
+      scope AS (
+        SELECT h.sku, h.period_date, h.units_sold
+        FROM demand_history h JOIN master.products p ON p.sku = h.sku
+        WHERE ($supplier_id IS NULL OR p.supplier_id = $supplier_id)
+          AND ($category IS NULL OR h.category = $category)
+          AND ($segment IS NULL OR ($segment = 'fashion') = (h.category IN (SELECT category FROM fashion)))
+          AND h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND h.period_date <= CAST($period_end AS DATE)),
+      wk AS (SELECT period_date, SUM(units_sold) AS units FROM scope GROUP BY period_date),
+      st AS (
+        SELECT COUNT(*) AS weeks, AVG(units) AS avg_wk, STDDEV_POP(units) AS sd, quantile_cont(units, 0.1) AS p10,
+               MIN(units) AS worst_wk FROM wk),
+      err AS (
+        SELECT COUNT(DISTINCT s.sku) AS skus_with_forecast,
+               AVG(ABS(f.units_forecast - s.units_sold) * 100.0 / NULLIF(s.units_sold, 0)) AS mape,
+               AVG((f.units_forecast - s.units_sold) * 100.0 / NULLIF(s.units_sold, 0)) AS bias,
+               STDDEV_POP(ABS(f.units_forecast - s.units_sold) * 100.0 / NULLIF(s.units_sold, 0)) AS mape_sd
+        FROM scope s JOIN forecasts f ON f.sku = s.sku AND f.forecast_week = s.period_date AND f.forecast_type = 'base')
+      SELECT (SELECT COUNT(DISTINCT sku) FROM scope) AS skus_analyzed, st.weeks AS weeks_of_history,
+             ROUND(st.avg_wk, 0) AS avg_weekly_units,
+             ROUND(st.sd * 100.0 / NULLIF(st.avg_wk, 0), 1) AS demand_cv_pct,
+             ROUND(st.p10, 0) AS downside_weekly_units,
+             ROUND((st.p10 / NULLIF(st.avg_wk, 0) - 1) * 100, 1) AS downside_vs_average_pct,
+             ROUND(e.mape, 1) AS avg_error_pct, ROUND(e.bias, 1) AS avg_bias_pct, ROUND(e.mape_sd, 1) AS mape_std_dev,
+             'Downside = the weaker 1-in-10 week; error = MAPE of base forecast vs actual by SKU-week' AS note
+      FROM st, err e
+    example: {supplier_id: SUP-0079}
 
   - name: get_demand_scenarios
     desc: Downside and upside demand scenarios. Shows impact of different market conditions.

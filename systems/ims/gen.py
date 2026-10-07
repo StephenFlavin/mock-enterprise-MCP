@@ -604,6 +604,14 @@ def generate(g):
         bid = "BATCH-LEATHER-002" if i % 3 != 2 else "BATCH-LEATHER-001"
         add_batch("SKU-101813", bid, "released", 100, st, max(int(next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"] == st) * 0.7), 1))
 
+    # (9) Wholesale allocation story: SKU-100035 has 8,000 units sellable across the network (three wholesale customers
+    # ordered 15,000). Master dc_stock only has DC1 and DC3, so the balance sits in DC2 (UK e-commerce DC).
+    have = sum(p["available"] - p["hold_qty"] for p in pos_rows if p["sku"] == "SKU-100035")
+    need = 8000 - have
+    if need > 0:
+        row = mkrow("SKU-100035", "DC2", need, round(need / 11.0, 1), 0, 30)
+        pos_rows.append(row)
+
     # ================= stock plan (normal value, cover target, closing plan) =================
     from datetime import date
     season_end = date(g.as_of.year + 1 if g.as_of.month >= 8 else g.as_of.year, 1 if g.as_of.month >= 8 else 7, 31)
@@ -630,6 +638,18 @@ def generate(g):
                 fr.append({"partner_id": row["partner_id"], "sku": row["sku"], "on_hand": int(row["on_hand"]),
                            "available": int(row["available"]), "target_stock": int(row["target_stock"]),
                            "is_core_range": row["is_core_range"] == "true"})
+    # Franchise ambient lines are healthy; only the planted partner story lines (franchise seed) are far from target.
+    story_f = set()
+    sf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "franchise", "seed", "partner_stock.csv")
+    if os.path.exists(sf):
+        story_f = {(row["partner_id"], row["sku"]) for row in csv.DictReader(open(sf))}
+    for row in fr:
+        if (row["partner_id"], row["sku"]) in story_f:
+            continue
+        t = row["target_stock"]
+        row["on_hand"] = min(max(row["on_hand"], int(0.75 * t)), int(1.4 * t))
+        row["available"] = min(row["available"], row["on_hand"])
+        row["available"] = max(row["available"], int(0.6 * row["on_hand"]))
     if not fr:
         fr = [{"partner_id": "PTN-011", "sku": "SKU-100007", "on_hand": 100, "available": 90, "target_stock": 80, "is_core_range": False}]
 

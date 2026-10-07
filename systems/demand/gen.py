@@ -774,6 +774,70 @@ def generate(g):
     add_bt("CFG-000003", "cluster", None, 14.6, 1.6, 5200)
     add_bt("CFG-000004", "sku", None, 18.4, 3.0, 24)
 
+    # Forecast error by supplier lead time: error grows with the horizon the order has to be placed at, fastest for
+    # fashion (trend and weather driven). Bands are four weeks wide and cover the lead times in the product master.
+    lt_bands = [("0-4 weeks", 0, 28), ("5-8 weeks", 29, 56), ("9-12 weeks", 57, 84), ("13-16 weeks", 85, 112)]
+    lt_slope = {"fashion": [0.92, 1.12, 1.50, 2.00], "other": [0.95, 1.00, 1.16, 1.32]}
+    lt_outerwear = [12.4, 15.6, 20.6, 26.8]
+    lt_count = {}
+    for pr in products:
+        if pr["status"] == "discontinued":
+            continue
+        days = int(pr["lead_time_days"])
+        for b, (_, lo, hi) in enumerate(lt_bands):
+            if lo <= days <= hi:
+                lt_count[(pr["category"], b)] = lt_count.get((pr["category"], b), 0) + 1
+    lead_time_accuracy = []
+    for i, cat in enumerate(categories):
+        seg = "fashion" if cat in fashion else "other"
+        base = 11.4 + ((i * 7) % 11 - 5) * 0.2
+        for b, (label, lo, hi) in enumerate(lt_bands):
+            n = lt_count.get((cat, b), 0)
+            if not n:
+                continue
+            mape = lt_outerwear[b] if cat == "Outerwear" else base * lt_slope[seg][b]
+            lead_time_accuracy.append({
+                "category": cat, "segment": seg, "lead_time_band": label, "lead_days_from": lo, "lead_days_to": hi,
+                "mape_pct": round(mape, 1), "bias_pct": round(mape * 0.12, 1), "skus": n})
+
+    # Pipeline: execution risk follows the status; the risk score is the mean of supply, demand and execution risk
+    # (low 20, medium 50, high 80). The SS27 range is rebuilt from master styles that really launch next: Rust Lighting
+    # (105-day lead time, draft) and White Outerwear S (late supplier, draft) are the risky ones.
+    pts = {"low": 20, "medium": 50, "high": 80}
+    exec_by_status = {"draft": "high", "approved": "medium", "in_production": "low", "launched": "low"}
+    ss27 = [  # pipeline_id, sku, supply, demand, status
+        ("PL-000004", "SKU-102128", "medium", "medium", "approved"),
+        ("PL-000005", "SKU-102135", "medium", "medium", "approved"),
+        ("PL-000006", "SKU-102905", "low", "high", "approved"),
+        ("PL-000007", "SKU-102912", "low", "high", "approved"),
+        ("PL-000008", "SKU-105005", "high", "high", "draft"),
+        ("PL-000009", "SKU-105012", "high", "high", "draft"),
+        ("PL-000019", "SKU-105194", "low", "low", "in_production"),
+        ("PL-000020", "SKU-105201", "low", "low", "in_production"),
+        ("PL-000021", "SKU-105299", "low", "high", "in_production"),
+        ("PL-000028", "SKU-105306", "low", "high", "in_production"),
+        ("PL-000029", "SKU-105530", "medium", "high", "draft"),
+        ("PL-000030", "SKU-105537", "medium", "high", "draft"),
+    ]
+    pl_by_id = {x["pipeline_id"]: x for x in pipeline_products}
+    for pid, sku, sup, dem, status in ss27:
+        pr = prod[sku]
+        pl_by_id[pid].update({"sku": sku, "product_name": pr["name"], "launch_date": date.fromisoformat(pr["launch_date"]),
+                              "season": pr["season"], "category": pr["category"], "supply_risk": sup,
+                              "demand_risk": dem, "status": status})
+    last26 = {this_monday - timedelta(weeks=n) for n in range(1, 27)}
+    cat_units, cat_skus = {}, {}
+    for h in demand_history:
+        if h["period_date"] in last26:
+            cat_units[h["category"]] = cat_units.get(h["category"], 0) + h["units_sold"]
+            cat_skus.setdefault(h["category"], set()).add(h["sku"])
+    for x in pipeline_products:
+        x["execution_risk"] = exec_by_status[x["status"]]
+        x["risk_score"] = round((pts[x["supply_risk"]] + pts[x["demand_risk"]] + pts[x["execution_risk"]]) / 3.0)
+        c = x["category"]
+        # planned steady-state weekly units: the average SKU in the category over the last 26 weeks
+        x["planned_weekly_units"] = int(round(cat_units.get(c, 0) / 26.0 / max(1, len(cat_skus.get(c, ())))))
+
     # Forecast run effort: weekly production runs for the last 13 weeks, by configuration and level.
     forecast_run_metrics = []
     run_specs = [("CFG-000003", "store_sku", 306400, 95, 48.0, 12.4, 6.0),
@@ -808,5 +872,6 @@ def generate(g):
         "category_history": category_history,
         "category_forecasts": category_forecasts,
         "forecast_backtests": forecast_backtests,
+        "lead_time_accuracy": lead_time_accuracy,
         "forecast_run_metrics": forecast_run_metrics,
     }

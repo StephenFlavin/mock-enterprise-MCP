@@ -18,6 +18,10 @@ tables:
       budget_gbp: {type: float, desc: Project budget in GBP}
       actual_cost_gbp: {type: float, desc: Actual spend to date}
       description: {type: str, desc: Project description}
+      site_id: {type: str, desc: "Site the project is for, if site-specific"}
+      supplier_id: {type: str, desc: "Supplier the project is run with, if any"}
+      tasks: {type: text, desc: "Initial task list, newline-separated, e.g. 'Task (owner EMP-00001)'"}
+      milestones: {type: text, desc: "Planned milestones with owners, newline-separated"}
       created_at: {type: timestamp, desc: Created timestamp}
       updated_at: {type: timestamp, desc: Last updated}
 
@@ -41,6 +45,8 @@ tables:
       milestone_id: {type: str, desc: "Milestone id, e.g. MIL-000123"}
       project_id: {type: str, desc: Project (null for programme milestones)}
       programme_milestone_id: {type: str, desc: "Programme milestone, if programme-level"}
+      site_id: {type: str, desc: "Site the milestone applies to, if a site rollout milestone"}
+      owner_id: {type: str, desc: Milestone owner employee id}
       title: {type: str, desc: Milestone title}
       due_date: {type: date, desc: Due date}
       forecast_date: {type: date, desc: Forecast date (if later than due date)}
@@ -78,7 +84,9 @@ tables:
       realized_saving_gbp: {type: float, desc: Realized saving to date}
       confidence_pct: {type: int, desc: Confidence level as percentage}
       category: {type: str, desc: "Savings category, e.g. procurement, labour, freight"}
-      depends_on: {type: str, desc: "Comma-separated dependent initiative ids"}
+      depends_on: {type: str, desc: "Comma-separated ids of initiatives that must deliver first"}
+      depends_on_team: {type: str, desc: "Other team or project that must deliver first, if any"}
+      status_reason: {type: str, desc: "Why the status was last changed"}
       start_date: {type: date, desc: Start date}
       target_date: {type: date, desc: Target realization date}
       description: {type: str, desc: Description}
@@ -155,7 +163,7 @@ tables:
       material_id: {type: str, desc: "Material or candidate being piloted"}
       owner_id: {type: str, desc: Pilot owner employee id}
       status: {type: enum, values: [planning, approved, in_progress, completed, cancelled], desc: Status}
-      test_partner: {type: str, desc: "Test lab or partner running pilot"}
+      lab_id: {type: str, desc: "Test lab or pilot partner running the pilot, e.g. LAB-001"}
       budget_gbp: {type: float, desc: Pilot budget}
       actual_cost_gbp: {type: float, desc: Actual spend}
       planned_start: {type: date, desc: Planned start date}
@@ -166,6 +174,33 @@ tables:
       outcome: {type: str, desc: Summary outcome}
       created_at: {type: timestamp, desc: Created timestamp}
       updated_at: {type: timestamp, desc: Last updated}
+
+  test_labs:
+    key: lab_id
+    cols:
+      lab_id: {type: str, desc: "Test lab or pilot partner id, e.g. LAB-001"}
+      name: {type: str, desc: Lab or partner name}
+      lab_type: {type: enum, values: [test_lab, pilot_partner], desc: "test_lab runs standard tests; pilot_partner runs scaled pilot or production trials"}
+      location: {type: str, desc: "Town and country"}
+      material_types: {type: str, desc: "Comma-separated material types covered, e.g. fabric, yarn, leather, packaging"}
+      capabilities: {type: text, desc: "Tests and trials offered, e.g. tensile, abrasion, dyeability"}
+      accreditation: {type: str, desc: "e.g. UKAS ISO 17025"}
+      lead_time_weeks: {type: int, desc: "Typical weeks from booking to report"}
+      pilot_cost_gbp: {type: float, desc: "Typical cost of a standard pilot programme in GBP"}
+      status: {type: enum, values: [available, limited, unavailable], desc: Availability}
+
+  pilot_criteria:
+    key: criterion_id
+    cols:
+      criterion_id: {type: str, desc: "Criterion id, e.g. CRIT-000123"}
+      material_id: {type: str, desc: "Candidate material id the criterion is for, e.g. CAND-901001; blank for a material-type default"}
+      material_type: {type: str, desc: "Material type the default applies to, e.g. fabric, yarn"}
+      metric: {type: str, desc: "What is measured, e.g. tensile strength"}
+      comparator: {type: enum, values: [">=", "<=", "="], desc: "Pass if the result is >= / <= the threshold"}
+      threshold: {type: float, desc: Pass threshold}
+      unit: {type: str, desc: Unit}
+      test_method: {type: str, desc: "Test method or standard"}
+      notes: {type: str, desc: Notes}
 
   market_entry_projects:
     key: market_project_id
@@ -206,6 +241,8 @@ tables:
       owner_id: {type: str, desc: Owner employee id}
       status: {type: enum, values: [draft, assigned, in_progress, review, completed, cancelled], desc: Status}
       agency: {type: str, desc: "Design agency name"}
+      countries: {type: str, desc: "Comma-separated country codes the artwork is for, e.g. FR,DE,IT"}
+      product_category: {type: str, desc: "Product category, e.g. cosmetics"}
       due_date: {type: date, desc: Due date}
       checklist: {type: text, desc: Task checklist items}
       deliverables: {type: str, desc: What is being delivered}
@@ -337,8 +374,11 @@ tables:
       title: {type: str, desc: Project title}
       system_name: {type: str, desc: "System being implemented"}
       owner_id: {type: str, desc: Project owner employee id}
+      regulation_id: {type: str, desc: "Reporting regulation the project is needed for, e.g. REG-EU-CSRD; blank if none"}
+      data_gap: {type: str, desc: "Data metric or capability the project closes, e.g. Scope3_supplier_emissions"}
       cost_estimate_gbp: {type: float, desc: Cost estimate in GBP}
       timeline_weeks: {type: int, desc: Estimated timeline in weeks}
+      start_after: {type: str, desc: "Implementation project that must finish first, if any"}
       scope: {type: str, desc: Scope summary}
       deliverables: {type: str, desc: Key deliverables}
       risks: {type: str, desc: Key risks}
@@ -360,19 +400,21 @@ tables:
 tools:
   # Write tools - create
   - name: create_project
-    desc: Creates a project with owner and tasks. Returns the new project.
+    desc: Creates a project with owner, budget, dates and an initial task list. Returns the new project.
     kind: insert
     table: projects
     id_prefix: PRJ-
     defaults: {status: active}
     args:
       name: {required: true, desc: "Project name"}
-      owner_id: {required: true, desc: "Project owner employee id"}
+      owner_id: {required: true, col: employee_id}
       start_date: {type: date, required: true}
       end_date: {type: date, required: true}
       budget_gbp: {type: float, default: 0}
+      site_id: {}
+      tasks: {desc: "Initial tasks, newline-separated, e.g. 'Re-slot fast movers to Leeds (owner EMP-00003)'"}
       description: {}
-    example: {name: "New Project", owner_id: "EMP-0001", start_date: "-30d", end_date: "+120d", budget_gbp: 1500000, description: "Project description"}
+    example: {name: "Network efficiency fixes", owner_id: "EMP-00004", start_date: "+7d", end_date: "+120d", budget_gbp: 395000, site_id: DC1, tasks: "Rebalance DC3 stock to cut cross-shipping\nFix split-order allocation rules", description: "Deliver the top three network inefficiency fixes"}
 
   - name: create_project_task
     desc: Adds a task to a project backlog. Returns the new task.
@@ -390,19 +432,21 @@ tools:
     example: {project_id: PRJ-000001, title: "Complete requirements", assigned_to: EMP-0042, due_date: "+30d", priority: high}
 
   - name: create_project_plan
-    desc: Creates a project with milestones and owners. Returns the new project.
+    desc: Creates a project with its milestones and owners (one per line) and optional supplier. Returns the new project.
     kind: insert
     table: projects
     id_prefix: PRJ-
     defaults: {status: active}
     args:
       name: {required: true, desc: "Project name"}
-      owner_id: {required: true, desc: "Project owner employee id"}
+      owner_id: {required: true, col: employee_id}
       start_date: {type: date, required: true}
       end_date: {type: date, required: true}
+      milestones: {required: true, desc: "Milestones with owners, newline-separated, e.g. 'Baseline lead times agreed - owner EMP-00057 - week 4'"}
+      supplier_id: {}
       budget_gbp: {type: float, default: 0}
       description: {}
-    example: {name: "Market Entry Programme", owner_id: "EMP-0001", start_date: "-30d", end_date: "+180d", budget_gbp: 2500000, description: "Project plan with milestones"}
+    example: {name: "Supplier lead time programme", owner_id: "EMP-00057", start_date: "+7d", end_date: "+180d", milestones: "Baseline lead times agreed - owner EMP-00057 - week 4\nPilot SKUs on shorter lead time - owner EMP-00050 - week 16", supplier_id: SUP-0046, budget_gbp: 120000, description: "Joint programme to cut lead time by 20%"}
 
   - name: create_raid_log_item
     desc: Adds a risk, issue or dependency to the RAID log. Returns the new item.
@@ -429,13 +473,15 @@ tools:
     defaults: {status: draft}
     args:
       title: {required: true}
-      owner_id: {required: true, desc: "Initiative owner employee id"}
+      owner_id: {required: true, col: employee_id}
       estimated_saving_gbp: {required: true, type: float}
-      category: {required: true, desc: "Savings category, e.g. procurement, labour"}
+      category: {required: true, desc: "Savings category, e.g. procurement, labour, freight, markdown"}
       confidence_pct: {type: int, default: 50}
+      depends_on: {}
+      depends_on_team: {}
       target_date: {type: date}
       description: {}
-    example: {title: "Freight rate negotiation", owner_id: EMP-0042, estimated_saving_gbp: 750000, category: "freight", confidence_pct: 75, target_date: "+90d", description: "Negotiate 12% reduction with carriers"}
+    example: {title: "Housewares supplier volume discount", owner_id: EMP-00050, estimated_saving_gbp: 150000, category: "procurement", confidence_pct: 85, target_date: "+120d", description: "Renegotiate Housewares supplier contracts for volume discount"}
 
   - name: create_improvement_initiative
     desc: Creates an improvement initiative with owners and targets. Returns the new initiative.
@@ -462,14 +508,14 @@ tools:
     defaults: {status: planning}
     args:
       title: {required: true}
-      material_id: {required: true, desc: "Material or candidate being tested"}
-      owner_id: {required: true}
-      test_partner: {required: true, desc: "Test lab or partner"}
+      material_id: {required: true, desc: "Candidate material id being piloted, e.g. CAND-901002"}
+      owner_id: {required: true, col: employee_id}
+      lab_id: {required: true}
       budget_gbp: {required: true, type: float}
       planned_start: {type: date, required: true}
       planned_end: {type: date, required: true}
       pass_criteria: {type: text, required: true, desc: "Pass/fail criteria"}
-    example: {title: "Sustainable Packaging Pilot", material_id: MAT-00523, owner_id: EMP-0042, test_partner: "Smithers Rapra", budget_gbp: 45000, planned_start: "+14d", planned_end: "+60d", pass_criteria: "Tensile strength >= 50MPa, tear resistance within 5%, cost <= 12pence per unit"}
+    example: {title: "Bio-based nylon pilot", material_id: CAND-901002, owner_id: EMP-00009, lab_id: LAB-001, budget_gbp: 45000, planned_start: "+14d", planned_end: "+70d", pass_criteria: "Tensile strength >= 450 N; abrasion >= 25000 cycles; dye fastness >= 4"}
 
   - name: create_market_entry_project
     desc: Creates a market entry project with workstreams. Returns the new project.
@@ -495,13 +541,13 @@ tools:
     defaults: {status: open}
     args:
       title: {required: true}
-      owner_id: {required: true}
+      owner_id: {required: true, col: employee_id}
       due_date: {required: true, type: date}
       priority: {type: enum, values: [low, medium, high, urgent], default: medium}
-      category: {desc: "Action category"}
-      source: {desc: "Source of action, e.g. question id"}
-      description: {}
-    example: {title: "Review budget variance", owner_id: EMP-0042, due_date: "+7d", priority: high, category: "budget", description: "Explain 14% overspend in facilities"}
+      category: {desc: "Action category, e.g. budget, procurement, packaging"}
+      source: {desc: "What triggered the action, e.g. a report or RAID item"}
+      description: {desc: "What the owner must do and why"}
+    example: {title: "Explain facilities budget variance", owner_id: EMP-00003, due_date: "+7d", priority: high, category: "budget", description: "Explain the overspend against budget at Northampton DC"}
 
   - name: create_artwork_task
     desc: Creates an artwork task for the design agency with checklist attached. Returns the new task.
@@ -511,13 +557,15 @@ tools:
     defaults: {status: draft}
     args:
       title: {required: true}
-      owner_id: {required: true}
+      owner_id: {required: true, col: employee_id}
       agency: {required: true, desc: "Design agency name"}
+      countries: {required: true, desc: "Country codes the artwork is for, comma-separated, e.g. FR,DE,IT"}
+      product_category: {desc: "Product category, e.g. cosmetics"}
       due_date: {required: true, type: date}
       checklist: {type: text, required: true, desc: "Checklist items, newline-separated"}
       deliverables: {desc: "What will be delivered"}
       requirements: {desc: "Key requirements and compliance"}
-    example: {title: "Cosmetics Packaging - France/Germany/Italy", owner_id: EMP-0042, agency: "Brand Design Studio", due_date: "+45d", checklist: "Legal marks compliance\nRecycling labels (all three countries)\nLanguage requirements (FR/DE/IT)\nWarning symbols\nNutrition format (if applicable)", deliverables: "3 packaging layouts (one per country)", requirements: "EU Cosmetics Regulation compliance, local language requirements"}
+    example: {title: "Cosmetics packaging artwork FR/DE/IT", owner_id: EMP-00009, agency: "Brightside Creative", countries: "FR,DE,IT", product_category: cosmetics, due_date: "+45d", checklist: "Legal marks\nRecycling labels\nLanguage requirements\nWarnings", deliverables: "3 packaging layouts (one per country)", requirements: "EU Cosmetics Regulation compliance, local language requirements"}
 
   - name: create_programme_milestone
     desc: Adds a milestone to the programme plan. Returns the new milestone.
@@ -542,15 +590,17 @@ tools:
     set: {status: "{status}"}
     args:
       status: {required: true, type: enum, values: [draft, active, in_progress, delivered, on_hold, archived, cancelled], desc: "New status"}
-    example: {initiative_id: CSI-000001, status: on_hold}
+      status_reason: {desc: "Why the status is changing"}
+    example: {initiative_id: CSI-000007, status: on_hold, status_reason: "Low confidence and depends on IT delivery"}
 
   - name: archive_cost_saving_initiative
     desc: Archives an initiative so it leaves the active list. Returns the archived initiative.
     kind: update
     table: cost_saving_initiatives
     set: {status: archived}
-    args: {}
-    example: {initiative_id: CSI-000001}
+    args:
+      status_reason: {desc: "Why the initiative is being archived"}
+    example: {initiative_id: CSI-000008, status_reason: "Saving not achievable in this financial year"}
 
   - name: cancel_capex_proposal
     desc: Withdraws a proposal from the capital queue. Returns the old and new status.
@@ -597,12 +647,17 @@ tools:
     example: {option_id: CUT-000001}
 
   - name: submit_capex_case_for_review
-    desc: Submits a capex case to the capex committee queue. Returns the proposal with submitted status.
+    desc: Submits a capex case to the capex committee queue, optionally with revised returns and assumptions. Returns old and new values.
     kind: update
     table: capex_proposals
     set: {status: submitted, submission_date: "$as_of"}
-    args: {}
-    example: {proposal_id: CAP-000001}
+    args:
+      key_assumptions: {desc: "Revised key assumptions, e.g. build slips six months"}
+      payback_years: {type: float, desc: "Revised payback in years"}
+      irr_pct: {type: float, desc: "Revised IRR as a percentage"}
+      npv_gbp: {type: float, desc: "Revised NPV in GBP"}
+      sensitivity_10pct: {desc: "Revised impact of a 10% revenue miss"}
+    example: {proposal_id: CAP-900001, key_assumptions: "Build slips six months; savings start month 19", payback_years: 4.5, irr_pct: 19.6, npv_gbp: 5400000}
 
   - name: submit_investment_request
     desc: Submits a funding request for an initiative for approval. Returns confirmation.
