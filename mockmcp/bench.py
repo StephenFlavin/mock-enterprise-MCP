@@ -174,7 +174,7 @@ def run_case(sid: str, case: dict, model: str, timeout: int = 300) -> dict:
 
 def run(sids: list[str], model: str = "haiku", workers: int = 6, only: str | None = None) -> Path:
     jobs = [(s, c) for s in sids for c in load(s) if not only or only in c["id"]]
-    stamp = f"{date.today().isoformat()}-{model}"
+    stamp = f"{date.today().isoformat()}-{model}-" + ("all" if len(sids) > 3 else "+".join(sids))  # parallel runs don't collide
     out = RESULTS / f"{stamp}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     results = []
