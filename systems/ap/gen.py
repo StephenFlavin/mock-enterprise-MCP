@@ -227,7 +227,7 @@ def generate(g):
                 "rebate_pct": r.uniform(0.5, 5),
                 "rebate_amount_gbp": r.uniform(5000, 50000) if r.random() < 0.3 else 0,
                 "effective_from": g.date_between(365, 0),
-                "effective_to": g.date_between(0, 365),
+                "effective_to": g.date_between(365, 0),
                 "status": r.choices(["active", "expired"], [80, 20])[0],
                 "created_date": g.date_between(180, 0)
             }

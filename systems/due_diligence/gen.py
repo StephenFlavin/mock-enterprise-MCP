@@ -142,13 +142,14 @@ def generate(g):
             })
             task_id += 1
 
-    # Generate factory profiles
+    # Generate factory profiles - use valid countries only
+    valid_countries = ["IN", "BD", "CN", "PK", "VN", "TH", "KH", "MX", "TN", "ET"]
     for factory in factories[:30]:
         factory_profs.append({
             "factory_id": factory["factory_id"],
             "name": factory["name"],
             "supplier_id": factory["supplier_id"],
-            "country": factory["country"],
+            "country": r.choice(valid_countries),  # Override with valid country
             "city": factory["city"],
             "latitude": float(factory.get("latitude", r.uniform(-30, 30))),
             "longitude": float(factory.get("longitude", r.uniform(-180, 180))),
@@ -259,13 +260,15 @@ def generate(g):
             })
             grievance_id += 1
 
-    # Supplier sub-tier relationships
+    # Supplier sub-tier relationships - avoid duplicates
+    seen_sub_tiers = set()
     for supplier in suppliers[:20]:
-        tier1_facs = [f for f in factories if f["supplier_id"] == supplier["supplier_id"]]
-        for fac in tier1_facs[:2]:
-            # Link to random sub-tier suppliers
-            for sub_sup in r.sample(suppliers[:30], min(2, len(suppliers))):
-                if sub_sup["supplier_id"] != supplier["supplier_id"]:
+        # Link to random sub-tier suppliers, max 2 per supplier
+        for sub_sup in r.sample(suppliers[:30], min(2, len(suppliers))):
+            if sub_sup["supplier_id"] != supplier["supplier_id"]:
+                key = (supplier["supplier_id"], sub_sup["supplier_id"])
+                if key not in seen_sub_tiers:
+                    seen_sub_tiers.add(key)
                     sub_tiers.append({
                         "supplier_id": supplier["supplier_id"],
                         "sub_tier_supplier_id": sub_sup["supplier_id"],
@@ -276,16 +279,17 @@ def generate(g):
                         "updated_at": g.as_of - timedelta(days=r.randint(1, 90)),
                     })
 
-    # Ownership structures
+    # Ownership structures - use valid countries only
+    valid_countries = ["IN", "BD", "CN", "PK", "VN", "TH", "KH", "MX", "TN", "ET"]
     for supplier in suppliers[:20]:
         ownership.append({
             "entity_id": supplier["supplier_id"],
             "entity_type": "supplier",
             "entity_name": supplier["name"],
-            "country": supplier["country"],
+            "country": r.choice(valid_countries),  # Override with valid country
             "parent_entity_id": None,
             "beneficial_owner_name": supplier["name"],
-            "beneficial_owner_country": supplier["country"],
+            "beneficial_owner_country": r.choice(valid_countries),  # Override with valid country
             "ownership_structure_description": "Single family-owned entity" if r.choice([True, False]) else "Part of larger manufacturing group",
             "verified": r.choice([True, False]),
             "verification_source": "Company registry" if r.choice([True, False]) else "Audit disclosure",
