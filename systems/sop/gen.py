@@ -47,7 +47,7 @@ def generate(g):
         })
 
     # Create scenarios for current cycle (2026-10)
-    current_cycle = "2026-10"
+    current_cycle = "SOP-2026-10"
     scenario_configs = [
         {"type": "baseline", "name": "Hold Current Plan", "desc": "Continue current execution plan", "revenue_adj": 0, "margin_adj": 0, "cash_adj": 0},
         {"type": "upside", "name": "Strong Holiday Demand", "desc": "Consumer confidence holds, promotional lift works", "revenue_adj": 6, "margin_adj": 1.5, "cash_adj": 8},
@@ -185,7 +185,7 @@ def generate(g):
 
         launches.append({
             "launch_id": launch_id,
-            "sop_cycle": "2026-09",
+            "sop_cycle": "SOP-2026-09",
             "sku": product["sku"],
             "style_id": product["style_id"],
             "launch_date": g.date_between(90, 30),

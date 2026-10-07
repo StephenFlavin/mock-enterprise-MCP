@@ -1,0 +1,206 @@
+id: wholesale_edi
+name: Wholesale / EDI Portal
+instructions: >
+  EDI and wholesale order management for wholesale and marketplace partners. Monitor order fulfillment,
+  EDI message status, and partner connectivity. Order ids look like WOL-000123. Message ids look like EDI-000456.
+  Manage short shipments, penalties, and reprocess failed EDI messages.
+
+tables:
+  wholesale_orders:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "Wholesale order, e.g. WOL-000123"}
+      partner_id: {type: str, desc: "Wholesale or marketplace partner, e.g. PTN-001"}
+      sku: {type: str, desc: "SKU ordered, e.g. SKU-100234"}
+      order_date: {type: date, desc: "Date order received"}
+      qty_ordered: {type: int, desc: "Units ordered"}
+      qty_allocated: {type: int, desc: "Units allocated to order"}
+      qty_picked: {type: int, desc: "Units picked and prepared"}
+      qty_shipped: {type: int, desc: "Units shipped to partner"}
+      status: {type: enum, values: [open, partial, delivered, failed], desc: "Order fulfillment status"}
+      shortfall_reason: {type: enum, values: [stock, quality, carrier, other], desc: "Why quantity fell short, if any"}
+      allocation_decision: {type: enum, values: [full, partial, none], desc: "Allocation decision made"}
+      pick_status: {type: enum, values: [pending, picked, short, damaged], desc: "Pick and pack status"}
+      carrier_id: {type: str, desc: "Carrier assigned for delivery"}
+      updated_at: {type: timestamp, desc: "Last status update"}
+
+  edi_messages:
+    key: message_id
+    cols:
+      message_id: {type: str, desc: "EDI message, e.g. EDI-000123"}
+      partner_id: {type: str, desc: "EDI trading partner"}
+      message_type: {type: str, desc: "Message type, e.g. PO_ACK, ASN, INVOICE"}
+      direction: {type: enum, values: [inbound, outbound], desc: "Inbound or outbound"}
+      sent_at: {type: timestamp, desc: "When message was sent/received"}
+      status: {type: enum, values: [success, failed, reprocessing, pending], desc: "Processing status"}
+      error_code: {type: str, desc: "Error code if failed, e.g. MAPPING_ERROR"}
+      error_reason: {type: text, desc: "Human-readable error description"}
+      retry_count: {type: int, desc: "Number of reprocess attempts"}
+      updated_at: {type: timestamp, desc: "Last status change"}
+
+  edi_partners:
+    key: partner_id
+    cols:
+      partner_id: {type: str, desc: "EDI trading partner"}
+      message_types: {type: str, desc: "Comma-separated message types supported, e.g. PO_ACK,ASN,INVOICE"}
+      last_message_date: {type: timestamp, desc: "Most recent message sent or received"}
+      status: {type: enum, values: [active, inactive, suspended], desc: "Partnership status"}
+      recent_error_count: {type: int, desc: "Failed messages in last 7 days"}
+      connection_status: {type: enum, values: [ok, degraded, failed], desc: "EDI connection health"}
+
+  wholesale_accounts:
+    key: partner_id
+    cols:
+      partner_id: {type: str, desc: "Wholesale or marketplace partner"}
+      account_value_gbp: {type: float, desc: "Account value in GBP (annual)"}
+      sell_through_units_week: {type: int, desc: "Units sold by partner last week"}
+      stock_on_hand_units: {type: int, desc: "Estimated units held by partner (all SKUs)"}
+      data_feed_coverage_pct: {type: float, desc: "Percentage of SKUs with active data feed"}
+      data_feed_status: {type: enum, values: [active, stale, missing], desc: "Data feed health"}
+      last_feed_date: {type: timestamp, desc: "Last data feed received"}
+      updated_at: {type: timestamp, desc: "Last metrics update"}
+
+  short_shipment_notices:
+    key: notice_id
+    cols:
+      notice_id: {type: str, desc: "Notice id, e.g. SSN-000123"}
+      partner_id: {type: str, desc: "Partner notified"}
+      order_id: {type: str, desc: "Wholesale order short"}
+      qty_short: {type: int, desc: "Units short"}
+      reason: {type: str, desc: "Reason for short shipment"}
+      notice_date: {type: date, desc: "Date notice sent"}
+      status: {type: enum, values: [drafted, sent, acknowledged, disputed], desc: "Notice status"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+tools:
+  - name: get_wholesale_orders_for_customer
+    desc: Retrieves wholesale orders for a customer, with fulfillment status and any shortfalls.
+    kind: select
+    from: wholesale_orders
+    filters:
+      partner_id: {}
+      status: {}
+      date_from: {col: order_date, op: ">=", default: "-90d"}
+    columns: [order_id, partner_id, sku, order_date, qty_ordered, qty_allocated, qty_picked, qty_shipped, status, shortfall_reason]
+    order: order_date DESC
+    limit: 50
+    example: {partner_id: PTN-001}
+
+  - name: draft_response_to_customer_buyer
+    desc: Draft a response to a wholesale customer's buyer about order issues or penalties.
+    kind: draft
+    args: [partner_id]
+    sql:
+      partner: SELECT * FROM master.partners WHERE partner_id = $partner_id
+      orders: SELECT order_id, qty_ordered, qty_shipped, status FROM wholesale_orders WHERE partner_id = $partner_id AND status IN ('partial', 'failed') ORDER BY order_date DESC LIMIT 5
+    template: |
+      Dear {{ partner[0].name }} Buyer,
+
+      Thank you for your continued partnership. We have reviewed the recent order fulfillment issues:
+
+      {% for o in orders -%}
+      - Order {{ o.order_id }}: ordered {{ o.qty_ordered }} units, shipped {{ o.qty_shipped }} ({{ o.status }})
+      {% endfor %}
+
+      We are committed to resolving these matters and will work with you on remediation.
+
+      Best regards,
+      Harbour & Vale Wholesale Team
+    example: {partner_id: PTN-001}
+
+  - name: get_customer_account_value
+    desc: Retrieves customer account value and relationship metrics.
+    kind: select
+    from: wholesale_accounts
+    filters:
+      partner_id: {}
+    columns: [partner_id, account_value_gbp, sell_through_units_week, stock_on_hand_units, data_feed_status]
+    limit: 10
+    example: {partner_id: PTN-001}
+
+  - name: get_key_account_sell_through_and_stock
+    desc: Retrieves key account sell through and stock levels, use to forecast next quarter orders.
+    kind: select
+    from: wholesale_accounts
+    filters:
+      data_feed_status: {default: active}
+    columns: [partner_id, account_value_gbp, sell_through_units_week, stock_on_hand_units, data_feed_coverage_pct, last_feed_date]
+    order: account_value_gbp DESC
+    limit: 30
+    example: {}
+
+  - name: get_data_feed_coverage_by_account
+    desc: Retrieves data feed coverage by account, showing data freshness and SKU coverage.
+    kind: select
+    from: wholesale_accounts
+    filters:
+      data_feed_status: {}
+    columns: [partner_id, data_feed_coverage_pct, data_feed_status, last_feed_date, account_value_gbp]
+    order: partner_id
+    limit: 50
+    example: {}
+
+  - name: get_edi_partner_status
+    desc: Connection status and recent activity of an EDI partner, including error counts and last message time.
+    kind: select
+    from: edi_partners
+    filters:
+      partner_id: {}
+      status: {}
+    columns: [partner_id, message_types, connection_status, status, last_message_date, recent_error_count]
+    limit: 10
+    example: {partner_id: PTN-001}
+
+  - name: get_failed_edi_messages
+    desc: Failed EDI messages with partner, type and error code, ordered most recent first.
+    kind: sql
+    args:
+      partner_id: {desc: "Partner to filter, or blank for all"}
+      message_type: {desc: "Message type to filter (e.g. PO_ACK), or blank for all"}
+      date_from: {type: date, default: "-7d", desc: "Only messages from this date onwards"}
+    sql: |
+      SELECT message_id, partner_id, message_type, sent_at, error_code, error_reason, retry_count, status
+      FROM edi_messages
+      WHERE status IN ('failed', 'reprocessing')
+        AND sent_at >= CAST($date_from AS DATE)
+        AND ($partner_id IS NULL OR partner_id = $partner_id)
+        AND ($message_type IS NULL OR message_type = $message_type)
+      ORDER BY sent_at DESC
+    limit: 50
+    example: {}
+
+  - name: list_trading_partners_using_message_type
+    desc: Partners sending a given message type, useful for mapping or spec changes.
+    kind: sql
+    args:
+      message_type: {required: true, desc: "Message type to find, e.g. ASN or PO_ACK"}
+    sql: |
+      SELECT DISTINCT p.partner_id, p.name, ep.message_types, ep.status, ep.last_message_date
+      FROM edi_partners ep
+      JOIN master.partners p ON p.partner_id = ep.partner_id
+      WHERE ep.message_types LIKE '%' || $message_type || '%'
+      ORDER BY p.name
+    limit: 50
+    example: {message_type: ASN}
+
+  - name: send_short_shipment_notice_to_customers
+    desc: Sends a short-shipment notice to named wholesale customers, records in outbox for delivery.
+    kind: insert
+    table: short_shipment_notices
+    id_prefix: SSN-
+    defaults: {status: sent}
+    args:
+      partner_id: {required: true}
+      order_id: {required: true}
+      qty_short: {type: int, required: true}
+      reason: {required: true, desc: "Reason for short shipment, e.g. stock unavailable"}
+    example: {partner_id: PTN-001, order_id: WOL-900001, qty_short: 100, reason: "Stock unavailable at order date"}
+
+  - name: submit_edi_message_reprocess
+    desc: Resubmits failed EDI messages for processing, resets error status and increments retry count.
+    kind: update
+    table: edi_messages
+    set: {status: reprocessing, retry_count: "retry_count + 1"}
+    args:
+      retry_reason: {required: true, desc: "Why we are reprocessing, e.g. Mapping corrected"}
+    example: {message_id: EDI-900001, retry_reason: "Mapping corrected"}
