@@ -133,7 +133,12 @@ def _validate_once(sid: str) -> list[str]:
         try:
             eng = Engine([sid])
             names = {t.name for t in eng.systems[sid].tools}
+            writes = {t.name for t in eng.systems[sid].tools if t.writes}
+            dirty = False
             for c in load(sid):
+                if dirty:  # every case starts from clean state, as in a model run
+                    db.STATE = Path(tempfile.mkdtemp(dir=tmp))
+                    eng, dirty = Engine([sid]), False
                 cid = c.get("id", "?")
                 if cid in seen:
                     p.append(f"{cid}: duplicate id")
@@ -151,6 +156,7 @@ def _validate_once(sid: str) -> list[str]:
                         p.append(f"{cid}: ref tool {r['tool']} is not in {sid}")
                         continue
                     text, err = eng.call(sid, r["tool"], _shift_args(r.get("args") or {}))
+                    dirty = dirty or r["tool"] in writes
                     if err:
                         p.append(f"{cid}: ref {r['tool']} errored: {text[:150]}")
                     out += "\n" + text
