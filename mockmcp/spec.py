@@ -124,9 +124,20 @@ class System(Strict):
         return SYSTEMS / ("_master" if self.id == "master" else self.id)
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """Rejects duplicate keys, which plain YAML silently resolves to the last one."""
+
+    def construct_mapping(self, node, deep=False):
+        keys = [self.construct_object(k, deep=deep) for k, _ in node.value]
+        dupes = {k for k in keys if keys.count(k) > 1}
+        if dupes:
+            raise ValueError(f"duplicate YAML key(s) {sorted(map(str, dupes))} near line {node.start_mark.line + 1}")
+        return super().construct_mapping(node, deep)
+
+
 def load_system(system_id: str) -> System:
     d = SYSTEMS / ("_master" if system_id == "master" else system_id)
-    raw = yaml.safe_load((d / "system.yaml").read_text())
+    raw = yaml.load((d / "system.yaml").read_text(), Loader=_StrictLoader)
     return System.model_validate(raw)
 
 
