@@ -1,7 +1,7 @@
 """Python hooks for the commodity system."""
 
 
-def calc_fixed_vs_floating(ctx, commodity_id, volume_units=1000000.0, period_months=12, current_price_gbp=None,
+def calc_fixed_vs_floating(ctx, commodity_id, volume_units=1000.0, period_months=12, current_price_gbp=None,
                            fixed_price_gbp=None):
     cid = commodity_id.upper()
     period_months = max(1, min(int(period_months or 12), 12))
