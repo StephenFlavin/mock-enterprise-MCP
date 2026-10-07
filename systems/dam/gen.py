@@ -23,13 +23,13 @@ def generate(g):
 
     assets = []
     for i, (title, asset_type_val) in enumerate(asset_topics * 3):
-        asset_id = f"AST-{i+1:05d}"
+        dam_asset_id = f"DAM-{i+1:05d}"
         created = g.as_of - timedelta(days=r.randint(60, 180))
         assets.append({
-            "asset_id": asset_id,
+            "dam_asset_id": dam_asset_id,
             "title": f"{title} Reference {i % len(asset_topics) + 1}",
             "asset_type": "reference",
-            "url": f"/dam/assets/{asset_id}.jpg",
+            "url": f"/dam/assets/{dam_asset_id}.jpg",
             "created_at": created,
             "created_by": r.choice(design_team)["employee_id"],
             "metadata": title,
