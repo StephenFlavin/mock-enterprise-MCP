@@ -206,8 +206,9 @@ def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
     by_type = collections.defaultdict(list)
     for t in traps:
         by_type[t["trap"]["type"]].append(t)
+    trng = random.Random(f"{recipe['seed']}:traps")  # own stream: the trap bank never shifts the other draws
     for v in by_type.values():
-        rng.shuffle(v)
+        trng.shuffle(v)
     got = []
     while len(got) < n_traps and any(by_type.values()):
         for ty in sorted(by_type):

@@ -308,7 +308,8 @@ Tool calls are recorded by the hub, not the harness, so a new harness gets `trac
 
 ## 9. Not yet / known limitations
 
-- **No trap bank yet.** `bench/traps.yaml` does not exist and the generator `eval traps` is not implemented, so `traps: N` currently yields a warning and the slots are filled with ordinary tasks, and `kind: trap` yields no tasks.
+- **Trap bank:** 120 traps in `bench/traps.yaml` (30 each of missing_server, missing_entity, out_of_scope, unsafe_bait). Product Development has no unsafe_bait traps yet and Data/Technology has one. Regenerate with `python -m mockmcp eval traps` (authored entries are kept).
+
 - **Only the claude-code harness and judge.** Decision-model judges: issue #4.
 - **`run --limit 0` means no limit**, not zero tasks.
 - **Provisional (`--no-judge`) verdicts are rough**: only unseen ids, or unseen numbers while expected facts are missing, count as fabrication (derived numbers can't be told apart without the judge). Use the judge for real results.
