@@ -172,7 +172,7 @@ def calc_peak_capacity_risk(ctx, scenario_id, peak_volume_uplift_pct):
         "peak_volume_units_day": int(peak_volume),
         "spare_capacity_units_day": int(spare),
         "at_risk": at_risk,
-        "risk_score_0_100": round(risk_score, 1),
+        "risk_score": round(risk_score, 1),
         "recommendation": "Invest in capacity" if risk_score > 20 else "Capacity adequate",
     }
 

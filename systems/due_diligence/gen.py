@@ -163,11 +163,12 @@ def generate(g):
             "updated_at": g.as_of - timedelta(days=r.randint(1, 60)),
         })
 
-    # Supply chain mapping
-    products = g.master("products")[:30]
-    for product in products:
-        tier1_facs = [f for f in factories if f["supplier_id"] == product.get("supplier_id")]
-        for fac in tier1_facs[:2]:
+    # Supply chain mapping (only for seeded factories)
+    products = g.master("products")
+    seeded_factory_ids = set(f["factory_id"] for f in factory_profs)
+    for fac in factory_profs[:10]:
+        # Use only a couple of products for mapping
+        for product in r.sample(products, min(3, len(products))):
             mapping.append({
                 "product_sku": product["sku"],
                 "tier": 1,

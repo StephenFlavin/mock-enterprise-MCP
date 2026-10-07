@@ -386,3 +386,176 @@ tools:
       reported_saving_gbp: {required: true, type: float, desc: "Reported saving target"}
       target_completion_date: {required: true, type: date}
     example: {name: "Housewares consolidation", category: "Home", initiative_type: "consolidation", reported_saving_gbp: 150000, target_completion_date: "+90d"}
+
+  - name: list_top_suppliers_by_spend
+    desc: Top suppliers by total spend over the last 12 months. Use to identify strategic suppliers.
+    kind: sql
+    args:
+      category: {}
+      limit_rows: {type: int, desc: "Maximum number of suppliers to return", default: 10}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.category, sum(s.spend_gbp) AS total_spend_gbp,
+             sum(s.units) AS total_units, round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp,
+             count(distinct s.period) AS periods_with_spend
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE ($category IS NULL OR s.category = $category)
+      GROUP BY s.supplier_id, sup.name, s.category
+      ORDER BY total_spend_gbp DESC
+      LIMIT $limit_rows
+    example: {category: "Home", limit_rows: 10}
+
+  - name: list_top_categories_by_spend
+    desc: Top product categories by total spend over the last 12 months. Use to prioritise procurement efforts.
+    kind: sql
+    args:
+      limit_rows: {type: int, desc: "Maximum number of categories to return", default: 10}
+    sql: |
+      SELECT s.category, sum(s.spend_gbp) AS total_spend_gbp, sum(s.units) AS total_units,
+             count(distinct s.supplier_id) AS supplier_count, round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp
+      FROM supplier_spend s
+      GROUP BY s.category
+      ORDER BY total_spend_gbp DESC
+      LIMIT $limit_rows
+    example: {limit_rows: 10}
+
+  - name: get_supplier_share_of_category_spend
+    desc: Supplier share of a category's total spend. Use to identify market concentration.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      category: {required: true}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.category,
+             round(sum(s.spend_gbp), 0) AS supplier_spend_gbp,
+             round((SELECT sum(spend_gbp) FROM supplier_spend WHERE category = $category), 0) AS category_total_gbp,
+             round(100.0 * sum(s.spend_gbp) / (SELECT sum(spend_gbp) FROM supplier_spend WHERE category = $category), 1) AS share_pct,
+             count(distinct s.period) AS periods_active
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id AND s.category = $category
+      GROUP BY s.supplier_id, sup.name, s.category
+    example: {supplier_id: "SUP-0001", category: "Home"}
+
+  - name: get_supplier_share_of_wallet
+    desc: Our share of a supplier's total volume (concentrate risk/leverage). Use for negotiation prep.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT s.supplier_id, sup.name,
+             round(sum(s.spend_gbp), 0) AS our_spend_gbp,
+             coalesce(sup.annual_spend_gbp, 0) AS supplier_annual_spend_gbp,
+             round(100.0 * sum(s.spend_gbp) / nullif(coalesce(sup.annual_spend_gbp, 1), 0), 1) AS our_share_pct,
+             count(distinct s.category) AS categories_supplied,
+             count(distinct s.period) AS periods_active
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+      GROUP BY s.supplier_id, sup.name, sup.annual_spend_gbp
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_supplier_fragmentation_by_category
+    desc: Number of suppliers and tail spend by category. Shows concentration risk.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      WITH ranked AS (
+        SELECT supplier_id, category, sum(spend_gbp) AS supplier_total,
+               row_number() OVER (PARTITION BY category ORDER BY sum(spend_gbp) DESC) AS rank
+        FROM supplier_spend
+        WHERE category = $category
+        GROUP BY supplier_id, category
+      )
+      SELECT $category AS category,
+             count(*) AS total_suppliers,
+             (SELECT count(*) FROM ranked WHERE rank <= 3) AS top_3_suppliers,
+             round((SELECT sum(supplier_total) FROM ranked WHERE rank <= 3), 0) AS top_3_spend_gbp,
+             round((SELECT sum(supplier_total) FROM ranked WHERE rank > 10), 0) AS tail_spend_gbp,
+             round(100.0 * (SELECT sum(supplier_total) FROM ranked WHERE rank <= 3) / sum(supplier_total), 1) AS top_3_share_pct
+      FROM ranked
+    example: {category: "Home"}
+
+  - name: get_supplier_spend_by_currency
+    desc: Supplier spend exposure by currency. Use for FX risk and tariff planning.
+    kind: sql
+    args:
+      category: {}
+    sql: |
+      SELECT s.supplier_id, sup.name, sup.currency, s.category,
+             round(sum(s.spend_gbp), 0) AS spend_gbp, sum(s.units) AS units
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE ($category IS NULL OR s.category = $category)
+      GROUP BY s.supplier_id, sup.name, sup.currency, s.category
+      ORDER BY spend_gbp DESC
+    limit: 100
+    example: {category: "Home"}
+
+  - name: get_vendor_spend_last_24_months
+    desc: Vendor spend over the last 24 months for consolidation and duplicate analysis.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.period,
+             round(sum(s.spend_gbp), 0) AS monthly_spend_gbp, sum(s.units) AS monthly_units,
+             round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+      GROUP BY s.supplier_id, sup.name, s.period
+      ORDER BY s.period DESC
+      LIMIT 24
+    example: {supplier_id: "SUP-0001"}
+
+  - name: list_suppliers_by_price_increase_history
+    desc: Suppliers ranked by historical price increases. Shows which suppliers are likely to push increases.
+    kind: sql
+    args:
+      category: {}
+      min_increase_pct: {type: float, desc: "Filter to suppliers with increases above this %", default: 0}
+    sql: |
+      SELECT s.supplier_id, sup.name, sup.category_focus,
+             round(max(s.index_value) - min(s.index_value), 2) AS index_change,
+             round(100.0 * (max(s.index_value) - min(s.index_value)) / min(s.index_value), 1) AS increase_pct,
+             round(avg(s.pct_of_total), 1) AS avg_cost_pct,
+             count(distinct s.cost_component) AS components_tracked
+      FROM supplier_input_costs s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE ($category IS NULL OR sup.category_focus = $category)
+      GROUP BY s.supplier_id, sup.name, sup.category_focus
+      HAVING 100.0 * (max(s.index_value) - min(s.index_value)) / min(s.index_value) >= $min_increase_pct
+      ORDER BY increase_pct DESC
+    limit: 50
+    example: {category: "Home"}
+
+  - name: get_supplier_input_cost_mix
+    desc: Input cost components by supplier showing labour, materials, energy exposure. Use for price increase forecasting.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.cost_component,
+             round(avg(s.index_value), 2) AS avg_index_value,
+             round(avg(s.pct_of_total), 1) AS avg_pct_of_total,
+             round(max(s.index_value) - min(s.index_value), 2) AS index_change
+      FROM supplier_input_costs s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+      GROUP BY s.supplier_id, sup.name, s.cost_component
+      ORDER BY avg_pct_of_total DESC
+    example: {supplier_id: "SUP-0001"}
+
+  - name: update_savings_tracker_entry
+    desc: Correct the reported saving value or status of a tracked initiative. Use to update realisation.
+    kind: update
+    table: savings_initiatives
+    set: {}
+    args:
+      reported_saving_gbp: {type: float, desc: "Update reported saving target"}
+      realised_saving_gbp: {type: float, desc: "Update realised saving"}
+      status: {desc: "Update status"}
+      actual_completion_date: {type: date, desc: "Set completion date"}
+    example: {initiative_id: "INIT-000001", realised_saving_gbp: 145000, status: "completed", actual_completion_date: "-30d"}

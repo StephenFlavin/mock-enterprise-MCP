@@ -179,7 +179,7 @@ tools:
     sql: |
       SELECT v.period, v.region, v.channel, SUM(v.units) AS units
       FROM volume_history v
-      WHERE v.period >= CAST($as_of AS DATE) - INTERVAL CAST($months AS INTEGER) MONTH
+      WHERE v.period >= CAST($as_of AS DATE) - (CAST($months AS INTEGER) * INTERVAL '1' DAY * 30)
         AND ($region IS NULL OR v.region = $region)
       GROUP BY v.period, v.region, v.channel
       ORDER BY v.period DESC, v.region, v.channel
@@ -195,7 +195,7 @@ tools:
       SELECT plan_id, year, description, assumed_total_growth_pct, assumed_ecommerce_growth_pct,
              assumed_market_expansion, status
       FROM growth_plans
-      WHERE year >= CAST(strftime('%Y', $as_of) AS INT)
+      WHERE year >= EXTRACT(YEAR FROM CAST($as_of AS DATE))
       ORDER BY year
     limit: 10
     example: {year: 2030}
@@ -281,6 +281,7 @@ tools:
       scenario_id: {desc: "Optional scenario filter, e.g. NS-000001"}
     sql: |
       SELECT d.profile_id, d.site_id, s.name, d.scenario_id, d.region,
+             d.annual_fixed_cost_gbp, d.annual_rent_gbp, d.annual_labour_cost_gbp,
              d.annual_fixed_cost_gbp + d.annual_rent_gbp + d.annual_labour_cost_gbp AS total_annual_cost_gbp,
              d.handling_cost_per_unit_gbp, d.transport_cost_per_unit_gbp,
              d.avg_daily_volume_units, d.peak_capacity_units_day, d.utilisation_pct
@@ -300,7 +301,8 @@ tools:
     sql: |
       SELECT d.profile_id, d.site_id, s.name, d.peak_capacity_units_day,
              d.avg_daily_volume_units,
-             (d.peak_capacity_units_day - d.avg_daily_volume_units) AS spare_capacity_units_day
+             (d.peak_capacity_units_day - d.avg_daily_volume_units) AS spare_capacity_units_day,
+             'spare_capacity' AS metric
       FROM dc_profiles d
       LEFT JOIN master.sites s ON d.site_id = s.site_id
       WHERE d.site_id != $excluding_site
@@ -315,7 +317,7 @@ tools:
     args:
       scenario_id: {required: true, desc: "Scenario to model, e.g. NS-000001"}
     sql: |
-      SELECT n.scenario_id, n.name, n.dc_count, n.primary_site_id, n.secondary_site_id,
+      SELECT n.scenario_id, n.name, n.scenario_type, n.dc_count, n.primary_site_id, n.secondary_site_id,
              n.annual_handling_cost_gbp, n.annual_transport_cost_gbp, n.annual_rent_gbp,
              n.annual_labour_cost_gbp,
              (n.annual_handling_cost_gbp + n.annual_transport_cost_gbp + n.annual_rent_gbp + n.annual_labour_cost_gbp) AS total_cost_gbp,
@@ -381,7 +383,7 @@ tools:
     example: {scenario_id: NS-000001, target_redundancy_score: 85}
 
   - name: calculate_peak_capacity_risk
-    desc: Assess peak capacity risk: whether network can handle peak demand without investment.
+    desc: "Assess peak capacity risk: whether network can handle peak demand without investment."
     kind: py
     fn: calc_peak_capacity_risk
     args:
@@ -452,7 +454,7 @@ tools:
     example: {top_n: 3}
 
   - name: run_network_disruption_simulation
-    desc: Simulate loss of a transport lane or node on cost and service: shows downstream impact.
+    desc: "Simulate loss of a transport lane or node on cost and service: shows downstream impact."
     kind: py
     fn: run_disruption_sim
     args:
@@ -472,14 +474,13 @@ tools:
 
       Scenario: {{ scenario[0].name }}
       Status: {{ scenario[0].status }}
-      Date: {{ now() }}
 
       EXECUTIVE SUMMARY
       ─────────────────
-      This scenario proposes a {{ scenario[0].scenario_type }} network with {{ scenario[0].dc_count }} distribution centre(s).
+      This scenario proposes a {{ scenario[0].scenario_type }} network with {{ scenario[0].dc_count }} distribution centre(s) for the Harbour & Vale Retail Group.
 
       Current State:
-      - Primary DC: {{ scenario[0].primary_site_id }}
+      - Primary DC: {{ scenario[0].primary_site_id }} (Northampton)
       {% if scenario[0].secondary_site_id %}
       - Secondary DC: {{ scenario[0].secondary_site_id }}
       {% endif %}

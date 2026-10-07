@@ -122,7 +122,7 @@ tools:
     kind: sql
     args:
       cause: {type: str, desc: "Split reason: stock, location, wave, carrier, other (blank = all)"}
-      date_from: {type: date, default: "-60d", desc: "Shipped on or after"}
+      date_from: {type: date, default: "-60d", desc: "Shipped on or after this date"}
     sql: |
       SELECT s.shipment_id, o.order_id, o.customer_id, o.channel, s.split_reason, count(*) as split_count,
              sum(sl.qty_shipped) as units, o.total_gbp
@@ -203,9 +203,9 @@ tools:
     desc: Sales (units/revenue) by channel over time, week-on-week. Use for channel performance.
     kind: sql
     args:
-      product_sku: {}
-      date_from: {type: date, default: "-30d"}
-      date_to: {type: date, default: "+0d"}
+      product_sku: {desc: "Product SKU (blank = all)"}
+      date_from: {type: date, default: "-30d", desc: "Sales on or after this date"}
+      date_to: {type: date, default: "+0d", desc: "Sales on or before this date"}
     sql: |
       SELECT date_trunc('week', s.shipped_date)::date AS week, s.channel,
              sum(sl.qty_shipped) AS units, round(sum(ol.unit_price_gbp * sl.qty_shipped), 2) AS revenue_gbp,
@@ -225,8 +225,8 @@ tools:
     desc: "Percentage and count of orders split across shipments, by cause and period."
     kind: sql
     args:
-      date_from: {type: date, default: "-60d"}
-      split_cause: {}
+      date_from: {type: date, default: "-60d", desc: "Period from this date"}
+      split_cause: {type: str, desc: "Filter by split cause: stock, location, wave, carrier, other (blank = all)"}
     sql: |
       WITH totals AS (
         SELECT count(DISTINCT order_id) AS total_orders, count(*) FILTER (WHERE is_split) AS split_orders
@@ -253,7 +253,7 @@ tools:
     desc: Orders fulfilled from non-local DC (cross-shipping rate and value). Use for network efficiency.
     kind: sql
     args:
-      date_from: {type: date, default: "-30d"}
+      date_from: {type: date, default: "-30d", desc: "Allocations on or after this date"}
     sql: |
       SELECT count(DISTINCT ad.order_id) AS cross_ship_orders,
              round(100.0 * count(DISTINCT ad.order_id) FILTER (WHERE o.hold_status = 'none') /
@@ -270,9 +270,9 @@ tools:
     desc: Store order service level by week, store and lane. Use for store performance.
     kind: sql
     args:
-      store_id: {}
-      date_from: {type: date, default: "-21d"}
-      date_to: {type: date, default: "+0d"}
+      store_id: {type: str, desc: "Store customer id (blank = all stores)"}
+      date_from: {type: date, default: "-21d", desc: "Shipped on or after this date"}
+      date_to: {type: date, default: "+0d", desc: "Shipped on or before this date"}
     sql: |
       SELECT date_trunc('week', s.shipped_date)::date AS week,
              o.customer_id AS store_id, o.channel AS lane,
@@ -303,9 +303,9 @@ tools:
     desc: Order arrival profile by hour, channel and lines per order. Use for wave/batch planning.
     kind: sql
     args:
-      date_from: {type: date, default: "-7d"}
-      date_to: {type: date, default: "+7d"}
-      channel: {}
+      date_from: {type: date, default: "-7d", desc: "Orders from this date"}
+      date_to: {type: date, default: "+7d", desc: "Orders through this date"}
+      channel: {type: str, desc: "Sales channel: store, online, wholesale (blank = all)"}
     sql: |
       SELECT date_trunc('hour', o.order_time)::timestamp AS hour_bucket,
              o.channel,
@@ -370,8 +370,8 @@ tools:
     desc: Orders cancelled or short-shipped for stock reasons. Use for inventory risk.
     kind: sql
     args:
-      reason: {desc: "Filter by reason: stock, location, wave (blank = all)"}
-      date_from: {type: date, default: "-30d"}
+      reason: {type: str, desc: "Filter by reason: stock, location, wave (blank = all)"}
+      date_from: {type: date, default: "-30d", desc: "Orders from this date"}
     sql: |
       SELECT o.order_id, o.customer_id, o.channel, o.status,
              sum(ol.qty_ordered) AS units_ordered,
@@ -445,8 +445,8 @@ tools:
     desc: Orders, units and revenue flowing through OMS per day (for ransomware risk assessment).
     kind: sql
     args:
-      date_from: {type: date, default: "-30d"}
-      date_to: {type: date, default: "+0d"}
+      date_from: {type: date, default: "-30d", desc: "Period from this date"}
+      date_to: {type: date, default: "+0d", desc: "Period through this date"}
     sql: |
       SELECT o.order_date,
              count(DISTINCT o.order_id) AS orders,
@@ -510,6 +510,22 @@ tools:
       online_pct: {type: float, required: true}
       wholesale_pct: {type: float, required: true}
     example: {product_sku: "STY-5520", channel: "ALL", store_pct: 50, online_pct: 30, wholesale_pct: 20}
+
+  - name: get_delivery_notes_for_invoice
+    desc: Delivery notes and proof of delivery for an order. Use for invoice disputes.
+    kind: sql
+    args:
+      order_id: {required: true}
+    sql: |
+      SELECT DISTINCT s.delivery_notes, s.shipment_id, s.shipped_date, s.delivered_date,
+             sum(sl.qty_shipped) AS total_units, count(*) AS line_count
+      FROM shipments s
+      JOIN shipment_lines sl ON sl.shipment_id = s.shipment_id
+      WHERE s.order_id = $order_id
+      GROUP BY s.delivery_notes, s.shipment_id, s.shipped_date, s.delivered_date
+      ORDER BY s.shipped_date
+    limit: 20
+    example: {order_id: ORD-900001}
 
   - name: draft_short_shipment_message_to_customers
     desc: Draft a message telling affected customers about short shipment. Use for wholesale notifications.
