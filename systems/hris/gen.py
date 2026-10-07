@@ -171,7 +171,7 @@ def generate(g):
             "commute_method": r.choices(["car", "public_transport", "bike", "other"], [0.6, 0.25, 0.1, 0.05])[0]
         })
 
-    # Generate market rates by site and role
+    # Generate market rates by site and role (skip DC2 Warehouse Operative which is seeded)
     base_rates = {
         "Warehouse Operative": {"early": 12.50, "late": 13.00, "night": 15.00},
         "Picker": {"early": 12.50, "late": 13.00, "night": 15.00},
@@ -184,6 +184,10 @@ def generate(g):
     for site in sites:
         for role in roles:
             for shift in ["early", "late", "night"]:
+                # Skip seeded records
+                if site["site_id"] == "DC2" and role == "Warehouse Operative":
+                    continue
+
                 our_rate = base_rates.get(role, {}).get(shift, 12.50)
                 # Market rate is higher in some sites
                 market_variance = 1.05 if site["site_id"] in ["DC2", "DC3"] else 1.0
