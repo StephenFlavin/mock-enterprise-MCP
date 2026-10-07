@@ -250,17 +250,19 @@ def generate(g):
 
     # ASN feed metrics
     asn_feed_metrics = []
+    recent_threshold = g.as_of - timedelta(days=20)
+    recent_threshold_15 = g.as_of - timedelta(days=15)
     for i in range(r.randint(25, 40)):
-        measured_when = g.date_between(g.days_ago(60), g.days_ago(0))
+        measured_when = g.date_between(60, 0)
         asn_feed_metrics.append({
             "metric_id": f"MET-{len(asn_feed_metrics) + 1:06d}",
             "measured_at": measured_when,
             "asn_messages_received": r.randint(15, 80),
             "asn_lines_received": r.randint(200, 2000),
-            "lines_with_pallet_data": r.randint(100, 1500) if measured_when > g.days_ago(20) else r.randint(50, 500),
-            "message_completeness_pct": r.gauss(97, 2) if measured_when > g.days_ago(20) else r.gauss(85, 10),
+            "lines_with_pallet_data": r.randint(100, 1500) if measured_when > recent_threshold else r.randint(50, 500),
+            "message_completeness_pct": r.gauss(97, 2) if measured_when > recent_threshold else r.gauss(85, 10),
             "feed_status": "stable" if r.random() < 0.9 else "degraded",
-            "changes": "Added pallet-level packing data support" if measured_when > g.days_ago(15) else None,
+            "changes": "Added pallet-level packing data support" if measured_when > recent_threshold_15 else None,
             "updated_at": measured_when + timedelta(hours=1)
         })
 
