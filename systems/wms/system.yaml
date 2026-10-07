@@ -1143,7 +1143,7 @@ tools:
     example: {site_id: DC1}
 
   - name: get_stock_location_for_split_orders
-    desc: Orders picked from more than one bin location, as orders, by week (share of picked orders that were multi-bin) or by zone mix. Shows whether stock is spread across bins and zones and so splits orders.
+    desc: Orders picked from more than one bin location, as orders, by week (share of picked orders that were multi-bin) or by zone mix. Shows whether stock is spread across bins and zones and so splits orders, and whether the multi-bin share is rising, flat or falling.
     kind: sql
     args:
       date_from: {type: date, default: "-30d", desc: "Orders picked from this date"}
@@ -1165,16 +1165,24 @@ tools:
                CAST(NULL AS DOUBLE) AS multi_bin_pct, skus AS skus_in_order, bins AS bins_used, zones, locations, units
         FROM o WHERE bins > 1
         UNION ALL
-        SELECT 'week', CAST(CAST(date_trunc('week', pick_date) AS DATE) AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR),
-               count(*), count(*) FILTER (WHERE bins > 1), round(100.0 * count(*) FILTER (WHERE bins > 1) / count(*), 1),
-               CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), sum(units)
-        FROM o GROUP BY 2
+        SELECT 'week', period_start, CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), orders_picked, multi_bin_orders, multi_bin_pct,
+               CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), units
+        FROM (
+          SELECT CAST(CAST(date_trunc('week', pick_date) AS DATE) AS VARCHAR) AS period_start, count(*) AS orders_picked,
+                 count(*) FILTER (WHERE bins > 1) AS multi_bin_orders, round(100.0 * count(*) FILTER (WHERE bins > 1) / count(*), 1) AS multi_bin_pct,
+                 sum(units) AS units
+          FROM o GROUP BY 1
+        )
         UNION ALL
         SELECT 'zones', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS BIGINT), count(*), CAST(NULL AS DOUBLE),
                CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), zones, CAST(NULL AS VARCHAR), sum(units)
         FROM o WHERE bins > 1 GROUP BY zones
       )
-      SELECT * FROM u WHERE grouped_by = coalesce($group_by, 'order')
+      SELECT * EXCLUDE (prev),
+             CASE WHEN grouped_by = 'week' AND prev IS NOT NULL
+                  THEN CASE WHEN multi_bin_pct - prev > 3 THEN 'rising' WHEN prev - multi_bin_pct > 3 THEN 'falling' ELSE 'flat' END END AS trend_vs_earlier_weeks
+      FROM (SELECT *, avg(multi_bin_pct) OVER (PARTITION BY grouped_by ORDER BY period_start ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev
+            FROM u WHERE grouped_by = coalesce($group_by, 'order'))
       ORDER BY CASE WHEN grouped_by = 'week' THEN period_start END, units DESC
     limit: 50
     example: {site_id: DC2}
