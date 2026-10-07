@@ -165,14 +165,14 @@ def generate(g):
     # Generate audit_universe
     audit_universe = []
     for i, area in enumerate(audit_areas, 1):
-        last_audit = g.date_between("-730d", "-30d")
+        last_audit = g.date_between(730, 30)
         audit_universe.append({
             "audit_area_id": f"UA-{i:06d}",
             "audit_area": area,
             "description": f"Audit of {area.lower()}",
-            "risk_rating": g.pick(["high", "medium", "low"], [0.2, 0.5, 0.3]),
+            "risk_rating": r.choices(["high", "medium", "low"], [0.2, 0.5, 0.3])[0],
             "last_audit_date": last_audit,
-            "audit_frequency_months": g.pick([12, 24, 36]),
+            "audit_frequency_months": r.choice([12, 24, 36]),
             "created_at": g.fake.date_time_this_year(),
         })
 

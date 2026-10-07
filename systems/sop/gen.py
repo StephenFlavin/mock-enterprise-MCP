@@ -11,11 +11,11 @@ def generate(g):
     disputed = []
 
     # Generate baseline data for multiple S&OP cycles
-    cycles = ["2026-08", "2026-09", "2026-10"]
+    cycles = ["SOP-2026-08", "SOP-2026-09", "SOP-2026-10"]
     periods = {
-        "2026-08": "Q3 2026",
-        "2026-09": "Q3 2026",
-        "2026-10": "Q4 2026"
+        "SOP-2026-08": "Q3 2026",
+        "SOP-2026-09": "Q3 2026",
+        "SOP-2026-10": "Q4 2026"
     }
 
     employees = g.master("employees")
