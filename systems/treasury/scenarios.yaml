@@ -1,88 +1,85 @@
 # Treasury test scenarios - one per question row in the brief
 - question: "04:39:Q2"
   story: >
-    Raw materials buyer needs to decide on hedging 60% of next year's cotton requirement (4,200 tonnes).
-    Seed data includes a cotton forward hedge proposal at 0.76/unit (HDG-900001) and a historical
-    outcome showing a similar hedge in AW26 (HOU-900003) gained 630k GBP (4% better than spot).
-    Forecast shows adequate cash position to support hedging costs.
+    The buyer wants to hedge 60% of 4,200 tonnes of cotton (2,520 tonnes, about 8.2m at 1.96 per kg). Cash is
+    tight in weeks 5 and 6 (18.5m and 17.2m, under the 20m minimum) but recovers, so hedging cost is affordable
+    if the first tranche avoids those weeks. Past cotton hedges (HOU-900001 to HOU-900003) show forwards beat spot
+    in AW26 (+514,800) and AW24 (+84,000) but lost 532,800 in AW25 when prices fell. Forward, option and collar
+    costs come from the pricing sheet; the first tranche is submitted as a request.
   checks:
     - tool: get_cash_position_forecast
       args: {}
-      expect: ["adequate", "headroom"]
+      expect: ["at_risk", "17200000", "-2800000"]
     - tool: get_historic_hedging_outcomes
-      args: {underlying_type: commodity}
-      expect: ["cotton", "HOU-900003", "4%"]
+      args: {commodity: cotton}
+      expect: ["HOU-900001", "514800", "-532800", "Spot was 12.8% cheaper than the forward"]
     - tool: calculate_hedge_scenarios
-      args: {underlying_type: commodity, commodity: cotton, notional_amount: 4200}
-      expect: ["Forward hedge", "Option"]
+      args: {underlying_type: commodity, commodity: cotton, notional_amount: 4200, hedge_ratio_pct: 60}
+      expect: ["153115", "375379", "54331", "8232000"]
+    - tool: submit_hedge_request
+      args: {underlying_type: commodity, commodity: cotton, notional_amount: 1260, notional_unit: tonnes, hedge_ratio_pct: 30, instrument_type: forward, maturity_date: "+365d", strike_or_rate: 2.02}
+      expect: ["HDG-900002", "submitted", "1260", "cotton"]
 
 - question: "07:66:Q1"
   story: >
-    FX analyst checks 12-month net exposure by currency. Seed data includes bank accounts and
-    forecasts denominated in GBP and references to historical USD and EUR hedges (HOU-900001, HOU-900002).
-    The analyst can see exposure profile and identify hedging gaps.
+    Forecast non-sterling cash flows for 12 months. USD net exposure totals 154.1m, peaking at 17.5m in the
+    spring month, EUR totals 28.4m. These are the same payables and receivables the fx system reports as exposure.
   checks:
     - tool: get_forecast_cash_flows_by_currency
-      args: {}
-      expect: ["GBP", "net_exposure"]
-    - tool: get_historic_hedging_outcomes
-      args: {underlying_type: fx_forward}
-      expect: ["GBP/USD", "GBP/EUR"]
-    - tool: get_debt_facilities_and_headroom
-      args: {}
-      expect: ["maturity_date", "undrawn"]
+      args: {currency: USD}
+      expect: ["17500000", "154100000", "net_exposure_gbp"]
+    - tool: get_forecast_cash_flows_by_currency
+      args: {currency: EUR}
+      expect: ["28400000", "3000000"]
 
 - question: "07:66:Q3"
   story: >
-    Treasury evaluates raising USD hedge ratio from 60% to 80%. Hedge request HDG-900002 shows
-    80% hedge on $2m USD exposure at forward rate 1.27. Covenant headroom (FAC-900001 at 28.5%)
-    is solid, allowing for hedge cost.
+    Raising the dollar hedge from 60% to 80% on 154.1m of net USD purchases. At 12 months a forward costs
+    0.14% (129,444 at 60%, 172,592 at 80%), a collar 0.32% and an option 2.6% (3,205,280 at 80%). If sterling
+    rises 10% the 80% forward forgoes 12.5m versus staying unhedged, while the option keeps the upside.
   checks:
     - tool: calculate_hedge_scenarios
-      args: {underlying_type: fx_forward, currency_pair: GBP/USD, notional_amount: 2000000, forward_rate_or_price: 1.27}
-      expect: ["Forward hedge", "Option", "Cost"]
-    - tool: get_debt_facilities_and_covenants
-      args: {}
-      expect: ["FAC-900001", "compliant"]
+      args: {underlying_type: fx_forward, currency_pair: GBP/USD, notional_amount: 154100000, hedge_ratio_pct: 80, compare_ratio_pct: 60}
+      expect: ["129444", "172592", "3205280", "12500592", "Collar"]
 
 - question: "07:66:Q5"
   story: >
-    Liquidity manager checks 13-week cash forecast headroom. FOR-900001 forecast shows adequate
-    closing balances across all weeks, with lowest point at week 5 (29.6m GBP, well above minimum 5m).
-    Peak week is week 10 (44.6m) with dividend payment impact at week 11 (drops to 37.6m but still adequate).
+    The 13-week base forecast opens at 25.0m (the five bank accounts) and dips below the 20m minimum in week 5
+    (18.5m, supplier payment run plus VAT) and week 6 (17.2m, store refit capex and Friday supplier run), the
+    tightest week. Cash recovers over Christmas. The revolving facility FAC-900002 has 35m undrawn.
   checks:
     - tool: get_13_week_cash_forecast
-      args: {forecast_id: FOR-900001}
-      expect: ["week_no", "closing_balance"]
+      args: {}
+      expect: ["17200000", "18500000", "tightest week", "below_minimum", "Store refit"]
     - tool: get_bank_balances
       args: {}
-      expect: ["available_balance", "facility_limit"]
+      expect: ["ACC-900001", "11800000", "Barclays"]
     - tool: get_debt_facilities_and_headroom
       args: {}
-      expect: ["undrawn_pct"]
+      expect: ["FAC-900002", "35000000", "revolving_credit"]
 
 - question: "07:70:Q2"
   story: >
-    CFO analyzes downside/base/upside scenarios over 18 months. FAC-900001 (term loan) has 28.5%
-    headroom to leverage covenant of 3.0x. Forecast shows 26-week trajectory with risks at dividend
-    payment (week 11, £5m) and debt repayment (week 10, £2m). Create alert at 15% headroom threshold.
-    Downside scenario halves headroom to ~14%, triggering warning.
+    Leverage (FAC-900001, net debt / EBITDA below 3.0x) is the tightest covenant: 18.7% headroom now, 7.7% at
+    worst in the downside (2.77x at the Sep-27 test) and 4 tests under 15%. Downside cash bottoms at 11.1m,
+    upside at 17.6m. Dividend policy defers payments when leverage headroom is under 15%, so the 4.5m interim
+    and 7.5m final are at risk in the downside. An alert at 15% headroom is created on FAC-900001.
   checks:
+    - tool: calculate_covenant_headroom
+      args: {facility_id: FAC-900001}
+      expect: ["breach_risk", "7.7", "2.77"]
     - tool: get_cash_flow_forecast_18_months
-      args: {}
-      expect: ["closing_balance", "drawn_amount", "undrawn"]
+      args: {scenario: downside}
+      expect: ["11088745", "gross_debt_gbp"]
+    - tool: get_cash_flow_forecast_18_months
+      args: {scenario: upside}
+      expect: ["17583654"]
     - tool: get_debt_facilities_and_covenants
       args: {}
-      expect: ["Leverage", "compliant", "28.5"]
+      expect: ["FAC-900001", "18.7", "Leverage"]
     - tool: get_dividend_policy_and_schedule
       args: {}
-      expect: ["payment_date", "amount_gbp"]
-    - tool: calculate_covenant_headroom
-      args: {facility_id: FAC-900001, scenario: base}
-      expect: ["headroom_pct", "compliant"]
-    - tool: calculate_covenant_headroom
-      args: {facility_id: FAC-900001, scenario: downside}
-      expect: ["watch"]
+      expect: ["DIV-900002", "4500000", "7500000", "below 15%"]
     - tool: create_covenant_alert
-      args: {facility_id: FAC-900001, alert_type: headroom_threshold, threshold_pct: 15}
-      expect: ["ALT-", "active"]
+      args: {facility_id: FAC-900001, threshold_pct: 15, current_headroom_pct: 18.7}
+      expect: ["ALT-900002", "active", "15"]

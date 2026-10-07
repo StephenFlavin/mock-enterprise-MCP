@@ -85,7 +85,6 @@ def generate(g):
         prof = CLUSTER.get(s["cluster"] or "C", CLUSTER["C"])
         fmt = s["format"]
         base_plan = st.get("plan") or round(int(s["sqft"]) * RATE.get(fmt, 3.5) * r.uniform(0.85, 1.15), -2)
-        shrink = st.get("shrink") or [round(r.uniform(*prof["sh"]) + r.uniform(-0.03, 0.03), 2)] * 0
         base_sh, base_av, base_lb = r.uniform(*prof["sh"]), r.uniform(*prof["av"]), r.uniform(*prof["lb"])
         spv = st.get("spv") or r.uniform(9.5, 14.0)
         mplan = st.get("mplan") or round(BASE_MARGIN.get(fmt, 33.0) + r.uniform(-2, 2), 1)
@@ -101,12 +100,10 @@ def generate(g):
             else:
                 var = round(min(4.0, max(-3.0, r.gauss(0.5, 1.4))), 1)
             actual = round(plan * (1 + var / 100), 2)
-            if i == 11 and st.get("var"):  # latest month: exact figures
-                actual = round(plan * (1 + var / 100), 2)
             vgbp = round(actual - plan, 2)
             vpct = round(vgbp / plan * 100, 1)
             if st.get("mact") is not None:
-                mact = round(st["mact"] + (11 - i) * 0.08 * (1 if st["mact"] < st["mplan"] else -1), 1) if i < 11 else st["mact"]
+                mact = round(mplan + (st["mact"] - mplan) * i / 11, 1)
             elif st.get("mgap") is not None:
                 mact = round(mplan + st["mgap"] * (i / 11), 1)
             else:

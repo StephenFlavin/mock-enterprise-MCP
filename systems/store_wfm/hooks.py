@@ -66,7 +66,7 @@ def calc_labour_requirement(ctx, site_id, week_start, forecast_footfall, deliver
             out.append({
                 "site_id": site_id, "rota_id": rota_id, "date": the_date.isoformat(), "weekday": name,
                 "hour": f"{h:02d}:00", "forecast_visitors": round(ff),
-                "required_staff": required, "rostered_staff": rostered_after, "gap": gap,
+                "minimum_cover": MIN_COVER, "required_staff": required, "rostered_staff": rostered_after, "gap": gap,
                 "status": "short" if gap < 0 else "over" if gap >= 2 else "ok",
                 "note": "receiving before opening" if recv else "",
             })
