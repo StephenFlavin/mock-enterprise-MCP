@@ -258,6 +258,23 @@ def generate(g):
             'updated_at': created_at
         })
 
+    # Allocation retries - log of retry events
+    allocation_retries = []
+    for i in range(r.randint(10, 30)):
+        retry_id = f'RETRY-{i+1:06d}'
+        retried_at = g.as_of - timedelta(days=r.randint(1, 30))
+        allocation_retries.append({
+            'retry_id': retry_id,
+            'order_id': f"ORD-2026-{r.randint(100000, 999999)}",
+            'previous_status': 'allocation_failed',
+            'new_status': r.choice(['allocated', 'allocated', 'partial', 'failed']),
+            'result': r.choice(['success', 'success', 'success', 'partial', 'failed']),
+            'retried_at': retried_at,
+            'created_by': f"EMP-{r.randint(1000, 9999):05d}",
+            'notes': r.choice(['Stock became available', 'Configuration updated', 'Manual override', 'System recovery']),
+            'updated_at': retried_at
+        })
+
     return {
         'cause_codes': cause_codes,
         'pack_specifications': pack_specs,
@@ -266,4 +283,5 @@ def generate(g):
         'cycle_count_results': cycle_count_results,
         'stock_movements': stock_movements,
         'stock_transfers': stock_transfers,
+        'allocation_retries': allocation_retries,
     }

@@ -244,7 +244,7 @@ def generate(g):
             value = max(base_value * r.uniform(0.8, 1.2) + noise, 500)
             rate_indices.append({
                 "index_name": index,
-                "index_date": index_date.date(),
+                "index_date": index_date,
                 "index_value": round(value, 1),
                 "week_change_pct": round(r.uniform(-5, 5), 1),
                 "year_change_pct": round(r.uniform(-20, 30), 1),
