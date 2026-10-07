@@ -496,9 +496,9 @@ def generate(g):
     for p in pos_rows:
         k = (p["sku"], p["site_id"], p["location_id"])
         if k == ("SKU-104018", "DC5", ""):
-            p["reorder_point"], p["safety_stock"] = 1733, 180
+            p["reorder_point"], p["safety_stock"] = 12639, 1949
         if k == ("SKU-103234", "DC2", ""):
-            p["reorder_point"], p["safety_stock"] = 4944, 560
+            p["reorder_point"], p["safety_stock"] = 34772, 5131
 
     # (3b) SKU-103227 (container CONT-000078 story): ST186 is the clear first store to run out, 3.9 weeks of cover.
     pos_rows = [p for p in pos_rows if not (p["sku"] == "SKU-103227" and p["site_id"] == "ST186")]
