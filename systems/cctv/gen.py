@@ -30,28 +30,30 @@ def generate(g):
     incident_logs = []
 
     # Generate events across all stores and DCs
-    all_sites = stores + dcs
+    story_sites = {"ST150", "ST159", "ST165", "ST181", "ST183"}
+    all_sites = [s for s in stores + dcs if s["site_id"] not in story_sites]
+    reviewers = ["EMP-00101", "EMP-00102", "EMP-00103", "EMP-00104"]
 
     # ~200-400 exception events over 180 days
-    for i in range(rng.randint(200, 400)):
+    for i in range(rng.randint(120, 160)):
         site = rng.choice(all_sites)
         days_ago = rng.randint(0, 180)
-        occurred_at = g.days_ago(days_ago)
+        occurred_at = datetime.combine(g.days_ago(days_ago), datetime.min.time()) + timedelta(hours=rng.randint(7, 21), minutes=rng.randint(0, 59))
         event_type = rng.choice(event_types)
-        severity = rng.choice(severities[1:] if rng.random() < 0.3 else severities)  # Skew towards medium/high
+        severity = rng.choices(severities, weights=[50, 38, 12, 0])[0]
 
         # Camera IDs: CAM-<site>-<number>
         camera_id = f"CAM-{site['site_id']}-{rng.randint(1, 50):03d}"
 
         # Get employees at this site
         site_emps = store_employees.get(site["site_id"]) or dc_employees.get(site["site_id"]) or []
-        employee_id = rng.choice(site_emps)["employee_id"] if site_emps and rng.random() < 0.4 else None
+        employee_id = rng.choice(site_emps)["employee_id"] if site_emps and rng.random() < 0.15 else None
 
         # Reviewer might be security/loss prevention staff
-        reviewed_by = rng.choice([e["employee_id"] for e in employees if "loss" in e.get("role", "").lower() or "security" in e.get("role", "").lower()] or [e["employee_id"] for e in employees[:50]])
-        reviewed_at = occurred_at + timedelta(hours=rng.randint(1, 168))  # Within a week
+        reviewed_by = rng.choice(reviewers)
+        reviewed_at = min(occurred_at + timedelta(hours=rng.randint(1, 168)), datetime.combine(as_of, datetime.min.time()))
 
-        event_id = f"EXC-{900001 + i:06d}"
+        event_id = f"EXC-{100001 + i:06d}"
 
         descriptions = {
             "person_in_restricted_area": f"Unauthorized person detected in {rng.choice(['loading dock', 'staff room', 'security office', 'cash office', 'warehouse area'])}",
@@ -76,17 +78,17 @@ def generate(g):
             "employee_id": employee_id,
             "reviewed_by": reviewed_by,
             "reviewed_at": reviewed_at,
-            "status": rng.choice(statuses),
+            "status": rng.choice(["resolved", "resolved", "reviewed"]),
             "updated_at": reviewed_at,
         })
 
     # Generate incident logs - subset of exception events that escalated to incidents
-    for i in range(rng.randint(50, 100)):
+    for i in range(rng.randint(25, 40)):
         site = rng.choice(all_sites)
         days_ago = rng.randint(0, 180)
-        occurred_at = g.days_ago(days_ago)
+        occurred_at = datetime.combine(g.days_ago(days_ago), datetime.min.time()) + timedelta(hours=rng.randint(7, 21), minutes=rng.randint(0, 59))
         incident_type = rng.choice(incident_types)
-        severity = rng.choice(severities)
+        severity = rng.choices(severities, weights=[50, 38, 12, 0])[0]
 
         # Link to some exception events (comma-separated)
         num_related = rng.randint(0, 3)
@@ -94,17 +96,18 @@ def generate(g):
         related_event_ids = ",".join(related_events) if related_events else None
 
         # Assign to loss prevention or security staff
-        assigned_to = rng.choice([e["employee_id"] for e in employees if "loss" in e.get("role", "").lower() or "security" in e.get("role", "").lower()] or [e["employee_id"] for e in employees[:100]])
+        assigned_to = rng.choice(reviewers)
 
-        status = rng.choice(incident_statuses)
+        status = rng.choice(["closed", "closed", "dismissed", "investigating"])
         suspected_loss_gbp = None
         if incident_type in ["internal_theft", "external_theft", "unauthorized_refund"]:
-            suspected_loss_gbp = rng.randint(50, 5000)
+            suspected_loss_gbp = rng.randint(50, 600)
 
         created_at = occurred_at + timedelta(minutes=rng.randint(5, 60))
-        closed_at = created_at + timedelta(days=rng.randint(1, 30)) if status in ["closed", "dismissed"] else None
+        now = datetime.combine(as_of, datetime.min.time())
+        closed_at = min(created_at + timedelta(days=rng.randint(1, 30)), now) if status in ["closed", "dismissed"] else None
 
-        incident_id = f"INC-{900001 + i:06d}"
+        incident_id = f"INC-{100001 + i:06d}"
 
         descriptions = {
             "internal_theft": f"Suspected internal theft at {site['name']}: {rng.choice(['inventory discrepancy', 'stock shortage', 'till variance', 'missing merchandise'])}",
@@ -132,7 +135,7 @@ def generate(g):
             "suspected_loss_gbp": suspected_loss_gbp,
             "created_at": created_at,
             "closed_at": closed_at,
-            "updated_at": closed_at or created_at + timedelta(days=rng.randint(0, 10)),
+            "updated_at": closed_at or min(created_at + timedelta(days=rng.randint(0, 10)), now),
         })
 
     return {

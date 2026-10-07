@@ -42,43 +42,49 @@ tables:
 
 tools:
   - name: get_cctv_exception_events_for_store
-    desc: "CCTV exception events for a store over a period: unusual activity, tampering, access violations. Newest first."
+    desc: "CCTV exception events (tampering, unusual activity, scanner faults, access violations) for a store or a whole region over a period, newest first. Filter by type, minimum severity or employee."
     kind: sql
     args:
-      site_id: {required: true}
+      site_id: {desc: "Store or DC, e.g. ST150 (default: all sites; then use region)"}
+      region: {type: str, desc: "Region of the sites, e.g. UK North (default all)"}
       date_from: {type: date, default: "-30d", desc: "Events on or after"}
       event_type: {type: enum, values: [person_in_restricted_area, unusual_activity, tailgating, tampering, unauthorized_access, scanning_error, system_fault], desc: "Filter by event type (default all)"}
-      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity (default all)"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity: this level and above (default all)"}
+      employee_id: {}
     sql: |
-      SELECT event_id, site_id, occurred_at, event_type, severity, description,
-             camera_id, employee_id, reviewed_by, reviewed_at, status
-      FROM cctv_exception_events
-      WHERE site_id = $site_id
-        AND occurred_at >= CAST($date_from AS DATE)
-        AND ($event_type IS NULL OR event_type = $event_type)
-        AND ($severity IS NULL OR severity IN ('critical', 'high', 'medium', 'low'))
-      ORDER BY occurred_at DESC
+      SELECT e.event_id, e.site_id, e.occurred_at, e.event_type, e.severity, e.description,
+             e.camera_id, e.employee_id, e.reviewed_by, e.reviewed_at, e.status
+      FROM cctv_exception_events e JOIN master.sites s USING (site_id)
+      WHERE ($site_id IS NULL OR e.site_id = $site_id)
+        AND ($region IS NULL OR lower(s.region) = lower($region))
+        AND e.occurred_at >= CAST($date_from AS DATE)
+        AND ($event_type IS NULL OR e.event_type = $event_type)
+        AND ($severity IS NULL OR list_position(['low', 'medium', 'high', 'critical'], e.severity) >= list_position(['low', 'medium', 'high', 'critical'], $severity))
+        AND ($employee_id IS NULL OR e.employee_id = $employee_id)
+      ORDER BY e.occurred_at DESC
     limit: 50
-    example: {site_id: "ST214", severity: "high"}
+    example: {site_id: "ST150", severity: "high"}
 
   - name: search_cctv_incident_logs
-    desc: "Search incident logs for pattern analysis: internal/external theft, process errors, equipment faults. Newest first."
+    desc: "Incident log entries (internal/external theft, process errors, voids, equipment faults) for a site or a whole region, newest first. Use for pattern analysis; filter by type, minimum severity, status."
     kind: sql
     args:
-      site_id: {desc: "Store or DC (default all)"}
+      site_id: {desc: "Store or DC, e.g. ST150 (default all)"}
+      region: {type: str, desc: "Region of the sites, e.g. UK North (default all)"}
       date_from: {type: date, default: "-180d", desc: "Incidents on or after"}
       incident_type: {type: enum, values: [internal_theft, external_theft, process_error, system_fault, stock_discrepancy, pos_void, unauthorized_refund, equipment_failure], desc: "Filter by incident type (default all)"}
-      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity (default all)"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity: this level and above (default all)"}
       status: {type: enum, values: [open, investigating, evidence_collected, closed, dismissed], desc: "Filter by status (default all)"}
     sql: |
-      SELECT incident_id, site_id, occurred_at, incident_type, severity, description,
-             related_event_ids, assigned_to, status, suspected_loss_gbp, created_at, closed_at
-      FROM incident_logs
-      WHERE ($site_id IS NULL OR site_id = $site_id)
-        AND occurred_at >= CAST($date_from AS DATE)
-        AND ($incident_type IS NULL OR incident_type = $incident_type)
-        AND ($severity IS NULL OR severity IN ('critical', 'high', 'medium', 'low'))
-        AND ($status IS NULL OR status = $status)
-      ORDER BY occurred_at DESC
+      SELECT i.incident_id, i.site_id, i.occurred_at, i.incident_type, i.severity, i.description,
+             i.related_event_ids, i.assigned_to, i.status, i.suspected_loss_gbp, i.created_at, i.closed_at
+      FROM incident_logs i JOIN master.sites s USING (site_id)
+      WHERE ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($region IS NULL OR lower(s.region) = lower($region))
+        AND i.occurred_at >= CAST($date_from AS DATE)
+        AND ($incident_type IS NULL OR i.incident_type = $incident_type)
+        AND ($severity IS NULL OR list_position(['low', 'medium', 'high', 'critical'], i.severity) >= list_position(['low', 'medium', 'high', 'critical'], $severity))
+        AND ($status IS NULL OR i.status = $status)
+      ORDER BY i.occurred_at DESC
     limit: 100
-    example: {severity: "high"}
+    example: {site_id: "ST150", severity: "high"}
