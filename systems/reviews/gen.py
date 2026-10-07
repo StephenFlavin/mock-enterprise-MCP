@@ -451,6 +451,10 @@ def generate(g):
         ("CMPD-003-K01", "Carrefour", "Small appliances", "Bouilloire verre 1.7L", 59.99, "active", "1.7L glass; auto shut-off", "K-1700", 3.9, 420),
         ("CMPD-004-K01", "Currys", "Small appliances", "Currys Pro Glass Kettle 1.7L", 74.99, "active", "1.7L glass; keep-warm", "K-1700", 4.3, 1760),
         ("CMPD-005-K01", "Argos", "Small appliances", "Argos 1.7L Glass Kettle", 64.99, "active", "1.7L glass; rapid boil", "K-1700", 4.0, 3050),
+        ("CMPD-005-T01", "Argos", "Small appliances", "Argos 4-Slice Toaster", 39.99, "active", "4 slices; 6 browning levels", "SKU-101309", 3.8, 2640),
+        ("CMPD-004-T01", "Currys", "Small appliances", "Currys Essentials 4-Slice Toaster", 44.99, "active", "4 slices; defrost and reheat", "SKU-101309", 4.0, 1130),
+        ("CMPD-001-T01", "HomeShop Direct", "Small appliances", "HomeShop 4-Slice Toaster", 49.99, "active", "4 slices; wide slots", "SKU-101309", 3.9, 970),
+        ("CMPD-002-T01", "John Lewis", "Small appliances", "John Lewis 4-Slice Toaster", 69.99, "active", "4 slices; stainless steel; variable browning", "SKU-101309", 4.5, 760),
     ]
     LB_NEG = [("leaking", "Leaked all over my bag in the first week"), ("leaking", "Lid does not seal, soup leaked everywhere"),
               ("leaking", "Not leakproof despite the claims"), ("leaking", "Liner seam leaks when it tips"), ("leaking", "Soup leaked out of the lid in my rucksack"),
