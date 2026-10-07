@@ -2,24 +2,23 @@
 
 
 def get_programme_resource_plan(ctx, programme_name):
-    """Get resource plan and availability by workstream."""
-    # Get workstreams for the programme
-    workstreams = ctx.q("""
-        SELECT DISTINCT name, object_type, status, records_completed, records_total
+    """Resource plan and availability by workstream: FTE needed vs assigned, with the gap."""
+    rows = ctx.q("""
+        SELECT workstream_id, name AS workstream, object_type, owner_id AS lead_id, status,
+               fte_required, fte_available,
+               round(coalesce(fte_required, 0) - coalesce(fte_available, 0), 1) AS fte_gap,
+               blocker
         FROM migration_workstreams
-        WHERE programme_name = $prog
-        ORDER BY name
+        WHERE programme_name = $prog AND status != 'completed'
+        ORDER BY fte_gap DESC, workstream_id
     """, prog=programme_name)
-
-    # Build resource plan summary
-    return {
-        "programme_name": programme_name,
-        "workstreams": workstreams,
-        "total_workstreams": len(workstreams),
-        "resource_summary": f"Resource plan for {programme_name}: {len(workstreams)} workstreams active",
-    }
-
-
+    total_req = round(sum(r["fte_required"] or 0 for r in rows), 1)
+    total_avail = round(sum(r["fte_available"] or 0 for r in rows), 1)
+    for r in rows:
+        r["programme_fte_required"] = total_req
+        r["programme_fte_available"] = total_avail
+        r["programme_fte_gap"] = round(total_req - total_avail, 1)
+    return rows
 
 
 def run_programme_scenario(ctx, programme_name, scenario_type, parameter):

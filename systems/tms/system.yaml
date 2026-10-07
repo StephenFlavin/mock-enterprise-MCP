@@ -402,7 +402,8 @@ tools:
     from: postcodes
     filters:
       postcode: {op: like, desc: "Postcode or prefix, e.g. M1"}
-      next_day_available: {default: true, desc: "Filter for next-day available"}
+      next_day_available: {desc: "true for areas the carrier covers next-day, false for areas it does not; blank for both"}
+      carrier_id: {desc: "Parcel carrier id, blank for all carriers"}
       region: {desc: "Region, blank for all"}
     columns: [postcode, region, carrier_id, next_day_available, next_day_cost_gbp]
     order: postcode
@@ -694,6 +695,8 @@ tools:
     args:
       carrier_id: {desc: "Carrier id, blank for all"}
       incident_id: {desc: "Incident id, blank for all"}
+      lanes: {type: list, desc: "Lane codes the disruption hit, e.g. DC1-ST214,DC1-ST215; blank for all"}
+      incident_from: {type: date, desc: "Only incidents on or after this date, e.g. -30d"}
     sql: |
       SELECT ci.incident_id, ci.carrier_id, c.name AS carrier,
              ci.incident_type, ci.lane, ci.incident_date,
@@ -706,8 +709,11 @@ tools:
       LEFT JOIN shipments s ON s.shipment_id = ci.shipment_id
       WHERE ($incident_id IS NULL OR ci.incident_id = $incident_id)
         AND ($carrier_id IS NULL OR ci.carrier_id = $carrier_id)
+        AND ($lanes IS NULL OR list_contains($lanes, ci.lane))
+        AND ($incident_from IS NULL OR ci.incident_date >= CAST($incident_from AS DATE))
       GROUP BY ci.incident_id, ci.carrier_id, c.name, ci.incident_type,
                ci.lane, ci.incident_date, ci.description
+      ORDER BY extra_cost_gbp DESC
     limit: 50
     example: {}
 
@@ -972,12 +978,16 @@ tools:
     example: {exit_carrier_ids: "CAR-003"}
 
   - name: get_shipment_volumes_by_lane
-    desc: "Shipment volumes by lane and carrier over a period."
+    desc: "Shipment volumes, pallets and freight cost by lane and carrier over a period. Set group_by=carrier for one total row per carrier."
     kind: sql
     args:
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      origin_site_id: {desc: "Origin site or port id, e.g. DC1; blank for all"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      group_by: {type: enum, values: [lane, carrier], default: lane, desc: "lane = one row per lane and carrier; carrier = one total row per carrier"}
     sql: |
-      SELECT s.lane, s.carrier_id, c.name AS carrier_name,
+      SELECT CASE WHEN $group_by = 'carrier' THEN 'all lanes' ELSE s.lane END AS lane, s.carrier_id, c.name AS carrier_name,
              COUNT(*) AS shipments,
              SUM(s.units) AS total_units,
              SUM(s.pallets) AS total_pallets,
@@ -985,7 +995,10 @@ tools:
       FROM shipments s
       LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
       WHERE s.actual_departure >= CAST($period_start AS DATE)
-      GROUP BY s.lane, s.carrier_id, c.name
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+      GROUP BY 1, s.carrier_id, c.name
       ORDER BY total_cost_gbp DESC
     limit: 200
     example: {}
@@ -1211,18 +1224,21 @@ tools:
     filters:
       order_id: {desc: "Order id, blank for all"}
       status: {desc: "Shipment status, blank for all"}
-    columns: [shipment_id, order_id, carrier_id, freight_cost_gbp, units, fill_rate_pct]
+    columns: [shipment_id, order_id, carrier_id, mode, status, freight_cost_gbp, units, fill_rate_pct, is_split]
     order: freight_cost_gbp DESC
     limit: 1000
     example: {}
 
   - name: get_transport_spend_by_lane
-    desc: "Transport cost and volume by lane and mode."
+    desc: "Transport cost and volume by lane and mode. Set group_by=mode for one total row per mode."
     kind: sql
     args:
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
+      origin_site_id: {desc: "Origin site or port id, e.g. DC1; blank for all"}
+      group_by: {type: enum, values: [lane, mode], default: lane, desc: "lane = one row per lane and mode; mode = one total row per mode"}
     sql: |
-      SELECT s.lane, s.mode,
+      SELECT CASE WHEN $group_by = 'mode' THEN 'all lanes' ELSE s.lane END AS lane, s.mode,
              COUNT(*) AS shipments,
              SUM(s.units) AS units,
              SUM(s.pallets) AS pallets,
@@ -1230,7 +1246,9 @@ tools:
              ROUND(SUM(s.freight_cost_gbp) / NULLIF(SUM(s.pallets), 0), 2) AS cost_per_pallet_gbp
       FROM shipments s
       WHERE s.actual_departure >= CAST($period_start AS DATE)
-      GROUP BY s.lane, s.mode
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+      GROUP BY 1, s.mode
       ORDER BY cost_gbp DESC
     limit: 200
     example: {}
@@ -1360,17 +1378,24 @@ tools:
     example: {}
 
   - name: get_shipments_by_lane_and_mode
-    desc: "Shipments by lane and mode to analyze multi-mode routing."
+    desc: "Shipments, units, weight and freight cost by lane and mode, to analyse multi-mode routing. Use origin_region=Asia for the Asia-Europe lanes and period_start/period_end to compare two periods."
     kind: sql
     args:
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      period_end: {type: date, desc: "Analysis period end; blank for up to today"}
+      origin_region: {type: enum, values: [Asia, Europe, Americas], desc: "Region of the origin port, e.g. Asia for Asia-Europe lanes; blank for all lanes"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
     sql: |
       SELECT s.lane, s.mode,
              COUNT(*) AS shipments_count,
              SUM(s.units) AS units,
+             ROUND(SUM(s.weight_kg) / 1000, 1) AS tonnes,
              ROUND(SUM(s.freight_cost_gbp), 2) AS freight_cost
       FROM shipments s
       WHERE s.actual_departure >= CAST($period_start AS DATE)
+        AND ($period_end IS NULL OR s.actual_departure <= CAST($period_end AS DATE))
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($origin_region IS NULL OR s.origin_site_id IN (SELECT port_code FROM master.ports WHERE region = $origin_region))
       GROUP BY s.lane, s.mode
       ORDER BY freight_cost DESC
     limit: 200

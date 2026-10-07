@@ -104,7 +104,7 @@ def generate(g):
         result["raid_log_items"].append({
             "raid_id": raid_id,
             "project_id": g.pick(project_ids) if g.rng.random() > 0.3 else None,
-            "item_type": g.pick(["risk", "action", "issue", "dependency"]),
+            "item_type": g.pick(["risk", "action", "issue"]),  # dependencies are hand-written in seed/raid_log_items.csv
             "title": g.fake.sentence(),
             "owner_id": pick_employee(),
             "status": g.pick(["open", "in_progress", "on_hold"]),
@@ -144,58 +144,97 @@ def generate(g):
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
-    # Generate capex proposals (6-8)
-    for i in range(1, 7):
-        cap_id = f"CAP-{i:06d}"
-        cap_title, cap_site = [
-            ("Venlo DC racking extension", "DC4"), ("Store refit programme, northern region", None),
-            ("Leeds DC returns processing upgrade", "DC3"), ("Columbus DC dock door expansion", "DC5"),
-            ("E-commerce checkout and payments replatform", None), ("Daventry DC mezzanine pick floor", "DC2"),
-        ][i - 1]
+    # Capital queue for the CFO's "next GBP 50m" question: six candidate options, all submitted.
+    # (CAP-900001, the Northampton automation case, is a draft in seed/capex_proposals.csv.)
+    proposals = [
+        ("New regional DC in the North West", None, 22000000, 6.2, 11.4, 4100000, "high",
+         "Adds 400k sq ft of regional capacity to relieve Northampton and Daventry",
+         "Volume growth 6% a year; 15-month build; land secured at current price",
+         "NPV falls to about GBP 0.4m and payback stretches to 8 years under a 10% revenue miss"),
+        ("Store refit programme, 60 stores", None, 9500000, 4.1, 17.2, 5200000, "low",
+         "Refit 60 high-street and retail-park stores to the new format",
+         "Like-for-like sales uplift of 6% in refitted stores; 4-week closure per store",
+         "NPV falls to about GBP 3.1m under a 10% revenue miss; payback 5.0 years"),
+        ("E-commerce platform and fulfilment capacity", None, 8000000, 3.4, 21.5, 7100000, "medium",
+         "Replace the checkout and payments platform and add pick capacity for online orders",
+         "Online share of sales reaches 28% in two years; conversion up 0.4 points",
+         "NPV falls to about GBP 4.6m under a 10% revenue miss; payback 4.2 years"),
+        ("Nearshoring: Turkey and Portugal supplier hubs", None, 7500000, 3.9, 16.8, 4400000, "medium",
+         "Move 15% of apparel and home volume to nearshore suppliers to cut lead time by 5 weeks",
+         "Landed cost within 3% of Far East; 20 suppliers qualified in 18 months",
+         "NPV falls to about GBP 2.8m under a 10% revenue miss; payback 4.8 years"),
+        ("New markets: Poland and Czechia launch", None, 6500000, 5.4, 12.6, 1900000, "high",
+         "Launch the home range online and in 12 concession stores in Poland and Czechia",
+         "Brand awareness builds slowly; 35% gross margin after duties; no local entity needed in year one",
+         "NPV turns negative at about GBP -0.6m under a 10% revenue miss; payback 7.1 years"),
+        ("Network automation: Daventry and Leeds DCs", None, 11000000, 4.4, 14.9, 3600000, "medium",
+         "Goods-to-person picking at Daventry and Leeds to cut labour cost per unit",
+         "Labour saving of GBP 2.4m a year from month 15; 12-month build",
+         "NPV falls to about GBP 2.0m under a 10% revenue miss; payback 5.3 years"),
+    ]
+    for i, (cap_title, cap_site, capex, payback, irr, npv, risk, case, assumptions, sens) in enumerate(proposals, 1):
         result["capex_proposals"].append({
-            "proposal_id": cap_id,
+            "proposal_id": f"CAP-{i:06d}",
             "title": cap_title,
             "sponsor_id": pick_employee(),
-            "status": ["submitted", "under_review", "submitted", "approved", "draft", "submitted"][i - 1],
-            "capex_gbp": round(g.rng.uniform(500000, 15000000), 0),
-            "payback_years": round(g.rng.uniform(1.5, 5.5), 1),
-            "irr_pct": round(g.rng.uniform(8, 25), 1),
-            "npv_gbp": round(g.rng.uniform(500000, 5000000), 0),
-            "risk_rating": g.pick(["low", "medium", "high"]),
+            "status": "submitted",
+            "capex_gbp": capex,
+            "payback_years": payback,
+            "irr_pct": irr,
+            "npv_gbp": npv,
+            "risk_rating": risk,
             "site_id": cap_site,
-            "business_case": g.fake.sentence(),
-            "key_assumptions": g.fake.sentence(),
-            "sensitivity_10pct": f"NPV falls to £{round(g.rng.uniform(200000, 2000000), -3):,.0f} under a 10% revenue miss",
-            "submission_date": (g.as_of - timedelta(days=g.rng.randint(0, 30))) if g.rng.random() > 0.5 else None,
+            "business_case": case,
+            "key_assumptions": assumptions,
+            "sensitivity_10pct": sens,
+            "submission_date": g.as_of - timedelta(days=g.rng.randint(3, 25)),
             "decision_date": None,
-            "description": g.fake.sentence(),
+            "description": case,
             "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
-    # Generate capex projects (4-6)
+    # FY27 capex tracker: seven active projects totalling GBP 34.0m (the COO's envelope question).
+    # Each has a delivery project (PRJ-9000xx in seed/projects.csv) whose RAID items give its delivery risk.
     capex_project_ids = []
-    for i in range(1, 5):
+    capex_projects = [
+        ("Daventry DC mezzanine pick floor", "DC2", 5500000, 3.4, 18.2, "PRJ-900031",
+         "Adds 90k sq ft of pick floor; peak readiness for e-commerce orders", 2.9),
+        ("Leeds DC returns processing upgrade", "DC3", 4200000, 2.9, 21.0, "PRJ-900032",
+         "Doubles returns throughput before peak; strongest return in the portfolio", 1.1),
+        ("Venlo DC racking extension", "DC4", 3000000, 3.8, 16.5, "PRJ-900033",
+         "Adds 6,000 pallet positions for EU peak stock", 0.4),
+        ("Columbus DC dock door expansion", "DC5", 2800000, 5.2, 12.1, "PRJ-900034",
+         "Six extra dock doors for US inbound; modest return", 0.0),
+        ("Northampton yard and gatehouse reconfiguration", "DC1", 3500000, 6.6, 9.4, "PRJ-900035",
+         "Reconfigure the yard and gatehouse to cut trailer queues; weakest business case, payback beyond six years", 0.0),
+        ("Daventry sortation conveyor upgrade", "DC2", 7000000, 4.1, 15.3, "PRJ-900036",
+         "Replace the end-of-life sorter; needed for peak capacity", 3.8),
+        ("Northampton WMS and RF scanner replacement", "DC1", 8000000, 4.5, 14.0, "PRJ-900037",
+         "Replace RF scanners and upgrade the WMS client; can be phased by zone", 0.0),
+    ]
+    for i, (cxp_title, cxp_site, capex, payback, irr, delivery, case, spent) in enumerate(capex_projects, 1):
         cxp_id = f"CXP-{i:06d}"
         capex_project_ids.append(cxp_id)
-        start_date = g.as_of - timedelta(days=g.rng.randint(30, 60))
-        end_date = g.as_of + timedelta(days=g.rng.randint(90, 270))
+        start_date = g.as_of + timedelta(days=g.rng.randint(14, 70))
+        end_date = start_date + timedelta(days=g.rng.randint(180, 300))
         result["capex_projects"].append({
             "capex_project_id": cxp_id,
-            "title": g.fake.sentence(),
+            "title": cxp_title,
             "sponsor_id": pick_employee(),
-            "status": g.pick(["planned", "active", "on_hold"]),
-            "capex_gbp": round(g.rng.uniform(500000, 12000000), 0),
-            "actual_spend_gbp": round(g.rng.uniform(100000, 2000000), 0),
+            "status": "active",
+            "capex_gbp": capex,
+            "actual_spend_gbp": round(spent * 100000, 0),
             "planned_start": start_date,
             "planned_end": end_date,
-            "forecast_end": (end_date + timedelta(days=g.rng.randint(0, 210))) if g.rng.random() > 0.7 else end_date,
-            "payback_years": round(g.rng.uniform(2, 5), 1),
-            "irr_pct": round(g.rng.uniform(10, 22), 1),
-            "business_case": g.fake.sentence(),
+            "forecast_end": end_date,
+            "payback_years": payback,
+            "irr_pct": irr,
+            "delivery_project_id": delivery,
+            "business_case": f"FY27 capex tracker line {i}",
             "phasing": None,
-            "site_id": g.pick(dc_sites)["site_id"],
-            "description": g.fake.sentence(),
+            "site_id": cxp_site,
+            "description": case,
             "created_at": g.as_of - timedelta(days=g.rng.randint(60, 120)),
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
@@ -208,7 +247,7 @@ def generate(g):
         result["market_entry_projects"].append({
             "market_project_id": mep_id,
             "title": g.fake.sentence(),
-            "countries": g.pick(["PL;CZ", "DE;AT", "FR;BE", "ES;PT"]),
+            "countries": g.pick(["DE;AT", "FR;BE", "ES;PT"]),
             "owner_id": pick_employee(),
             "status": g.pick(["planning", "approved"]),
             "scope": g.pick(["Home range", "Fashion", "Gifts"]),
@@ -262,7 +301,7 @@ def generate(g):
         prm_id = f"PRM-{i:06d}"
         result["programme_milestones"].append({
             "milestone_id": prm_id,
-            "programme_name": g.pick(["ERP", "Automation", "DC3", "Digital"]),
+            "programme_name": g.pick(["Automation", "DC3", "Digital"]),  # ERP milestones are in seed/
             "title": g.fake.sentence(),
             "sequence": i,
             "due_date": (g.as_of + timedelta(days=g.rng.randint(30, 300))),
@@ -293,19 +332,32 @@ def generate(g):
                 "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
 
-    # Generate automation options for each DC
-    for i, site in enumerate(dc_sites[:4]):
-        for j in range(1, 3):
+    # Automation options per DC (what could be live before peak, and what could not).
+    automation = {
+        "DC1": [("Pick-to-light zone for fast movers", "Pick-to-light on the 2,000 fastest lines; no building work", 900000, 10, 2.1, 430000),
+                ("Conveyor and sortation upgrade", "New sorter induction and lane extension for outbound parcels", 1800000, 14, 2.8, 640000),
+                ("Shuttle goods-to-person automation", "Automated shuttle storage and goods-to-person picking; the GBP 12m capex case", 12000000, 52, 4.0, 3000000)],
+        "DC2": [("Goods-to-person pick stations", "Six pick stations fed by the existing conveyor", 4500000, 30, 3.6, 1250000),
+                ("Pack-bench automation", "Automated carton erecting and labelling at pack benches", 1100000, 12, 2.4, 460000)],
+        "DC3": [("Returns sortation automation", "Automated returns induction and sortation", 3200000, 24, 3.3, 970000),
+                ("Pallet shuttle racking", "Shuttle racking for slow-moving pallet stock", 2100000, 20, 4.2, 500000)],
+        "DC4": [("Pick-to-light zone", "Pick-to-light for EU fast movers", 700000, 9, 2.5, 280000),
+                ("Autonomous mobile robots for picking", "Collaborative picking robots for the e-commerce zone", 2600000, 26, 3.9, 670000)],
+        "DC5": [("Dock scheduling and yard automation", "Automated gate and dock appointment system", 600000, 11, 3.0, 200000),
+                ("Conveyor extension", "Extend outbound conveyor to two new dock doors", 1500000, 16, 3.5, 430000)],
+    }
+    for site_id, options in automation.items():
+        for aut_title, aut_desc, capex, lead, payback, saving in options:
             aut_id = f"AUT-{len(result['automation_options']) + 1:06d}"
             result["automation_options"].append({
                 "option_id": aut_id,
-                "site_id": site["site_id"],
-                "title": g.pick(["Shuttle automation", "Conveyor upgrade", "Sorting automation"]),
-                "description": g.fake.sentence(),
-                "capex_gbp": round(g.rng.uniform(500000, 8000000), 0),
-                "lead_time_weeks": g.rng.randint(12, 52),
-                "payback_years": round(g.rng.uniform(2, 5), 1),
-                "annual_saving_gbp": round(g.rng.uniform(100000, 1500000), 0),
+                "site_id": site_id,
+                "title": aut_title,
+                "description": aut_desc,
+                "capex_gbp": capex,
+                "lead_time_weeks": lead,
+                "payback_years": payback,
+                "annual_saving_gbp": saving,
                 "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
                 "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
             })
@@ -315,7 +367,7 @@ def generate(g):
         dec_id = f"DEC-{i:06d}"
         result["steering_decisions"].append({
             "decision_id": dec_id,
-            "programme_name": g.pick(["ERP", "Automation"]),
+            "programme_name": g.pick(["Automation", "Digital"]),  # ERP decisions are in seed/
             "title": g.fake.sentence(),
             "status": g.pick(["pending", "approved", "deferred"]),
             "due_date": (g.as_of + timedelta(days=g.rng.randint(7, 30))),
@@ -353,7 +405,7 @@ def generate(g):
         mws_id = f"MWS-{i:06d}"
         result["migration_workstreams"].append({
             "workstream_id": mws_id,
-            "programme_name": g.pick(["ERP", "Automation"]),
+            "programme_name": "Automation",  # ERP migration workstreams are in seed/
             "name": g.fake.sentence(),
             "object_type": g.pick(["Customer master", "Supplier master", "Purchase orders", "Sales orders", "Inventory"]),
             "status": g.pick(["planning", "extracting", "transforming", "validating", "loading"]),

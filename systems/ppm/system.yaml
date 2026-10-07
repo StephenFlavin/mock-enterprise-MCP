@@ -66,6 +66,8 @@ tables:
       status: {type: enum, values: [open, in_progress, resolved, retired, on_hold], desc: Status}
       impact: {type: enum, values: [low, medium, high, critical], desc: Impact level}
       probability: {type: enum, values: [low, medium, high], desc: "Probability (risks only)"}
+      programme_name: {type: str, desc: "Programme the item belongs to, e.g. ERP; blank if project-level"}
+      depends_on_project_id: {type: str, desc: "For dependencies: the project that must deliver first, e.g. PRJ-900014"}
       mitigation_action: {type: str, desc: Mitigation or action}
       target_resolution_date: {type: date, desc: Target date}
       resolved_date: {type: date, desc: Date resolved}
@@ -148,6 +150,7 @@ tables:
       forecast_end: {type: date, desc: Forecast end date}
       payback_years: {type: float, desc: Expected payback in years}
       irr_pct: {type: float, desc: Expected IRR as percentage}
+      delivery_project_id: {type: str, desc: "Delivery project that tracks this capex project's risks, e.g. PRJ-900031"}
       business_case: {type: str, desc: Business case reference}
       phasing: {type: str, desc: "Phasing plan, if phased, e.g. Phase 1 Q1, Phase 2 Q2"}
       site_id: {type: str, desc: Site affected}
@@ -317,6 +320,7 @@ tables:
     cols:
       benefit_id: {type: str, desc: "Benefit id, e.g. BEN-000123"}
       initiative_id: {type: str, desc: "Initiative id (capex, CSI, etc)"}
+      programme_name: {type: str, desc: "Programme the benefit belongs to, e.g. ERP; blank if not programme-level"}
       title: {type: str, desc: Benefit title}
       benefit_type: {type: enum, values: [financial, operational, strategic], desc: Benefit type}
       planned_gbp: {type: float, desc: Planned benefit in GBP}
@@ -339,7 +343,13 @@ tables:
       status: {type: enum, values: [planning, extracting, transforming, validating, loading, completed], desc: Migration status}
       cycle: {type: int, desc: "Migration cycle number"}
       planned_date: {type: date, desc: Planned completion date}
+      forecast_date: {type: date, desc: Forecast completion date}
       actual_date: {type: date, desc: Actual completion date}
+      owner_id: {type: str, desc: Workstream lead employee id}
+      blocker: {type: text, desc: "What is blocking the workstream, if anything"}
+      blocker_owner_id: {type: str, desc: "Employee id who can clear the blocker"}
+      fte_required: {type: float, desc: FTE needed to hit the plan}
+      fte_available: {type: float, desc: FTE currently assigned}
       records_total: {type: int, desc: Total records to migrate}
       records_completed: {type: int, desc: Records completed}
       data_quality_pct: {type: int, desc: Data quality score"}
@@ -460,10 +470,10 @@ tools:
       title: {required: true}
       owner_id: {required: true, desc: "Employee id of owner"}
       impact: {type: enum, values: [low, medium, high, critical], default: medium}
-      probability: {type: enum, values: [low, medium, high]}
+      programme_name: {desc: "Programme the item belongs to, e.g. ERP"}
       target_resolution_date: {type: date}
       description: {}
-    example: {project_id: PRJ-000001, item_type: risk, title: "Supplier delay risk", owner_id: EMP-0042, impact: high, probability: medium, target_resolution_date: "+30d", description: "Component availability uncertain"}
+    example: {programme_name: ERP, item_type: issue, title: "Supplier master extract blocked", owner_id: EMP-00004, impact: high, target_resolution_date: "+30d", description: "Extract waiting on access to the legacy system"}
 
   - name: create_cost_saving_initiative
     desc: Adds a new initiative with owner and estimated saving to the tracker. Returns the new initiative.
@@ -496,7 +506,9 @@ tools:
       unit: {required: true, desc: "Unit of measurement"}
       target_date: {type: date, required: true}
       site_id: {}
-    example: {title: "Productivity Recovery", owner_id: "EMP-0001", target_metric: "labour productivity", current_value: 85, target_value: 100, unit: "units/hour", target_date: "+180d"}
+      team_members: {desc: "Named owners, comma-separated employee ids, e.g. EMP-00108,EMP-00109"}
+      description: {desc: "What the initiative will do"}
+    example: {title: "Productivity Recovery", owner_id: "EMP-00004", site_id: DC1, team_members: "EMP-00108,EMP-00109", target_metric: "labour productivity", current_value: 85, target_value: 100, unit: "units/hour", target_date: "+180d"}
 
   - name: create_pilot_project
     desc: Creates a pilot project with tasks, budget and pass-fail criteria for a material. Returns the new pilot.
@@ -603,7 +615,7 @@ tools:
     desc: Withdraws a proposal from the capital queue. Returns the old and new status.
     kind: update
     table: capex_proposals
-    set: {status: withdrawn}
+    set: {status: withdrawn, decision_date: "$as_of", updated_at: "$as_of"}
     args: {}
     example: {proposal_id: CAP-000001}
 
@@ -611,7 +623,7 @@ tools:
     desc: Cancels a capex project and releases its budget. Returns the old and new status.
     kind: update
     table: capex_projects
-    set: {status: cancelled}
+    set: {status: cancelled, updated_at: "$as_of"}
     args: {}
     example: {capex_project_id: "CXP-000001"}
 
@@ -660,7 +672,7 @@ tools:
     desc: Submits a funding request for an initiative for approval. Returns confirmation.
     kind: update
     table: cost_saving_initiatives
-    set: {status: active}
+    set: {status: active, status_reason: "Funding request submitted for approval", updated_at: "$as_of"}
     args: {}
     example: {initiative_id: "CSI-000001"}
 
@@ -707,11 +719,12 @@ tools:
     kind: select
     from: raid_log_items
     filters:
+      programme_name: {}
       item_type: {}
       status: {default: open}
       project_id: {}
-    columns: [raid_id, project_id, item_type, title, owner_id, status, impact, target_resolution_date, updated_at]
-    order: impact DESC, updated_at DESC
+    columns: [raid_id, programme_name, project_id, item_type, title, owner_id, status, impact, probability, target_resolution_date, mitigation_action, created_at, updated_at]
+    order: CASE impact WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, created_at
     limit: 50
     example: {status: open}
 
@@ -743,7 +756,7 @@ tools:
     filters:
       status: {default: pending}
       programme_name: {}
-    columns: [decision_id, programme_name, title, due_date, recommendation, owner_id]
+    columns: [decision_id, programme_name, title, due_date, options, recommendation, owner_id]
     order: due_date ASC
     limit: 30
     example: {status: pending}
@@ -755,8 +768,9 @@ tools:
       programme_name: {required: true}
       workstream_id: {}
     sql: |
-      SELECT workstream_id, programme_name, name AS workstream_name, object_type,
-             records_total, records_completed, data_quality_pct, issues_count, status, updated_at
+      SELECT workstream_id, programme_name, name AS workstream_name, object_type, owner_id,
+             records_total, records_completed, data_quality_pct, issues_count, status,
+             blocker, blocker_owner_id, updated_at
       FROM migration_workstreams
       WHERE programme_name = $programme_name
         AND ($workstream_id IS NULL OR workstream_id = $workstream_id)
@@ -793,8 +807,10 @@ tools:
       site_id: {}
       status: {default: active}
     sql: |
-      SELECT capex_project_id, title, sponsor_id, capex_gbp, payback_years, irr_pct,
-             actual_spend_gbp, planned_start, planned_end, forecast_end, status
+      SELECT capex_project_id, title, sponsor_id, site_id, capex_gbp, payback_years, irr_pct,
+             actual_spend_gbp, planned_start, planned_end, forecast_end, status,
+             delivery_project_id, business_case, description,
+             sum(capex_gbp) OVER () AS total_capex_gbp
       FROM capex_projects
       WHERE ($site_id IS NULL OR site_id = $site_id)
         AND status = $status
@@ -809,7 +825,7 @@ tools:
     filters:
       status: {default: submitted}
       risk_rating: {}
-    columns: [proposal_id, title, capex_gbp, payback_years, irr_pct, npv_gbp, risk_rating, status]
+    columns: [proposal_id, title, site_id, capex_gbp, payback_years, irr_pct, npv_gbp, risk_rating, key_assumptions, sensitivity_10pct, business_case, status]
     order: npv_gbp DESC
     limit: 20
     example: {status: submitted}
@@ -833,10 +849,12 @@ tools:
     kind: sql
     args:
       site_id: {required: true}
+      max_lead_time_weeks: {type: int, desc: "Only options that can be live within this many weeks"}
     sql: |
-      SELECT option_id, title, capex_gbp, lead_time_weeks, payback_years, annual_saving_gbp
+      SELECT option_id, site_id, title, description, capex_gbp, lead_time_weeks, payback_years, annual_saving_gbp
       FROM automation_options
       WHERE site_id = $site_id
+        AND ($max_lead_time_weeks IS NULL OR lead_time_weeks <= $max_lead_time_weeks)
       ORDER BY payback_years, lead_time_weeks
     limit: 10
     example: {site_id: DC1}
@@ -846,11 +864,14 @@ tools:
     kind: sql
     args:
       initiative_id: {}
+      programme_name: {}
     sql: |
-      SELECT benefit_id, initiative_id, title, benefit_type, planned_gbp, realized_gbp,
-             realization_date, forecast_date, status, owner_id
+      SELECT benefit_id, programme_name, initiative_id, title, benefit_type, planned_gbp, realized_gbp,
+             realization_date, forecast_date, status, owner_id,
+             sum(planned_gbp) OVER () AS total_planned_gbp, sum(realized_gbp) OVER () AS total_realized_gbp
       FROM benefits_tracking
-      WHERE $initiative_id IS NULL OR initiative_id = $initiative_id
+      WHERE ($initiative_id IS NULL OR initiative_id = $initiative_id)
+        AND ($programme_name IS NULL OR programme_name = $programme_name)
       ORDER BY planned_gbp DESC
     limit: 50
     example: {}
@@ -906,12 +927,14 @@ tools:
       programme_name: {required: true}
       cycle: {}
     sql: |
-      SELECT workstream_id, programme_name, name AS workstream_name, object_type, status, cycle,
-             records_total, records_completed, data_quality_pct, issues_count, actual_date
+      SELECT workstream_id, programme_name, name AS workstream_name, object_type, owner_id, status, cycle,
+             planned_date, forecast_date, actual_date,
+             CASE WHEN status = 'completed' THEN 0 ELSE greatest(date_diff('day', planned_date, forecast_date), 0) END AS days_behind,
+             records_total, records_completed, data_quality_pct, issues_count
       FROM migration_workstreams
       WHERE programme_name = $programme_name
         AND ($cycle IS NULL OR cycle = $cycle)
-      ORDER BY cycle, status
+      ORDER BY cycle, days_behind DESC, status
     limit: 30
     example: {programme_name: "ERP"}
 
@@ -942,9 +965,13 @@ tools:
     args:
       project_id: {required: true}
     sql: |
-      SELECT project_id, name, budget_gbp, actual_cost_gbp, start_date, end_date, owner_id, status
-      FROM projects
-      WHERE project_id = $project_id
+      SELECT p.project_id, p.name, p.status, p.owner_id, p.site_id, p.budget_gbp, p.actual_cost_gbp,
+             p.budget_gbp - p.actual_cost_gbp AS remaining_budget_gbp, p.start_date, p.end_date,
+             (SELECT string_agg(t.title || ' (' || t.assigned_to || ', due ' || CAST(t.due_date AS VARCHAR) || ')', '; ' ORDER BY t.due_date)
+                FROM project_tasks t WHERE t.project_id = p.project_id) AS resource_plan,
+             p.description
+      FROM projects p
+      WHERE p.project_id = $project_id
     limit: 1
     example: {project_id: PRJ-000001}
 
@@ -954,12 +981,17 @@ tools:
     args:
       project_id: {required: true}
     sql: |
-      SELECT r.raid_id, p.project_id, p.name, r.item_type, r.title, r.impact, r.status, r.owner_id
-      FROM raid_log_items r
-      JOIN projects p ON r.project_id = p.project_id
-      WHERE p.project_id = $project_id
-        AND r.status IN ('open', 'in_progress')
-      ORDER BY r.impact DESC, r.updated_at DESC
+      SELECT x.project_id, x.name, x.delivery_risk_rating, x.raid_id, x.item_type, x.title, x.impact, x.status, x.owner_id
+      FROM (
+        SELECT p.project_id, p.name, r.raid_id, r.item_type, r.title, r.impact, r.status, r.owner_id, r.updated_at,
+               CASE r.impact WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END AS score,
+               CASE max(CASE r.impact WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) OVER ()
+                    WHEN 0 THEN 'green' WHEN 1 THEN 'green' WHEN 2 THEN 'amber' ELSE 'red' END AS delivery_risk_rating
+        FROM projects p
+        LEFT JOIN raid_log_items r ON r.project_id = p.project_id AND r.status IN ('open', 'in_progress')
+        WHERE p.project_id = $project_id
+      ) x
+      ORDER BY x.score DESC, x.updated_at DESC
     limit: 30
     example: {project_id: PRJ-000001}
 
@@ -969,11 +1001,16 @@ tools:
     args:
       project_id: {}
     sql: |
-      SELECT raid_id, project_id, title, item_type, target_resolution_date, status
-      FROM raid_log_items
-      WHERE item_type = 'dependency'
-        AND ($project_id IS NULL OR project_id = $project_id)
-      ORDER BY target_resolution_date, status
+      SELECT r.raid_id, r.project_id, p.name AS project_name, r.depends_on_project_id, d.name AS depends_on_project_name,
+             r.title, r.impact, r.target_resolution_date, r.status,
+             count(*) OVER (PARTITION BY r.depends_on_project_id) AS projects_waiting_on_it
+      FROM raid_log_items r
+      LEFT JOIN projects p ON p.project_id = r.project_id
+      LEFT JOIN projects d ON d.project_id = r.depends_on_project_id
+      WHERE r.item_type = 'dependency'
+        AND r.status IN ('open', 'in_progress', 'on_hold')
+        AND ($project_id IS NULL OR r.project_id = $project_id OR r.depends_on_project_id = $project_id)
+      ORDER BY projects_waiting_on_it DESC, r.target_resolution_date, r.raid_id
     limit: 50
     example: {}
 
