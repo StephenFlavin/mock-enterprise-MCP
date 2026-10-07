@@ -72,15 +72,16 @@ def generate(g):
         caps.append({"factory_id": f["factory_id"], "capability": GENERIC_CAPABILITY[cat],
                      "line_capacity_units_season": int(round(monthly * 3 * r.uniform(0.25, 0.5), -3)), "notes": ""})
 
-    # Unrelated fibre and pack suppliers (never recycled polyester or the story pack materials)
+    # Unrelated cotton and pack suppliers (never polyester or the story pack materials)
     story_sup = _seed_keys("supplier_materials", "supplier_id")
     others = [s for s in g.master("suppliers") if s["supplier_id"] not in story_sup and s["status"] == "active"]
     mats = []
     for s in r.sample(others, 6):
-        mats.append({"supplier_id": s["supplier_id"], "material": "virgin polyester (filament yarn)",
-                     "material_class": "alternative_fibre", "recycled_content_pct": 0, "certification": "OEKO-TEX",
-                     "price_premium_vs_virgin_pct": 0, "lead_time_days": r.choice([21, 28, 35]),
-                     "available_capacity": r.choice([800, 1500, 3000]), "capacity_unit": "tonnes", "notes": ""})
+        mat, prem = r.choice([("organic cotton (GOTS)", 22.0), ("recycled cotton (post-industrial)", 24.0)])
+        mats.append({"supplier_id": s["supplier_id"], "material": mat,
+                     "material_class": "alternative_fibre", "recycled_content_pct": 50 if "recycled" in mat else 0,
+                     "certification": "GOTS", "price_premium_vs_virgin_pct": prem, "lead_time_days": r.choice([30, 45, 60]),
+                     "available_capacity": r.choice([200, 400, 800]), "capacity_unit": "tonnes", "notes": "Cotton, not a polyester substitute"})
     for s in r.sample([x for x in others if x["supplier_id"] not in {m["supplier_id"] for m in mats}], 5):
         mats.append({"supplier_id": s["supplier_id"], "material": r.choice(["polybag (LDPE)", "hanger", "tissue paper"]),
                      "material_class": "packaging", "recycled_content_pct": r.choice([0, 30, 50]), "certification": "",

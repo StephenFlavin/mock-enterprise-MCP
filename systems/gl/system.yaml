@@ -413,7 +413,7 @@ tables:
     cols:
       order_id:
         type: str
-        desc: Customer order
+        desc: Order id, e.g. ORD-2026-0100001
       entity_id:
         type: str
         desc: Legal entity
@@ -438,6 +438,9 @@ tables:
       je_id:
         type: str
         desc: Posted journal entry
+      shipment_count:
+        type: int
+        desc: Number of shipments the order was split into
   erp_stock:
     key:
     - sku
@@ -652,6 +655,155 @@ tables:
       note:
         type: text
         desc: What is pending and why
+  inventory_monthly:
+    key:
+    - site_id
+    - category
+    - month_end
+    cols:
+      site_id:
+        type: str
+        desc: DC the stock sits in, e.g. DC1
+      category:
+        type: str
+        desc: Product category, e.g. Outerwear
+      month_end:
+        type: date
+        desc: Month-end the balances are at
+      units_on_hand:
+        type: int
+        desc: Units on hand at month-end
+      gross_value_gbp:
+        type: float
+        desc: Gross inventory value at month-end
+      provision_gbp:
+        type: float
+        desc: Slow-moving and obsolete provision at month-end
+      volume_gbp:
+        type: float
+        desc: Value movement in the month from change in units
+      mix_gbp:
+        type: float
+        desc: Value movement in the month from change in product mix
+      cost_update_gbp:
+        type: float
+        desc: Value movement from standard cost updates
+      fx_gbp:
+        type: float
+        desc: Value movement from foreign exchange revaluation
+      adjustments_gbp:
+        type: float
+        desc: Value movement from stock count and valuation adjustments
+      shrink_gbp:
+        type: float
+        desc: Stock shrink written off in the month
+      written_off_gbp:
+        type: float
+        desc: Stock written off (damaged, expired, clearance) in the month
+      movement_note:
+        type: text
+        desc: Finance note on unusual items in the month
+  ledger_balances:
+    key:
+    - account_code
+    - period
+    cols:
+      account_code:
+        type: str
+        desc: Inventory ledger account, e.g. 1300
+      account_desc:
+        type: str
+        desc: Account name
+      period:
+        type: str
+        desc: Financial period, e.g. FY27-08
+      period_end:
+        type: date
+        desc: Last day of the period
+      opening_balance_gbp:
+        type: float
+        desc: Balance at start of period (credits negative)
+      movement_gbp:
+        type: float
+        desc: Net movement in the period
+      closing_balance_gbp:
+        type: float
+        desc: Balance at end of period (credits negative)
+  sourcing_margins:
+    key: margin_id
+    cols:
+      margin_id:
+        type: str
+        desc: Row id, e.g. SM-0001
+      sourcing_entity_id:
+        type: str
+        desc: Sourcing entity charging the fee, e.g. LE-HK
+      receiving_entity_id:
+        type: str
+        desc: Entity receiving the sourcing service, e.g. LE-UK
+      period:
+        type: str
+        desc: Financial quarter, e.g. FY27-Q1
+      period_end:
+        type: date
+        desc: Last day of the quarter
+      department:
+        type: str
+        desc: Product department sourced, e.g. Womenswear
+      cost_base_gbp:
+        type: float
+        desc: Sourcing entity operating cost base for the quarter
+      fee_charged_gbp:
+        type: float
+        desc: Fee or commission charged to the receiving entity
+      markup_pct:
+        type: float
+        desc: Mark-up on cost actually earned, percent
+      policy_markup_pct:
+        type: float
+        desc: Mark-up on cost required by group transfer pricing policy, percent
+  supplier_payments:
+    key: payment_id
+    cols:
+      payment_id:
+        type: str
+        desc: Payment id, e.g. PAY-000001
+      supplier_id:
+        type: str
+        desc: Supplier paid
+      po_id:
+        type: str
+        desc: Purchase order the invoice relates to
+      invoice_ref:
+        type: str
+        desc: Supplier invoice reference
+      invoice_date:
+        type: date
+        desc: Invoice date
+      due_date:
+        type: date
+        desc: Due date under the payment terms
+      paid_date:
+        type: date
+        desc: Date the payment left the bank, blank if unpaid
+      amount_gbp:
+        type: float
+        desc: Invoice amount in GBP
+      payment_terms_days:
+        type: int
+        desc: Payment terms in days
+      days_to_pay:
+        type: int
+        desc: Days from invoice date to payment
+      days_late:
+        type: int
+        desc: Days paid after the due date, negative if early
+      status:
+        type: enum
+        desc: Payment status
+        values:
+        - paid
+        - open
 tools:
 - name: create_journal_entry
   desc: Creates a draft, unposted journal entry with amount and debit and credit accounts. Returns the new journal with its id.
@@ -754,28 +906,47 @@ tools:
     account_code: '6210'
     owner_id: EMP-00087
 - name: create_inventory_adjustment_journal
-  desc: Posts a journal adjusting inventory valuation for an agreed reconciling difference. Returns the new journal.
+  desc: Creates a draft inventory adjustment journal for an agreed reconciling difference, with amount and accounts. Returns the new journal; submit it for approval separately.
   kind: insert
   table: journal_entries
   id_prefix: JE-
   defaults:
     status: draft
     je_type: inventory
+    total_credit_gbp: '{total_debit_gbp}'
+    recurring: false
+    pl_impact_gbp: 0
   args:
     entity_id:
       required: true
-      desc: Legal entity
+      desc: Legal entity that books the journal, e.g. LE-UK
     posting_date:
       required: true
       type: date
       desc: Date to post
     description:
       required: true
-      desc: Inventory adjustment description
+      desc: Inventory adjustment description, including any reference
+    total_debit_gbp:
+      required: true
+      type: float
+      desc: Adjustment amount in GBP (debits; credits are set equal)
+    debit_account:
+      required: true
+      desc: GL account code to debit, e.g. 5000
+    credit_account:
+      required: true
+      desc: GL account code to credit, e.g. 1300
+    created_by:
+      desc: Employee id of the preparer, e.g. EMP-00087
   example:
     entity_id: LE-UK
     posting_date: -7d
-    description: Inventory shrink adjustment for DC1 SKU-100007
+    description: Reverse duplicate goods receipt, DC3 SKU-100007
+    total_debit_gbp: 12500
+    debit_account: '5000'
+    credit_account: '1300'
+    created_by: EMP-00087
 - name: get_cost_centre_actuals
   desc: Monthly DC cost-centre actuals vs budget by cost category (labour, overtime, agency, damages, rework, energy, rent) with units shipped and cost per unit.
   kind: sql
@@ -827,11 +998,11 @@ tools:
   example:
     site_id: DC1
 - name: get_inventory_valuation_by_site
-  desc: Inventory valuation and provisions by site. Returns gross value, provisions and net value.
+  desc: 'Inventory valuation by DC: gross value, provisions, net value, provision shortfall against policy, and the difference to operations stock value. Includes an ALL row.'
   kind: sql
   args:
     site_id:
-      desc: Site or DC (default all)
+      desc: Site or DC, e.g. DC1 (default all)
     as_of_date:
       type: date
       default: $as_of
@@ -842,53 +1013,97 @@ tools:
       - active
       - slow_moving
       - obsolete
-      - written_off
-      desc: Filter by status
+      desc: Only stock with this ageing status
   sql: |
-    SELECT i.site_id, s.name AS site_name,
-           sum(i.units_on_hand) AS total_units,
-           round(sum(i.total_value_gbp), 2) AS gross_value_gbp,
-           round(sum(i.provision_gbp), 2) AS provision_gbp,
-           round(sum(i.net_value_gbp), 2) AS net_value_gbp,
-           count(DISTINCT i.sku) AS sku_count
-    FROM inventory_by_site i
-    LEFT JOIN master.sites s ON s.site_id = i.site_id
-    WHERE i.as_of_date = (SELECT max(as_of_date) FROM inventory_by_site)
-      AND ($site_id IS NULL OR i.site_id = $site_id)
-      AND ($status IS NULL OR i.status = $status)
-    GROUP BY i.site_id, s.name
-    ORDER BY i.site_id
+    WITH snap AS (SELECT max(as_of_date) AS d FROM inventory_by_site WHERE as_of_date <= CAST($as_of_date AS DATE)),
+    s AS (
+      SELECT i.* FROM inventory_by_site i JOIN snap ON i.as_of_date = snap.d
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($status IS NULL OR i.status = $status)
+    ), per AS (
+      SELECT site_id, sum(units_on_hand) AS units, count(DISTINCT sku) AS skus, sum(total_value_gbp) AS gross,
+             sum(provision_gbp) AS prov, sum(net_value_gbp) AS net,
+             sum(total_value_gbp) FILTER (WHERE status IN ('slow_moving', 'obsolete')) AS aged_value,
+             sum(CASE status WHEN 'slow_moving' THEN total_value_gbp * 0.15 WHEN 'obsolete' THEN total_value_gbp * 0.50 ELSE 0 END) AS policy_prov,
+             count(*) FILTER (WHERE status <> 'active' AND provision_pct < CASE status WHEN 'slow_moving' THEN 0.15 ELSE 0.50 END - 0.0001) AS below_policy
+      FROM s GROUP BY site_id
+    ), ops AS (SELECT site_id, sum(stock_value_gbp) AS v FROM master.dc_stock GROUP BY site_id),
+    tot AS (
+      SELECT 'ALL' AS site_id, sum(units), sum(skus), sum(gross), sum(prov), sum(net), sum(aged_value), sum(policy_prov), sum(below_policy)
+      FROM per
+    )
+    SELECT p.site_id, coalesce(st.name, 'All sites') AS site_name, CAST(p.units AS BIGINT) AS total_units, CAST(p.skus AS INTEGER) AS sku_count,
+           round(p.gross, 2) AS gross_value_gbp, round(p.prov, 2) AS provision_gbp, round(p.net, 2) AS net_value_gbp,
+           round(coalesce(p.aged_value, 0), 2) AS slow_moving_and_obsolete_value_gbp,
+           round(p.prov / NULLIF(p.aged_value, 0) * 100, 1) AS provision_cover_pct,
+           round(p.policy_prov, 2) AS policy_provision_gbp,
+           round(p.policy_prov - p.prov, 2) AS provision_shortfall_gbp,
+           CAST(p.below_policy AS INTEGER) AS skus_provided_below_policy,
+           round(CASE WHEN p.site_id = 'ALL' THEN (SELECT sum(v) FROM ops WHERE $site_id IS NULL) ELSE o.v END, 2) AS ops_stock_value_gbp,
+           round(p.gross - CASE WHEN p.site_id = 'ALL' THEN (SELECT sum(v) FROM ops WHERE $site_id IS NULL) ELSE o.v END, 2) AS finance_minus_ops_gbp
+    FROM (SELECT * FROM per UNION ALL SELECT * FROM tot) p
+    LEFT JOIN master.sites st ON st.site_id = p.site_id
+    LEFT JOIN ops o ON o.site_id = p.site_id
+    ORDER BY (p.site_id = 'ALL'), p.site_id
   limit: 10
   example:
     site_id: DC1
 - name: compare_wms_to_ledger
-  desc: Reconcile WMS stock value to the ledger. Returns valuation by SKU with differences highlighted.
+  desc: Reconcile WMS stock value to the ledger by SKU, or by cause with group_by cause. Shows the difference and whether it is timing, valuation or an error.
   kind: sql
   args:
     site_id:
-      desc: Site or DC (default all)
+      desc: Site or DC, e.g. DC1 (default all)
+    group_by:
+      type: enum
+      values:
+      - sku
+      - cause
+      default: sku
+      desc: sku = largest differences first; cause = total difference per cause
     as_of_date:
       type: date
       default: $as_of
       desc: Date for comparison
     min_variance_gbp:
       type: float
-      default: 100.0
-      desc: Only show differences >= this
+      default: 1000.0
+      desc: Only show differences of at least this size
   sql: |
-    SELECT e.sku,
-           p.name AS sku_name,
-           e.site_id,
-           e.quantity AS erp_units,
-           e.total_value_gbp AS erp_value_gbp,
-           round(e.total_value_gbp, 2) AS ledger_value_gbp,
-           round(e.total_value_gbp - e.total_value_gbp, 2) AS difference_gbp
-    FROM erp_stock e
-    LEFT JOIN master.products p ON p.sku = e.sku
-    WHERE e.as_of_date = (SELECT max(as_of_date) FROM erp_stock)
-      AND ($site_id IS NULL OR e.site_id = $site_id)
-    ORDER BY abs(e.total_value_gbp - e.total_value_gbp) DESC
-  limit: 50
+    WITH snap AS (SELECT max(as_of_date) AS d FROM erp_stock WHERE as_of_date <= CAST($as_of_date AS DATE)),
+    l AS (
+      SELECT e.sku, e.site_id, e.quantity AS ledger_units, e.unit_cost_gbp AS ledger_unit_cost, e.total_value_gbp AS ledger_value
+      FROM erp_stock e JOIN snap ON e.as_of_date = snap.d WHERE ($site_id IS NULL OR e.site_id = $site_id)
+    ), w AS (
+      SELECT sku, site_id, on_hand AS wms_units, stock_value_gbp AS wms_value FROM master.dc_stock
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+    ), j AS (
+      SELECT coalesce(l.sku, w.sku) AS sku, coalesce(l.site_id, w.site_id) AS site_id, coalesce(w.wms_units, 0) AS wms_units,
+             coalesce(l.ledger_units, 0) AS ledger_units, coalesce(w.wms_value, 0) AS wms_value, coalesce(l.ledger_value, 0) AS ledger_value,
+             l.ledger_unit_cost, w.wms_value / NULLIF(w.wms_units, 0) AS wms_unit_cost
+      FROM l FULL OUTER JOIN w ON w.sku = l.sku AND w.site_id = l.site_id
+    ), c AS (
+      SELECT j.*, j.ledger_value - j.wms_value AS diff,
+             CASE
+               WHEN j.ledger_units <> j.wms_units AND EXISTS (SELECT 1 FROM goods_movements m WHERE m.sku = j.sku AND m.to_site_id = j.site_id
+                                                             AND m.pending_in = 'WMS') THEN 'timing: ERP goods receipt not yet put away in WMS'
+               WHEN j.ledger_units <> j.wms_units THEN 'error: quantity posted twice in ledger'
+               WHEN j.ledger_unit_cost > 3 * j.wms_unit_cost THEN 'error: ledger unit cost keyed at ten times'
+               WHEN abs(j.ledger_value - j.wms_value) >= 1 THEN 'valuation: ledger standard cost updated, WMS cost not refreshed'
+               ELSE 'agreed'
+             END AS cause
+      FROM j
+    )
+    SELECT c.sku, p.name AS sku_name, c.site_id, c.wms_units, c.ledger_units, round(c.wms_value, 2) AS wms_value_gbp,
+           round(c.ledger_value, 2) AS ledger_value_gbp, round(c.diff, 2) AS difference_gbp, c.cause,
+           round(sum(c.diff) OVER (), 2) AS net_difference_all_skus_gbp
+    FROM c LEFT JOIN master.products p ON p.sku = c.sku
+    WHERE $group_by = 'sku' AND abs(c.diff) >= $min_variance_gbp
+    UNION ALL
+    SELECT NULL, CAST(count(*) AS VARCHAR) || ' SKU-site balances', NULL, sum(c.wms_units), sum(c.ledger_units), round(sum(c.wms_value), 2),
+           round(sum(c.ledger_value), 2), round(sum(c.diff), 2), c.cause, round(sum(sum(c.diff)) OVER (), 2)
+    FROM c WHERE $group_by = 'cause' AND abs(c.diff) >= $min_variance_gbp GROUP BY c.cause
+    ORDER BY abs(difference_gbp) DESC
+  limit: 25
   example:
     site_id: DC1
 - name: get_erp_stock_by_sku
@@ -1045,11 +1260,11 @@ tools:
   limit: 60
   example: {}
 - name: get_fx_gain_loss_by_account
-  desc: FX gain and loss postings by account. Separates realised from unrealised movements by currency.
+  desc: FX gain and loss postings by account, currency and realised or unrealised type, flagging unrealised amounts booked to the realised account.
   kind: sql
   args:
     account_code:
-      desc: GL FX account (default all)
+      desc: GL FX account, e.g. 8110 realised or 8120 unrealised (default all)
     period_start:
       type: date
       default: -90d
@@ -1059,18 +1274,22 @@ tools:
       default: $as_of
       desc: Postings on or before
   sql: |
-    SELECT f.account_code, f.currency, f.fx_type,
+    SELECT f.account_code, a.name AS account_name, f.currency, f.fx_type,
            round(sum(f.gain_loss_gbp), 2) AS gain_loss_gbp,
            count(*) AS transaction_count,
+           CASE WHEN f.fx_type = 'unrealised' AND f.account_code = '8110' THEN 'unrealised booked to realised account' ELSE '' END AS flag,
+           string_agg(DISTINCT f.je_id, '; ') FILTER (WHERE f.fx_type = 'unrealised' AND f.account_code = '8110') AS misclassified_je_ids,
            round(avg(f.opening_rate), 4) AS avg_opening_rate,
-           round(avg(f.closing_rate), 4) AS avg_closing_rate
+           round(avg(f.closing_rate), 4) AS avg_closing_rate,
+           round(sum(sum(f.gain_loss_gbp)) OVER (), 2) AS net_gain_loss_all_accounts_gbp
     FROM fx_gains_losses f
+    LEFT JOIN accounts a ON a.account_code = f.account_code
     WHERE f.posting_date >= CAST($period_start AS DATE)
       AND f.posting_date <= CAST($period_end AS DATE)
       AND ($account_code IS NULL OR f.account_code = $account_code)
-    GROUP BY f.account_code, f.currency, f.fx_type
+    GROUP BY f.account_code, a.name, f.currency, f.fx_type
     ORDER BY f.account_code, f.currency
-  limit: 50
+  limit: 40
   example: {}
 - name: get_handling_cost_by_channel
   desc: Handling cost, units and cost per unit by circular-economy recovery channel (take-back, resale, repair, recycling) over a period, with a total row.
@@ -1104,11 +1323,21 @@ tools:
   limit: 10
   example: {}
 - name: get_erp_order_header_and_charges
-  desc: Order headers, revenue and charges from the ERP. Shows order level financials by entity and channel.
+  desc: ERP order headers with entity, channel, shipments, revenue, freight and handling charges, discount and total charges. Filter by order, entity or channel.
   kind: sql
   args:
+    order_id:
+      desc: Order id, e.g. ORD-2026-0100002 (default all orders in the period)
     entity_id:
-      desc: Legal entity (default all)
+      desc: Legal entity, e.g. LE-UK (default all)
+    channel:
+      type: enum
+      values:
+      - web
+      - app
+      - click_collect
+      - marketplace
+      desc: Sales channel (default all)
     period_start:
       type: date
       default: -30d
@@ -1118,40 +1347,66 @@ tools:
       default: $as_of
       desc: Orders on or before
   sql: |
-    SELECT o.order_id, o.posting_date, o.entity_id, le.name AS entity_name,
-           round(o.revenue_gbp, 2) AS revenue_gbp,
-           round(o.freight_charge_gbp, 2) AS freight_charge_gbp,
-           round(o.handling_charge_gbp, 2) AS handling_charge_gbp,
-           round(o.discount_gbp, 2) AS discount_gbp,
-           round(o.total_charges_gbp, 2) AS total_charges_gbp
+    SELECT o.order_id, o.posting_date, o.entity_id, le.name AS entity_name, m.channel, m.fulfil_site_id, m.units, m.delivery_service,
+           o.shipment_count, round(o.revenue_gbp, 2) AS revenue_gbp, round(o.freight_charge_gbp, 2) AS freight_charge_gbp,
+           round(o.handling_charge_gbp, 2) AS handling_charge_gbp, round(o.discount_gbp, 2) AS discount_gbp,
+           round(o.total_charges_gbp, 2) AS total_charges_gbp, count(*) OVER () AS orders_in_selection,
+           round(sum(o.revenue_gbp) OVER (), 2) AS revenue_in_selection_gbp
     FROM order_charges o
+    LEFT JOIN master.orders m ON m.order_id = o.order_id
     LEFT JOIN master.legal_entities le ON le.entity_id = o.entity_id
-    WHERE o.posting_date >= CAST($period_start AS DATE)
-      AND o.posting_date <= CAST($period_end AS DATE)
+    WHERE o.posting_date >= CAST($period_start AS DATE) AND o.posting_date <= CAST($period_end AS DATE)
+      AND ($order_id IS NULL OR o.order_id = $order_id)
       AND ($entity_id IS NULL OR o.entity_id = $entity_id)
-    ORDER BY o.posting_date DESC
-  limit: 100
+      AND ($channel IS NULL OR m.channel = $channel)
+    ORDER BY o.posting_date DESC, o.order_id
+  limit: 25
   example:
     entity_id: LE-UK
 - name: get_intercompany_sourcing_margins
-  desc: Sourcing entity margins and mark-ups. Shows margin % by product category and transfer price variance.
+  desc: Sourcing entity mark-up on cost by product department against policy mark-up, with the fee shortfall or excess versus policy. Use for transfer pricing exposure.
   kind: sql
   args:
     from_entity_id:
-      desc: Sourcing entity (default all)
+      desc: Sourcing entity, e.g. LE-HK (default all)
     to_entity_id:
-      desc: Receiving entity (default all)
+      desc: Receiving entity, e.g. LE-UK (default all)
+    department:
+      type: str
+      desc: Product department, e.g. Womenswear (default all)
+    period_start:
+      type: date
+      default: -365d
+      desc: Quarters ending on or after
+    period_end:
+      type: date
+      default: $as_of
+      desc: Quarters ending on or before
   sql: |
-    SELECT i.from_entity_id, i.to_entity_id,
-           count(DISTINCT i.ic_txn_id) AS transaction_count,
-           round(sum(i.amount_gbp), 2) AS total_transfer_price_gbp,
-           round(avg(i.fx_rate), 4) AS avg_fx_rate
-    FROM intercompany_transactions i
-    WHERE ($from_entity_id IS NULL OR i.from_entity_id = $from_entity_id)
-      AND ($to_entity_id IS NULL OR i.to_entity_id = $to_entity_id)
-    GROUP BY i.from_entity_id, i.to_entity_id
-    ORDER BY i.from_entity_id, i.to_entity_id
-  limit: 20
+    WITH s AS (
+      SELECT * FROM sourcing_margins
+      WHERE period_end >= CAST($period_start AS DATE) AND period_end <= CAST($period_end AS DATE)
+        AND ($from_entity_id IS NULL OR sourcing_entity_id = $from_entity_id)
+        AND ($to_entity_id IS NULL OR receiving_entity_id = $to_entity_id)
+        AND ($department IS NULL OR department = $department)
+    ), d AS (
+      SELECT sourcing_entity_id, receiving_entity_id, department, count(DISTINCT period) AS quarters,
+             sum(cost_base_gbp) AS cost, sum(fee_charged_gbp) AS fee, avg(policy_markup_pct) AS policy
+      FROM s GROUP BY sourcing_entity_id, receiving_entity_id, department
+    ), a AS (
+      SELECT sourcing_entity_id, receiving_entity_id, 'ALL' AS department, count(DISTINCT period) AS quarters,
+             sum(cost_base_gbp) AS cost, sum(fee_charged_gbp) AS fee, avg(policy_markup_pct) AS policy
+      FROM s GROUP BY sourcing_entity_id, receiving_entity_id
+    )
+    SELECT u.sourcing_entity_id, le.name AS sourcing_entity_name, u.receiving_entity_id, u.department, u.quarters,
+           round(u.cost, 2) AS cost_base_gbp, round(u.fee, 2) AS fee_charged_gbp,
+           round((u.fee / u.cost - 1) * 100, 2) AS markup_pct, round(u.policy, 2) AS policy_markup_pct,
+           round((u.fee / u.cost - 1) * 100 - u.policy, 2) AS markup_vs_policy_pp,
+           round(u.cost * (1 + u.policy / 100) - u.fee, 2) AS shortfall_vs_policy_gbp
+    FROM (SELECT * FROM a UNION ALL SELECT * FROM d) u
+    LEFT JOIN master.legal_entities le ON le.entity_id = u.sourcing_entity_id
+    ORDER BY u.sourcing_entity_id, (u.department <> 'ALL'), u.department
+  limit: 60
   example: {}
 - name: calculate_shift_option_cost
   desc: Total cost of a late shift (night premium, allowances, agency fees, onboarding) versus overtime for a headcount gap, from the site rate card.
@@ -1268,66 +1523,85 @@ tools:
   example:
     site_id: DC1
 - name: get_inventory_value_movement
-  desc: Inventory value movement by month. Returns gross value changes, cost updates, FX impact and adjustments.
+  desc: 'Inventory value movement by month: opening, volume, mix, cost update, FX and adjustment effects, closing value and units, with finance notes. Group by category for drivers.'
   kind: sql
   args:
     site_id:
-      desc: Site or DC (default all)
+      desc: Site or DC, e.g. DC1 (default all)
+    category:
+      type: str
+      desc: Product category, e.g. Outerwear (default all)
+    group_by:
+      type: enum
+      values:
+      - month
+      - category
+      default: month
+      desc: month = one row per month; category = movement summed over the period per category
     period_start:
       type: date
       default: -90d
-      desc: Period start
+      desc: Month-ends on or after
     period_end:
       type: date
       default: $as_of
-      desc: Period end
+      desc: Month-ends on or before
   sql: |
-    SELECT i.site_id, i.as_of_date,
-           count(DISTINCT i.sku) AS sku_count,
-           round(sum(i.total_value_gbp), 2) AS gross_value_gbp,
-           round(sum(i.provision_gbp), 2) AS provision_gbp,
-           round(sum(i.net_value_gbp), 2) AS net_value_gbp
-    FROM inventory_by_site i
-    WHERE i.as_of_date >= CAST($period_start AS DATE)
-      AND i.as_of_date <= CAST($period_end AS DATE)
-      AND ($site_id IS NULL OR i.site_id = $site_id)
-    GROUP BY i.site_id, i.as_of_date
-    ORDER BY i.site_id, i.as_of_date DESC
-  limit: 50
+    WITH mm AS (
+      SELECT month_end, sum(units_on_hand) AS units, sum(gross_value_gbp) AS closing, sum(volume_gbp) AS vol, sum(mix_gbp) AS mix,
+             sum(cost_update_gbp) AS cost, sum(fx_gbp) AS fx, sum(adjustments_gbp) AS adj,
+             string_agg(DISTINCT NULLIF(movement_note, ''), '; ') AS notes
+      FROM inventory_monthly WHERE ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category)
+      GROUP BY month_end
+    ), w AS (SELECT *, lag(units) OVER (ORDER BY month_end) AS prior_units FROM mm),
+    cat AS (
+      SELECT category, max(month_end) AS month_end, sum(volume_gbp) AS vol, sum(mix_gbp) AS mix, sum(cost_update_gbp) AS cost,
+             sum(fx_gbp) AS fx, sum(adjustments_gbp) AS adj, string_agg(DISTINCT NULLIF(movement_note, ''), '; ') AS notes
+      FROM inventory_monthly
+      WHERE month_end >= CAST($period_start AS DATE) AND month_end <= CAST($period_end AS DATE)
+        AND ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category)
+      GROUP BY category
+    )
+    SELECT month_end, 'ALL' AS category, CAST(units AS BIGINT) AS units_on_hand, CAST(units - prior_units AS BIGINT) AS units_change,
+           round(closing - (vol + mix + cost + fx + adj), 2) AS opening_value_gbp, round(vol, 2) AS volume_gbp, round(mix, 2) AS mix_gbp,
+           round(cost, 2) AS cost_update_gbp, round(fx, 2) AS fx_gbp, round(adj, 2) AS adjustments_gbp,
+           round(vol + mix + cost + fx + adj, 2) AS change_gbp, round(closing, 2) AS closing_value_gbp, notes
+    FROM w
+    WHERE $group_by = 'month' AND month_end >= CAST($period_start AS DATE) AND month_end <= CAST($period_end AS DATE)
+    UNION ALL
+    SELECT month_end, category, NULL, NULL, NULL, round(vol, 2), round(mix, 2), round(cost, 2), round(fx, 2), round(adj, 2),
+           round(vol + mix + cost + fx + adj, 2), NULL, notes
+    FROM cat WHERE $group_by = 'category'
+    ORDER BY month_end DESC, change_gbp DESC
+  limit: 40
   example:
     site_id: DC1
 - name: get_ledger_inventory_balance
-  desc: Inventory ledger balance by account. Returns inventory asset accounts with balances.
+  desc: 'Inventory ledger balances for a financial period: finished goods account 1300 and provision account 1310 with opening, movement and closing, and net inventory.'
   kind: sql
   args:
     account_code:
-      desc: GL inventory account (default all)
+      desc: GL inventory account, 1300 or 1310 (default both)
     period:
       required: true
       type: str
-      desc: Financial period, e.g. FY27-09
+      desc: Financial period, e.g. FY27-08
   sql: |
-    SELECT jl.account_code, jl.account_desc,
-           round(sum(jl.debit_gbp), 2) AS total_debit_gbp,
-           round(sum(jl.credit_gbp), 2) AS total_credit_gbp,
-           round(sum(jl.debit_gbp) - sum(jl.credit_gbp), 2) AS balance_gbp,
-           count(DISTINCT jl.je_id) AS entry_count
-    FROM journal_lines jl
-    JOIN journal_entries je ON jl.je_id = je.je_id
-    WHERE je.status = 'posted'
-      AND jl.account_code LIKE '1%'
-      AND ($account_code IS NULL OR jl.account_code = $account_code)
-    GROUP BY jl.account_code, jl.account_desc
-    ORDER BY jl.account_code
+    SELECT b.account_code, b.account_desc, b.period, b.period_end, round(b.opening_balance_gbp, 2) AS opening_balance_gbp,
+           round(b.movement_gbp, 2) AS movement_gbp, round(b.closing_balance_gbp, 2) AS balance_gbp,
+           round(sum(b.closing_balance_gbp) OVER (), 2) AS net_inventory_gbp
+    FROM ledger_balances b
+    WHERE b.period = $period AND ($account_code IS NULL OR b.account_code = $account_code)
+    ORDER BY b.account_code
   limit: 50
   example:
-    period: FY27-09
+    period: FY27-08
 - name: get_payment_history_by_supplier
-  desc: Payment terms and actual payment timing by supplier. Returns supplier payment performance.
+  desc: 'Supplier payment terms and actual payment timing: invoices paid, average days to pay, days beyond terms, share paid late and overdue open invoices. Worst payers first.'
   kind: sql
   args:
     supplier_id:
-      desc: Supplier (default all)
+      desc: Supplier, e.g. SUP-0073 (default all)
     period_start:
       type: date
       default: -180d
@@ -1337,25 +1611,32 @@ tools:
       default: $as_of
       desc: Payments on or before
   sql: |
-    SELECT f.supplier_id, sup.name AS supplier_name,
-           round(sum(f.cost_gbp), 2) AS total_paid_gbp,
-           count(DISTINCT f.freight_id) AS payment_count,
-           round(avg(f.cost_gbp), 2) AS avg_payment_gbp
-    FROM freight_costs f
-    LEFT JOIN master.suppliers sup ON sup.supplier_id = f.supplier_id
-    WHERE f.posting_date >= CAST($period_start AS DATE)
-      AND f.posting_date <= CAST($period_end AS DATE)
-      AND ($supplier_id IS NULL OR f.supplier_id = $supplier_id)
-    GROUP BY f.supplier_id, sup.name
-    ORDER BY total_paid_gbp DESC
-  limit: 50
+    WITH paid AS (
+      SELECT * FROM supplier_payments
+      WHERE status = 'paid' AND paid_date >= CAST($period_start AS DATE) AND paid_date <= CAST($period_end AS DATE)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+    ), od AS (
+      SELECT supplier_id, count(*) AS n, round(sum(amount_gbp), 2) AS amt FROM supplier_payments
+      WHERE status = 'open' AND due_date < CAST($as_of AS DATE) AND ($supplier_id IS NULL OR supplier_id = $supplier_id) GROUP BY supplier_id
+    )
+    SELECT p.supplier_id, sup.name AS supplier_name, any_value(p.payment_terms_days) AS payment_terms_days, count(*) AS invoices_paid,
+           round(sum(p.amount_gbp), 2) AS total_paid_gbp, round(avg(p.days_to_pay), 1) AS avg_days_to_pay,
+           round(avg(p.days_late), 1) AS avg_days_beyond_terms, max(p.days_late) AS max_days_beyond_terms,
+           round(100.0 * count(*) FILTER (WHERE p.days_late > 0) / count(*), 1) AS pct_paid_late, max(p.paid_date) AS last_payment_date,
+           coalesce(any_value(od.n), 0) AS overdue_open_invoices, coalesce(any_value(od.amt), 0) AS overdue_open_gbp
+    FROM paid p
+    LEFT JOIN master.suppliers sup ON sup.supplier_id = p.supplier_id
+    LEFT JOIN od ON od.supplier_id = p.supplier_id
+    GROUP BY p.supplier_id, sup.name
+    ORDER BY avg_days_beyond_terms DESC, total_paid_gbp DESC
+  limit: 20
   example: {}
 - name: get_realised_vs_unrealised_fx
-  desc: Realised and unrealised FX split. Returns FX gains and losses separated by realization.
+  desc: Realised and unrealised FX split by currency with totals, plus how much unrealised FX was booked to the realised account 8110.
   kind: sql
   args:
     currency:
-      desc: Currency (default all)
+      desc: Currency, e.g. USD (default all)
     period_start:
       type: date
       default: -90d
@@ -1365,18 +1646,27 @@ tools:
       default: $as_of
       desc: Postings on or before
   sql: |
-    SELECT f.currency, f.fx_type,
-           round(sum(f.gain_loss_gbp), 2) AS gain_loss_gbp,
-           count(*) AS transaction_count,
-           round(sum(CASE WHEN f.gain_loss_gbp > 0 THEN f.gain_loss_gbp ELSE 0 END), 2) AS gains_gbp,
-           round(sum(CASE WHEN f.gain_loss_gbp < 0 THEN abs(f.gain_loss_gbp) ELSE 0 END), 2) AS losses_gbp
-    FROM fx_gains_losses f
-    WHERE f.posting_date >= CAST($period_start AS DATE)
-      AND f.posting_date <= CAST($period_end AS DATE)
-      AND ($currency IS NULL OR f.currency = $currency)
-    GROUP BY f.currency, f.fx_type
-    ORDER BY f.currency, f.fx_type
-  limit: 20
+    WITH f AS (
+      SELECT * FROM fx_gains_losses
+      WHERE posting_date >= CAST($period_start AS DATE) AND posting_date <= CAST($period_end AS DATE)
+        AND ($currency IS NULL OR currency = $currency)
+    ), by_ccy AS (
+      SELECT currency, fx_type, sum(gain_loss_gbp) AS net, count(*) AS n,
+             sum(CASE WHEN gain_loss_gbp > 0 THEN gain_loss_gbp ELSE 0 END) AS gains,
+             sum(CASE WHEN gain_loss_gbp < 0 THEN -gain_loss_gbp ELSE 0 END) AS losses,
+             sum(CASE WHEN account_code = '8110' THEN gain_loss_gbp ELSE 0 END) AS in_realised_account
+      FROM f GROUP BY currency, fx_type
+    ), tot AS (
+      SELECT 'ALL' AS currency, fx_type, sum(net) AS net, sum(n) AS n, sum(gains) AS gains, sum(losses) AS losses,
+             sum(in_realised_account) AS in_realised_account
+      FROM by_ccy GROUP BY fx_type
+    )
+    SELECT currency, fx_type, round(net, 2) AS gain_loss_gbp, CAST(n AS INTEGER) AS transaction_count,
+           round(gains, 2) AS gains_gbp, round(losses, 2) AS losses_gbp,
+           round(CASE WHEN fx_type = 'unrealised' THEN in_realised_account ELSE 0 END, 2) AS booked_to_realised_account_gbp
+    FROM (SELECT * FROM tot UNION ALL SELECT * FROM by_ccy)
+    ORDER BY (currency <> 'ALL'), currency, fx_type
+  limit: 40
   example: {}
 - name: get_recovered_value_by_channel
   desc: Value recovered by circular-economy channel (take-back, resale, repair, recycling) over a period with handling cost and recovered value per pound of handling cost.
@@ -1412,11 +1702,21 @@ tools:
   limit: 10
   example: {}
 - name: get_shrink_and_writeoff_history
-  desc: Shrink and write-off trend with prior-year pattern. Returns write-offs and shrink by period and category.
+  desc: Monthly shrink and write-offs with the same month a year earlier and rolling 12-month totals, or by category ranked by increase on last year.
   kind: sql
   args:
     site_id:
-      desc: Site or DC (default all)
+      desc: Site or DC, e.g. DC1 (default all)
+    category:
+      type: str
+      desc: Product category, e.g. Fragrance (default all)
+    group_by:
+      type: enum
+      values:
+      - month
+      - category
+      default: month
+      desc: month = trend by month; category = period total per category against the same period last year
     period_start:
       type: date
       default: -365d
@@ -1426,43 +1726,86 @@ tools:
       default: $as_of
       desc: History end
   sql: |
-    SELECT i.site_id, i.as_of_date,
-           count(CASE WHEN i.status = 'written_off' THEN 1 END) AS written_off_count,
-           round(sum(CASE WHEN i.status = 'written_off' THEN i.total_value_gbp ELSE 0 END), 2) AS written_off_value_gbp,
-           count(CASE WHEN i.status = 'slow_moving' THEN 1 END) AS slow_moving_count,
-           round(sum(CASE WHEN i.status = 'slow_moving' THEN i.provision_gbp ELSE 0 END), 2) AS provision_for_shrink_gbp
-    FROM inventory_by_site i
-    WHERE i.as_of_date >= CAST($period_start AS DATE)
-      AND i.as_of_date <= CAST($period_end AS DATE)
-      AND ($site_id IS NULL OR i.site_id = $site_id)
-    GROUP BY i.site_id, i.as_of_date
-    ORDER BY i.site_id, i.as_of_date DESC
-  limit: 50
+    WITH mm AS (
+      SELECT month_end, sum(shrink_gbp) AS shrink, sum(written_off_gbp) AS wo, row_number() OVER (ORDER BY month_end) AS rn
+      FROM inventory_monthly WHERE ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category)
+      GROUP BY month_end
+    ), r AS (
+      SELECT *, sum(shrink + wo) OVER (ORDER BY month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS roll12, rn AS n FROM mm
+    ), t AS (
+      SELECT a.month_end, a.shrink, a.wo, b.shrink + b.wo AS prior_total,
+             CASE WHEN a.rn >= 12 THEN a.roll12 END AS roll12, CASE WHEN b.rn >= 12 THEN b.roll12 END AS prior_roll12
+      FROM r a LEFT JOIN r b ON b.rn = a.rn - 12
+    ), cw AS (
+      SELECT category, sum(shrink_gbp) AS shrink, sum(written_off_gbp) AS wo
+      FROM inventory_monthly
+      WHERE month_end >= CAST($period_start AS DATE) AND month_end <= CAST($period_end AS DATE)
+        AND ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category) GROUP BY category
+    ), cp AS (
+      SELECT category, sum(shrink_gbp + written_off_gbp) AS prior_total
+      FROM inventory_monthly
+      WHERE month_end >= CAST($period_start AS DATE) - INTERVAL 365 DAY AND month_end <= CAST($period_end AS DATE) - INTERVAL 365 DAY
+        AND ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category) GROUP BY category
+    )
+    SELECT month_end, 'ALL' AS category, round(shrink, 2) AS shrink_gbp, round(wo, 2) AS written_off_gbp, round(shrink + wo, 2) AS total_loss_gbp,
+           round(prior_total, 2) AS prior_year_total_gbp, round((shrink + wo) / NULLIF(prior_total, 0) * 100 - 100, 1) AS change_vs_prior_year_pct,
+           round(roll12, 2) AS rolling_12m_gbp, round(prior_roll12, 2) AS prior_year_rolling_12m_gbp
+    FROM t WHERE $group_by = 'month' AND month_end >= CAST($period_start AS DATE) AND month_end <= CAST($period_end AS DATE)
+    UNION ALL
+    SELECT NULL, cw.category, round(cw.shrink, 2), round(cw.wo, 2), round(cw.shrink + cw.wo, 2), round(cp.prior_total, 2),
+           round((cw.shrink + cw.wo) / NULLIF(cp.prior_total, 0) * 100 - 100, 1), NULL, NULL
+    FROM cw LEFT JOIN cp ON cp.category = cw.category WHERE $group_by = 'category'
+    ORDER BY month_end DESC NULLS LAST, (total_loss_gbp - coalesce(prior_year_total_gbp, 0)) DESC
+  limit: 40
   example:
     site_id: DC1
 - name: get_slow_moving_provision
-  desc: Provision balance and prior-year comparison. Returns slow-moving and obsolete stock provisions.
+  desc: Slow-moving and obsolete provision balance by category with the prior-year balance and change, plus an ALL row. Use to compare with last year.
   kind: sql
   args:
     site_id:
-      desc: Site or DC (default all)
+      desc: Site or DC, e.g. DC1 (default all)
+    category:
+      type: str
+      desc: Product category, e.g. Outerwear (default all)
     as_of_date:
       type: date
       default: $as_of
-      desc: As of date
+      desc: Balance at the latest month-end on or before this date
   sql: |
-    SELECT i.site_id, i.status,
-           count(DISTINCT i.sku) AS sku_count,
-           round(sum(i.total_value_gbp), 2) AS gross_value_gbp,
-           round(sum(i.provision_gbp), 2) AS provision_gbp,
-           round(sum(i.provision_gbp) / NULLIF(sum(i.total_value_gbp), 0) * 100, 1) AS provision_pct
-    FROM inventory_by_site i
-    WHERE i.as_of_date = (SELECT max(as_of_date) FROM inventory_by_site)
-      AND i.status IN ('slow_moving', 'obsolete')
-      AND ($site_id IS NULL OR i.site_id = $site_id)
-    GROUP BY i.site_id, i.status
-    ORDER BY i.site_id, provision_gbp DESC
-  limit: 20
+    WITH ends AS (
+      SELECT (SELECT max(month_end) FROM inventory_monthly WHERE month_end <= CAST($as_of_date AS DATE)) AS cur
+    ), pe AS (
+      SELECT cur, (SELECT max(month_end) FROM inventory_monthly WHERE month_end <= cur - INTERVAL 360 DAY) AS prior FROM ends
+    ), c AS (
+      SELECT m.category, sum(m.gross_value_gbp) AS gross, sum(m.provision_gbp) AS prov
+      FROM inventory_monthly m JOIN pe ON m.month_end = pe.cur
+      WHERE ($site_id IS NULL OR m.site_id = $site_id) AND ($category IS NULL OR m.category = $category) GROUP BY m.category
+    ), p AS (
+      SELECT m.category, sum(m.gross_value_gbp) AS gross, sum(m.provision_gbp) AS prov
+      FROM inventory_monthly m JOIN pe ON m.month_end = pe.prior
+      WHERE ($site_id IS NULL OR m.site_id = $site_id) AND ($category IS NULL OR m.category = $category) GROUP BY m.category
+    ), a AS (
+      SELECT pr.category, sum(i.total_value_gbp) FILTER (WHERE i.status = 'slow_moving') AS slow_value,
+             sum(i.total_value_gbp) FILTER (WHERE i.status = 'obsolete') AS obs_value
+      FROM inventory_by_site i JOIN master.products pr ON pr.sku = i.sku
+      WHERE i.as_of_date = (SELECT max(as_of_date) FROM inventory_by_site WHERE as_of_date <= CAST($as_of_date AS DATE))
+        AND ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR pr.category = $category) GROUP BY pr.category
+    ), j AS (
+      SELECT c.category, c.gross, c.prov, coalesce(a.slow_value, 0) AS slow_value, coalesce(a.obs_value, 0) AS obs_value,
+             coalesce(p.prov, 0) AS prior_prov, coalesce(p.gross, 0) AS prior_gross
+      FROM c LEFT JOIN p ON p.category = c.category LEFT JOIN a ON a.category = c.category
+    ), u AS (
+      SELECT 'ALL' AS category, sum(gross) AS gross, sum(prov) AS prov, sum(slow_value) AS slow_value, sum(obs_value) AS obs_value,
+             sum(prior_prov) AS prior_prov, sum(prior_gross) AS prior_gross FROM j
+      UNION ALL SELECT * FROM j
+    )
+    SELECT category, round(gross, 2) AS gross_value_gbp, round(slow_value, 2) AS slow_moving_value_gbp, round(obs_value, 2) AS obsolete_value_gbp,
+           round(prov, 2) AS provision_gbp, round(prov / NULLIF(gross, 0) * 100, 2) AS provision_pct_of_value,
+           round(prior_prov, 2) AS prior_year_provision_gbp, round(prov - prior_prov, 2) AS change_vs_prior_year_gbp,
+           round((prov / NULLIF(prior_prov, 0) - 1) * 100, 1) AS change_vs_prior_year_pct
+    FROM u ORDER BY (category <> 'ALL'), provision_gbp DESC
+  limit: 40
   example: {}
 - name: get_usd_cogs_exposure
   desc: USD-denominated cost of goods in GBP over whole weeks, its share of total COGS, and the extra cost if sterling falls against the dollar, before hedges.

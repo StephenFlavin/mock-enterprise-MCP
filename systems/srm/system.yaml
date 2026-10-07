@@ -81,7 +81,7 @@ tables:
       engagement_record_id: {type: str, desc: "Engagement record, e.g. ENG-000123"}
       supplier_id: {desc: "Supplier"}
       programme_type: {type: enum, values: [emissions, sustainability, innovation, quality], desc: "Type of engagement programme"}
-      engagement_status: {type: enum, values: [invited, active, inactive, completed], desc: "Current engagement status"}
+      engagement_status: {type: enum, values: [planned, invited, active, inactive, completed], desc: "Current engagement status"}
       invitation_sent_date: {type: date, desc: "When invitation was sent"}
       acceptance_date: {type: date, desc: "When supplier accepted"}
       programme_start_date: {type: date, desc: "When programme started"}
@@ -159,69 +159,93 @@ tables:
 
 tools:
   - name: search_suppliers
-    desc: Find suppliers by name, country or category; returns supplier ids.
+    desc: Find suppliers by name, country or category; returns supplier ids, risk rating and account manager. Use first to get ids.
     kind: select
     from: master.suppliers
     filters:
+      supplier_id: {}
       name: {op: like, desc: "Words in supplier name, e.g. textile mill"}
       country: {op: like, desc: "Country name or code"}
       category_focus: {op: like, desc: "Category name or code"}
-    columns: [supplier_id, name, country, category_focus, status]
+    columns: [supplier_id, name, country, category_focus, status, risk_rating, otif_pct_12m, annual_spend_gbp, account_manager_id]
     order: supplier_id
     limit: 50
     example: {category_focus: Womenswear}
 
   - name: list_suppliers_for_category
-    desc: Suppliers active in a category, sorted by spend. Use to see the supply base for sourcing decisions.
-    kind: select
-    from: master.suppliers
-    filters:
-      category_focus: {}
-    columns: [supplier_id, name, country, category_focus, annual_spend_gbp]
-    order: annual_spend_gbp
+    desc: Suppliers that supply a product category (e.g. Bedding, Cookware) or department, largest spend first, with latest scorecard. Use to build a sourcing shortlist.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Product category, subcategory or department, e.g. Bedding, Cookware, Home"}
+    sql: |
+      WITH hits AS (
+        SELECT p.supplier_id, count(*) AS skus_in_category
+        FROM master.products p
+        WHERE p.category ILIKE '%' || $category || '%' OR p.subcategory ILIKE '%' || $category || '%'
+           OR p.department ILIKE '%' || $category || '%'
+        GROUP BY p.supplier_id
+      ),
+      latest AS (
+        SELECT supplier_id, overall_score, on_time_delivery_pct
+        FROM supplier_scorecards
+        QUALIFY row_number() OVER (PARTITION BY supplier_id ORDER BY scorecard_month DESC) = 1
+      )
+      SELECT s.supplier_id, s.name, s.country, s.category_focus, h.skus_in_category, s.annual_spend_gbp,
+             s.otif_pct_12m, s.risk_rating, s.status, l.overall_score AS latest_overall_score,
+             l.on_time_delivery_pct AS latest_on_time_pct
+      FROM hits h
+      JOIN master.suppliers s ON s.supplier_id = h.supplier_id
+      LEFT JOIN latest l ON l.supplier_id = s.supplier_id
+      WHERE s.status IN ('active', 'onboarding')
+      ORDER BY s.annual_spend_gbp DESC
     limit: 30
-    example: {category_focus: Womenswear}
+    example: {category: Bedding}
 
   - name: get_supplier_scorecard_history
-    desc: Supplier's scorecard history by month, latest first. Shows quality, on-time delivery, cost and overall performance.
+    desc: Supplier's monthly scorecard history, latest first. Shows quality, on-time delivery, cost, responsiveness, compliance and overall score.
     kind: sql
     args:
       supplier_id: {required: true}
-      months_back: {type: int, default: 12, desc: "Number of months to show"}
+      months_back: {type: int, default: 12, desc: "Number of latest monthly scorecards to show"}
     sql: |
       SELECT supplier_id, scorecard_month, quality_score, on_time_delivery_pct,
              cost_performance_score, lead_time_days, agreed_lead_time_days,
              responsiveness_score, compliance_score, overall_score, status_category
       FROM supplier_scorecards
       WHERE supplier_id = $supplier_id
-        AND scorecard_month >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
+      QUALIFY row_number() OVER (ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
       ORDER BY scorecard_month DESC
     limit: 24
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_on_time_delivery_trend
-    desc: On-time delivery percentage by month, latest first. Shows whether delivery performance is improving or deteriorating.
+    desc: On-time delivery percentage by month with the change from the month before, latest first. Shows whether delivery is improving or deteriorating.
     kind: sql
     args:
       supplier_id: {required: true}
-      months_back: {type: int, default: 6, desc: "Number of months to show"}
+      months_back: {type: int, default: 6, desc: "Number of latest months to show"}
     sql: |
-      SELECT supplier_id, scorecard_month, on_time_delivery_pct,
-             LAG(on_time_delivery_pct) OVER (ORDER BY scorecard_month DESC) as prior_month_pct,
-             ROUND(on_time_delivery_pct - LAG(on_time_delivery_pct) OVER (ORDER BY scorecard_month DESC), 1) as trend_change_pct
-      FROM supplier_scorecards
-      WHERE supplier_id = $supplier_id
-        AND scorecard_month >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
+      WITH t AS (
+        SELECT supplier_id, scorecard_month, on_time_delivery_pct,
+               LAG(on_time_delivery_pct) OVER (ORDER BY scorecard_month) AS prior_month_pct
+        FROM supplier_scorecards
+        WHERE supplier_id = $supplier_id
+      )
+      SELECT supplier_id, scorecard_month, on_time_delivery_pct, prior_month_pct,
+             ROUND(on_time_delivery_pct - prior_month_pct, 1) AS change_vs_prior_month_pct
+      FROM t
+      QUALIFY row_number() OVER (ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
       ORDER BY scorecard_month DESC
-    limit: 12
+    limit: 24
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_issues_log
-    desc: Open and recent issues for a supplier. Shows severity, type, assigned owner and status.
+    desc: Open and recent issues for a supplier, most severe first. Shows type, severity, owner, status, dates and root cause.
     kind: sql
     args:
       supplier_id: {required: true}
       status: {type: enum, values: [open, investigating, in_progress, resolved, closed], desc: "Filter by status (default all)"}
+      issue_type: {type: enum, values: [quality, delivery, cost, compliance, responsiveness, other], desc: "Filter by issue type (default all)"}
       days_back: {type: int, default: 180, desc: "Show issues raised in last N days"}
     sql: |
       SELECT issue_id, supplier_id, issue_type, severity, status, description,
@@ -229,98 +253,131 @@ tools:
       FROM supplier_issues
       WHERE supplier_id = $supplier_id
         AND ($status IS NULL OR status = $status)
-        AND raised_date >= CAST($as_of AS DATE) - INTERVAL ($days_back) DAY
-      ORDER BY severity DESC, raised_date DESC
+        AND ($issue_type IS NULL OR issue_type = $issue_type)
+        AND raised_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, raised_date DESC
     limit: 30
     example: {supplier_id: SUP-0003}
 
   - name: get_supplier_lead_time_performance
-    desc: Actual vs agreed lead time by process stage. Shows where delays occur (factory, port, transport).
+    desc: Actual vs agreed lead time per supplier over recent months (total by default, or one process stage), with share of POs late. Filter by supplier or country.
     kind: sql
     args:
-      supplier_id: {required: true}
-      months_back: {type: int, default: 3, desc: "Months to analyse"}
+      supplier_id: {required: false}
+      country: {type: str, desc: "Supplier country code, e.g. TR, PT, CN"}
+      process_stage: {type: enum, values: [total, order_to_factory, factory_to_port, port_to_dc], default: total, desc: "Stage to analyse; total is door to door"}
+      months_back: {type: int, default: 6, desc: "Months of POs to analyse"}
     sql: |
-      SELECT supplier_id, process_stage,
-             COUNT(*) as po_count,
-             ROUND(AVG(agreed_lead_time_days), 1) as avg_agreed_days,
-             ROUND(AVG(actual_lead_time_days), 1) as avg_actual_days,
-             ROUND(AVG(days_variance), 1) as avg_variance_days,
-             ROUND(SUM(CASE WHEN days_variance > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as late_pct
-      FROM supplier_lead_times
-      WHERE supplier_id = $supplier_id
-        AND po_date >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
-      GROUP BY supplier_id, process_stage
-      ORDER BY process_stage
-    limit: 20
+      SELECT l.supplier_id, s.name AS supplier_name, s.country, l.process_stage,
+             COUNT(*) AS po_count,
+             ROUND(AVG(l.agreed_lead_time_days), 1) AS avg_agreed_days,
+             ROUND(AVG(l.actual_lead_time_days), 1) AS avg_actual_days,
+             ROUND(AVG(l.days_variance), 1) AS avg_variance_days,
+             ROUND(SUM(CASE WHEN l.days_variance > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS late_pct
+      FROM supplier_lead_times l
+      JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      WHERE ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+        AND ($country IS NULL OR s.country = upper($country))
+        AND l.process_stage = $process_stage
+        AND l.po_date >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
+      GROUP BY l.supplier_id, s.name, s.country, l.process_stage
+      ORDER BY late_pct DESC, l.supplier_id
+    limit: 30
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_lead_time_breakdown
-    desc: Average lead time by process stage (order to factory, factory to port, port to DC) for a supplier.
+    desc: Average lead time by process stage (order to factory, factory to port, port to DC) for a supplier, with each stage's share of the total. Shows where time goes.
     kind: sql
     args:
       supplier_id: {required: true}
+      months_back: {type: int, default: 12, desc: "Months of POs to analyse"}
     sql: |
-      SELECT supplier_id, process_stage,
-             ROUND(AVG(actual_lead_time_days), 1) as avg_lead_time_days,
-             ROUND(MIN(actual_lead_time_days), 0) as min_days,
-             ROUND(MAX(actual_lead_time_days), 0) as max_days,
-             ROUND(STDDEV_POP(actual_lead_time_days), 1) as variability_std_dev,
-             COUNT(*) as data_points
-      FROM supplier_lead_times
-      WHERE supplier_id = $supplier_id
-      GROUP BY supplier_id, process_stage
-      ORDER BY process_stage
+      WITH t AS (
+        SELECT * FROM supplier_lead_times
+        WHERE supplier_id = $supplier_id
+          AND po_date >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
+      ),
+      tot AS (SELECT AVG(actual_lead_time_days) AS d FROM t WHERE process_stage = 'total')
+      SELECT t.supplier_id, t.process_stage,
+             ROUND(AVG(t.agreed_lead_time_days), 1) AS avg_agreed_days,
+             ROUND(AVG(t.actual_lead_time_days), 1) AS avg_lead_time_days,
+             ROUND(AVG(t.actual_lead_time_days) * 100.0 / (SELECT d FROM tot), 0) AS share_of_total_pct,
+             MIN(t.actual_lead_time_days) AS min_days, MAX(t.actual_lead_time_days) AS max_days,
+             ROUND(STDDEV_POP(t.actual_lead_time_days), 1) AS variability_std_dev,
+             COUNT(*) AS data_points
+      FROM t
+      GROUP BY t.supplier_id, t.process_stage
+      ORDER BY CASE t.process_stage WHEN 'order_to_factory' THEN 1 WHEN 'factory_to_port' THEN 2 WHEN 'port_to_dc' THEN 3 ELSE 4 END
     limit: 10
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_reaction_time
-    desc: Average reaction time (in hours) to change requests, by quarter.
+    desc: Average hours a supplier takes to respond to change requests, by quarter, with responsiveness score. Filter by supplier or country.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {required: false}
+      country: {type: str, desc: "Supplier country code, e.g. TR, PT, CN"}
+      quarters_back: {type: int, default: 4, desc: "Number of latest quarters"}
     sql: |
-      SELECT supplier_id, scorecard_month,
-             ROUND(responsiveness_score, 1) as responsiveness_score
-      FROM supplier_scorecards
-      WHERE supplier_id = $supplier_id
-      ORDER BY scorecard_month DESC
-    limit: 12
+      SELECT c.supplier_id, s.name AS supplier_name, s.country,
+             date_trunc('quarter', c.scorecard_month) AS quarter_start,
+             ROUND(AVG(c.reaction_time_hours), 1) AS avg_reaction_hours,
+             ROUND(AVG(c.responsiveness_score), 1) AS responsiveness_score
+      FROM supplier_scorecards c
+      JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+      WHERE ($supplier_id IS NULL OR c.supplier_id = $supplier_id)
+        AND ($country IS NULL OR s.country = upper($country))
+        AND c.scorecard_month >= date_trunc('quarter', CAST($as_of AS DATE)) - INTERVAL (CAST($quarters_back AS INT) * 3) MONTH
+      GROUP BY c.supplier_id, s.name, s.country, date_trunc('quarter', c.scorecard_month)
+      ORDER BY quarter_start DESC, avg_reaction_hours
+    limit: 40
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_scorecard_comparison
-    desc: Compare performance scorecards of multiple suppliers side-by-side for latest month.
+    desc: Compare several suppliers side by side on average quality, on-time delivery, cost, lead time, reaction time, flexibility and overall score over recent months.
     kind: sql
     args:
       supplier_ids: {required: true, desc: "Comma-separated supplier ids, e.g. SUP-0001,SUP-0002"}
+      months_back: {type: int, default: 6, desc: "Number of latest monthly scorecards to average"}
     sql: |
-      WITH latest_month AS (
-        SELECT MAX(scorecard_month) as month FROM supplier_scorecards
+      WITH ids AS (SELECT trim(unnest(string_split($supplier_ids, ','))) AS supplier_id),
+      recent AS (
+        SELECT c.* FROM supplier_scorecards c JOIN ids USING (supplier_id)
+        QUALIFY row_number() OVER (PARTITION BY c.supplier_id ORDER BY c.scorecard_month DESC) <= CAST($months_back AS INT)
       )
-      SELECT supplier_id, scorecard_month, quality_score, on_time_delivery_pct,
-             cost_performance_score, lead_time_days, responsiveness_score,
-             compliance_score, overall_score, status_category
-      FROM supplier_scorecards, latest_month
-      WHERE scorecard_month = latest_month.month
-        AND POSITION(supplier_id IN $supplier_ids) > 0
+      SELECT r.supplier_id, s.name AS supplier_name, s.country,
+             ROUND(AVG(r.quality_score), 1) AS quality_score,
+             ROUND(AVG(r.on_time_delivery_pct), 1) AS on_time_delivery_pct,
+             ROUND(AVG(r.cost_performance_score), 1) AS cost_performance_score,
+             ROUND(AVG(r.lead_time_days), 1) AS avg_lead_time_days,
+             ROUND(AVG(r.agreed_lead_time_days), 1) AS avg_agreed_lead_time_days,
+             ROUND(AVG(r.reaction_time_hours), 1) AS reaction_time_hours,
+             ROUND(AVG(r.responsiveness_score), 1) AS responsiveness_score,
+             ROUND(AVG(r.flexibility_score), 1) AS flexibility_score,
+             ROUND(AVG(r.compliance_score), 1) AS compliance_score,
+             ROUND(AVG(r.overall_score), 1) AS overall_score
+      FROM recent r JOIN master.suppliers s ON s.supplier_id = r.supplier_id
+      GROUP BY r.supplier_id, s.name, s.country
       ORDER BY overall_score DESC
     limit: 20
     example: {supplier_ids: "SUP-0001,SUP-0002,SUP-0003"}
 
   - name: get_supplier_management_cost
-    desc: Estimated cost to manage a supplier (team time, audits, systems, travel).
+    desc: Annual cost to manage a supplier (team time, audits, systems, travel) and as a percentage of spend. Leave supplier blank to rank all, costliest relative to spend first.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {required: false}
     sql: |
-      SELECT $supplier_id as supplier_id,
-             CASE
-               WHEN (SELECT COUNT(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id AND status NOT IN ('cancelled', 'draft')) > 50 THEN 25000
-               WHEN (SELECT COUNT(*) FROM master.purchase_orders WHERE supplier_id = $supplier_id AND status NOT IN ('cancelled', 'draft')) > 20 THEN 18000
-               ELSE 12000
-             END as estimated_annual_cost_gbp,
-             'Cost estimate based on volume and complexity' as formula
-    limit: 1
+      SELECT m.supplier_id, s.name AS supplier_name, s.annual_spend_gbp, m.team_hours, m.team_cost_gbp,
+             m.audit_cost_gbp, m.systems_cost_gbp, m.travel_cost_gbp,
+             m.total_annual_cost_gbp AS estimated_annual_cost_gbp,
+             ROUND(m.total_annual_cost_gbp * 100.0 / s.annual_spend_gbp, 1) AS cost_pct_of_spend,
+             'total = team hours x rate + audits + systems + travel' AS formula
+      FROM supplier_management_costs m
+      JOIN master.suppliers s ON s.supplier_id = m.supplier_id
+      WHERE ($supplier_id IS NULL OR m.supplier_id = $supplier_id)
+      ORDER BY cost_pct_of_spend DESC
+    limit: 20
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_concentration_by_category
@@ -335,35 +392,48 @@ tools:
     example: {category_focus: Womenswear}
 
   - name: calculate_supplier_segmentation_score
-    desc: Score suppliers for invest, maintain or exit based on spend, performance and criticality.
+    desc: Score suppliers 0-100 for invest, maintain or exit from performance, spend and management cost. Leave supplier blank to rank all; filter by recommendation.
     kind: sql
     args:
-      supplier_id: {required: true}
+      supplier_id: {required: false}
+      recommendation: {type: enum, values: [Invest, Maintain, Exit], desc: "Only suppliers with this recommendation"}
+      months_back: {type: int, default: 6, desc: "Months of scorecards averaged for performance"}
     sql: |
-      WITH latest_scorecard AS (
-        SELECT supplier_id, overall_score, on_time_delivery_pct
+      WITH perf AS (
+        SELECT supplier_id, AVG(overall_score) AS perf_score, AVG(on_time_delivery_pct) AS otd
         FROM supplier_scorecards
-        WHERE supplier_id = $supplier_id
-        ORDER BY scorecard_month DESC
-        LIMIT 1
+        QUALIFY row_number() OVER (PARTITION BY supplier_id ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
+        GROUP BY supplier_id
       ),
-      spend_data AS (
-        SELECT COUNT(DISTINCT pur.po_id) as po_count,
-               ROUND(SUM(CASE WHEN pur.status NOT IN ('cancelled', 'draft') THEN pur.total_value ELSE 0 END), 2) as annual_spend_gbp
-        FROM master.purchase_orders pur
-        WHERE pur.supplier_id = $supplier_id
+      base AS (
+        SELECT s.supplier_id, s.name, s.country, s.category_focus, s.annual_spend_gbp, s.risk_rating,
+               p.perf_score, p.otd, m.total_annual_cost_gbp,
+               m.total_annual_cost_gbp * 100.0 / s.annual_spend_gbp AS cost_pct,
+               percent_rank() OVER (ORDER BY s.annual_spend_gbp) * 100 AS spend_rank_pct
+        FROM master.suppliers s
+        JOIN perf p ON p.supplier_id = s.supplier_id
+        JOIN supplier_management_costs m ON m.supplier_id = s.supplier_id
+        WHERE s.status IN ('active', 'onboarding')
+      ),
+      scored AS (
+        SELECT *, ROUND(0.5 * perf_score + 0.3 * spend_rank_pct + 0.2 * greatest(0, 100 - cost_pct * 8), 1) AS segmentation_score
+        FROM base
       )
-      SELECT $supplier_id as supplier_id,
-             ROUND((COALESCE((SELECT overall_score FROM latest_scorecard), 50) * 0.5) +
-                   (COALESCE(CASE WHEN (SELECT annual_spend_gbp FROM spend_data) > 100000 THEN 30 ELSE 20 END, 0)) +
-                   (CASE WHEN (SELECT po_count FROM spend_data) > 20 THEN 20 ELSE 10 END), 0) as segmentation_score,
-             CASE
-               WHEN (COALESCE((SELECT overall_score FROM latest_scorecard), 50) > 75) AND (SELECT annual_spend_gbp FROM spend_data) > 50000 THEN 'Invest'
-               WHEN (COALESCE((SELECT overall_score FROM latest_scorecard), 50) < 40) THEN 'Exit'
-               ELSE 'Maintain'
-             END as recommendation,
-             'score = (performance * 0.5) + (spend * 0.3) + (volume * 0.2)' as formula
-    limit: 1
+      SELECT supplier_id, name, country, category_focus, annual_spend_gbp, risk_rating,
+             ROUND(perf_score, 1) AS avg_overall_score, ROUND(otd, 1) AS avg_on_time_pct,
+             total_annual_cost_gbp AS management_cost_gbp, ROUND(cost_pct, 1) AS cost_pct_of_spend,
+             segmentation_score,
+             CASE WHEN perf_score < 70 AND (spend_rank_pct < 50 OR cost_pct > 5) THEN 'Exit'
+                  WHEN perf_score >= 82 AND spend_rank_pct >= 50 THEN 'Invest'
+                  ELSE 'Maintain' END AS recommendation,
+             'score = 0.5 x performance + 0.3 x spend rank + 0.2 x cost efficiency; Exit if performance < 70 and small or costly; Invest if performance >= 82 and above-median spend' AS formula
+      FROM scored
+      WHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)
+        AND ($recommendation IS NULL OR $recommendation = CASE
+              WHEN perf_score < 70 AND (spend_rank_pct < 50 OR cost_pct > 5) THEN 'Exit'
+              WHEN perf_score >= 82 AND spend_rank_pct >= 50 THEN 'Invest' ELSE 'Maintain' END)
+      ORDER BY segmentation_score DESC
+    limit: 25
     example: {supplier_id: SUP-0001}
 
   - name: get_dual_sourcing_cost_estimate
@@ -421,27 +491,29 @@ tools:
     example: {api_supported: true}
 
   - name: get_supplier_engagement_status
-    desc: Engagement history on emissions and sustainability programmes for a supplier.
+    desc: Engagement records on emissions and other programmes (status, invitation and start dates, science-based target flag). Filter by supplier, programme or target flag.
     kind: select
     from: supplier_engagement_plans
     filters:
       supplier_id: {}
       programme_type: {}
+      engagement_status: {}
+      has_science_based_target: {}
     columns: [engagement_record_id, supplier_id, programme_type, engagement_status, invitation_sent_date,
               acceptance_date, programme_start_date, has_science_based_target, progress_notes]
-    order: programme_start_date
-    limit: 20
+    order: programme_start_date DESC
+    limit: 30
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_improvement_programme_history
-    desc: Past improvement programmes and results (quality, delivery, cost).
+    desc: Past and current improvement programmes for a supplier with baseline, target, progress and the result achieved.
     kind: sql
     args:
       supplier_id: {required: true}
     sql: |
       SELECT plan_id, supplier_id, plan_name, plan_type, focus_area,
              current_baseline, target_value, start_date, target_completion_date,
-             status, progress_pct, owner_internal
+             status, progress_pct, result, owner_internal
       FROM supplier_improvement_plans
       WHERE supplier_id = $supplier_id
       ORDER BY start_date DESC
@@ -462,20 +534,22 @@ tools:
     example: {supplier_id: SUP-0001, review_period: "Q4 2026", scheduled_date: "+14d", internal_owner: "EMP-0042"}
 
   - name: create_supplier_improvement_plan
-    desc: Opens a formal improvement plan with targets and dates for a supplier. Returns the new plan.
+    desc: Opens a formal improvement plan with baseline, target and dates for a supplier. Returns the new plan.
     kind: insert
     table: supplier_improvement_plans
     id_prefix: SIP-
-    defaults: {status: planned, progress_pct: 0}
+    defaults: {status: active, progress_pct: 0, start_date: "$as_of", plan_name: "{plan_type} improvement plan: {focus_area}"}
     args:
       supplier_id: {required: true}
       plan_type: {required: true, type: enum, values: [quality, delivery, cost, capacity, compliance, sustainability]}
-      focus_area: {required: true, desc: "Specific area to improve"}
-      current_baseline: {type: str, default: "current", desc: "Performance baseline"}
-      target_value: {required: true, desc: "Target value to achieve"}
-      target_completion_date: {required: true, type: date, desc: "Target completion date"}
-      owner_internal: {required: true, desc: "Employee id"}
-    example: {supplier_id: SUP-0001, plan_type: delivery, focus_area: "Factory to port", target_value: "21 days", target_completion_date: "+90d", owner_internal: "EMP-0042"}
+      focus_area: {required: true, desc: "Specific area to improve, e.g. On-time delivery"}
+      current_baseline: {required: true, desc: "Current performance, e.g. 61% on time"}
+      target_value: {required: true, desc: "Target value to achieve, e.g. 90% on time"}
+      target_completion_date: {required: true, type: date, desc: "Date the target must be met"}
+      owner_internal: {required: true, desc: "Employee id of the internal owner, e.g. the account manager"}
+      target_metric: {type: str, desc: "Metric measured, e.g. On-time delivery %"}
+      owner_supplier: {type: str, desc: "Supplier-side owner name"}
+    example: {supplier_id: SUP-0001, plan_type: delivery, focus_area: "On-time delivery", current_baseline: "88% on time", target_value: "95% on time", target_completion_date: "+90d", owner_internal: "EMP-00062"}
 
   - name: create_supplier_issue_record
     desc: Logs an issue and owner against a supplier. Returns the new issue record.
@@ -501,40 +575,45 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: update_supplier_status
-    desc: Changes a supplier's relationship status (watch, planned exit, active). Returns old and new status.
+    desc: Changes a supplier's relationship status (watch, planned_exit, active) with a reason. Returns old and new status.
     kind: update
-    table: master.suppliers
-    set: {status: "{status}"}
+    table: supplier_relationships
+    set: {status: "{status}", status_changed_date: "$as_of"}
     args:
-      status: {required: true, type: enum, values: [active, watch, planned_exit, blocked], desc: "New status"}
-    example: {supplier_id: SUP-0001, status: watch}
+      status: {required: true, type: enum, values: [active, watch, planned_exit], desc: "New relationship status"}
+      reason: {required: true, desc: "Why the status is changing"}
+    example: {supplier_id: SUP-0001, status: watch, reason: "Delivery and quality slipping"}
 
   - name: create_supplier_engagement_plan
-    desc: Add suppliers to the emissions engagement programme. Returns the new engagement plan.
+    desc: Add a supplier to the emissions (or other) engagement programme as planned, before any invitation. Returns the new engagement record.
     kind: insert
     table: supplier_engagement_plans
     id_prefix: ENG-
-    defaults: {engagement_status: invited}
+    defaults: {engagement_status: planned, has_science_based_target: false, progress_notes: "Added to programme, invitation not yet sent"}
     args:
       supplier_id: {required: true}
       programme_type: {required: true, type: enum, values: [emissions, sustainability, innovation, quality], desc: "Type of engagement"}
+      target_date: {type: date, default: "+365d", desc: "Date by which engagement should be complete"}
+      has_science_based_target: {type: bool, desc: "True if the supplier already has an SBTi-validated target"}
     example: {supplier_id: SUP-0001, programme_type: emissions}
 
   - name: send_supplier_engagement_invitation
-    desc: Send an emissions engagement invitation to a supplier. Returns confirmation and invitation details.
+    desc: Send an engagement programme invitation to a supplier and record it as invited today. Returns the invitation record.
     kind: insert
     table: supplier_engagement_plans
     id_prefix: ENG-
-    defaults: {engagement_status: invited}
+    defaults: {engagement_status: invited, invitation_sent_date: "$as_of", has_science_based_target: false, progress_notes: "Invitation sent, awaiting reply"}
     args:
       supplier_id: {required: true}
-      programme_type: {required: true, type: enum, values: [emissions, sustainability, innovation, quality]}
+      programme_type: {required: true, type: enum, values: [emissions, sustainability, innovation, quality], desc: "Type of engagement"}
+      target_date: {type: date, default: "+365d", desc: "Date by which engagement should be complete"}
     example: {supplier_id: SUP-0001, programme_type: emissions}
 
   - name: remove_supplier_from_engagement_programme
-    desc: Remove a supplier from the engagement programme. Returns confirmation.
+    desc: Remove a supplier from the engagement programme by marking its engagement record inactive, with a reason. Returns old and new status.
     kind: update
     table: supplier_engagement_plans
     set: {engagement_status: inactive}
-    args: {}
-    example: {engagement_record_id: ENG-000001}
+    args:
+      progress_notes: {required: true, desc: "Reason for removal, e.g. already has SBTi targets"}
+    example: {engagement_record_id: ENG-000001, progress_notes: "Already has SBTi targets"}

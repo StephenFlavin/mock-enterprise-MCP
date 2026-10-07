@@ -352,6 +352,9 @@ def generate(g):
             'opening_rate': round(o, 4), 'closing_rate': round(c, 4), 'gain_loss_gbp': round((c - o) * gbp_amount / o, 2),
             'fx_type': (fxt := rng.choice(['realised', 'unrealised'])), 'account_code': '8110' if fxt == 'realised' else '8120'})
 
+    # keep the September story clean: no background FX postings in the last 40 days
+    fx_gains_losses = [r for r in fx_gains_losses if r['posting_date'] <= as_of - timedelta(days=40)]
+
     # ---------------------------------------------------------------- freight postings (ledger side of the TMS reconciliation)
     freight_costs = []
     fr_n = 0
