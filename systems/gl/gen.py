@@ -808,6 +808,7 @@ def build_order_charges(g, lr):
             handling = 1.40 + 0.35 * units
         else:
             handling = 0.95 + 0.35 * units
+        lr = g.rng_for('order_charge', o['order_id'])   # per-order stream: master growth never shifts other orders
         discount = round(v * lr.uniform(0.05, 0.20), 2) if lr.random() < 0.30 else 0.0
         x = lr.random()
         if svc == 'collect':
