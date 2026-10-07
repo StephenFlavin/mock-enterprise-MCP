@@ -101,7 +101,31 @@ def _idlike(v) -> bool:
 
 # ---------- validation (no model) ----------
 
-def validate(sid: str) -> list[str]:
+def validate(sid: str, days: int = 7) -> list[str]:
+    """Validate as if today were each of the next `days` days: data moves in whole weeks but 'today' moves daily,
+    so a fact that depends on where a rolling window ends ('last 30 days') must hold on every weekday."""
+    real = date.fromisoformat(WORLD["as_of"])
+    out: list[str] = []
+    try:
+        for off in range(days):
+            spec.set_today(real + timedelta(days=off))
+            tag = "" if off == 0 else f" [only when today is {real + timedelta(days=off):%a} {real + timedelta(days=off)}]"
+            out += [x + tag for x in _validate_once(sid) if x not in out and not any(o.startswith(x) for o in out)]
+    finally:
+        spec.set_today(real)
+    return out
+
+
+def _shift_args(args: dict) -> dict:
+    """Ref args are written in data time like facts: move ISO dates with the data."""
+    def mv(v):
+        if isinstance(v, str) and re.fullmatch(r"\d{4}-\d\d-\d\d", v.strip()):
+            return (date.fromisoformat(v.strip()) + timedelta(days=spec.SHIFT_DAYS)).isoformat()
+        return [mv(x) for x in v] if isinstance(v, list) else v
+    return {k: mv(v) for k, v in args.items()}
+
+
+def _validate_once(sid: str) -> list[str]:
     from .server import Engine
     p, seen = [], set()
     with tempfile.TemporaryDirectory() as tmp:
@@ -126,7 +150,7 @@ def validate(sid: str) -> list[str]:
                     if r["tool"] not in names:
                         p.append(f"{cid}: ref tool {r['tool']} is not in {sid}")
                         continue
-                    text, err = eng.call(sid, r["tool"], r.get("args") or {})
+                    text, err = eng.call(sid, r["tool"], _shift_args(r.get("args") or {}))
                     if err:
                         p.append(f"{cid}: ref {r['tool']} errored: {text[:150]}")
                     out += "\n" + text

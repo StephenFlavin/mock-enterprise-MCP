@@ -4,15 +4,6 @@ def generate(g):
     # Knowledge base articles - for testing create/archive
     articles = [
         {
-            "article_id": "KB-000001",
-            "title": "ERP-WMS stock reconciliation mismatch resolution",
-            "category": "reconciliation",
-            "content": "Timing differences between ERP cutoff and WMS receipt processing cause recurring £1m+ gaps. Root cause: WMS receives goods 1-3 days after ERP records inbound PO. Solution: move WMS cutoff to match ERP close window.",
-            "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-180d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
-        },
-        {
             "article_id": "KB-000002",
             "title": "WMS duplicate task creation after replenishment - patch 9.2.7",
             "category": "failure_mode",
@@ -74,15 +65,6 @@ def generate(g):
             "status": "published",
             "created_at": g.fake.date_time_between(start_date="-120d", end_date="-30d"),
             "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
-        },
-        {
-            "article_id": "KB-000009",
-            "title": "Nearshore sourcing in Morocco: lead time and cost benchmarks",
-            "category": "runbook",
-            "content": "Morocco vs Turkey comparison: Lead time: Morocco 8-12 weeks (consistent), Turkey 6-10 weeks (variable). Cost: Morocco 15-20% premium vs Asia, Turkey 10-15% premium. Strengths: Morocco - EU trade preferences, EU quality standards, language (French/Arabic/English). Turkey - established supply base, competitive pricing, fast logistics. Risks: Morocco - newer supply base, fewer alt suppliers; Turkey - geopolitical (Syria/Iraq proximity). RECOMMENDATION: Morocco for EU-only collections (EU preferential rates). Turkey for faster turnaround on reorders.",
-            "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-100d", end_date="-20d"),
-            "updated_at": g.fake.date_time_between(start_date="-20d", end_date="-5d"),
         },
         {
             "article_id": "KB-000010",
@@ -173,7 +155,7 @@ def generate(g):
             "policy_id": "POL-FALLBACK-001",
             "policy_type": "fallback_positions",
             "policy_name": "Approved Fallback Positions by Clause",
-            "content": "Liability caps:\n- Our position: No cap on product liability, safety claims. Cap at 2x annual order value for other claims.\n- First fallback: Cap at order value.\n- Red line: Will not accept cap <order value.\nIP Ownership:\n- Our position: We own all IP including improvements and know-how.\n- First fallback: Shared IP rights; we get license to use at no cost.\n- Red line: Will not accept supplier retaining exclusive rights.\nForce majeure:\n- Our position: Force majeure only for unforeseeable events; requires suspension, not termination.\n- First fallback: Allow termination if event lasts >90 days.\n- Red line: None; event must clear before resuming.",
+            "content": "Approved fallback positions by clause (standard / first fallback / red line):\n- Limitation of liability: Standard: cap at amounts paid in the previous 12 months, with product safety, injury, IP and data breach uncapped. First fallback: cap at 100% of the value of the affected order for general claims. Red line: never cap product safety, death or personal injury, IP infringement or data breach.\n- IP ownership: Standard: Buyer owns all designs, patterns and improvements. First fallback: supplier keeps pre-existing IP and Buyer gets a royalty-free perpetual licence to improvements. Red line: supplier must not own or resell Buyer designs.\n- Force majeure: Standard: excludes strikes, supplier financial failure and shipping delays; 48-hour notice; either party may terminate after 90 days. First fallback: 120 days before termination. Red line: no relief for supplier financial failure or foreseeable shipping delay.\n- Payment terms: Standard: 60 days from goods receipt. First fallback: 45 days. Red line: never faster than 30 days and no payment before shipment.\n- Termination: Standard: termination for convenience on 90 days' notice. First fallback: 180 days notice on volume-committed frameworks. Red line: no termination fee beyond finished goods and materials bought against firm orders.\n- Audit and code of conduct: Standard: unannounced audit right and signed supplier code of conduct. First fallback: 5 working days' notice. Red line: no audit right means no agreement.\n- Subcontracting: Standard: only with written consent. First fallback: pre-approved subcontractor list. Red line: no unauthorised subcontracting.\n- Volume commitment: Standard: 60% of forecast with +/-20% flexibility. First fallback: 70% with +/-15%. Red line: no commitment above 70% of forecast and no agreement without a flexibility band.",
             "version": "1.3",
             "effective_date": g.days_ago(180),
             "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
