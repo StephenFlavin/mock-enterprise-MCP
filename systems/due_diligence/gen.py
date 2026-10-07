@@ -153,7 +153,7 @@ def generate(g):
     r = g.rng
     asof = g.as_of
     d = lambda n: asof - timedelta(days=n)
-    suppliers = [s for s in g.master("suppliers") if s["supplier_type"] == "product"]
+    suppliers = [s for s in g.master("suppliers") if s.get("supplier_type", "product") == "product"]
     sup = {s["supplier_id"]: s for s in suppliers}
     factories = g.master("factories")
     fac_by_sup = {}
