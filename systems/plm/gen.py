@@ -186,7 +186,10 @@ def generate(g):
         # scale component prices so material cost is a believable share of the master unit cost
         raw = sum(ln["quantity"] * ln["unit_cost_gbp"] for ln in lines)
         if raw:
-            k = r.uniform(0.3, 0.5) * float(p["unit_cost_gbp"]) / raw
+            share = r.uniform(0.3, 0.5)
+            if cat == "Blouses":  # 04:39:Q4: Ochre blouse style STY-9345 is the most exposed to a polyester price rise
+                share = {"SKU-106125": 0.47, "SKU-106132": 0.46, "SKU-106118": 0.45}.get(sku, min(share, 0.42))
+            k = share * float(p["unit_cost_gbp"]) / raw
             for ln in lines:
                 ln["unit_cost_gbp"] = round(ln["unit_cost_gbp"] * k, 3)
         for ln in lines:

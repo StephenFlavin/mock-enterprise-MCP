@@ -663,6 +663,15 @@ def generate(g):
         if gap + inv["amount_gbp"] <= 210000 and k < 6:
             inv["posted_to_ledger"] = False
             gap += inv["amount_gbp"]; k += 1
+    # Reconciled with ap and gl: GBP 208,822 is invoiced but not posted, of which carrier CAR-008 is 66,981.
+    # Trim the unposted invoices to those figures (the remainder comes off the largest other unposted invoice).
+    unposted = [x for x in recent if not x["posted_to_ledger"]]
+    c8 = [x for x in unposted if x["carrier_id"] == "CAR-008"]
+    others = sorted([x for x in unposted if x["carrier_id"] != "CAR-008"], key=lambda x: -x["amount_gbp"])
+    if c8 and others:
+        c8[0]["amount_gbp"] = round(c8[0]["amount_gbp"] - (sum(x["amount_gbp"] for x in c8) - 66981), 2)
+        others[0]["amount_gbp"] = round(others[0]["amount_gbp"] - (sum(x["amount_gbp"] for x in unposted) - 208822), 2)
+        gap = sum(x["amount_gbp"] for x in unposted)
     for inv in recent:
         if inv["posted_to_ledger"] and inv["carrier_id"] in ("CAR-001", "CAR-002") and gap + inv["amount_gbp"] <= 210000:
             inv["gl_account"] = "5120"

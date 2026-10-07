@@ -279,11 +279,13 @@ def generate(g):
 
     # ---------------- click and collect ----------------
     cc, seen = [], set()
-    k1700 = {"ST001": 14, "ST006": 12, "ST150": 11, "ST214": 9, "ST209": 8, "ST008": 8, "ST202": 7, "ST206": 6}
+    # daily forecast per store: the eight busiest collection stores take ~220 forecast / ~280 actual units a week
+    # against ~500 online units a week for K-1700 in master sales_weekly
+    k1700 = {"ST001": 6, "ST006": 5, "ST150": 5, "ST214": 4, "ST209": 3, "ST008": 3, "ST202": 3, "ST206": 2}
     for sid, fc in k1700.items():
         r = g.rng_for("store_ops_cc_k1700", sid)
         for d in range(7):  # last 7 days of data: inside the default window whatever weekday it is run
-            f = max(1, fc + r.randint(-2, 2))
+            f = max(1, fc + r.randint(-1, 1))
             a = int(round(f * r.uniform(1.15, 1.45)))
             cc.append({"site_id": sid, "sku": "K-1700", "date": g.days_ago(d), "forecasted_demand": f, "actual_demand": a,
                        "reserved_quantity": max(0, int(a * 0.6)), "online_allocation": fc * 3})

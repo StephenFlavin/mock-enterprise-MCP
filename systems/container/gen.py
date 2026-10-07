@@ -92,7 +92,8 @@ def generate(g):
         fx = FX.get(po["currency"], 1.0)
         lines = po_lines[s["po_id"]]
         per = [[] for _ in range(n)]
-        weights = [r.uniform(0.4, 1.6) for _ in range(n)]
+        rx = g.rng_for("expand", s["shipment_id"])
+        weights = [rx.uniform(0.4, 1.6) for _ in range(n)]
         for ln in lines:
             q = int(ln["qty_ordered"])
             shares = [max(1, int(q * w / sum(weights))) for w in weights]
@@ -115,6 +116,7 @@ def generate(g):
                     else "Americas-UK" if s["dest_port"].startswith("GB")
                     else "Asia-US" if s["dest_port"] == "USNYC" else "Asia-Europe")
             status = "delayed" if story_v else STATUS_MAP[s["status"]]
+            r = g.rng_for("container", s["shipment_id"])
             for lines in per:
                 cid = f"CONT-{len(containers) + 1:06d}"
                 value = 0.0
@@ -143,6 +145,7 @@ def generate(g):
                             "anchored_since": ago(days=6, hours=1), "delay_days": 6.0,
                             "container_count": len(v_containers), "updated_at": ago(hours=2)})
             continue
+        r = g.rng_for("vessel", vessel_id)
         etas = [datetime.fromisoformat(m["eta"]) + timedelta(hours=14) for m in members]
         eta = max(etas)
         at_port = sum(1 for c in v_containers if c["status"] == "at_port") * 2 > len(v_containers)
@@ -245,6 +248,7 @@ def generate(g):
     via = {"NLRTM": (36, 1.4, "GBFXT", "sea+feeder"), "DEHAM": (37, 1.8, "GBFXT", "sea+feeder"),
            "ESVLC": (41, 1.0, "DIRFT", "sea+rail"), "GRPIR": (37, 1.9, "DIRFT", "sea+rail")}
     transit = []
+    r = g.rng_for("transit_history")
 
     def add_transit(origin, vport, dep, delay, dwell):
         planned, _b, gw, chain = via[vport]
@@ -285,6 +289,7 @@ def generate(g):
                   "CNYTN": 30, "VNSGN": 30, "INNSA": 50, "BDCGP": 68, "MXZLO": 26, "USNYC": 30, "TRMER": 26,
                   "PTLEI": 22, "ESVLC": 22, "GRPIR": 26}
     dwell = []
+    r = g.rng_for("port_dwell")
     weeks = g.weeks(26)
     for port, base in dwell_base.items():
         for i, wk in enumerate(weeks):
@@ -305,6 +310,7 @@ def generate(g):
     # signed error = actual minus predicted (positive = arrived later than the carrier said)
     carriers = {"CAR-005": (4, 14, 38), "CAR-006": (38, 30, 30), "CAR-007": (14, 20, 34)}
     preds = []
+    r = g.rng_for("eta_predictions")
     for cid, (bias, sd, voyages) in carriers.items():
         for v in range(voyages):
             arrive = ago(days=r.randint(3, 88))

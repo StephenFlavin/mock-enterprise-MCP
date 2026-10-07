@@ -1,6 +1,6 @@
 """Merchandise Financial Planning data: planned buys, weekly sell-through, OTB, forecasts, scenarios, market forecasts."""
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 import statistics
 
 REGIONS = {  # master trading regions with a rough size factor (store count based)
@@ -57,6 +57,8 @@ def generate(g):
     price = defaultdict(list)
     dept_of = {}
     for p in products:
+        if p["status"] == "new":  # not yet launched: no plan history, and it must not shift existing averages
+            continue
         cat_info[p["category"]][p["country_of_origin"]].append(float(p["unit_cost_gbp"]))
         price[(p["department"], p["category"])].append(float(p["retail_price_gbp"]))
         price[p["category"]].append(float(p["retail_price_gbp"]))
@@ -71,6 +73,7 @@ def generate(g):
                 continue
             for country, costs in sorted(by_country.items()):
                 for season, period in (("SS", 2), ("AW", 7)):
+                    r = g.rng_for("planned_buy", year, cat, country, season)
                     units = r.randrange(2000, 16000, 500)
                     unit_cost = round(sum(costs) / len(costs) * r.uniform(1.12, 1.22), 2)
                     mark = avg_price[cat] / (sum(costs) / len(costs)) * r.uniform(0.97, 1.03)
@@ -83,6 +86,7 @@ def generate(g):
                         "created_at": g.days_ago(r.randint(120, 300)), "updated_at": g.days_ago(r.randint(1, 60)),
                     })
 
+    r = g.rng
     # ---- weekly sell-through vs plan (26 weeks, k=1 latest complete week)
     sell = []
     line_bias = {}
@@ -103,10 +107,23 @@ def generate(g):
             "sell_through_pct": round(ratio * 100, 1),
         })
 
+    # weekly plan units per line follow the master sales scale: average units sold per week over the last 13 weeks,
+    # split across regions by size factor
+    dept_cat = {p["sku"]: (p["department"], p["category"]) for p in products}
+    since = g.as_of - timedelta(days=91)
+    line_units = defaultdict(float)
+    for w in g.master("sales_weekly"):
+        if date.fromisoformat(w["week_start"]) >= since and w["sku"] in dept_cat:
+            line_units[dept_cat[w["sku"]]] += float(w["store_units"]) + float(w["online_units"])
+    fsum = sum(REGIONS.values())
+
+    def plan_units(dept, cat, f, share=1.0, step=10):
+        return max(100, int(round(line_units[(dept, cat)] / 13.0 * share * f / fsum / step)) * step)
+
     for dept, cat, base, bias in LINES:
         for region, f in REGIONS.items():
-            plan = max(100, int(round(base * f / 100.0)) * 100)
-            rf = round(r.uniform(-0.03, 0.03), 2)
+            plan = plan_units(dept, cat, f)
+            rf = round(g.rng_for("sell_rf", dept, cat, region).uniform(-0.03, 0.03), 2)
             for k in range(1, 27):
                 if (dept, cat) in STORY_BANDS:
                     b = STORY_BANDS[(dept, cat)]
@@ -115,21 +132,27 @@ def generate(g):
                 else:
                     ratio = bias + rf
                 add_sell(dept, cat, "", region, k, plan, round(ratio, 2))
-    for cat, base in (("Tops", 2500), ("Trousers", 1800)):
+    for cat, share in (("Tops", 0.28), ("Trousers", 0.18)):  # the new range plans a share of the category's weekly units
         for region, f in REGIONS.items():
-            plan = max(100, int(round(base * f / 100.0)) * 100)
+            plan = plan_units("Womenswear", cat, f, share, 100)
             for k in range(1, 11):
                 add_sell("Womenswear", cat, "Athleisure", region, k, plan, ATHLEISURE[region])
 
-    # ---- SKU-level season sell-through (master SKUs of finished / running seasons)
+    # ---- SKU-level season sell-through (master SKUs of finished / running seasons).
+    # Units sold are the master weekly sales over the weeks on sale, so volumes match the sales data;
+    # units received follow from the SKU's sell-through.
+    first_week = g.as_of - timedelta(days=7 * 26)
+    sold_by_week = defaultdict(dict)
+    for w in g.master("sales_weekly"):
+        sold_by_week[w["sku"]][w["week_start"]] = (float(w["store_units"]) + float(w["online_units"]), float(w["revenue_gbp"]))
     sku_st = []
     cat_ratio = {"Tops": 0.55, "Footwear": 0.58, "Small Appliances": 0.57}
     for p in products:
-        if p["season"] not in ("SS26", "AW26", "CORE"):
+        if p["season"] not in ("SS26", "AW26", "CORE") or p["status"] == "new":
             continue
+        r = g.rng_for("sku_st", p["sku"])
         cat = p["category"]
         weeks = 9 if p["season"] == "AW26" else 26
-        recv = r.randrange(300, 3000, 50) if cat != "Small Appliances" else r.randrange(200, 1500, 50)
         if p["status"] in ("clearance", "discontinued"):
             ratio = r.uniform(0.30, 0.52)
         elif p["season"] == "SS26" and cat in cat_ratio:
@@ -138,12 +161,18 @@ def generate(g):
             ratio = r.uniform(0.28, 0.45)   # 9 weeks into a 26-week season
         else:
             ratio = r.uniform(0.78, 0.96)
-        sold = int(recv * ratio)
+        start = g.as_of - timedelta(days=7 * weeks)
+        wk = [v for d, v in sold_by_week.get(p["sku"], {}).items() if start <= date.fromisoformat(d) < g.as_of]
+        sold = int(sum(v[0] for v in wk))
+        if sold <= 0:
+            continue
+        recv = max(sold, int(round(sold / ratio / 50.0)) * 50)
         sku_st.append({
             "sku": p["sku"], "category": cat, "season": p["season"], "received_units": recv, "units_sold": sold,
             "sell_through_pct": round(sold * 100.0 / recv, 1), "weeks_on_sale": weeks,
-            "retail_sales_gbp": round(sold * float(p["retail_price_gbp"]) * 0.88, 2),
+            "retail_sales_gbp": round(sum(v[1] for v in wk), 2),
         })
+    r = g.rng
 
     # ---- open to buy: prior and current seasons (spring 2027 is seeded)
     otb = []

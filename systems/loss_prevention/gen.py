@@ -69,6 +69,7 @@ def generate(g):
     shrink_records = []
     for s in sites:
         sid = s["site_id"]
+        r = g.rng_for("lp_shrink", sid)
         size = min(1.8, max(0.35, float(s["sqft"] or 15000) / 18000.0))
         store_factor = size * r.uniform(0.85, 1.15)
         for k in range(WEEKS):
@@ -109,6 +110,7 @@ def generate(g):
     }
     incidents = []
     for sid in stores:
+        r = g.rng_for("lp_incidents", sid)
         for _ in range(r.randint(2, 9)):
             d = g.as_of - timedelta(days=r.randint(1, 450))
             t = r.choice(kinds)
@@ -135,6 +137,7 @@ def generate(g):
     types = list(CONTROL_PROFILE)
     control_programs = []
     for sid in stores:
+        r = g.rng_for("lp_controls", sid)
         n = r.choice([0, 1, 1, 2, 2, 3])
         for ct in r.sample(types, n):
             cost, red, sd = CONTROL_PROFILE[ct]
@@ -151,6 +154,7 @@ def generate(g):
 
     # ---- high-risk list: a modest set of electricals, mostly theft-driven -----------------------
     elec = [p["sku"] for p in products if p["department"] == "Electricals" and float(p["retail_price_gbp"] or 0) >= 100]
+    r = g.rng_for("lp_high_risk")
     pool = r.sample(elec, min(10, len(elec)))
     high_risk_products = []
     for sid in stores[:60]:

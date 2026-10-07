@@ -83,6 +83,7 @@ def generate(g):
     for sid, s in sites.items():
         if sid in by_site:
             continue
+        r = g.rng_for("wfm_staff", sid)
         sqft = int(s["sqft"])
         m = managers.get(sid)
         add_staff(sid, m["name"] if m else person(), "Store Manager", 40, "active", m["employee_id"] if m else "")
@@ -165,6 +166,7 @@ def generate(g):
     rota_stores = [i for i in (leeds + near + rest) if i != "ST150"][:20]
 
     def generic_spec(site):
+        r = g.rng_for("wfm_spec", site)
         close = 20 if sites[site]["format"] in ("shopping_centre", "high_street") else 21
         end = f"{close:02d}:00"
         spec = []
@@ -237,12 +239,14 @@ def generate(g):
                 add_shifts(rota, stable[site])
 
     # a few shifts changed after publication in past weeks (swaps), at random generic stores
+    r = g.rng_for("wfm_swaps")
     for sh in r.sample([x for x in shifts if not x["shift_id"].startswith("SFT-9") and x["shift_date"] < mon0], 40):
         sh["status"] = "swapped"
 
     # ---------- availability ----------
     availability = []
     for site in ["ST214", "ST150"] + rota_stores:
+        r = g.rng_for("wfm_avail", site)
         for s in by_site[site]:
             if s["status"] not in ("active", "agency"):
                 continue
@@ -294,6 +298,7 @@ def generate(g):
     region_rate = {"Ireland": 1.1, "EU Central": 1.2, "US": 1.25}
     base_pct = {}
     for sid, s in sites.items():
+        r = g.rng_for("wfm_basepct", sid)
         mean = region_mean.get(s["region"], 11.5)
         v = r.uniform(9.5, 10.8) if s["region"] == "UK North" else r.uniform(mean - 1.0, mean + 0.9)
         base_pct[sid] = round(v, 1)
@@ -302,6 +307,7 @@ def generate(g):
         week = wk(n)
         mi = {7: 0, 8: 1, 9: 2}.get(week.month, 2)
         for sid, s in sites.items():
+            r = g.rng_for("wfm_cost", sid, n)
             rate = round(12.9 * region_rate.get(s["region"], 1.0) + r.uniform(-0.25, 0.25), 2)
             if sid == "ST214":
                 pct, hours = pct214[n + 13], hours214 + r.choice([-4, 0, 0, 4])

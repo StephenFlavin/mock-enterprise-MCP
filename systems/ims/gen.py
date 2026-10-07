@@ -125,8 +125,9 @@ def generate(g):
                         "weekly_demand": round(base["weekly_demand"] * sh, 1),
                         "safety_stock": int(base["safety_stock"] * sh), "reorder_point": int(base["reorder_point"] * sh)})
             positions[(sku + "@" + loc, "DC1")] = row
-    # PF-220 and K-1700 DC2 demand (master stock; chain sales ~ 240/week)
-    for sku, dem in (("K-1700", 240.0), ("PF-220", 260.0)):
+    # PF-220 and K-1700 DC2 demand: DC2 is the e-commerce DC, so it issues the chain's online units (master sales_weekly)
+    for sku in ("K-1700", "PF-220"):
+        dem = round(chain_online[sku], 1)
         p = positions[(sku, "DC2")]
         p["weekly_demand"] = dem
         p["safety_stock"] = int(dem * 1.5)
@@ -467,6 +468,12 @@ def generate(g):
         if k == ("SKU-103234", "DC2", ""):
             p["reorder_point"], p["safety_stock"] = 4944, 560
 
+    # (3b) SKU-103227 (container CONT-000068 story): ST186 is the clear first store to run out, 3.9 weeks of cover.
+    for p in pos_rows:
+        if p["sku"] == "SKU-103227" and p["site_id"] == "ST186":
+            p["available"] = int(3.9 * p["weekly_demand"])
+            p["on_hand"] = p["available"] + p["allocated"]
+
     # (4) DC1 stock is held in bins: spread each SKU over one or two bins in aisles A-F
     recent = {"DC1-A-01-01", "DC1-A-02-01"}
     pool = [l["location_id"] for l in g.master("locations")
@@ -612,12 +619,32 @@ def generate(g):
         add_batch("SKU-101813", "BATCH-LEATHER-001", "released", 150, site, q)
     leather_stores = sorted((p["site_id"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"].startswith("ST")),
                             key=lambda x: h("leather", x))
+    # the failed batch 002 is one 300-unit production lot (qms): 80 units are still in stores, shared out by store stock
+    # (batch 001 is the bulk of the store stock)
+    l_on = {st: next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"] == st) for st in leather_stores}
+    l2 = [st for i, st in enumerate(leather_stores) if i % 3 != 2]
+    l2_tot = sum(l_on[st] for st in l2)
+    left = 80
+    for j, st in enumerate(l2):
+        q = left if j == len(l2) - 1 else max(int(80 * l_on[st] / l2_tot), 1)
+        left -= q
+        add_batch("SKU-101813", "BATCH-LEATHER-002", "released", 100, st, q)
     for i, st in enumerate(leather_stores):
-        bid = "BATCH-LEATHER-002" if i % 3 != 2 else "BATCH-LEATHER-001"
-        add_batch("SKU-101813", bid, "released", 100, st, max(int(next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"] == st) * 0.7), 1))
+        if i % 3 == 2:
+            add_batch("SKU-101813", "BATCH-LEATHER-001", "released", 100, st, max(int(l_on[st] * 0.7), 1))
 
     # (9) Wholesale allocation story: SKU-100035 has 8,000 units sellable across the network (three wholesale customers
     # ordered 15,000). Master dc_stock only has DC1 and DC3, so the balance sits in DC2 (UK e-commerce DC).
+    # Stores range this scarf at chain-scale volumes, so cap what the stores hold (the oms allocation story needs 8,000 in all).
+    STORE_CAP = 1900
+    st_rows = [p for p in pos_rows if p["sku"] == "SKU-100035" and p["site_id"].startswith("ST")]
+    st_tot = sum(p["available"] for p in st_rows)
+    if st_tot > STORE_CAP:
+        for p in st_rows:
+            f = STORE_CAP / st_tot
+            p["on_hand"] = max(int(p["on_hand"] * f), 1)
+            p["allocated"] = int(p["allocated"] * f)
+            p["available"] = p["on_hand"] - p["allocated"]
     have = sum(p["available"] - p["hold_qty"] for p in pos_rows if p["sku"] == "SKU-100035")
     need = 8000 - have
     if need > 0:

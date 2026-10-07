@@ -114,7 +114,8 @@ def generate(g):
         p["_cost"] = float(p["unit_cost_gbp"])
 
     # ---- rules -------------------------------------------------------------------------------------------
-    cats = sorted({p["category"] for p in products})
+    # categories that have launched products only: categories made of new master products get no rules or rates yet
+    cats = sorted({p["category"] for p in products if p["status"] != "new"})
     cat_dept = {p["category"]: p["department"] for p in products}
     # Accessories/Kids/Womenswear share category names across departments only for Outerwear/Knitwear/Trousers
     def rule_for(cat):
@@ -130,7 +131,7 @@ def generate(g):
             disposition_rules.append({
                 "rule_id": f"DIS-{n:06d}", "product_category": cat, "min_age_days": lo, "max_age_days": hi,
                 "disposition_route": route, "status": "active", "effective_from": as_of - timedelta(days=120),
-                "updated_at": as_of - timedelta(days=r.randint(20, 100))})
+                "updated_at": as_of - timedelta(days=g.rng_for("returns_rule", cat, lo).randint(20, 100))})
 
     def band_route(cat, age):
         rr = rule_for(cat)
