@@ -139,7 +139,7 @@ def generate(g):
             "depot": r.choice(["Leeds DC", "Manchester Depot", "London Hub", "Glasgow Terminal"]),
             "sku": r.choice(["SKU-100234", "K-1700", "PF-220", "STY-5520", "SKU-100456"]),
             "package_type": r.choice(["carton", "polybag", "hanging"]),
-            "claim_date": g.date_between(g.days_ago(90), g.as_of),
+            "claim_date": g.date_between(90, 0),
             "amount_gbp": round(r.uniform(50.0, 2000.0), 2),
             "status": r.choice(["filed", "accepted", "settled"]),
             "claim_notes": "Goods damaged in transit - " + r.choice(["crushed", "wet", "torn", "broken"])
@@ -246,7 +246,7 @@ def generate(g):
                 "lane": r.choice(road_lanes[:4]),
                 "weeks_needed": f"weeks {r.randint(40, 52)}-{r.randint(45, 53)}",
                 "units_requested": r.randint(200, 1000),
-                "request_date": g.date_between(g.days_ago(30), g.as_of),
+                "request_date": g.date_between(30, 0),
                 "status": r.choice(["confirmed", "requested"])
             })
 

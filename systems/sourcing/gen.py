@@ -79,13 +79,13 @@ def generate(g):
         # Generate responses for RFX
         num_rfx_responses = r.choice([2, 3, 4])
         for j in range(num_rfx_responses):
-            carrier = r.choice(carriers)
+            supplier = r.choice(suppliers)
             rfx_resp_id = f"RXR-{1000000 + len(rfx_responses) + 1:06d}"
 
             rfx_responses.append({
                 "rfx_response_id": rfx_resp_id,
                 "rfx_id": rfx_id,
-                "supplier_id": carrier["carrier_id"],
+                "supplier_id": supplier["supplier_id"],
                 "status": r.choice(["submitted", "received", "evaluated", "accepted"]),
                 "annual_cost_gbp": round(r.uniform(500000, 2000000), 2),
                 "transition_cost_gbp": round(r.uniform(50000, 150000), 2),

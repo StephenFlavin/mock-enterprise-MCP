@@ -1301,3 +1301,341 @@ tools:
   limit: 100
   example:
     supplier_id: SUP-0001
+- name: get_supplier_tier_mapping_by_country
+  desc: Tier-n supplier map by country, with factory count, worker count and mapping percentage.
+  kind: sql
+  args:
+    supplier_id:
+      required: true
+    country: {}
+    tier: {type: int}
+  sql: |
+    SELECT
+      supplier_id,
+      country,
+      tier,
+      factory_count,
+      worker_count,
+      mapped_pct,
+      updated_at
+    FROM tier_mapping_by_country
+    WHERE supplier_id = $supplier_id
+      AND ($country IS NULL OR country = $country)
+      AND ($tier IS NULL OR tier = $tier)
+    ORDER BY tier, country
+  limit: 100
+  example:
+    supplier_id: SUP-0001
+    country: IN
+- name: get_supplier_traceability_evidence
+  desc: Traceability evidence for suppliers, including blockchain, batch tracking and origin documentation.
+  kind: sql
+  args:
+    supplier_id:
+      required: true
+    evidence_type: {}
+  sql: |
+    SELECT
+      supplier_id,
+      evidence_id,
+      evidence_type,
+      material_or_product,
+      origin,
+      confidence_level,
+      evidence_date,
+      updated_at
+    FROM supplier_traceability_evidence
+    WHERE supplier_id = $supplier_id
+      AND ($evidence_type IS NULL OR evidence_type = $evidence_type)
+    ORDER BY confidence_level DESC, evidence_date DESC
+  limit: 50
+  example:
+    supplier_id: SUP-0001
+- name: get_supply_chain_map_for_product
+  desc: Mapped tiers for a product from direct supplier through sub-tiers with factories and materials.
+  kind: sql
+  args:
+    sku:
+      required: true
+    tier: {type: int, desc: "Tier level (1=direct); omit for all"}
+  sql: |
+    SELECT
+      product_sku,
+      tier,
+      factory_id,
+      supplier_id,
+      mapped_at,
+      mapping_status,
+      material_flow,
+      updated_at
+    FROM supply_chain_mapping
+    WHERE product_sku = $sku
+      AND ($tier IS NULL OR tier = $tier)
+    ORDER BY tier, factory_id
+  limit: 50
+  example:
+    sku: PF-220
+- name: get_supply_chain_mapping_gaps
+  desc: Unmapped tiers by region and product, with remediation plans and priority.
+  kind: sql
+  args:
+    product_category: {}
+    country: {}
+    min_priority: {type: enum, values: [high, medium, low], default: medium, desc: "Minimum priority to include"}
+  sql: |
+    SELECT
+      gap_id,
+      product_category,
+      tier_level,
+      country,
+      unit_volume_annual,
+      gap_reason,
+      remediation_plan,
+      priority,
+      updated_at
+    FROM supply_chain_mapping_gaps
+    WHERE ($product_category IS NULL OR product_category = $product_category)
+      AND ($country IS NULL OR country = $country)
+      AND (
+        CASE $min_priority
+          WHEN 'high' THEN priority = 'high'
+          WHEN 'medium' THEN priority IN ('high', 'medium')
+          ELSE priority IN ('high', 'medium', 'low')
+        END
+      )
+    ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, unit_volume_annual DESC
+  limit: 100
+  example: {}
+- name: get_worker_grievance_records
+  desc: Grievance hotline and worker voice records by factory with category and remediation status.
+  kind: sql
+  args:
+    factory_id: {}
+    supplier_id: {}
+    category: {}
+    status: {type: enum, values: [open, investigating, resolved, closed]}
+  sql: |
+    SELECT
+      grievance_id,
+      factory_id,
+      supplier_id,
+      grievance_date,
+      category,
+      description,
+      remediation_status,
+      resolution_notes,
+      updated_at
+    FROM worker_grievances
+    WHERE ($factory_id IS NULL OR factory_id = $factory_id)
+      AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      AND ($category IS NULL OR category = $category)
+      AND ($status IS NULL OR remediation_status = $status)
+    ORDER BY grievance_date DESC
+  limit: 100
+  example:
+    supplier_id: SUP-0001
+- name: list_required_supplier_documents
+  desc: Documents required from suppliers to meet due-diligence and compliance obligations.
+  kind: select
+  from: supplier_document_requirements
+  filters:
+    supplier_id: {}
+    jurisdiction: {}
+    document_type: {op: like}
+  columns: [requirement_id, supplier_id, jurisdiction, document_type, description, required_by_date, status]
+  order: required_by_date
+  limit: 50
+  example:
+    supplier_id: SUP-0001
+- name: list_suppliers_by_forced_labour_risk
+  desc: Suppliers ranked by forced labour risk with compliance and financial risk indicators.
+  kind: sql
+  args:
+    min_risk_level: {type: enum, values: [low, medium, high, critical], default: high}
+    country: {}
+  sql: |
+    SELECT
+      r.supplier_id,
+      s.name AS supplier_name,
+      s.country,
+      r.forced_labour_risk,
+      r.compliance_risk,
+      r.financial_risk,
+      r.overall_risk,
+      r.due_diligence_status,
+      r.last_assessed_at,
+      COUNT(DISTINCT e.evidence_id) AS evidence_count
+    FROM supplier_risk_ratings r
+    JOIN master.suppliers s ON s.supplier_id = r.supplier_id
+    LEFT JOIN risk_evidence e ON e.supplier_id = r.supplier_id AND e.risk_category = 'forced_labour'
+    WHERE r.forced_labour_risk IN ('high', 'critical')
+      AND ($country IS NULL OR s.country = $country)
+    GROUP BY r.supplier_id, s.name, s.country, r.forced_labour_risk, r.compliance_risk, r.financial_risk, r.overall_risk, r.due_diligence_status, r.last_assessed_at
+    ORDER BY CASE r.forced_labour_risk WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, r.supplier_id
+  limit: 50
+  example: {}
+- name: run_sanctions_screening
+  desc: Screen entities against sanctions lists (OFAC, UN, UK, EU) with match status and details.
+  kind: sql
+  args:
+    entity_id: {}
+    entity_name: {}
+    sanctions_list: {values: [OFAC, UN, UK, EU]}
+  sql: |
+    SELECT
+      entity_id,
+      screening_id,
+      entity_name,
+      screening_date,
+      sanctions_list,
+      match_status,
+      description,
+      action_taken,
+      updated_at
+    FROM sanctions_screening_records
+    WHERE ($entity_id IS NULL OR entity_id = $entity_id)
+      AND ($entity_name IS NULL OR entity_name ILIKE '%' || $entity_name || '%')
+      AND ($sanctions_list IS NULL OR sanctions_list = $sanctions_list)
+    ORDER BY screening_date DESC, CASE match_status WHEN 'confirmed_match' THEN 0 WHEN 'possible_match' THEN 1 ELSE 2 END
+  limit: 50
+  example:
+    entity_name: "Bishop Apparel"
+- name: search_adverse_media
+  desc: Search adverse media on an entity by keywords, with source, date and severity.
+  kind: sql
+  args:
+    headline: {op: like, desc: "Keywords in headline or content"}
+    source: {}
+    severity: {type: enum, values: [low, medium, high, critical]}
+    date_from: {type: date, default: "-180d"}
+  sql: |
+    SELECT
+      entity_id,
+      record_id,
+      entity_type,
+      headline,
+      source,
+      content,
+      published_date,
+      severity,
+      verified,
+      found_at,
+      updated_at
+    FROM adverse_media_records
+    WHERE ($headline IS NULL OR (headline ILIKE '%' || $headline || '%' OR content ILIKE '%' || $headline || '%'))
+      AND ($source IS NULL OR source = $source)
+      AND ($severity IS NULL OR severity = $severity)
+      AND published_date >= CAST($date_from AS DATE)
+    ORDER BY severity DESC, published_date DESC
+  limit: 50
+  example:
+    headline: "forced labour"
+- name: search_adverse_media_for_entity
+  desc: Adverse media on a named entity with publication date, severity and verification status.
+  kind: sql
+  args:
+    entity_id: {}
+    entity_type: {type: enum, values: [supplier, factory]}
+  sql: |
+    SELECT
+      entity_id,
+      record_id,
+      entity_type,
+      headline,
+      source,
+      published_date,
+      severity,
+      verified,
+      content,
+      found_at,
+      updated_at
+    FROM adverse_media_records
+    WHERE ($entity_id IS NULL OR entity_id = $entity_id)
+      AND ($entity_type IS NULL OR entity_type = $entity_type)
+    ORDER BY published_date DESC, severity DESC
+  limit: 50
+  example:
+    entity_id: SUP-0001
+- name: search_company_registry
+  desc: Search company registries for entity information with country and registration details.
+  kind: sql
+  args:
+    entity_name: {op: like, desc: "Company name or part of it"}
+    country: {}
+  sql: |
+    SELECT
+      entity_id,
+      entity_name,
+      country,
+      registration_number,
+      registry_source,
+      legal_form,
+      registration_date,
+      status,
+      directors_info,
+      verified_date,
+      updated_at
+    FROM company_registry
+    WHERE entity_name ILIKE '%' || COALESCE($entity_name, '') || '%'
+      AND ($country IS NULL OR country = $country)
+    ORDER BY entity_name, country
+  limit: 50
+  example:
+    entity_name: "Bishop Apparel"
+    country: CN
+- name: search_due_diligence_regulation_requirements
+  desc: Due-diligence regulation requirements by jurisdiction with effective date and penalties.
+  kind: sql
+  args:
+    jurisdiction: {}
+    topic: {type: enum, values: [forced_labour, due_diligence, supply_chain_transparency, conflict_minerals, environmental]}
+    keyword: {op: like, desc: "Search term in regulation name or description"}
+  sql: |
+    SELECT
+      requirement_id,
+      jurisdiction,
+      regulation,
+      topic,
+      requirement_text,
+      applicability,
+      effective_date,
+      penalties,
+      updated_at
+    FROM compliance_requirements
+    WHERE ($jurisdiction IS NULL OR jurisdiction = $jurisdiction)
+      AND ($topic IS NULL OR topic = $topic)
+      AND ($keyword IS NULL OR (regulation ILIKE '%' || $keyword || '%' OR requirement_text ILIKE '%' || $keyword || '%'))
+    ORDER BY effective_date DESC, jurisdiction
+  limit: 50
+  example:
+    jurisdiction: UK
+    topic: forced_labour
+- name: search_litigation_records
+  desc: Litigation records for an entity with case type, jurisdiction and status.
+  kind: sql
+  args:
+    entity_name: {op: like}
+    case_type: {type: enum, values: [employment, labour, environmental, criminal, commercial, other]}
+    jurisdiction: {}
+    status: {type: enum, values: [active, settled, dismissed, appealed, concluded]}
+  sql: |
+    SELECT
+      entity_id,
+      case_id,
+      entity_name,
+      case_type,
+      jurisdiction,
+      case_status,
+      description,
+      outcome,
+      case_date,
+      updated_at
+    FROM litigation_records
+    WHERE entity_name ILIKE '%' || COALESCE($entity_name, '') || '%'
+      AND ($case_type IS NULL OR case_type = $case_type)
+      AND ($jurisdiction IS NULL OR jurisdiction = $jurisdiction)
+      AND ($status IS NULL OR case_status = $status)
+    ORDER BY case_date DESC, case_status
+  limit: 50
+  example:
+    entity_name: "Brown Textiles"
