@@ -331,7 +331,7 @@ tools:
       WHERE s.po_id = $po_id AND s.status IN ('in_transit', 'delivered')
       ORDER BY s.actual_arrival DESC NULLS LAST
     limit: 5
-    example: {}
+    example: {po_id: "PO-2026-000001"}
 
   - name: get_carrier_next_day_coverage_by_postcode
     desc: "Retrieves carrier next-day delivery coverage by postcode."
@@ -404,7 +404,7 @@ tools:
         AND ($carrier_id IS NULL OR cl.carrier_id = $carrier_id)
         AND cl.status = 'active'
     limit: 1
-    example: {}
+    example: {lane: "DC1-ST001", volume_units: 500}
 
   - name: calculate_scenario_cost_and_service
     desc: "Calculates cost and service outcome of an allocation scenario."
@@ -421,7 +421,7 @@ tools:
       FROM allocation_scenarios sce
       WHERE sce.scenario_id = $scenario_id
     limit: 1
-    example: {}
+    example: {scenario_id: "SCN-000001"}
 
   - name: calculate_transfer_cost
     desc: "Calculate transfer cost between DCs for a stock rebalance."
@@ -439,7 +439,7 @@ tools:
              ROUND($units * 1.5, 2) AS transport_cost_gbp,
              'Cost estimated at 1.5 per unit' AS formula
       LIMIT 1
-    example: {}
+    example: {from_site_id: "DC1", to_site_id: "DC2", sku: "SKU-0001", units: 500}
 
   - name: calculate_transport_cost_impact
     desc: "Calculate transport cost impact of changing sourcing strategy or network design."
@@ -460,7 +460,7 @@ tools:
                                ELSE $base_volume_units END) / 1000, 2) AS adjusted_transport_cost_gbp,
              'Transport cost varies by volume; air is premium' AS formula
       LIMIT 1
-    example: {}
+    example: {scenario_description: "Centralise to 2 DCs", base_volume_units: 10000, mode_change: "centralise"}
 
   - name: compare_freight_ledger_to_tms
     desc: "Reconcile freight ledger cost to TMS shipment cost, highlighting variances."
@@ -544,7 +544,7 @@ tools:
         AND cl.status = 'active'
       ORDER BY cl.lane
     limit: 100
-    example: {}
+    example: {origin_site_id: "DC1", delivery_target_date: "+7d"}
 
   - name: calculate_delivery_time_by_scenario
     desc: "Calculate delivery time (days) by scenario (e.g., different network or mode)."
@@ -562,7 +562,7 @@ tools:
                   WHEN $scenario = 'overseas' THEN 14
                   ELSE 1 END AS transit_days
       LIMIT 1
-    example: {}
+    example: {origin_site_id: "DC1", destination_site_id: "ST001", scenario: "current"}
 
   - name: calculate_extra_shipping_cost_of_splits
     desc: "Calculates extra shipping cost of splits."
@@ -740,7 +740,17 @@ tools:
     columns: [route_id, date, lane, vehicle_type, stops_count, planned_hours, planned_utilisation_pct, status]
     order: date
     limit: 100
-    example: {}
+    example: {date: "+0d"}
+
+  - name: update_route_plan
+    desc: "Changes the stops, sequence or vehicle assignment in a route plan."
+    kind: update
+    table: route_plans
+    set: {updated_at: "$as_of"}
+    args:
+      vehicle_type: {desc: "New vehicle type"}
+      status: {type: enum, values: [planned, active, completed, cancelled], desc: "New status"}
+    example: {route_id: "RTE-000001", status: active}
 
   - name: get_planned_stop_time_assumptions
     desc: "Stop-time and service-time assumptions used in route plans."
@@ -764,13 +774,14 @@ tools:
 
   - name: update_planning_buffer_for_lane
     desc: "Changes the transit-time planning buffer for a lane."
-    kind: select
-    from: carriers_lanes
-    filters:
+    kind: update
+    table: carriers_lanes
+    set: {updated_at: "$as_of"}
+    args:
       lane: {required: true, desc: "Lane code, e.g. DC1-ST001"}
-    columns: [lane, carrier_id, cutoff_day_offset]
-    limit: 10
-    example: {}
+      carrier_id: {required: true, desc: "Carrier id"}
+      cutoff_day_offset: {type: int, required: true, desc: "New days in advance to book"}
+    example: {lane: "DC1-ST001", carrier_id: "CAR-001", cutoff_day_offset: 2}
 
   - name: update_shipment_routing
     desc: "Changes the routing, hold status or departure window of an open shipment."
@@ -780,7 +791,16 @@ tools:
     args:
       lane: {desc: "New lane if different"}
       status: {type: enum, values: [planned, booked, in_transit, held], desc: "New status"}
-    example: {shipment_id: "SHP-000001", status: held}
+    example: {shipment_id: "SHP-000001", status: planned}
+
+  - name: reassign_shipment_to_carrier
+    desc: "Changes the assigned carrier on a planned or open shipment."
+    kind: update
+    table: shipments
+    set: {updated_at: "$as_of"}
+    args:
+      carrier_id: {required: true, desc: "New carrier id"}
+    example: {shipment_id: "SHP-000001", carrier_id: "CAR-001"}
 
   - name: remove_carrier_from_lane_allocation
     desc: "Removes a carrier from a lane's allocation."
@@ -788,18 +808,21 @@ tools:
     table: carriers_lanes
     set: {status: blocked}
     args: []
-    example: {}
+    example: {carrier_id: "CAR-001", lane: "DC1-ST001"}
 
   - name: run_tender_award_scenario
     desc: "Runs a tender volume-allocation scenario across carriers."
-    kind: insert
-    table: allocation_scenarios
-    id_prefix: "TDR-"
-    defaults: {scenario_type: tender_award, status: draft}
+    kind: sql
     args:
-      description: {required: true}
-      lanes_affected: {required: true}
-      carriers_involved: {required: true}
+      scenario_type: {default: tender_award, desc: "Scenario type"}
+    sql: |
+      SELECT scenario_id, scenario_type, description, lanes_affected, carriers_involved,
+             volume_units, total_cost_gbp, projected_on_time_pct, projected_fill_rate_pct,
+             risk_rating, status
+      FROM allocation_scenarios
+      WHERE scenario_type = $scenario_type
+      ORDER BY created_at DESC
+    limit: 20
     example: {}
 
   - name: get_shipment_volumes_by_lane
@@ -831,7 +854,27 @@ tools:
     columns: [lane, carrier_id, mode, weekly_capacity_trips, weekly_capacity_pallets, rate_per_trip_gbp]
     order: lane
     limit: 100
-    example: {}
+    example: {lane: "DC1-ST001"}
+
+  - name: get_load_volumes_by_lane
+    desc: "Historic load volumes and delivery windows by lane."
+    kind: sql
+    args:
+      lane: {required: true, desc: "Lane code, e.g. DC1-ST001"}
+      weeks_back: {type: int, default: 12, desc: "Number of weeks to analyse"}
+    sql: |
+      SELECT cp.lane,
+             cp.period_start,
+             SUM(cp.shipments_count) AS shipments,
+             ROUND(AVG(cp.fill_rate_avg_pct), 1) AS avg_fill_rate_pct,
+             ROUND(SUM(cp.total_cost_gbp), 2) AS weekly_cost_gbp
+      FROM carrier_performance cp
+      WHERE cp.lane = $lane
+        AND cp.period_start >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK)
+      GROUP BY cp.lane, cp.period_start
+      ORDER BY cp.period_start
+    limit: 52
+    example: {lane: "DC1-ST001"}
 
   - name: get_dwell_time_by_node
     desc: "Dwell time at ports, hubs and depots by mode and lane."
@@ -1173,6 +1216,7 @@ tools:
     defaults: {scenario_type: trial_allocation, status: draft}
     args:
       lanes_affected: {required: true, desc: "Comma-separated lane codes"}
-      carriers_involved: {required: true, desc: "Carrier ids in allocation"}
+      carriers_involved: {required: true, desc: "Comma-separated carrier ids in allocation"}
       volume_units: {type: int, required: true, desc: "Volume units for trial"}
-    example: {}
+      description: {required: true, desc: "Scenario description"}
+    example: {lanes_affected: "DC1-ST001,DC1-ST002", carriers_involved: "CAR-001", volume_units: 5000, description: "Trial with CAR-001"}

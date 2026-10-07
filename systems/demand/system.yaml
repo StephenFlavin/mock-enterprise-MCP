@@ -185,7 +185,7 @@ tools:
       WHERE h.sku = $sku AND h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
       ORDER BY h.period_date
     limit: 26
-    example: {sku: "SKU-100001", period_start: "-90d", period_end: "$as_of"}
+    example: {sku: "SKU-100056", period_start: "-90d", period_end: "$as_of"}
 
   - name: calculate_early_sales_trigger_thresholds
     desc: Calculate velocity thresholds for early sales alerts (chase/cancel). Returns thresholds for chase and cancel by forecast confidence.
@@ -202,7 +202,7 @@ tools:
       FROM early_sales_data e
       WHERE e.sku = $sku AND e.launch_date = CAST($launch_week AS DATE)
       GROUP BY e.sku, e.product_name, e.launch_date
-    example: {sku: "SKU-100342", launch_week: "2026-10-13"}
+    example: {sku: "SKU-100056", launch_week: "2026-10-13"}
 
   - name: calculate_lost_demand_for_sku
     desc: Calculate lost demand from stockouts. Takes correction period and returns estimated lost units and impact.
@@ -217,9 +217,9 @@ tools:
                (SELECT COALESCE(AVG(h.revenue_gbp / NULLIF(h.units_sold, 0)), 0)
                 FROM demand_history h WHERE h.sku = a.sku), 0) AS estimated_lost_revenue_gbp,
              'lost_units * avg_unit_price' AS formula
-      FROM demand_history_adjustments a WHERE a.sku = $sku
+      FROM demand_history_adjustments a
       WHERE a.sku = $sku AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-    example: {sku: "STY-5520", period_start: "2026-07-01", period_end: "2026-09-30"}
+    example: {sku: "SKU-100056", period_start: "-90d", period_end: "-60d"}
 
   - name: calculate_lost_sales_for_product
     desc: Calculate lost sales from stockouts or demand mismatches. Returns lost units and estimated revenue impact.
@@ -234,10 +234,10 @@ tools:
              ROUND(COALESCE(SUM(a.units_lost), 0) *
                (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 50) FROM master.products p WHERE p.sku = a.sku), 0) AS lost_margin_gbp,
              'lost_units * product_margin' AS formula
-      FROM demand_history_adjustments a WHERE a.sku = $sku
+      FROM demand_history_adjustments a
       WHERE a.sku = $sku AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
       GROUP BY a.sku
-    example: {sku: "STY-5520", period_start: "2026-08-01", period_end: "2026-08-31"}
+    example: {sku: "SKU-100056", period_start: "-60d", period_end: "-30d"}
 
   - name: calculate_pipeline_risk_score
     desc: Calculate risk score for pipeline products combining supply, demand and execution risk. Returns 0-100 score and key risk drivers.
@@ -284,11 +284,12 @@ tools:
       SELECT f.sku,
              ROUND(COALESCE(SUM(CASE WHEN f.units_forecast > 0 THEN f.units_forecast ELSE 0 END) / NULLIF(COUNT(*), 0), 0), 0) AS avg_weekly_demand,
              ROUND(COALESCE(STDDEV_POP(f.units_forecast), 0), 0) AS demand_std_dev,
-             ROUND(MIN(CASE WHEN f.units_forecast > 0 THEN (STDDEV_POP(f.units_forecast) OVER ()) / NULLIF(AVG(f.units_forecast) OVER (), 0) * 100 ELSE 0 END), 1) AS cv_pct,
-             ROUND(LEAST((STDDEV_POP(f.units_forecast) OVER () * 1.645), 100), 0) AS stock_out_risk_score,
+             ROUND(COALESCE(STDDEV_POP(f.units_forecast), 0) / NULLIF(AVG(f.units_forecast), 0) * 100, 1) AS cv_pct,
+             ROUND(LEAST(COALESCE(STDDEV_POP(f.units_forecast), 0) * 1.645, 100), 0) AS stock_out_risk_score,
              'risk_score = min(cv * forecast * 1.645, 100)' AS formula
       FROM forecasts f
       WHERE f.sku = $sku AND f.forecast_type = 'base'
+      GROUP BY f.sku
       LIMIT $forecast_weeks
     example: {sku: "SKU-100234"}
 
@@ -348,7 +349,7 @@ tools:
       WHERE ($category IS NULL OR a.category = $category)
         AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
       GROUP BY a.forecast_level
-      ORDER BY a.mape_pct
+      ORDER BY ROUND(AVG(a.mape_pct), 1)
     example: {category: "Dresses"}
 
   - name: create_early_sales_alert
@@ -362,7 +363,7 @@ tools:
       alert_type: {required: true, desc: "chase or cancel"}
       trigger_threshold_pct: {required: true, type: float, desc: "Velocity threshold %"}
     defaults: {status: active}
-    example: {sku: "SKU-100999", product_name: "Recycled backpack", alert_type: chase, trigger_threshold_pct: 70.0}
+    example: {sku: "SKU-100056", product_name: "Ivory Knitwear", alert_type: chase, trigger_threshold_pct: 70.0}
 
   - name: create_forecast_model_configuration
     desc: Create a test forecast configuration with different parameters (e.g. different history window). Returns config id and parameters.
@@ -591,7 +592,7 @@ tools:
       FROM forecast_accuracy a
       WHERE a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
       GROUP BY a.category
-      ORDER BY a.mape_pct DESC
+      ORDER BY ROUND(AVG(a.mape_pct), 1) DESC
     limit: 30
     example: {}
 
@@ -675,7 +676,7 @@ tools:
       JOIN master.products p ON a.sku = p.sku
       WHERE ($category IS NULL OR a.category = $category)
         AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      GROUP BY lead_time_bucket
+      GROUP BY lead_time_bucket, CAST(p.lead_time_days AS INT)
       ORDER BY CAST(p.lead_time_days AS INT)
     example: {category: "Home"}
 
@@ -884,8 +885,8 @@ tools:
              ROUND(COALESCE(SUM(f.units_forecast) * 0.05 *
                (SELECT COALESCE(AVG(CAST(p.retail_price_gbp AS FLOAT)), 40) FROM master.products p LIMIT 1), 0), 0) AS estimated_returns_value_gbp
       FROM (
-        SELECT CAST(DATE_TRUNC('week', CAST($week_start AS DATE) + INTERVAL (row_number() - 1) DAY) AS DATE) AS day
-        FROM (SELECT ROW_NUMBER() OVER () FROM range(0, $weeks_ahead * 7))
+        SELECT CAST(DATE_TRUNC('week', CAST($week_start AS DATE) + INTERVAL (ROW_NUMBER() OVER () - 1) DAY) AS DATE) AS day
+        FROM range(0, $weeks_ahead * 7)
       ) week_start
       LEFT JOIN forecasts f ON CAST(f.forecast_week AS DATE) = CAST(week_start.day AS DATE)
       GROUP BY CAST(week_start.day AS DATE)
@@ -1018,7 +1019,7 @@ tools:
     kind: sql
     args:
       season: {required: true, desc: "Season code, e.g. AW26"}
-      status: {desc: Status, default: "in_production"}
+      status: {desc: "Status: draft, approved, in_production, launched"}
     sql: |
       SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
              p.category, p.risk_score, p.status
@@ -1042,7 +1043,7 @@ tools:
       FROM demand_history h
       WHERE h.period_date >= CAST($period_start AS DATE) AND h.period_date <= CAST($period_end AS DATE)
       GROUP BY h.sku
-      ORDER BY CASE WHEN $metric = 'units' THEN units_sold ELSE CAST(SUM(h.revenue_gbp) AS INT) END DESC
+      ORDER BY CASE WHEN $metric = 'units' THEN SUM(h.units_sold) ELSE SUM(h.revenue_gbp) END DESC
     limit: 200
     example: {}
 
@@ -1141,7 +1142,7 @@ tools:
         AND f.forecast_week < p.launch_date + INTERVAL ($weeks_to_forecast * 7) DAY
       WHERE p.sku = $sku
       GROUP BY p.sku, p.product_name, p.launch_date
-    example: {sku: "SKU-100999", launch_date: "2026-10-13"}
+    example: {sku: "SKU-100056", launch_date: "$as_of"}
 
   - name: run_promotional_volume_forecast
     desc: Runs promotional volume forecast. Estimates units and revenue during promotion.

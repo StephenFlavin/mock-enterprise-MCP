@@ -584,3 +584,364 @@ tools:
     limit: 50
     example: {}
 
+  - name: get_supplier_emissions_commitments
+    desc: Supplier reduction commitments for emissions and sustainability targets. Use for ESG tracking.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT supplier_id, submission_year, emissions_reduction_commitment_pct,
+             emissions_reduction_target_year, renewable_pct, submission_status
+      FROM supplier_esg
+      WHERE supplier_id = $supplier_id
+      ORDER BY submission_year DESC
+    limit: 10
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_expedite_options
+    desc: Retrieve supplier expedite options (available stock and capacity). Use to identify expeditable orders.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      sku: {type: str, desc: "SKU (optional)"}
+    sql: |
+      SELECT supplier_id, sku, available_stock_units, available_capacity_units,
+             lead_time_days, moq_units, price_gbp_per_unit, position_date
+      FROM supply_position
+      WHERE supplier_id = $supplier_id
+        AND ($sku IS NULL OR sku = $sku)
+        AND (available_stock_units > 0 OR available_capacity_units > 0)
+      ORDER BY position_date DESC, sku
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_lead_time_and_moq
+    desc: Lead time and MOQ for a supplier by product. Use for order sizing and scheduling.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      sku: {type: str, desc: "Product (optional)"}
+    sql: |
+      SELECT supplier_id, sku, lead_time_days, moq_units, price_gbp_per_unit, position_date
+      FROM supply_position
+      WHERE supplier_id = $supplier_id
+        AND ($sku IS NULL OR sku = $sku)
+      ORDER BY position_date DESC, sku
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_make_to_order_lead_times
+    desc: Retrieve supplier make to order lead times and terms. Use for MTO sourcing decisions.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      sku: {type: str, desc: "Product (optional)"}
+    sql: |
+      SELECT supplier_id, sku, lead_time_days, moq_units, available_capacity_units,
+             price_gbp_per_unit
+      FROM supply_position
+      WHERE supplier_id = $supplier_id
+        AND ($sku IS NULL OR sku = $sku)
+      ORDER BY lead_time_days, sku
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_material_origin_mix
+    desc: Origin mix of supplier materials (e.g. cotton sourcing by country). Use for supply chain transparency.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      material_type: {type: str, desc: "Material type (optional)"}
+    sql: |
+      SELECT supplier_id, material_id, material_name, material_type,
+             sustainability_notes, composition, certifications
+      FROM material_supply
+      WHERE supplier_id = $supplier_id
+        AND ($material_type IS NULL OR material_type = $material_type)
+      ORDER BY material_name
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_milestone_updates
+    desc: Return supplier milestone updates on product launches and samples. Use to track sample progress.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT communication_id, supplier_id, sku, po_id, title, content,
+             from_party, created_at, status, deadline
+      FROM supplier_communications
+      WHERE supplier_id = $supplier_id
+        AND communication_type = 'milestone_update'
+      ORDER BY created_at DESC
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_portal_access_log
+    desc: Pages and records accessed in the supplier portal. Use for security and audit review.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      lookback_days: {type: int, default: 30, desc: "Historical period"}
+    sql: |
+      SELECT communication_id, supplier_id, portal_page, accessed_at, status
+      FROM supplier_communications
+      WHERE supplier_id = $supplier_id
+        AND communication_type = 'portal_access'
+        AND accessed_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_days AS INT)) DAY
+      ORDER BY accessed_at DESC
+    limit: 200
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_renewable_energy_status
+    desc: Renewable electricity use and targets. Use for ESG and sustainability tracking.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT supplier_id, submission_year, renewable_pct, submission_type, submission_status,
+             audit_evidence_provided, evidence_quality
+      FROM supplier_esg
+      WHERE supplier_id = $supplier_id
+      ORDER BY submission_year DESC
+    limit: 10
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_response_times
+    desc: Return supplier response times to fit comments and other enquiries. Use to assess supplier responsiveness.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      communication_type: {type: str, desc: "Type (optional)"}
+    sql: |
+      SELECT communication_id, supplier_id, communication_type, title, response_time_hours,
+             deadline, overdue, created_at
+      FROM supplier_communications
+      WHERE supplier_id = $supplier_id
+        AND response_time_hours IS NOT NULL
+        AND ($communication_type IS NULL OR communication_type = $communication_type)
+      ORDER BY response_time_hours DESC
+    limit: 100
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_ship_date_performance
+    desc: Retrieve supplier ship date performance (OTD history). Use to assess delivery reliability.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      lookback_months: {type: int, default: 6, desc: "Historical period"}
+    sql: |
+      SELECT supplier_id, COUNT(*) AS total_orders,
+             COUNT(*) FILTER (WHERE delay_days = 0) AS on_time_orders,
+             round(100 * COUNT(*) FILTER (WHERE delay_days = 0) / NULLIF(COUNT(*), 0), 1) AS otd_pct,
+             AVG(delay_days) AS avg_delay_days
+      FROM supplier_delays
+      WHERE supplier_id = $supplier_id
+      GROUP BY supplier_id
+    limit: 10
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supplier_data_evidence_status
+    desc: Evidence status for supplier-supplied data (emissions, renewable energy). Use for assurance and audit.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT supplier_id, submission_year, audit_evidence_provided, evidence_quality,
+             data_quality_score, follow_up_needed, notes
+      FROM supplier_esg
+      WHERE supplier_id = $supplier_id
+      ORDER BY submission_year DESC
+    limit: 10
+    example: {supplier_id: "SUP-0013"}
+
+  - name: get_supply_dependency_for_supplier
+    desc: Retrieve supply dependency for supplier (volume and criticality). Use for supply risk assessment.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT supplier_id, sku, SUM(committed_capacity_units) AS committed_volume,
+             AVG(price_gbp_per_unit) AS avg_price, COUNT(DISTINCT position_date) AS position_count
+      FROM supply_position
+      WHERE supplier_id = $supplier_id
+      GROUP BY supplier_id, sku
+      ORDER BY committed_volume DESC
+    limit: 50
+    example: {supplier_id: "SUP-0013"}
+
+  - name: list_supplier_esg_submissions
+    desc: ESG submissions by supplier and status. Use to track ESG data collection and quality.
+    kind: sql
+    args:
+      submission_status: {type: enum, values: [not_submitted, submitted, pending_review, accepted, rejected, low_quality], desc: "Filter by status (optional)"}
+      min_data_quality: {type: float, default: 0, desc: "Minimum data quality score"}
+    sql: |
+      SELECT supplier_id, submission_year, submission_status, submitted_date, data_quality_score,
+             emissions_tonnes_co2e, renewable_pct, follow_up_needed
+      FROM supplier_esg
+      WHERE ($submission_status IS NULL OR submission_status = $submission_status)
+        AND data_quality_score >= $min_data_quality
+      ORDER BY submission_year DESC, supplier_id
+    limit: 100
+    example: {}
+
+  - name: search_alternative_suppliers
+    desc: Search public sources for alternative suppliers by capability and location. Use for supply diversification.
+    kind: select
+    from: master.suppliers
+    filters:
+      country: {}
+      category_focus: {op: like, desc: "Category, e.g. fabric"}
+      tier: {}
+      status: {}
+    columns: [supplier_id, name, country, category_focus, tier, annual_spend_gbp]
+    order: annual_spend_gbp
+    limit: 50
+    example: {country: "PT", category_focus: "fabrics"}
+
+  - name: search_approved_material_suppliers
+    desc: Search for approved material suppliers by material type and certification. Use for material sourcing.
+    kind: sql
+    args:
+      material_type: {required: true}
+      certification: {type: str, desc: "Certification (optional)"}
+      country: {type: str, desc: "Country (optional)"}
+    sql: |
+      SELECT DISTINCT m.supplier_id, m.material_name, m.certifications, m.capacity_monthly_units,
+             m.price_gbp_per_unit, m.stock_units_available, s.name, s.country
+      FROM material_supply m
+      JOIN master.suppliers s ON s.supplier_id = m.supplier_id
+      WHERE m.material_type = $material_type
+        AND ($certification IS NULL OR m.certifications ILIKE '%' || $certification || '%')
+        AND ($country IS NULL OR s.country = $country)
+      ORDER BY m.capacity_monthly_units DESC
+    limit: 50
+    example: {material_type: fabric}
+
+  - name: search_supplier_price_increase_notices
+    desc: Price increase notices received from suppliers. Use for procurement planning.
+    kind: sql
+    args:
+      supplier_id: {type: str, desc: "Supplier (optional)"}
+      from_date: {type: date, default: "-180d", desc: "From date"}
+      to_date: {type: date, default: "+30d", desc: "To date"}
+    sql: |
+      SELECT communication_id, supplier_id, title, content, created_at, deadline
+      FROM supplier_communications
+      WHERE communication_type = 'price_increase_notice'
+        AND created_at >= CAST($from_date AS DATE)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+      ORDER BY created_at DESC
+    limit: 100
+    example: {}
+
+  - name: send_sample_comments_to_supplier
+    desc: Sends revised construction comments on a sample to the supplier. Returns the communication record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: sample_comment}
+    args:
+      supplier_id: {required: true}
+      sku: {required: true}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, desc: "Response deadline (optional)"}
+    example: {supplier_id: "SUP-0013", sku: "SKU-101904", title: "Backpack sample - seam comments", content: "Increase seam strength by 20%"}
+
+  - name: send_supplier_chargeback_notice
+    desc: Sends a chargeback notice to a supplier for avoidable air freight cost. Returns the notice record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: chargeback_notice}
+    args:
+      supplier_id: {required: true}
+      po_id: {type: str, desc: "PO affected (optional)"}
+      title: {required: true}
+      content: {required: true}
+    example: {supplier_id: "SUP-0013", po_id: "PO-2026-004003", title: "Chargeback for air freight", content: "Air freight cost of £5,000 due to delay last week"}
+
+  - name: send_supplier_document_request
+    desc: Sends a request to a supplier for missing compliance documents. Returns the request record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: document_request}
+    args:
+      supplier_id: {required: true}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, default: "+14d", desc: "Response deadline"}
+    example: {supplier_id: "SUP-0013", title: "Ireland compliance - WEEE documentation", content: "Please provide WEEE registration and compliance evidence for Irish market"}
+
+  - name: send_supplier_fit_comment_reminder
+    desc: Sends a reminder to suppliers with unanswered fit comments. Returns the reminder record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: fit_comment}
+    args:
+      supplier_id: {required: true}
+      sku: {required: true}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, desc: "Sample deadline"}
+    example: {supplier_id: "SUP-0013", sku: "SKU-101904", title: "Open fit comments reminder", content: "Please respond to pending fit comments by end of week"}
+
+  - name: send_supplier_milestone_chase
+    desc: Sends a chaser message to the supplier on a late launch milestone. Returns the message record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: milestone_update}
+    args:
+      supplier_id: {required: true}
+      sku: {required: true}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, desc: "Milestone due date (optional)"}
+    example: {supplier_id: "SUP-0013", sku: "SKU-101904", title: "Milestone chase - sample approval", content: "Awaiting your sample approval to proceed with production"}
+
+  - name: send_supplier_price_query
+    desc: Sends a price-change query to a supplier through the portal. Returns the query record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: price_query}
+    args:
+      supplier_id: {required: true}
+      sku: {type: str, desc: "SKU (optional)"}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, default: "+7d", desc: "Response deadline"}
+    example: {supplier_id: "SUP-0013", sku: "PF-220", title: "Price variance - raw material indexing", content: "Your price increased 12%. Please explain the cost drivers"}
+
+  - name: send_supplier_variance_note
+    desc: Send an approved variance note to the supplier manager. Returns the sent record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: variance_note}
+    args:
+      supplier_id: {required: true}
+      title: {required: true}
+      content: {required: true}
+    example: {supplier_id: "SUP-0013", title: "Receipt variance summary - last 8 weeks", content: "Your variance record shows consistent short-shipping. Please implement corrective actions"}
+
+  - name: submit_expedite_request
+    desc: Sends a request to a supplier to bring forward delivery of open order lines. Returns the request record.
+    kind: insert
+    table: supplier_communications
+    id_prefix: COM-
+    defaults: {status: sent, from_party: hv_to_supplier, communication_type: expedite_request}
+    args:
+      supplier_id: {required: true}
+      po_id: {type: str, desc: "PO to expedite (optional)"}
+      sku: {type: str, desc: "SKU (optional)"}
+      title: {required: true}
+      content: {required: true}
+      deadline: {type: date, desc: "Requested ship date"}
+    example: {supplier_id: "SUP-0013", sku: "PF-220", title: "Expedite request", content: "Can you bring forward delivery by 2 weeks?"}
+

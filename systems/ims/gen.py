@@ -47,6 +47,8 @@ def generate(g):
                 else:
                     location_id = None
 
+                reorder_point = r.randint(100, 500)
+                safety_stock = r.randint(50, 200)
                 positions.append({
                     "sku": sku,
                     "site_id": site_id,
@@ -56,6 +58,8 @@ def generate(g):
                     "available": available,
                     "reserved_for_channel": reserved,
                     "hold_qty": hold_qty,
+                    "reorder_point": reorder_point,
+                    "safety_stock": safety_stock,
                     "updated_at": g.fake.date_time_this_month(tzinfo=None),
                 })
 

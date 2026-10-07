@@ -9,7 +9,7 @@ tables:
   inventory_positions:
     key: [sku, site_id, location_id]
     cols:
-      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      sku: {type: str, desc: "SKU, e.g. SKU-100007"}
       site_id: {type: str, desc: "Site (DC or store), e.g. DC1 or ST214"}
       location_id: {type: str, desc: "Location id (DC bin or store zone), e.g. DC1-C-14-02 or null for store"}
       on_hand: {type: int, desc: "Units physically on hand"}
@@ -17,6 +17,8 @@ tables:
       available: {type: int, desc: "On hand minus allocated"}
       reserved_for_channel: {type: int, desc: "Units reserved for specific channel"}
       hold_qty: {type: int, desc: "Units on quality/investigation hold"}
+      reorder_point: {type: int, desc: "Reorder point for replenishment"}
+      safety_stock: {type: int, desc: "Safety stock quantity"}
       updated_at: {type: timestamp, desc: "Last inventory movement"}
 
   inventory_adjustments:
@@ -193,7 +195,7 @@ tools:
       location_id: {}
       reason_notes: {}
       reference_id: {}
-    example: {sku: K-1700, site_id: ST214, quantity_delta: -5, cause_code: damage, reason_notes: "Water damage from leak"}
+    example: {sku: SKU-100007, site_id: ST214, quantity_delta: -5, cause_code: damage, reason_notes: "Water damage from leak"}
 
   - name: create_stock_release_plan
     desc: Create a plan of actions to release stock for selected areas. Returns the new plan.
@@ -924,46 +926,39 @@ tools:
 
   - name: update_inventory_hold_status
     desc: Place or release stock holds. Returns the hold status.
-    kind: sql
+    kind: update
+    table: inventory_positions
+    set: {hold_qty: "$hold_qty"}
     args:
       sku: {required: true}
       site_id: {required: true}
-      quantity: {required: true, type: int, desc: "Units to hold or release"}
-      action: {required: true, values: [place, release], desc: "Place or release hold"}
-      reason: {}
-    sql: |
-      SELECT $sku AS sku, $site_id AS site_id, $quantity AS quantity,
-             CAST($action AS TEXT) AS action,
-             CAST($as_of AS DATE) AS updated_date
-    example: {sku: K-1700, site_id: DC1, quantity: 50, action: place, reason: "Quality investigation hold"}
+      location_id: {default: null}
+      hold_qty: {required: true, type: int, desc: "Units to hold"}
+    example: {sku: K-1700, site_id: DC1, location_id: null, hold_qty: 50}
 
   - name: update_reorder_point_for_sku
     desc: Changes the reorder point on a SKU so replenishment triggers earlier or later.
-    kind: sql
+    kind: update
+    table: inventory_positions
+    set: {reorder_point: "$reorder_point"}
     args:
       sku: {required: true}
-      new_reorder_point: {required: true, type: int, desc: "New reorder point units"}
-      reason: {}
-    sql: |
-      SELECT $sku AS sku, $new_reorder_point AS new_reorder_point,
-             'Updated reorder point' AS action,
-             CAST($as_of AS DATE) AS updated_date
-    example: {sku: K-1700, new_reorder_point: 500}
+      site_id: {required: true}
+      location_id: {default: null}
+      reorder_point: {required: true, type: int, desc: "New reorder point units"}
+    example: {sku: K-1700, site_id: DC1, location_id: null, reorder_point: 500}
 
   - name: update_safety_stock_for_sku
     desc: Changes the safety stock quantity held on a SKU (optionally by location).
-    kind: sql
+    kind: update
+    table: inventory_positions
+    set: {safety_stock: "$safety_stock"}
     args:
       sku: {required: true}
-      new_safety_stock: {required: true, type: int, desc: "New safety stock units"}
-      site_id: {}
-      reason: {}
-    sql: |
-      SELECT $sku AS sku, $new_safety_stock AS new_safety_stock,
-             COALESCE($site_id, 'All sites') AS location,
-             'Updated safety stock' AS action,
-             CAST($as_of AS DATE) AS updated_date
-    example: {sku: K-1700, new_safety_stock: 200}
+      site_id: {required: true}
+      location_id: {default: null}
+      safety_stock: {required: true, type: int, desc: "New safety stock units"}
+    example: {sku: K-1700, site_id: DC1, location_id: null, safety_stock: 200}
 
   - name: get_stock_position_by_site
     desc: Operational stock units and value by site and status. Shows overall inventory position.
@@ -1280,7 +1275,7 @@ tools:
     limit: 100
     example: {sku: K-1700}
 
-  - name: get_store_cover_by_sku
+  - name: get_store_stock_cover_by_sku
     desc: Store stock cover by SKU. Shows cover for individual products by store.
     kind: sql
     args:
