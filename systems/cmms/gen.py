@@ -1,6 +1,6 @@
 """Background maintenance data for the CMMS: work orders, stoppages, condition readings, spares, shutdown plans.
 
-Story scope (the DC2 shuttle system, the DC1 sorter and the DC1 conveyor network) gets NO generated stoppages, so the
+Story scope (the DC2 site, the DC1 sorter and the DC1 conveyor network) gets NO generated stoppages, so the
 seeded stories are what a correct answer finds. Everything else is plausible background around master assets.
 Stoppages and breakdown work orders are generated together (same duration, linked ids), and a stoppage's cost is the
 repair cost on its work order plus lost throughput.
@@ -67,7 +67,6 @@ FAILURES = {
 BREAKDOWN_MINUTES = {"sorter": (120, 300), "shuttle": (30, 210), "conveyor": (30, 240), "motor": (45, 240),
                      "gearbox": (60, 300), "sensor": (15, 90), "forklift": (30, 240), "reach_truck": (30, 240),
                      "dock_leveller": (30, 240), "sprinkler": (20, 120), "compressor": (45, 300)}
-SEEDED_CLASSES = {"shuttle", "motor", "conveyor", "sorter", "sensor", "gearbox"}
 
 
 def _read_seed_assets(name):
@@ -142,8 +141,8 @@ def generate(g):
     # ---- breakdowns + stoppages (last 90 days), never in story scope -------------------------------------------
     for a in assets:
         cls = a["asset_class"]
-        if cls not in CLASS or a["asset_id"].startswith(STORY_PREFIXES):
-            continue
+        if cls not in CLASS or a["asset_id"].startswith(STORY_PREFIXES) or a["site_id"] == "DC2":
+            continue  # DC2 is the shuttle story site: only the seeded 14 stoppages exist there
         if r.random() < 0.12:
             lo, hi = BREAKDOWN_MINUTES[cls]
             occurred = _ts(g.date_between(90, 2), r.randint(6, 20)) + timedelta(minutes=r.randint(0, 59))
