@@ -5,7 +5,7 @@ uses g.rng. All port codes are master ports (VNSGN, GBFXT, NLRTM ...), except US
 transhipment ports (ESVLC, GRPIR), which master data does not list.
 """
 import math
-from datetime import timedelta
+from datetime import date, timedelta
 
 
 def generate(g):
@@ -154,7 +154,7 @@ def generate(g):
             "service_level": level, "min_weight_kg": wmin, "max_weight_kg": wmax, "terms": terms, "status": "active",
         })
 
-    d_ = lambda s: __import__("datetime").date.fromisoformat(s)
+    d_ = lambda s: date.fromisoformat(s)
     sea_terms = "Rate per 40ft container, all-in of base freight; BAF and peak season surcharges billed as per carrier notice"
     for car, lane, rate, band, mn, mx in [
         ("CAR-007", "VNSGN-GBFXT", 1750, "large", 500, 5000), ("CAR-005", "VNSGN-GBFXT", 1820, "medium", 300, 2000),
@@ -212,13 +212,13 @@ def generate(g):
             market_benchmarks.append({
                 "benchmark_id": f"BEN-{len(market_benchmarks) + 1:06d}", "lane_id": f"UK-{svc}", "mode": "parcel",
                 "volume_band": "medium", "benchmark_rate_gbp": p50, "data_points": 25 + r.randint(0, 20),
-                "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.92, 2), "percentile_50_gbp": p50,
-                "percentile_75_gbp": round(p50 * 1.08, 2), "min_weight_kg": lo, "max_weight_kg": hi,
+                "benchmark_date": A, "percentile_25_gbp": round(p50 * 0.90, 2), "percentile_50_gbp": p50,
+                "percentile_75_gbp": round(p50 * 1.10, 2), "min_weight_kg": lo, "max_weight_kg": hi,
             })
 
     # ------------------------------------------------------------------ surcharges
     sur = [
-        ("CAR-007", "fuel", -5, 87, 125, None, "effective"),
+        ("CAR-007", "fuel", -5, 12, 125, None, "effective"),
         ("CAR-007", "congestion", 2, 11, 250, "VNSGN-NLRTM", "announced"),
         ("CAR-005", "peak season", 3, 10, 300, "VNSGN-GBFXT", "announced"),
         ("CAR-005", "peak season", 3, 10, 300, "VNSGN-NLRTM", "announced"),
@@ -282,9 +282,9 @@ def generate(g):
     # ------------------------------------------------------------------ rate indices with Lunar New Year run-ups
     lny_weeks = {}       # weeks back (from as_of) of the Monday of Lunar New Year week
     for lny in ("2024-02-10", "2025-01-29", "2026-02-17"):
-        lny_weeks[(A - d_(lny)).days // 7] = lny
+        lny_weeks[-((d_(lny) - A).days // 7)] = lny
     peak = {}           # run-up size by LNY week
-    for (wb, lny), p in zip(sorted(lny_weeks.items(), reverse=True), (0.22, 0.17, 0.26)):
+    for (wb, lny), p in zip(sorted(lny_weeks.items(), reverse=True), (0.226, 0.17, 0.26)):
         peak[wb] = p
     rate_indices = []
     for name, base, drift in (("SCFI", 1000, 0.0015), ("WCI", 1900, 0.0015)):
