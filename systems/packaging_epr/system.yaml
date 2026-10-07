@@ -48,8 +48,11 @@ tables:
       schedule_id: {type: str, desc: "Schedule id, e.g. SCH-000001"}
       country: {type: str, desc: "ISO country code"}
       scheme_name: {type: str, desc: "EPR scheme name"}
-      material: {type: str, desc: "Material type, e.g. plastic, paper, glass, metal"}
-      fee_per_tonne_gbp: {type: float, desc: "Fee in GBP per tonne"}
+      category: {type: str, desc: "Fee category: packaging or textiles"}
+      material: {type: str, desc: "Material type, e.g. plastic, corrugated, textile"}
+      product_category: {type: str, desc: "Textile product category, e.g. Womenswear (textiles only)"}
+      fee_per_tonne_gbp: {type: float, desc: "Packaging fee in GBP per tonne"}
+      fee_per_item_gbp: {type: float, desc: "Textile fee in GBP per item placed on market"}
       effective_from: {type: date, desc: "When fees come into effect"}
       effective_to: {type: date, desc: "When fees expire (if applicable)"}
 
@@ -97,9 +100,13 @@ tables:
       country: {type: str, desc: "ISO country code"}
       product_category: {type: str, desc: "Product category, e.g. cosmetics, home, textiles"}
       requirement: {type: text, desc: "Label requirement description"}
+      legal_marks: {type: text, desc: "Mandatory legal marks and logos, e.g. Triman"}
+      warnings: {type: text, desc: "Warnings and pictograms required on pack"}
       material_markings_required: {type: bool, desc: "Must mark material/component types"}
       disposal_instructions_required: {type: bool, desc: "Must include disposal instructions"}
       language_requirements: {type: text, desc: "Language(s) required"}
+      often_missed: {type: text, desc: "Requirement most often missed on artwork"}
+      penalty_gbp: {type: float, desc: "Penalty for non-compliant labelling"}
       effective_from: {type: date, desc: "Effective date"}
 
   epr_preparation_tasks:
@@ -127,278 +134,16 @@ tables:
       regulatory_cost_per_unit_gbp: {type: float, desc: "Regulatory compliance cost per unit"}
       effective_from: {type: date, desc: "When this cost structure is effective"}
 
+  packaging_catch_up_options:
+    key: option_id
+    cols:
+      option_id: {type: str, desc: "Option id, e.g. CU-000001"}
+      target_id: {type: str, desc: "Target the option would close, e.g. TGT-900001"}
+      option_name: {type: str, desc: "Short name of the action"}
+      description: {type: text, desc: "What the action involves"}
+      improvement_pts: {type: float, desc: "Percentage points the action adds to the metric"}
+      cost_change_per_unit_gbp: {type: float, desc: "Change in pack cost per unit (negative is a saving)"}
+      one_off_cost_gbp: {type: float, desc: "One-off tooling and trial cost"}
+      lead_time_weeks: {type: int, desc: "Weeks to deliver"}
+
 tools:
-  - name: search_packaging_regulations_by_country
-    desc: Packaging regulations (recycled content mandates, plastic taxes, EPR rules) by country and effective dates.
-    kind: select
-    from: packaging_regulations
-    filters:
-      country: {}
-      regulation_name: {op: like}
-    columns: [regulation_id, country, regulation_name, recycled_content_mandate_pct, plastic_tax_pct, effective_from, effective_to, penalty_gbp]
-    order: effective_from
-    limit: 20
-    example: {country: DE}
-
-  - name: get_epr_fee_rates
-    desc: EPR fee rates by material, country and scheme; effective dates and expiries.
-    kind: select
-    from: epr_fee_schedules
-    filters:
-      country: {}
-      material: {}
-      scheme_name: {op: like}
-    columns: [schedule_id, country, scheme_name, material, fee_per_tonne_gbp, effective_from, effective_to]
-    order: effective_from
-    limit: 30
-    example: {country: DE, material: plastic}
-
-  - name: get_epr_registrations_by_country
-    desc: EPR scheme registrations by country, scheme name, and registration status (active/pending/suspended).
-    kind: select
-    from: epr_registrations
-    filters:
-      country: {}
-      scheme_name: {op: like}
-      status: {}
-    columns: [registration_id, country, scheme_name, registration_number, status, registration_date, category]
-    order: country
-    limit: 30
-    example: {country: DE}
-
-  - name: list_epr_reporting_obligations
-    desc: EPR reporting obligations by country, deadline, frequency and required data fields; penalties for late/non-compliance.
-    kind: select
-    from: epr_reporting_obligations
-    filters:
-      country: {}
-      category: {}
-    columns: [obligation_id, country, category, data_required, deadline, frequency, penalty_gbp]
-    order: deadline
-    limit: 30
-    example: {country: FR}
-
-  - name: get_epr_reporting_requirements
-    desc: Required EPR data and deadlines by country; tells you what to report and when for compliance.
-    kind: select
-    from: epr_reporting_obligations
-    filters:
-      country: {}
-    columns: [country, category, data_required, deadline, frequency]
-    order: deadline
-    limit: 20
-    example: {country: NL}
-
-  - name: search_epr_scheme_fee_schedules
-    desc: EPR fee schedules by scheme name and country; use to understand fee exposure by material and market.
-    kind: select
-    from: epr_fee_schedules
-    filters:
-      scheme_name: {op: like, desc: "Scheme name or part of it"}
-      country: {}
-    columns: [scheme_name, country, material, fee_per_tonne_gbp, effective_from]
-    order: country
-    limit: 30
-    example: {scheme_name: EPR}
-
-  - name: get_packaging_targets_and_progress
-    desc: Company packaging targets (recycled content, recyclability) by SKU and deadline; shows current vs target.
-    kind: sql
-    args:
-      sku: {}
-      metric: {desc: "Metric name, e.g. recycled_content_pct"}
-    sql: |
-      SELECT t.target_id, t.sku, t.material, t.metric, t.target_value, t.current_value,
-             t.deadline, t.status,
-             ROUND(100.0 * (t.target_value - t.current_value) / NULLIF(t.target_value, 0), 1) AS gap_pct,
-             'gap_pct = (target - current) / target * 100' AS formula
-      FROM packaging_targets t
-      WHERE ($sku IS NULL OR t.sku = $sku)
-        AND ($metric IS NULL OR t.metric = $metric)
-      ORDER BY t.deadline ASC
-    limit: 50
-    example: {metric: recycled_content_pct}
-
-  - name: get_recycled_content_and_recyclability
-    desc: Recycled content % and recyclability rating by SKU and packaging material; compares current vs target.
-    kind: sql
-    args:
-      sku: {}
-    sql: |
-      SELECT r.sku, r.material, r.recycled_content_pct, r.target_recycled_pct,
-             ROUND(r.target_recycled_pct - r.recycled_content_pct, 1) AS shortfall_pct,
-             a.recyclability_pct, a.recyclability_rating
-      FROM recycled_content_data r
-      LEFT JOIN recyclability_assessments a ON a.sku = r.sku AND a.material = r.material
-      WHERE ($sku IS NULL OR r.sku = $sku)
-      ORDER BY r.sku, r.material
-    limit: 50
-    example: {sku: PF-220}
-
-  - name: get_recyclability_assessment_for_pack
-    desc: "Recyclability assessment for a pack: ease of recycling, recyclable %, non-recyclable components, material composition."
-    kind: select
-    from: recyclability_assessments
-    filters:
-      sku: {}
-      pack_type: {}
-    columns: [assessment_id, sku, pack_type, material, recyclability_pct, recycled_content_pct, recyclability_rating, notes, assessed_date]
-    order: assessed_date
-    limit: 20
-    example: {pack_type: rigid_box}
-
-  - name: get_recycling_label_rules_by_country
-    desc: Recycling label rules by country; material markings, disposal instructions, language requirements for packaging.
-    kind: select
-    from: recycling_label_rules
-    filters:
-      country: {}
-      product_category: {}
-    columns: [rule_id, country, product_category, requirement, material_markings_required, disposal_instructions_required, language_requirements, effective_from]
-    order: country
-    limit: 30
-    example: {country: FR}
-
-  - name: calculate_epr_cost_by_country
-    desc: "Estimated EPR fees and packaging taxes for current packaging by country; helps forecast compliance costs."
-    kind: sql
-    args:
-      country: {required: true}
-      volume_tonnes: {type: float, required: true, desc: "Annual volume in tonnes"}
-      material: {type: str, default: plastic, desc: "Packaging material type"}
-    sql: |
-      SELECT $country AS country, $volume_tonnes AS volume_tonnes, $material AS material,
-             COALESCE(s.fee_per_tonne_gbp, 0) AS epr_fee_per_tonne_gbp,
-             ROUND($volume_tonnes * COALESCE(s.fee_per_tonne_gbp, 0), 2) AS annual_epr_cost_gbp,
-             COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) AS plastic_tax_pct,
-             ROUND($volume_tonnes * 1000 * COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) / 100.0, 2) AS annual_plastic_tax_gbp,
-             ROUND($volume_tonnes * COALESCE(s.fee_per_tonne_gbp, 0) + $volume_tonnes * 1000 * COALESCE((SELECT MAX(plastic_tax_pct) FROM packaging_regulations WHERE country = $country), 0) / 100.0, 2) AS total_annual_cost_gbp,
-             'total_cost = (epr_fee_per_tonne * volume) + (plastic_tax_pct * volume * 1000 / 100)' AS formula
-      FROM epr_fee_schedules s
-      WHERE s.country = $country
-        AND s.material = $material
-        AND s.effective_from <= CAST($as_of AS DATE)
-        AND (s.effective_to IS NULL OR s.effective_to >= CAST($as_of AS DATE))
-    limit: 1
-    example: {country: DE, volume_tonnes: 500}
-
-  - name: calculate_epr_fee_exposure
-    desc: "Estimated EPR fee exposure by country and product category from volumes; shows highest-cost markets and categories."
-    kind: sql
-    args:
-      country: {required: true}
-      category: {required: true, desc: "Product category"}
-      volume_units: {type: int, required: true, desc: "Annual volume in units"}
-    sql: |
-      SELECT $country AS country, $category AS category, $volume_units AS volume_units,
-             COALESCE(SUM(s.fee_per_tonne_gbp), 0) AS epr_fee_rate_per_tonne_gbp,
-             ROUND($volume_units * COALESCE(SUM(s.fee_per_tonne_gbp), 0) / 1000.0, 2) AS estimated_annual_fee_gbp,
-             'estimated_fee = (volume_units / 1000) * fee_per_tonne' AS formula
-      FROM epr_fee_schedules s
-      WHERE s.country = $country
-        AND s.effective_from <= CAST($as_of AS DATE)
-        AND (s.effective_to IS NULL OR s.effective_to >= CAST($as_of AS DATE))
-      GROUP BY ALL
-    limit: 1
-    example: {country: FR, category: packaging, volume_units: 400000}
-
-  - name: calculate_catch_up_options
-    desc: Options and cost to meet packaging recycled-content or recyclability targets; ranks solutions by speed and investment needed.
-    kind: sql
-    args:
-      sku: {required: true, desc: "Product SKU"}
-      metric: {required: true, desc: "Target metric, e.g. recycled_content_pct"}
-    sql: |
-      SELECT t.sku, t.metric, t.target_value, t.current_value,
-             ROUND(t.target_value - t.current_value, 1) AS gap_to_close,
-             t.deadline,
-             CASE
-               WHEN t.metric = 'recycled_content_pct' THEN 'Increase recycled material in pack'
-               WHEN t.metric = 'recyclability_pct' THEN 'Redesign to improve recyclability'
-               ELSE 'Material substitution'
-             END AS recommended_action,
-             ROUND((SELECT COALESCE(MAX(cost_per_unit_gbp), 0.50) FROM recycled_content_data r WHERE r.sku = t.sku LIMIT 1) * (t.target_value - t.current_value) / 100.0, 2) AS estimated_cost_change_per_unit_gbp
-      FROM packaging_targets t
-      WHERE t.sku = $sku AND t.metric = $metric
-      LIMIT 1
-    example: {sku: PF-220, metric: recycled_content_pct}
-
-  - name: draft_epr_preparation_plan
-    desc: "Draft six-month EPR readiness plan: identifies preparation tasks, deadlines and data gaps."
-    kind: draft
-    args: [country, category]
-    sql:
-      obligations: SELECT * FROM epr_reporting_obligations WHERE country = $country AND category = $category
-      registrations: SELECT * FROM epr_registrations WHERE country = $country
-    template: |
-      EPR Readiness Plan: {{ country }} - {{ category }}
-
-      Reporting Obligations:
-      {% for o in obligations -%}
-      - {{ o.data_required }}: due {{ o.deadline }}
-      {% endfor %}
-
-      Current Registrations:
-      {% for reg in registrations -%}
-      - {{ reg.scheme_name }}: {{ reg.status }} ({{ reg.registration_number }})
-      {% endfor %}
-
-      Next Steps:
-      1. Verify all data fields are available
-      2. Set up monthly reporting schedule
-      3. Assign compliance owner
-      4. Test reporting systems
-    example: {country: FR, category: packaging}
-
-  - name: draft_artwork_compliance_checklist
-    desc: "Draft artwork compliance checklist for packaging artwork review; covers legal marks, recycling labels and language by country."
-    kind: draft
-    args: [country, product_category]
-    sql:
-      rules: SELECT * FROM recycling_label_rules WHERE country = $country AND product_category = $product_category
-      regulations: SELECT * FROM packaging_regulations WHERE country = $country
-    template: |
-      Artwork Compliance Checklist: {{ country }} - {{ product_category }}
-
-      Required Markings & Labels:
-      {% for r in rules -%}
-      [ ] Material markings required: {{ r.material_markings_required }}
-      [ ] Disposal instructions: {{ r.disposal_instructions_required }}
-      [ ] Languages: {{ r.language_requirements }}
-      [ ] {{ r.requirement }}
-      {% endfor %}
-
-      Regulatory Requirements:
-      {% for reg in regulations -%}
-      [ ] {{ reg.regulation_name }}
-      {% if reg.recycled_content_mandate_pct %}[ ] Recycled content min: {{ reg.recycled_content_mandate_pct }}%{% endif %}
-      {% endfor %}
-
-      Sign-off:
-      - [ ] Legal review complete
-      - [ ] Translations verified
-      - [ ] Print-ready approved
-    example: {country: FR, product_category: cosmetics}
-
-  - name: create_epr_preparation_task
-    desc: Create an EPR readiness task for a country/category; tracks preparation progress for compliance deadlines.
-    kind: insert
-    table: epr_preparation_tasks
-    id_prefix: ERT-
-    defaults: {status: open}
-    args:
-      country: {required: true}
-      category: {required: true}
-      task_description: {required: true}
-      due_date: {type: date, required: true}
-      assigned_to: {desc: "Employee id"}
-    example: {country: FR, category: packaging, task_description: "Verify all product data fields available in PIM", due_date: "+30d"}
-
-  - name: cancel_epr_preparation_task
-    desc: Cancel an EPR preparation task. Returns the old and new status.
-    kind: update
-    table: epr_preparation_tasks
-    set: {status: cancelled}
-    args:
-      cancel_reason: {required: true, desc: "Reason for cancellation"}
-    example: {task_id: ERT-000001, cancel_reason: "Out of scope for this market"}

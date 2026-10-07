@@ -94,7 +94,7 @@ def generate(g):
         fy_p, season = cal[wk.isoformat()]
         actual = int(round(plan * ratio))
         pp = avg_price[(dept, cat)]
-        realise = 1 - 0.2 * max(0.0, 1 - ratio)
+        realise = 1 - 0.1 * max(0.0, 1 - ratio)
         sell.append({
             "sell_through_id": f"ST-{len(sell) + 1:06d}", "department": dept, "category": cat, "range_name": rng_name,
             "region": region, "week_start": wk, "fy_period": fy_p, "season": season,

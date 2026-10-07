@@ -1,89 +1,129 @@
 - question: "02:12:Q4"
-  story: "Freight forwarder tracking rolled bookings from Q3 2026. Three ocean bookings were rolled (OBK-900003, OBK-900004, OBK-900007) due to vessel blank sailing or equipment shortage. The query returns rolled bookings with dates, container counts, and reasons. Related demurrage charges total GBP 4,555 across rolled and delivered shipments."
+  story: >
+    In the last quarter about 18% of Asia-Europe ocean bookings were rolled (25 of 136). Oceanic (CAR-005) and Pacific Star
+    (CAR-006) roll most. Bookings made under 14 days ahead roll at 45%, against 8% for 14-27 days and 2% for 28+ days,
+    bookings of 3+ containers roll three times as often as 1-2 container ones, and Rotterdam bookings roll most. About
+    GBP 22k of demurrage and detention was charged in the quarter, nearly 80% of it on rolled bookings.
   checks:
     - tool: list_rolled_bookings
       args: {}
-      expect: ["OBK-900003", "OBK-900004", "OBK-900007", "rolled"]
+      expect: ["25 rows", "CAR-005", "Overbooked vessel", "Rotterdam call omitted"]
+    - tool: get_booking_lead_time_vs_roll_outcome
+      args: {}
+      expect: ["under 14 days ahead", "45.5", "18.4"]
+    - tool: get_booking_lead_time_vs_roll_outcome
+      args: {group_by: carrier_id}
+      expect: ["CAR-005", "41.9", "CAR-006", "32"]
+    - tool: get_booking_lead_time_vs_roll_outcome
+      args: {group_by: booking_size}
+      expect: ["3+ containers", "34", "10.1"]
     - tool: get_demurrage_and_detention_for_bookings
       args: {}
-      expect: ["demurrage", "detention", "CHG-900001", "1250"]
+      expect: ["22492.16", "17535.49"]
 
 - question: "02:12:Q5"
-  story: "Freight forwarder planning ahead for Q4 2026 bookings. Upcoming planned bookings (OBK-900010 through OBK-900013) are booked for future sailings. The system tracks these and allows updates to different sailings or cancellations. OBK-900012 has 9 containers booked to GBFXT with upcoming sailing."
+  story: >
+    Carrier notices blank Oceanic's Rotterdam call (sailing in about two weeks), Pacific Star's Hamburg call (a week later)
+    and Oceanic's Felixstowe call (the week after). The booked bookings hit are OBK-900101 (CAR-005 CNSHA to NLRTM),
+    OBK-900102 (CAR-006 CNNGB to DEHAM) and OBK-900103 (CAR-005 CNYTN to GBFXT). OBK-900104 (CAR-007 to Rotterdam) is not hit.
+    Moving a booking shifts its cut-off and ETA; the Rotterdam booking can be cancelled instead.
   checks:
     - tool: list_planned_bookings
-      args: {}
-      expect: ["OBK-900010", "OBK-900011", "OBK-900012", "booked"]
+      args: {carrier_id: CAR-005, sailing_to: "+6w"}
+      expect: ["OBK-900101", "NLRTM", "OBK-900103", "GBFXT"]
     - tool: update_booking_sailing
-      args: {booking_id: OBK-900010, planned_sailing: "+21d"}
-      expect: ["OBK-900010"]
+      args: {booking_id: OBK-900102, planned_sailing: "+25d"}
+      expect: ["OBK-900102", "planned_sailing"]
     - tool: cancel_ocean_booking
-      args: {booking_id: OBK-900013}
-      expect: ["OBK-900013", "cancelled"]
+      args: {booking_id: OBK-900101, cancel_reason: Sailing blanked}
+      expect: ["OBK-900101", "cancelled"]
 
 - question: "02:12:Q6"
-  story: "Freight forwarder analyzing historical container volumes on the Asia-to-UK route to compare with alternative Mediterranean routing. The system returns monthly volume data for SGSIN-GBFXT and SGSIN-NLRTM routes showing typical 5-12 containers per booking over the past 12 months."
+  story: >
+    Volumes come from the portal's own bookings (1-2 containers per booking on average). Over six months Shanghai to
+    Felixstowe moved 42 containers in 22 bookings (about 7 a month), far below the 10+ containers per departure that a
+    Valencia or Piraeus block train needs.
   checks:
     - tool: get_historical_container_volumes_by_route
-      args: {dest_port: GBFXT}
-      expect: ["GBFXT", "booking_count", "total_containers"]
-    - tool: get_transshipment_options
-      args: {origin_port: SGSIN, dest_port: GBFXT}
-      expect: ["direct", "transship", "routing_option", "estimated_days"]
+      args: {origin_port: CNSHA, months_back: 6}
+      expect: ["CNSHA", "GBFXT", "42", "22"]
 
 - question: "02:13:Q1"
-  story: "Air freight coordinator considering airfreighting Style 7731 due to late factory exit. Creating new air freight booking for 3000 units."
+  story: >
+    Air freight for style STY-7731 (supplier SUP-0022, Turkey) leaves from Istanbul (IST) to Heathrow (LHR) with
+    SkyBridge Air Cargo (CAR-008). The booking is stored with style, route, dates, units and total cost.
   checks:
     - tool: create_air_freight_booking
-      args: {po_id: PO-2026-005912, carrier_id: CAR-008, origin_airport: HKHKG, dest_airport: LHR, units: 3000, planned_departure: "+2d", planned_arrival: "+3d", cost_gbp: 48000}
-      expect: ["ABK-", "booked"]
+      args: {style_id: STY-7731, carrier_id: CAR-008, origin_airport: IST, units: 6000, planned_departure: "+3d", planned_arrival: "+5d", cost_gbp: 4920}
+      expect: ["ABK-", "STY-7731", "6000", "4920", "booked"]
 
 - question: "02:13:Q2"
-  story: "Air freight spend analysis over past quarter. Invoices are categorized by reason code with delayed_factory and late_arrival being the main drivers. Multiple carriers are invoiced."
+  story: >
+    Last quarter's air freight invoices total GBP 420,000 over 11 invoices: supplier_late 150k, demand_spike 120k,
+    store_emergency 90k, quality_issue 40k, cancelled_order 20k. GBP 246,000 is avoidable (late supplier, quality and
+    cancelled-order flights fully, demand spikes 30%). SUP-0012 (90k), SUP-0015 (59k) and SUP-0021 (118k incl. 38k
+    avoidable) are the main suppliers. Older invoices sit outside the 90 day window.
   checks:
     - tool: list_air_freight_invoices
       args: {}
-      expect: ["invoice_id", "reason_code"]
+      expect: ["420000", "246000", "supplier_late", "150000", "SUP-0012", "90000"]
     - tool: list_air_freight_invoices
-      args: {reason_code: delayed_factory}
-      expect: ["delayed_factory"]
+      args: {reason_code: supplier_late}
+      expect: ["INV-900001", "SUP-0015", "150000"]
 
 - question: "02:13:Q5"
-  story: "Air freight coordinator comparing delivery date probabilities for urgent shipment needed in 12 days. The system provides probability estimates for sea direct, air express, and sea-air transship routing options. Cut-off times are calculated from booking records."
+  story: >
+    PO-2026-005784 (Bangladesh, SUP-0073, DC1) is held on sea booking OBK-900105 (CAR-005 BDCGP to GBFXT). For a 12 day
+    deadline direct air from Dhaka has a 94% chance, sea-air via Dubai only about 9% and sea 0%. Cut-offs are 2 days
+    before departure for air and 3 for sea-air. The draft names the existing sea booking, and it can be cancelled once
+    the air booking is made.
   checks:
     - tool: calculate_delivery_date_probability
-      args: {origin_port: SGSIN, dest_port: GBFXT, required_date: "+12d"}
-      expect: ["routing_option", "probability_pct", "sea_direct", "air_express"]
+      args: {origin_port: BDCGP, dest_port: GBFXT, required_date: "+12d"}
+      expect: ["air", "94", "sea_air", "AEDXB"]
     - tool: get_booking_cut_off_times
-      args: {booking_id: OBK-900001}
-      expect: ["OBK-900001", "cut_off_date", "hours"]
+      args: {po_id: PO-2026-005784}
+      expect: ["OBK-900105", "2 days before departure", "3 days before departure"]
     - tool: draft_forwarder_booking_request
-      args: {po_id: PO-2026-005912}
-      expect: ["BOOKING REQUEST", "PO-2026-005912"]
+      args: {po_id: PO-2026-005784, units: 500, mode: air}
+      expect: ["PO-2026-005784", "500 units", "OBK-900105"]
+    - tool: create_air_freight_booking
+      args: {po_id: PO-2026-005784, carrier_id: CAR-008, origin_airport: DAC, units: 500, planned_departure: "+3d", planned_arrival: "+7d", cost_gbp: 1440}
+      expect: ["ABK-", "PO-2026-005784", "1440"]
+    - tool: cancel_sea_freight_booking
+      args: {booking_id: OBK-900105, cancel_reason: Switched to air}
+      expect: ["OBK-900105", "cancelled"]
 
 - question: "02:19:Q1"
-  story: "Control tower analyst identifying in-transit shipments and sending expedite requests for urgent cases. System creates expedite events to notify forwarder of priority shipments."
+  story: >
+    PO-2026-004155 (OBK-900201, CAR-007 INNSA to GBFXT, already rolled once) and PO-2026-004352 (OBK-900202, CAR-007
+    INNSA to GBLGP) are late in transit. Expedite requests are stored against the bookings.
   checks:
+    - tool: list_planned_bookings
+      args: {po_id: PO-2026-004155}
+      expect: ["OBK-900201", "in_transit"]
     - tool: send_expedite_request_to_forwarder
-      args: {booking_id: OBK-900006, reason: "Store stockout risk"}
-      expect: ["EVT-", "expedite_request"]
-    - tool: list_rolled_bookings
-      args: {}
-      expect: ["rolled"]
+      args: {booking_id: OBK-900201, reason: Store stockout risk}
+      expect: ["EVT-", "OBK-900201", "expedite_request"]
 
 - question: "02:19:Q3"
-  story: "Control tower analyzing port congestion impact. The system provides transshipment options showing alternative routing with comparable transit times and costs."
+  story: >
+    A vessel from Shanghai is anchored outside Rotterdam. Options for CNSHA to NLRTM: wait (36 days typical, 63%
+    reliable, GBP 8,210 a box), divert to Hamburg (+1 day, +GBP 760, 82%), divert to Felixstowe (+2 days, +GBP 310, 74%),
+    or air for the most urgent boxes (3 days, 94%).
   checks:
     - tool: get_transshipment_options
-      args: {origin_port: SGSIN, dest_port: GBFXT, mode: sea}
-      expect: ["routing_option", "estimated_cost_gbp", "estimated_days"]
+      args: {origin_port: CNSHA, dest_port: NLRTM}
+      expect: ["Hamburg", "8970", "760", "Felixstowe", "8520", "air"]
 
 - question: "08:80:Q2"
-  story: "International market manager managing franchise order priorities. Update shipment priority to urgent or hold for franchise orders."
+  story: >
+    Dubai franchise PTN-011 order FRO-900001 travels on two ocean bookings: OBK-900031 (core range) and OBK-900032
+    (non-core overstock). Only the core shipment is set to urgent.
   checks:
-    - tool: update_shipment_priority_for_franchise_order
-      args: {booking_id: OBK-900012, priority: urgent}
-      expect: ["OBK-900012"]
     - tool: list_planned_bookings
-      args: {}
-      expect: ["planned_sailing"]
+      args: {partner_id: PTN-011}
+      expect: ["OBK-900031", "core", "OBK-900032", "non_core"]
+    - tool: update_shipment_priority_for_franchise_order
+      args: {booking_id: OBK-900031, priority: urgent}
+      expect: ["OBK-900031", "urgent"]

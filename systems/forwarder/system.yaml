@@ -109,17 +109,14 @@ tables:
 
 tools:
   - name: list_planned_bookings
-    desc: Ocean bookings with cut-off and ETA, soonest sailing first; defaults to booked (not yet sailed). Filter by carrier, port, PO, shipment, franchise partner or sailing dates.
+    desc: Ocean bookings with cut-off and ETA, soonest sailing first; defaults to booked (not yet sailed). Filter by carrier, port, PO, franchise partner or sailing date.
     kind: sql
     args:
-      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled, any], desc: "Booking status or any. Defaults to booked, or any when a PO, shipment or partner is given"}
+      booking_status: {type: enum, values: [booked, rolled, sailed, in_transit, delivered, cancelled, any], desc: "Booking status or any. Defaults to booked, or any when a PO or partner is given"}
       carrier_id: {}
-      origin_port: {}
       dest_port: {}
       po_id: {}
-      shipment_id: {}
       partner_id: {desc: "Franchise partner, to find its order shipments"}
-      sailing_from: {type: date, desc: "Only sailings on or after this date"}
       sailing_to: {type: date, desc: "Only sailings on or before this date, e.g. +60d"}
     sql: |
       SELECT booking_id, po_id, shipment_id, carrier_id, origin_port, dest_port, planned_sailing,
@@ -128,14 +125,11 @@ tools:
              container_count, booking_status, priority, partner_id, franchise_order_id, cargo_range, cost_gbp
       FROM ocean_bookings
       WHERE (CASE WHEN $booking_status IS NOT NULL THEN ($booking_status = 'any' OR booking_status = $booking_status)
-                  ELSE (booking_status = 'booked' OR $po_id IS NOT NULL OR $shipment_id IS NOT NULL OR $partner_id IS NOT NULL) END)
+                  ELSE (booking_status = 'booked' OR $po_id IS NOT NULL OR $partner_id IS NOT NULL) END)
         AND ($carrier_id IS NULL OR carrier_id = $carrier_id)
-        AND ($origin_port IS NULL OR origin_port = upper($origin_port))
         AND ($dest_port IS NULL OR dest_port = upper($dest_port))
         AND ($po_id IS NULL OR po_id = $po_id)
-        AND ($shipment_id IS NULL OR shipment_id = $shipment_id)
         AND ($partner_id IS NULL OR partner_id = $partner_id)
-        AND ($sailing_from IS NULL OR CAST(planned_sailing AS DATE) >= CAST($sailing_from AS DATE))
         AND ($sailing_to IS NULL OR CAST(planned_sailing AS DATE) <= CAST($sailing_to AS DATE))
       ORDER BY planned_sailing, booking_id
     limit: 50
@@ -387,22 +381,21 @@ tools:
     example: {po_id: PO-2026-004122}
 
   - name: create_air_freight_booking
-    desc: Creates an air freight booking with an airline for a PO or style, with route, dates, units and total cost. Returns the new booking.
+    desc: Creates an air freight booking into London Heathrow with an airline for a PO or style, with origin airport, dates, units and total cost. Returns the new booking.
     kind: insert
     table: air_freight_bookings
     id_prefix: ABK-
-    defaults: {booking_status: booked, booking_date: "$as_of"}
+    defaults: {booking_status: booked, booking_date: "$as_of", dest_airport: LHR}
     args:
       po_id: {desc: "Purchase order, if booking by PO"}
       style_id: {desc: "Style, if booking by style, e.g. STY-7731"}
       carrier_id: {required: true}
       origin_airport: {required: true, desc: "Departure airport code, e.g. IST"}
-      dest_airport: {required: true, desc: "Arrival airport code, e.g. LHR"}
       units: {required: true, type: int}
       planned_departure: {type: date, required: true}
       planned_arrival: {type: date, required: true}
       cost_gbp: {type: float, required: true, desc: "Total quoted cost in GBP"}
-    example: {style_id: STY-7731, carrier_id: CAR-008, origin_airport: IST, dest_airport: LHR, units: 6000, planned_departure: "+3d", planned_arrival: "+5d", cost_gbp: 4920}
+    example: {style_id: STY-7731, carrier_id: CAR-008, origin_airport: IST, units: 6000, planned_departure: "+3d", planned_arrival: "+5d", cost_gbp: 4920}
 
   - name: update_booking_sailing
     desc: Moves an ocean booking to a different sailing date; cut-off and ETA follow the new date. Returns the old and new sailing dates.

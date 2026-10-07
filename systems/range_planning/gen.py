@@ -1,106 +1,90 @@
-"""Range planning data: strategic roles, range gaps, and background tasks."""
-from datetime import datetime, timedelta
+"""Range planning data: strategic roles, category gaps, range plan, gap requests and review tasks."""
+from datetime import timedelta
+
+STORY_SKUS = {"K-1700", "PF-220", "SKU-101904", "SKU-103640", "SKU-101876"}
+SEEDED_GAP_CATS = {"Small Appliances", "Audio", "Jewellery"}
 
 
 def generate(g):
     r = g.rng
     products = g.master("products")
     employees = g.master("employees")
+    buyer_ids = [e["employee_id"] for e in employees if e.get("department") == "Buying" and e.get("status") == "active"]
 
-    # Filter to active buyers/product managers
-    buyers = [e for e in employees if e.get("department") == "Buying" and e.get("status") == "active"]
-    buyer_ids = [b["employee_id"] for b in buyers] if buyers else ["EMP-00010", "EMP-00011", "EMP-00012"]
-
-    # Assign strategic roles to products
-    strategic_roles = []
-    categories = set()
+    roles = []
     for p in products:
-        if p.get("status") in ("discontinued", "new"):
+        if p["status"] == "discontinued":
             continue
-        role = r.choices(["core", "growth", "seasonal", "experimental", "clearance"],
-                        [50, 25, 15, 7, 3])[0]
-        strategic_roles.append({
-            "sku": p["sku"],
-            "strategic_role": role
-        })
-        categories.add(p.get("category", "Misc"))
+        if p["status"] == "clearance":
+            role = r.choices(["clearance", "seasonal", "core"], [80, 15, 5])[0]
+        elif p["status"] == "new":
+            role = r.choices(["growth", "experimental", "seasonal"], [55, 35, 10])[0]
+        else:
+            role = r.choices(["core", "growth", "seasonal", "experimental"], [55, 25, 15, 5])[0]
+        roles.append({"sku": p["sku"], "strategic_role": role,
+                      "rationale": {"core": "Everyday volume line for the category",
+                                    "growth": "Building share; invest in range depth",
+                                    "seasonal": "Peaks with the season; plan buy depth accordingly",
+                                    "experimental": "Test line; judge on sell-through",
+                                    "clearance": "Being sold through; no replenishment"}[role]})
 
-    # Generate range gaps for main categories
-    range_gaps = []
-    gap_categories = list(categories)[:15]  # Focus on 15 main categories
-    for i, cat in enumerate(gap_categories):
-        size = r.randint(50000, 500000)
-        competitors = r.randint(2, 12)
-        products_in_cat = sum(1 for p in products if p.get("category") == cat)
-        range_gaps.append({
-            "gap_id": f"RGP-{i + 1:06d}",
-            "category": cat,
-            "gap_description": f"Under-supplied in {cat}; competitors have 30-50% more SKUs",
-            "opportunity_size_gbp": float(size),
-            "competitor_count": competitors,
-            "product_count_current": products_in_cat,
-            "created_at": g.as_of - timedelta(days=r.randint(14, 90))
-        })
-
-    # Generate some draft range plans
-    product_range_plan = []
-    for i in range(25):
-        p = r.choice(products)
-        action = r.choices(["extend", "refresh", "reprice", "delete"], [40, 35, 20, 5])[0]
-        status = r.choices(["draft", "approved", "in_progress"], [50, 35, 15])[0]
-        approved_by = r.choice(buyer_ids + [None]) if status in ("approved", "in_progress") else None
-        product_range_plan.append({
-            "plan_id": f"PRP-{i + 1:06d}",
-            "sku": p["sku"],
-            "action": action,
-            "status": status,
-            "approved_by": approved_by,
-            "created_at": g.as_of - timedelta(days=r.randint(1, 60)),
-            "updated_at": g.as_of - timedelta(days=r.randint(0, 20))
+    counts = {}
+    for p in products:
+        counts[p["category"]] = counts.get(p["category"], 0) + 1
+    gaps = []
+    cats = sorted(c for c in counts if c not in SEEDED_GAP_CATS)
+    for i, cat in enumerate(r.sample(cats, 10)):
+        comp = r.randint(2, 10)
+        gaps.append({
+            "gap_id": f"RGP-{i + 1:06d}", "category": cat, "segment": "All",
+            "gap_description": f"Whole-category view of {cat}; competitors carry more SKUs at similar price points",
+            "market_size_gbp": float(r.randint(200, 900) * 1_000_000),
+            "market_growth_pct": round(r.uniform(-3, 9), 1),
+            "opportunity_size_gbp": float(r.randint(15, 60) * 10_000),
+            "est_margin_pct": round(r.uniform(28, 55), 1),
+            "competitor_count": comp, "competitors": f"{comp} UK competitors",
+            "product_count_current": counts[cat],
+            "fill_feasibility": r.choice(["medium", "low"]),
+            "created_at": g.as_of - timedelta(days=r.randint(14, 90)),
         })
 
-    # Generate range gap requests
-    range_gap_requests = []
-    for i in range(10):
-        status = r.choices(["submitted", "approved", "rejected", "investigated"], [30, 40, 20, 10])[0]
-        category = r.choice(gap_categories)
-        range_gap_requests.append({
-            "request_id": f"RQR-{i + 1:06d}",
-            "category": category,
-            "reason": f"High market interest; {r.randint(2, 8)} competitor SKUs; estimated £{r.randint(50, 500)}k opportunity",
-            "status": status,
+    story_plan = {"K-1700", "PF-220", "SKU-101904", "SKU-103640", "SKU-101876"}
+    pool = [p for p in products if p["sku"] not in story_plan and p["status"] != "discontinued"]
+    plan = []
+    for i, p in enumerate(r.sample(pool, 20)):
+        action = r.choices(["extend", "refresh", "reprice", "delete"], [40, 30, 20, 10])[0]
+        status = r.choices(["draft", "approved", "in_progress", "completed"], [40, 25, 15, 20])[0]
+        plan.append({
+            "sku": p["sku"], "plan_id": f"PRP-{i + 1:06d}", "action": action, "status": status,
+            "approved_by": r.choice(buyer_ids) if status != "draft" else None,
+            "created_at": g.as_of - timedelta(days=r.randint(30, 120)),
+            "updated_at": g.as_of - timedelta(days=r.randint(25, 29)),
+        })
+
+    requests = []
+    for i in range(8):
+        cat = r.choice(cats)
+        requests.append({
+            "request_id": f"RQR-{i + 1:06d}", "category": cat,
+            "reason": f"Competitors carry {r.randint(2, 8)} more SKUs in {cat}",
+            "status": r.choice(["approved", "rejected", "investigated", "submitted"]),
             "created_by": r.choice(buyer_ids),
-            "created_at": g.as_of - timedelta(days=r.randint(1, 45)),
-            "updated_at": g.as_of - timedelta(days=r.randint(0, 20))
+            "created_at": g.as_of - timedelta(days=r.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=r.randint(20, 29)),
         })
 
-    # Generate SKU review tasks
-    sku_review_tasks = []
-    for i in range(12):
-        p = r.choice(products)
-        reasons = [
-            "Costs more to serve than revenue earned",
-            "Sales down 50% YoY, margin declining",
-            "Not aligned with strategic plan",
-            "Clearance candidate; low velocity",
-            "Performance below category benchmark"
-        ]
-        status = r.choices(["open", "in_progress", "completed", "cancelled"], [40, 30, 20, 10])[0]
-        sku_review_tasks.append({
-            "task_id": f"RVW-{i + 1:06d}",
-            "sku": p["sku"],
-            "reason": r.choice(reasons),
-            "owner": r.choice(buyer_ids),
-            "status": status,
+    tasks = []
+    reasons = ["Sales down year on year, margin declining", "Not aligned with strategic plan",
+               "Clearance candidate; low velocity", "Performance below category benchmark"]
+    for i, p in enumerate(r.sample(pool, 10)):
+        status = r.choice(["open", "in_progress", "completed", "cancelled"])
+        tasks.append({
+            "task_id": f"RVW-{i + 1:06d}", "sku": p["sku"], "reason": r.choice(reasons),
+            "owner": r.choice(buyer_ids), "status": status,
             "recommendation": r.choice(["delete", "refresh", "reprice", "investigate"]) if status == "completed" else None,
-            "created_at": g.as_of - timedelta(days=r.randint(1, 60)),
-            "updated_at": g.as_of - timedelta(days=r.randint(0, 30))
+            "created_at": g.as_of - timedelta(days=r.randint(30, 90)),
+            "updated_at": g.as_of - timedelta(days=r.randint(20, 29)),
         })
 
-    return {
-        "product_strategic_roles": strategic_roles,
-        "range_gaps": range_gaps,
-        "product_range_plan": product_range_plan,
-        "range_gap_requests": range_gap_requests,
-        "sku_review_tasks": sku_review_tasks
-    }
+    return {"product_strategic_roles": roles, "range_gaps": gaps, "product_range_plan": plan,
+            "range_gap_requests": requests, "sku_review_tasks": tasks}
