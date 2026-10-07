@@ -39,7 +39,7 @@ def generate(g):
                 "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
                 "lane_id": lane_id,
                 "mode": "sea",
-                "rate_date": rate_date.date(),
+                "rate_date": rate_date if isinstance(rate_date, datetime.date) else rate_date.date(),
                 "rate_gbp": round(rate, 2),
                 "unit": "per 40ft container",
                 "origin": origin,
