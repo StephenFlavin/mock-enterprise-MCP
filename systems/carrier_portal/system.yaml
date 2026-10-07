@@ -50,6 +50,7 @@ tables:
       volume_share_pct: {type: float, desc: "Our share of bookings on the lane for this period %"}
       avg_eta_days: {type: float, desc: "Actual average transit time (days)"}
       quoted_eta_days: {type: float, desc: "Transit time the carrier quotes (days)"}
+      transit_stddev_days: {type: float, desc: "Standard deviation of actual transit time (days), the variability of arrivals"}
 
   carrier_damage_rates:
     key: damage_rate_id
@@ -80,7 +81,7 @@ tables:
       carrier_id: {type: str, desc: "Carrier, e.g. CAR-002"}
       lane: {type: str, desc: "Lane where the damage happened, e.g. DC1-ST214"}
       site_id: {type: str, desc: "Dispatching DC, e.g. DC1"}
-      order_id: {type: str, desc: "Customer order, if the claim relates to one"}
+      order_ref: {type: str, desc: "Customer order id (e.g. ORD-900071), if the claim relates to one"}
       sku: {type: str, desc: "Product SKU"}
       package_type: {type: str, desc: "Packaging type, e.g. carton, polybag, hanging"}
       claim_date: {type: date, desc: Date the damage was claimed}
@@ -129,11 +130,14 @@ tables:
     key: delivery_id
     cols:
       delivery_id: {type: str, desc: "Delivery record id, e.g. DLV-000123"}
-      order_id: {type: str, desc: "Customer order, e.g. ORD-2026-0123456"}
+      order_ref: {type: str, desc: "Customer order id, e.g. ORD-2026-0123456 or a wholesale order ORD-900070"}
       carrier_id: {type: str, desc: "Carrier, e.g. CAR-011"}
       eta: {type: date, desc: Estimated arrival}
       ata: {type: date, desc: Actual arrival}
-      status: {type: enum, values: [in_transit, delayed, arrived, short_shipped, damaged, returned], desc: Delivery status}
+      status: {type: enum, values: [in_transit, delayed, arrived, short_shipped, damaged, returned, lost], desc: Delivery status}
+      lane: {type: str, desc: "Lane the order travelled, e.g. DC1-UK South"}
+      units_shipped: {type: int, desc: Units handed to the carrier}
+      units_delivered: {type: int, desc: "Units the carrier delivered (0 if lost)"}
       delivery_notes: {type: text, desc: Delivery notes}
 
   capacity_requests:
@@ -248,7 +252,7 @@ tools:
     example: {lane: Asia-Europe}
 
   - name: get_carrier_eta_vs_actual_by_lane
-    desc: Carrier-quoted transit time versus actual average transit by carrier and lane, with days of slippage and on-time %.
+    desc: Carrier-quoted transit time versus actual average transit by carrier and lane, with days of slippage, transit variability (std dev) and on-time %.
     kind: sql
     args:
       carrier_id: {desc: "Carrier id, blank for all"}
@@ -256,7 +260,7 @@ tools:
       period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
     sql: |
       SELECT p.carrier_id, c.name AS carrier_name, p.lane, p.period, p.quoted_eta_days, p.avg_eta_days AS actual_eta_days,
-             round(p.avg_eta_days - p.quoted_eta_days, 1) AS slippage_days, p.on_time_pct
+             round(p.avg_eta_days - p.quoted_eta_days, 1) AS slippage_days, p.transit_stddev_days, p.on_time_pct
       FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
       WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
         AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period
@@ -306,6 +310,7 @@ tools:
     kind: sql
     args:
       carrier_id: {desc: "Carrier id, blank for all"}
+      mode: {type: enum, values: [road, parcel, ocean, forwarder, air, rail], desc: "Carrier mode, blank for all"}
       lane: {type: str, desc: "Lane or part of it, blank for all lanes"}
       period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
     sql: |
@@ -315,7 +320,7 @@ tools:
              round(100.0 * sum(p.rolled_bookings) / sum(p.bookings), 1) AS roll_rate_pct,
              round(sum(p.damage_rate_pct * p.bookings) / sum(p.bookings), 2) AS damage_rate_pct
       FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
-      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id) AND ($mode IS NULL OR c.mode = $mode)
         AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period
       GROUP BY p.carrier_id, c.name, c.mode
       ORDER BY reliability_pct DESC
@@ -513,9 +518,9 @@ tools:
     kind: select
     from: order_delivery_records
     filters:
-      order_id: {required: true}
+      order_id: {col: order_ref, required: true, type: str, desc: "Customer order id, e.g. ORD-2026-0100001 or ORD-900070"}
       carrier_id: {}
-    columns: [delivery_id, order_id, carrier_id, eta, ata, status, delivery_notes]
+    columns: [delivery_id, order_ref, carrier_id, lane, eta, ata, status, units_shipped, units_delivered, delivery_notes]
     limit: 5
     example: {order_id: "ORD-2026-0100001"}
 
@@ -542,7 +547,7 @@ tools:
     defaults: {status: submitted, claim_date: "$as_of", submitted_date: "$as_of"}
     args:
       carrier_id: {required: true}
-      order_id: {}
+      order_ref: {}
       lane: {required: true}
       sku: {required: true}
       package_type: {required: true}

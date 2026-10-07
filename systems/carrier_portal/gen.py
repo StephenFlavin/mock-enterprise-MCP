@@ -124,7 +124,7 @@ def generate(g):
     for i, order in enumerate(g.master("orders")[:20], 1):
         eta = A - timedelta(days=r.randint(20, 90))
         ata = eta + timedelta(days=r.choice([-1, 0, 0, 0, 1, 2]))
-        deliveries.append({"delivery_id": f"DLV-{i:06d}", "order_id": order["order_id"], "carrier_id": r.choice(parcel), "eta": eta, "ata": ata,
+        deliveries.append({"delivery_id": f"DLV-{i:06d}", "order_ref": order["order_id"], "carrier_id": r.choice(parcel), "lane": "DC2-GB", "eta": eta, "ata": ata,
                            "status": "arrived", "delivery_notes": ""})
 
     return {
