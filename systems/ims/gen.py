@@ -183,6 +183,8 @@ def generate(g):
     for s in dict.fromkeys(store_ids[:60] + ["ST165", "ST214", "ST215", "ST216"]):
         sh = g.rng_for("shrink", s)
         base = sh.uniform(0.7, 1.1)
+        if s == "ST214":
+            base = 1.2  # story 08:71: ST214 shrink is high against its cluster
         for wk in range(0, 40):
             monday = g.as_of - timedelta(days=g.as_of.weekday()) - timedelta(weeks=wk + 1)
             for cat in cats:
@@ -471,7 +473,7 @@ def generate(g):
         if k == ("SKU-103234", "DC2", ""):
             p["reorder_point"], p["safety_stock"] = 4944, 560
 
-    # (3b) SKU-103227 (container CONT-000068 story): ST186 is the clear first store to run out, 3.9 weeks of cover.
+    # (3b) SKU-103227 (container CONT-000078 story): ST186 is the clear first store to run out, 3.9 weeks of cover.
     pos_rows = [p for p in pos_rows if not (p["sku"] == "SKU-103227" and p["site_id"] == "ST186")]
     pos_rows.append(mkrow("SKU-103227", "ST186", int(3.9 * 112.1), 112.1, 0, 20))
 

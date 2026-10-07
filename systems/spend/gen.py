@@ -40,13 +40,18 @@ def generate(g):
     sup = {s["supplier_id"]: s for s in g.master("suppliers")}
     prods = g.master("products")
     cat_dept = {p["category"]: p["department"] for p in prods}
+    # products that have been bought (or are no longer 'new'): the not-yet-launched master products have no spend, so they must not
+    # dilute a supplier's category split
+    bought = {l["sku"] for l in g.master("po_lines")}
+    live_prods = [p for p in prods if p["status"] != "new" or p["sku"] in bought]
+    live_cat_dept = {p["category"]: p["department"] for p in live_prods}
     sup_cats = defaultdict(lambda: defaultdict(int))
     ucost = defaultdict(list)
-    for p in prods:
+    for p in live_prods:
         sup_cats[p["supplier_id"]][p["category"]] += 1
         ucost[(p["supplier_id"], p["category"])].append(float(p["unit_cost_gbp"]))
     dept_cats = defaultdict(list)
-    for c, d in cat_dept.items():
+    for c, d in live_cat_dept.items():
         dept_cats[d].append(c)
 
     # 24 months, mid-month dates, oldest first; last full month is the one before as_of
@@ -62,6 +67,7 @@ def generate(g):
 
     def profile(sid, kind="product"):
         s = sup[sid]
+        r = g.rng_for("profile", sid)
         slope = SLOPE.get(sid, r.uniform(-0.1, 0.1))
         out = []
         for i, d in enumerate(months):
@@ -92,7 +98,7 @@ def generate(g):
             ir = random.Random("spend-indirect-" + sid)
             cats, product_annual, n, base = {}, 0.0, 1, None
         else:
-            ir = r
+            ir = g.rng_for("extra", sid)
             product_annual = float(s["annual_spend_gbp"])
             cats = dict(sup_cats.get(sid) or {})
             if not cats:
@@ -147,13 +153,14 @@ def generate(g):
             dept = cat_dept.get(c, s["category_focus"])
             ul = ucost.get((sid, c)) or [30.0]
             base_uc = sum(ul) / len(ul)
+        ir = g.rng_for("invoices", sid, c)
         for i, v in enumerate(vals):
             if v <= 0:
                 continue
             uc = base_uc * (1 + 0.004 * (i - 12))
             units = max(1, round(v / uc))
             spend_rows.append({"supplier_id": sid, "category": c, "department": dept, "period": months[i], "spend_gbp": float(v),
-                               "units": units, "invoice_count": r.randint(2, 9) if c not in SERVICE_RATE else r.randint(1, 3),
+                               "units": units, "invoice_count": ir.randint(2, 9) if c not in SERVICE_RATE else ir.randint(1, 3),
                                "avg_unit_cost_gbp": round(v / units, 2), "is_preferred": pref})
 
     # supplier sales (for share of wallet)
@@ -166,7 +173,7 @@ def generate(g):
         if sup[sid].get("supplier_type") == "indirect":  # service suppliers: fixed share, no random draw (keeps the stream of the others)
             share = 0.35
         else:
-            share = explicit.get(sid, r.uniform(0.04, 0.4))
+            share = explicit.get(sid, g.rng_for("share", sid).uniform(0.04, 0.4))
         supplier_volume.append({"supplier_id": sid, "annual_sales_gbp": float(round(last12[sid] / share, -3))})
 
     # payment terms benchmark
@@ -174,6 +181,7 @@ def generate(g):
     payment = []
     for c in sorted(cat_dept):
         for ctry, d in base_days.items():
+            r = g.rng_for("payment", c, ctry)
             std = d + r.choice([-15, 0, 0, 15])
             payment.append({"category": c, "supplier_country": ctry, "market_standard_days": std, "typical_min_days": max(15, std - 30),
                             "typical_max_days": std + 30, "observations_count": r.randint(6, 40)})
@@ -187,6 +195,7 @@ def generate(g):
     for sid, s in sup.items():
         if s["country"] not in NEARSHORE or s["status"] != "active":
             continue
+        r = g.rng_for("nearshore", sid)
         acc = 0.87 if sid == "SUP-0044" else r.uniform(0.9, 1.04)
         com = 0.90 if sid == "SUP-0044" else r.uniform(0.7, 0.95)
         for i, d in enumerate(months[12:], 12):
@@ -220,6 +229,7 @@ def generate(g):
         if used[sid] + actual * vol > 0.95 * float(sup[sid]["annual_spend_gbp"]):
             continue
         used[sid] += actual * vol
+        r = g.rng_for("pricevar", l["po_id"], l["line_no"])
         cv = SUP_CONTRACT_VAR.get(sid, r.uniform(-0.01, 0.02))
         contract = actual / (1 + cv + r.uniform(-0.01, 0.01))
         bv = OVERPAY_BENCH.get(prod["category"], r.uniform(-0.01, 0.03)) + r.uniform(-0.015, 0.015)
@@ -233,6 +243,7 @@ def generate(g):
     for sid, s in sup.items():
         if s["status"] in ("exited",) or s.get("supplier_type") == "indirect":
             continue
+        r = g.rng_for("inputcost", sid)
         dept = s["category_focus"]
         mix = list(MIX[dept])
         k = 0 if sid == "SUP-0074" else r.choice([-2, 0, 2])
@@ -253,6 +264,7 @@ def generate(g):
     for sid, s in sup.items():
         if s["status"] != "active" or s.get("supplier_type") == "indirect":
             continue
+        r = g.rng_for("increase", sid)
         cats = list(sup_cats.get(sid) or {}) or dept_cats[s["category_focus"]][:1]
         for _ in range(r.choice([0, 0, 1, 1, 2])):
             n += 1
@@ -265,8 +277,9 @@ def generate(g):
     # savings initiatives (older, completed history; recent story rows come from seed)
     initiatives = []
     rate = {"consolidation": 0.82, "renegotiation": 0.66, "spec_change": 0.55, "nearshore": 0.72, "other": 0.70}
-    cats_all = sorted(cat_dept)
+    cats_all = sorted(live_cat_dept)
     for i in range(48):
+        r = g.rng_for("initiative", i)
         t = r.choice(list(rate))
         c = r.choice(cats_all)
         rep = float(r.randrange(30, 400, 5) * 1000)
