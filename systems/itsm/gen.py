@@ -198,7 +198,7 @@ def generate(g):
         for area in areas:
             for hour in [6, 9, 12, 15, 18, 21]:
                 for day_offset in range(0, -14, -1):
-                    measure_date = g.date_between(g.days_ago(1), g.days_ago(1))
+                    measure_date = g.days_ago(-day_offset)
                     wifi_load.append({
                         "measurement_id": f"WIF-{g.rng.randint(900000, 999999)}",
                         "site_id": site["site_id"],
@@ -214,8 +214,8 @@ def generate(g):
     # Generate WMS system performance
     wms_perf = []
     for site in g.pick(sites_list, k=4):
-        for day_offset in range(-30, 0):
-            measure_date = g.days_ago(-day_offset)
+        for day_offset in range(30, 0, -1):
+            measure_date = g.days_ago(day_offset)
             wms_perf.append({
                 "perf_id": f"WMS-{g.rng.randint(900000, 999999)}",
                 "site_id": site["site_id"],
@@ -277,9 +277,9 @@ def generate(g):
             "system_type": g.rng.choice(["database", "application", "file storage"]),
             "rto_minutes": g.rng.choice([15, 30, 60, 120, 240]),
             "rpo_minutes": g.rng.choice([5, 15, 30, 60]),
-            "last_backup_date": g.date_between(g.days_ago(7), g.days_ago(0)),
+            "last_backup_date": g.days_ago(g.rng.randint(0, 7)),
             "last_backup_size_gb": g.rng.uniform(50, 1000),
-            "last_restore_test_date": g.date_between(g.days_ago(90), g.days_ago(0)) if restore_tested else None,
+            "last_restore_test_date": g.days_ago(g.rng.randint(0, 90)) if restore_tested else None,
             "last_restore_test_duration_minutes": g.rng.randint(30, 240) if restore_tested else None,
             "backup_status": g.rng.choice(["healthy", "at_risk", "failed"]) if g.rng.random() < 0.05 else "healthy",
             "restore_tested": restore_tested,
@@ -316,7 +316,7 @@ def generate(g):
     rule_types = ["drift", "accuracy", "retraining"]
     for i, model in enumerate(models):
         for rule_type in rule_types:
-            triggered = g.date_between(g.days_ago(30), g.days_ago(0)) if g.rng.random() > 0.5 else None
+            triggered = g.days_ago(g.rng.randint(0, 30)) if g.rng.random() > 0.5 else None
             model_alert_rules.append({
                 "rule_id": f"ALR-{900000 + i * 3 + rule_types.index(rule_type):06d}",
                 "model_name": model,
@@ -324,7 +324,7 @@ def generate(g):
                 "threshold_value": g.rng.uniform(0.05, 0.20) if rule_type == "drift" else g.rng.uniform(0.85, 0.95),
                 "threshold_metric": "PSI" if rule_type == "drift" else "MAE" if rule_type == "accuracy" else "days",
                 "enabled": g.rng.random() > 0.1,
-                "created_at": g.date_between(g.days_ago(180), g.days_ago(30)),
+                "created_at": g.days_ago(g.rng.randint(30, 180)),
                 "last_triggered": triggered,
                 "noise_level": g.rng.choice(["low", "medium", "high"]),
             })

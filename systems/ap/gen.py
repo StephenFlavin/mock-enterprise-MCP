@@ -93,7 +93,7 @@ def generate(g):
             "vendor_id": vendor_id_str,
             "supplier_id": po["supplier_id"],
             "invoice_type": "supplier",
-            "invoice_number": f"SUP-{r.randint(1000, 9999)}",
+            "invoice_number": f"INV-{r.randint(100000, 999999)}",
             "invoice_date": inv_date,
             "received_date": inv_date + timedelta(days=r.randint(0, 5)),
             "amount_gbp": float(po["total_value"]) * r.uniform(0.95, 1.05),

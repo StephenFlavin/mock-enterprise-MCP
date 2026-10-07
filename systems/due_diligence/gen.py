@@ -464,7 +464,7 @@ def generate(g):
         for _ in range(r.randint(0, 2)):
             litigation.append({
                 "entity_id": supplier["supplier_id"],
-                "case_id": f"LIT-{lit_id:06d}",
+                "litigation_case_id": f"LIT-{lit_id:06d}",
                 "entity_name": supplier["name"],
                 "case_type": r.choice(["employment", "labour", "environmental", "commercial"]),
                 "jurisdiction": r.choice(["India", "Bangladesh", "China", "Vietnam", "UK"]),
