@@ -131,6 +131,19 @@ tables:
       unblocked_at: {type: timestamp, desc: "When unblocked (if released)"}
       status: {type: enum, values: [active, blocked], desc: "Current status"}
 
+  allocation_retries:
+    key: retry_id
+    cols:
+      retry_id: {type: str, desc: "Retry record id, e.g. RETRY-000123"}
+      order_id: {type: str, desc: "Order that was retried"}
+      previous_status: {type: str, desc: "Status before retry"}
+      new_status: {type: str, desc: "Status after retry"}
+      result: {type: str, desc: "Result of retry (success, partial, failed)"}
+      retried_at: {type: timestamp, desc: "When the retry occurred"}
+      created_by: {type: str, desc: "Employee who initiated retry"}
+      notes: {type: text, desc: "Notes on retry outcome"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
 tools:
   - name: block_location
     desc: Place a hold on a bin location so no picks or putaways are directed to it. Returns the block record.
@@ -1169,20 +1182,26 @@ tools:
       status: {type: enum, values: [allocation_failed, insufficient_stock, location_unavailable, configuration_error], default: allocation_failed, desc: "Failure reason"}
       date_from: {type: date, default: "-30d", desc: "From date"}
     sql: |
-      SELECT CASE
-               WHEN COUNT(*) OVER (PARTITION BY m.reference_id) > COUNT(DISTINCT m.location_id) THEN 'insufficient_stock'
-               WHEN m.location_id IS NULL THEN 'location_unavailable'
-               ELSE 'configuration_error'
-             END AS failure_reason,
-             COUNT(DISTINCT m.reference_id) AS order_count,
+      WITH failure_analysis AS (
+        SELECT m.reference_id,
+               CASE
+                 WHEN COUNT(DISTINCT m.sku) > 3 THEN 'insufficient_stock'
+                 WHEN m.location_id IS NULL THEN 'location_unavailable'
+                 ELSE 'configuration_error'
+               END AS failure_reason
+        FROM stock_movements m
+        WHERE m.movement_type = 'pick'
+          AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        GROUP BY m.reference_id, m.location_id
+      )
+      SELECT failure_reason,
+             COUNT(DISTINCT reference_id) AS order_count,
              'Allocation failed' AS description
-      FROM stock_movements m
-      WHERE m.movement_type = 'pick'
-        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+      FROM failure_analysis
       GROUP BY failure_reason
       ORDER BY order_count DESC
     limit: 20
-    example: {}
+    example: {date_from: "-30d"}
 
   - name: list_cycle_count_corrections
     desc: Cycle count corrections including reversal records and timestamps. Returns adjustments made.

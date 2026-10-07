@@ -129,13 +129,11 @@ tools:
       FROM competitor_prices p
       JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
       JOIN competitors c ON c.competitor_id = p.competitor_id
-      JOIN master.products mp ON mp.sku = $sku
-      WHERE (cp.category ILIKE '%' || COALESCE($category, mp.category) || '%'
-             OR cp.their_name ILIKE '%' || mp.name || '%')
+      WHERE ($category IS NOT NULL AND cp.category ILIKE '%' || $category || '%')
         AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
       ORDER BY p.price_gbp, c.competitor_id
     limit: 50
-    example: {sku: "K-1700"}
+    example: {sku: "K-1700", category: "Kettles"}
 
   - name: get_competitor_price_history
     desc: Historical prices for a product category from competitors. For trend analysis.
@@ -406,12 +404,7 @@ tools:
       category: {required: true, type: str, desc: "Product category"}
       comparison_type: {type: str, default: "average", desc: "average, median, or min"}
     sql: |
-      WITH our_prices AS (
-        SELECT mp.category, CAST(mp.retail_price_gbp AS FLOAT) as price
-        FROM master.products mp
-        WHERE mp.category ILIKE '%' || $category || '%'
-      ),
-      competitor_avg AS (
+      WITH competitor_avg AS (
         SELECT ROUND(AVG(p.price_gbp), 2) as comp_avg_price,
                ROUND(MIN(p.price_gbp), 2) as comp_min_price,
                ROUND(MAX(p.price_gbp), 2) as comp_max_price,
@@ -420,17 +413,21 @@ tools:
         JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
         WHERE cp.category ILIKE '%' || $category || '%'
           AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
+      ),
+      our_prices AS (
+        SELECT ROUND(AVG(mp.retail_price_gbp), 2) as our_avg_price
+        FROM master.products mp
+        WHERE mp.category ILIKE '%' || $category || '%'
       )
       SELECT 'Category price index' as metric,
-             ROUND(AVG(our_prices.price), 2) as our_avg_price,
+             our_avg_price,
              comp_avg_price,
-             ROUND(100.0 * AVG(our_prices.price) / comp_avg_price, 1) as price_index,
-             CASE WHEN ROUND(100.0 * AVG(our_prices.price) / comp_avg_price, 1) > 100 THEN 'Above market'
-                  WHEN ROUND(100.0 * AVG(our_prices.price) / comp_avg_price, 1) < 100 THEN 'Below market'
+             ROUND(100.0 * our_avg_price / comp_avg_price, 1) as price_index,
+             CASE WHEN ROUND(100.0 * our_avg_price / comp_avg_price, 1) > 100 THEN 'Above market'
+                  WHEN ROUND(100.0 * our_avg_price / comp_avg_price, 1) < 100 THEN 'Below market'
                   ELSE 'At market' END as positioning,
              'index = (our_avg / competitor_avg) * 100' as formula,
              data_points
-      FROM our_prices, competitor_avg
-      GROUP BY comp_avg_price, data_points
+      FROM competitor_avg, our_prices
     limit: 1
-    example: {category: "Insulated bottles"}
+    example: {category: "Kettles"}

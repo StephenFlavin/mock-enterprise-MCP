@@ -39,7 +39,7 @@ def generate(g):
                 "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
                 "lane_id": lane_id,
                 "mode": "sea",
-                "rate_date": rate_date if isinstance(rate_date, datetime.date) else rate_date.date(),
+                "rate_date": rate_date,
                 "rate_gbp": round(rate, 2),
                 "unit": "per 40ft container",
                 "origin": origin,
@@ -82,8 +82,8 @@ def generate(g):
             "carrier_id": carrier,
             "lane_id": lane_id,
             "mode": "sea",
-            "rate_from": g.as_of - timedelta(days=r.randint(30, 180)),
-            "rate_to": g.as_of + timedelta(days=r.randint(180, 365)),
+            "rate_from": (g.as_of - timedelta(days=r.randint(30, 180))),
+            "rate_to": (g.as_of + timedelta(days=r.randint(180, 365))),
             "rate_gbp": round(base_rate, 2),
             "unit": "per 40ft container",
             "min_volume_units": r.choice([500, 1000, 2000, 5000]),
@@ -109,7 +109,7 @@ def generate(g):
                 "transit_days": r.randint(3, 7),
                 "carrier_id": carrier,
                 "quote_date": g.as_of,
-                "valid_until": g.as_of + timedelta(days=r.randint(7, 30)),
+                "valid_until": (g.as_of + timedelta(days=r.randint(7, 30))),
                 "status": r.choice(["quoted", "accepted"]),
                 "notes": ""
             })
@@ -126,7 +126,7 @@ def generate(g):
             prev_spot = r.uniform(1000, 3000)
             rate_history.append({
                 "lane_id": lane_id,
-                "rate_date": rate_date.date(),
+                "rate_date": rate_date,
                 "mode": "sea",
                 "spot_rate_gbp": round(spot_rate, 2),
                 "contract_rate_gbp": round(contract_rate, 2),
