@@ -913,7 +913,7 @@ tools:
     ORDER BY b.period_end DESC, b.commodity
   limit: 10
   example:
-    category: Dresses
+    commodity: COTTON
 - name: calculate_date_recovery_cost
   desc: Recovered value by disposition route and product age, with handling costs and days to realise cash.
   kind: sql
@@ -1653,8 +1653,7 @@ tools:
     ORDER BY excess_over_market_pts DESC
   limit: 20
   example:
-    supplier_id: SUP-0001
-    sku: K-1700
+    commodity: COTTON
 - name: create_costing_version_for_product
   desc: Saves a new costing version for a product at given volumes.
   kind: insert
@@ -2071,7 +2070,8 @@ tools:
     WHERE ($category IS NULL OR lower(h.category) = lower($category))
     ORDER BY h.category
   limit: 40
-  example: {}
+  example:
+    category: Outerwear
 - name: get_margin_bridge_for_category
   desc: Margin bridge for a category and period - price, cost, mix, markdown, shrink, FX and supplier effects in points, with notes on causes.
   kind: sql
@@ -2339,7 +2339,7 @@ tools:
     category: Knitwear
     department: Womenswear
 - name: get_sku_margin_and_revenue
-  desc: Revenue and margin by SKU over a period, with weekly run-rate, filtered by SKU, origin country or category. Use to size revenue and margin at risk.
+  desc: Revenue and margin by SKU over the latest trading blocks, with weekly run-rate and total row. Filter by SKU, origin country or category.
   kind: sql
   args:
     sku: {}
@@ -2351,23 +2351,33 @@ tools:
       desc: Product category, e.g. Knitwear
     period_from:
       type: date
-      default: -90d
-      desc: Period start
+      desc: Period start; overrides trading_blocks when given
+    trading_blocks:
+      type: int
+      default: 3
+      desc: Number of latest 4-week trading blocks to include
   sql: |
-    SELECT m.sku, m.category, pc.origin_country, SUM(m.volume_units) AS total_units, ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
-      ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp, ROUND(SUM(m.gross_margin_gbp), 2) AS gross_margin_gbp,
-      ROUND(SUM(m.markdown_gbp), 2) AS markdown_gbp, ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
-      ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS net_margin_pct,
-      ROUND(SUM(m.revenue_gbp) / NULLIF(COUNT(DISTINCT m.period_start) * 4, 0), 0) AS weekly_revenue_gbp,
-      ROUND(SUM(m.net_margin_gbp) / NULLIF(COUNT(DISTINCT m.period_start) * 4, 0), 0) AS weekly_net_margin_gbp
-    FROM margin_analyses m JOIN product_costings pc ON pc.sku = m.sku
-    WHERE ($sku IS NULL OR m.sku = $sku) AND ($origin_country IS NULL OR upper(pc.origin_country) = upper($origin_country))
-      AND ($category IS NULL OR lower(m.category) = lower($category)) AND m.analysed_at >= CAST($period_from AS DATE)
-    GROUP BY m.sku, m.category, pc.origin_country
-    ORDER BY total_revenue_gbp DESC
+    WITH g AS (
+      SELECT m.sku, m.category, pc.origin_country, SUM(m.volume_units) AS total_units, SUM(m.revenue_gbp) AS rev, SUM(m.cost_of_goods_gbp) AS cogs,
+        SUM(m.gross_margin_gbp) AS gm, SUM(m.markdown_gbp) AS md, SUM(m.net_margin_gbp) AS nm, COUNT(DISTINCT m.period_start) * 4 AS weeks
+      FROM margin_analyses m JOIN product_costings pc ON pc.sku = m.sku
+      WHERE ($sku IS NULL OR m.sku = $sku) AND ($origin_country IS NULL OR upper(pc.origin_country) = upper($origin_country))
+        AND ($category IS NULL OR lower(m.category) = lower($category)) AND (($period_from IS NULL AND m.period_start > (SELECT max(x.period_start) FROM margin_analyses x) - 28 * $trading_blocks)
+             OR ($period_from IS NOT NULL AND m.analysed_at >= CAST($period_from AS DATE)))
+      GROUP BY m.sku, m.category, pc.origin_country
+    ), r AS (
+      SELECT 1 AS sort_key, sku, category, origin_country, total_units, rev, cogs, gm, md, nm, weeks FROM g
+      UNION ALL
+      SELECT 0, 'TOTAL (' || count(*) || ' SKUs)', NULL, NULL, SUM(total_units), SUM(rev), SUM(cogs), SUM(gm), SUM(md), SUM(nm), max(weeks) FROM g
+      WHERE $sku IS NULL HAVING count(*) > 0
+    )
+    SELECT sku, category, origin_country, total_units, ROUND(rev, 2) AS total_revenue_gbp, ROUND(cogs, 2) AS total_cogs_gbp, ROUND(gm, 2) AS gross_margin_gbp,
+      ROUND(md, 2) AS markdown_gbp, ROUND(nm, 2) AS net_margin_gbp, ROUND(nm / NULLIF(rev, 0) * 100, 1) AS net_margin_pct,
+      ROUND(rev / NULLIF(weeks, 0), 0) AS weekly_revenue_gbp, ROUND(nm / NULLIF(weeks, 0), 0) AS weekly_net_margin_gbp
+    FROM r ORDER BY sort_key, rev DESC
   limit: 50
   example:
-    period_from: -90d
+    origin_country: VN
 - name: get_sku_margin_and_sales_at_risk
   desc: Per-unit margin plus sales and margin at risk over a number of weeks if a SKU runs out, from recent weekly sales rates. Ranked by margin at risk.
   kind: sql
@@ -2747,7 +2757,7 @@ tools:
     ORDER BY repair_cost_pct_of_unit_cost
   limit: 20
   example:
-    category: Electronics
+    category: Small Appliances
 - name: get_resale_value_estimates_by_category
   desc: Expected resale value as % of cost by category for an item age, with the best disposition route, handling cost, days to cash and risk. Leave category blank to rank.
   kind: sql
