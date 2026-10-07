@@ -1,0 +1,244 @@
+id: ml_platform
+name: ML Platform / Model Registry
+instructions: >
+  Production ML models, accuracy and drift monitoring, retraining schedules, and feature store.
+  Model ids look like MOD-demand, MOD-pricing, MOD-supplier-delay, etc.
+
+tables:
+  registered_models:
+    key: model_id
+    cols:
+      model_id: {type: str, desc: "Model identifier, e.g. MOD-demand"}
+      name: {type: str, desc: "Human-readable model name"}
+      owner_id: {type: str, desc: "Data scientist owning the model, e.g. EMP-0042"}
+      purpose: {type: str, desc: "What the model predicts, e.g. Demand forecast"}
+      status: {type: enum, values: [active, archived, in_review], desc: "Production status"}
+      current_version: {type: str, desc: "Current deployed version, e.g. v2.1"}
+      last_retrained: {type: date, desc: "Last retraining completion date"}
+      next_scheduled_retrain: {type: date, desc: "Next scheduled retraining date"}
+      created_at: {type: timestamp, desc: "Model registration date"}
+      updated_at: {type: timestamp, desc: "Last metadata update"}
+
+  model_performance_metrics:
+    key: [model_id, metric_date]
+    cols:
+      model_id: {type: str, desc: "Model identifier"}
+      metric_date: {type: date, desc: "Date of metric measurement"}
+      accuracy: {type: float, desc: "Overall accuracy or MAPE %, null if not calculated"}
+      precision: {type: float, desc: "Precision metric, null if not applicable"}
+      recall: {type: float, desc: "Recall metric, null if not applicable"}
+      feature_drift_score: {type: float, desc: "Drift magnitude 0-100, null if no drift"}
+      data_freshness_hours: {type: int, desc: "Hours since last data update"}
+      prediction_count: {type: int, desc: "Predictions made in period"}
+      updated_at: {type: timestamp, desc: "Metric update timestamp"}
+
+  model_training_datasets:
+    key: [model_id, dataset_version]
+    cols:
+      model_id: {type: str, desc: "Model identifier"}
+      dataset_version: {type: str, desc: "Training dataset version, e.g. v2.1"}
+      training_start_date: {type: date, desc: "Training data period start"}
+      training_end_date: {type: date, desc: "Training data period end"}
+      row_count: {type: int, desc: "Number of training examples"}
+      feature_count: {type: int, desc: "Number of features used"}
+      target_coverage_pct: {type: float, desc: "% of data with known outcome"}
+      created_at: {type: timestamp, desc: "Dataset creation timestamp"}
+
+  feature_store_entries:
+    key: [feature_id]
+    cols:
+      feature_id: {type: str, desc: "Feature identifier, e.g. FEAT-daily-demand"}
+      name: {type: str, desc: "Feature human-readable name"}
+      description: {type: text, desc: "Feature definition and calculation"}
+      data_source: {type: str, desc: "Where the feature comes from"}
+      freshness_hours: {type: int, desc: "How often updated (hours)"}
+      used_by_models: {type: str, desc: "Comma-separated model ids that use this"}
+      last_updated: {type: timestamp, desc: "Last refresh timestamp"}
+      created_at: {type: timestamp, desc: "Feature creation date"}
+
+  model_alert_rules:
+    key: alert_rule_id
+    cols:
+      alert_rule_id: {type: str, desc: "Alert rule identifier, e.g. RULE-000001"}
+      model_id: {type: str, desc: "Model being monitored"}
+      rule_type: {type: enum, values: [drift, accuracy, data_freshness], desc: "Type of alert"}
+      threshold: {type: float, desc: "Threshold value for alert trigger"}
+      enabled: {type: bool, desc: "Is this rule active"}
+      created_at: {type: timestamp, desc: "Rule creation date"}
+      updated_at: {type: timestamp, desc: "Last rule change"}
+
+  retraining_jobs:
+    key: job_id
+    cols:
+      job_id: {type: str, desc: "Retraining job identifier, e.g. RET-000001"}
+      model_id: {type: str, desc: "Model being retrained"}
+      dataset_version: {type: str, desc: "Training dataset version"}
+      status: {type: enum, values: [scheduled, running, completed, failed], desc: "Job status"}
+      scheduled_date: {type: date, desc: "Scheduled execution date"}
+      started_at: {type: timestamp, desc: "Actual start timestamp"}
+      completed_at: {type: timestamp, desc: "Completion timestamp"}
+      new_accuracy: {type: float, desc: "Accuracy achieved by retrained model"}
+      improvement_vs_current: {type: float, desc: "Accuracy gain vs current model %"}
+      created_at: {type: timestamp, desc: "Job creation timestamp"}
+
+  model_backtest_results:
+    key: backtest_id
+    cols:
+      backtest_id: {type: str, desc: "Backtest identifier, e.g. BT-000001"}
+      candidate_model_id: {type: str, desc: "New model being tested"}
+      current_model_id: {type: str, desc: "Current production model"}
+      test_period_start: {type: date, desc: "Backtest period start"}
+      test_period_end: {type: date, desc: "Backtest period end"}
+      candidate_accuracy: {type: float, desc: "Accuracy of candidate model"}
+      current_accuracy: {type: float, desc: "Accuracy of current model"}
+      uplift_pct: {type: float, desc: "Accuracy improvement %"}
+      estimated_benefit_gbp: {type: float, desc: "Estimated financial benefit GBP"}
+      recommendation: {type: enum, values: [deploy, hold, reject], desc: "Recommendation"}
+      created_at: {type: timestamp, desc: "Backtest completion date"}
+
+tools:
+  - name: list_registered_models
+    desc: Production models with owner, version and status. Use to see which models we have and their health.
+    kind: select
+    from: registered_models
+    filters:
+      status: {default: active}
+      owner_id: {}
+    columns: [model_id, name, owner_id, purpose, status, current_version, last_retrained, next_scheduled_retrain]
+    order: model_id
+    limit: 50
+    example: {status: active}
+
+  - name: get_model_health_summary
+    desc: Current accuracy, drift and data freshness per model. Use to quickly assess if models need attention.
+    kind: sql
+    args:
+      model_id: {}
+    sql: |
+      SELECT m.model_id, m.name, m.status, p.accuracy, p.feature_drift_score, p.data_freshness_hours,
+             p.prediction_count, p.metric_date, m.next_scheduled_retrain
+      FROM registered_models m
+      LEFT JOIN model_performance_metrics p ON m.model_id = p.model_id
+        AND p.metric_date = (SELECT MAX(metric_date) FROM model_performance_metrics WHERE model_id = m.model_id)
+      WHERE ($model_id IS NULL OR m.model_id = $model_id)
+      ORDER BY m.model_id
+    limit: 50
+    example: {}
+
+  - name: get_model_accuracy_history
+    desc: Accuracy metrics over time for a model, by segment. Use to understand degradation patterns.
+    kind: sql
+    args:
+      model_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Start of history period"}
+      date_to: {type: date, default: "+0d", desc: "End of history period"}
+    sql: |
+      SELECT model_id, metric_date, accuracy, precision, recall, prediction_count
+      FROM model_performance_metrics
+      WHERE model_id = $model_id AND metric_date >= CAST($date_from AS DATE) AND metric_date <= CAST($date_to AS DATE)
+      ORDER BY metric_date
+    limit: 100
+    example: {model_id: MOD-demand}
+
+  - name: get_feature_drift_report
+    desc: Input and prediction drift statistics for a model. Use to diagnose accuracy drops or model shift.
+    kind: sql
+    args:
+      model_id: {required: true}
+      days_back: {type: int, default: 30, desc: "Days of history"}
+    sql: |
+      SELECT model_id, metric_date, feature_drift_score, data_freshness_hours, prediction_count
+      FROM model_performance_metrics
+      WHERE model_id = $model_id AND metric_date >= CAST($as_of AS DATE) - INTERVAL $days_back DAY
+      ORDER BY metric_date DESC
+    limit: 50
+    example: {model_id: MOD-demand}
+
+  - name: get_model_training_dataset_summary
+    desc: Training data window, volume and coverage for a model. Use to assess retraining readiness.
+    kind: sql
+    args:
+      model_id: {required: true}
+    sql: |
+      SELECT model_id, dataset_version, training_start_date, training_end_date, row_count, feature_count, target_coverage_pct
+      FROM model_training_datasets
+      WHERE model_id = $model_id
+      ORDER BY training_end_date DESC
+    limit: 10
+    example: {model_id: MOD-demand}
+
+  - name: list_feature_store_features
+    desc: Features available in the feature store with lineage and freshness. Use to plan model development.
+    kind: select
+    from: feature_store_entries
+    filters:
+      name: {op: like, desc: "Search feature by name or keywords"}
+      data_source: {}
+      used_by_models: {op: like, desc: "Search by model using this feature"}
+    columns: [feature_id, name, description, data_source, freshness_hours, used_by_models, last_updated]
+    order: feature_id
+    limit: 50
+    example: {}
+
+  - name: list_model_retraining_schedule
+    desc: Last and next retraining dates for each model. Use to plan maintenance and resource allocation.
+    kind: sql
+    args:
+      status_filter: {type: enum, values: [active, all], default: active, desc: "Include all or active only"}
+    sql: |
+      SELECT m.model_id, m.name, m.last_retrained, m.next_scheduled_retrain,
+             COALESCE(rj.job_id, 'none') AS latest_job_id, COALESCE(rj.new_accuracy, 'N/A') AS latest_accuracy
+      FROM registered_models m
+      LEFT JOIN retraining_jobs rj ON m.model_id = rj.model_id AND rj.status = 'completed'
+        AND rj.completed_at = (SELECT MAX(completed_at) FROM retraining_jobs WHERE model_id = m.model_id AND status = 'completed')
+      WHERE ($status_filter = 'all' OR m.status = 'active')
+      ORDER BY m.next_scheduled_retrain
+    limit: 50
+    example: {}
+
+  - name: get_model_backtest_results
+    desc: Backtest results of a candidate model against current process. Use to evaluate uplift before deployment.
+    kind: sql
+    args:
+      candidate_model_id: {}
+      current_model_id: {}
+    sql: |
+      SELECT backtest_id, candidate_model_id, current_model_id, test_period_start, test_period_end,
+             candidate_accuracy, current_accuracy, uplift_pct, estimated_benefit_gbp, recommendation
+      FROM model_backtest_results
+      WHERE ($candidate_model_id IS NULL OR candidate_model_id = $candidate_model_id)
+        AND ($current_model_id IS NULL OR current_model_id = $current_model_id)
+      ORDER BY created_at DESC
+    limit: 20
+    example: {candidate_model_id: MOD-demand-v3, current_model_id: MOD-demand}
+
+  - name: create_model_alert_rule
+    desc: Adds a drift or accuracy alert rule to a model. Use to set up monitoring for new models.
+    kind: insert
+    table: model_alert_rules
+    id_prefix: RULE-
+    defaults: {enabled: true}
+    args:
+      model_id: {required: true}
+      rule_type: {required: true, type: enum, values: [drift, accuracy, data_freshness]}
+      threshold: {required: true, type: float, desc: "Alert threshold value"}
+    example: {model_id: MOD-demand, rule_type: drift, threshold: 15.0}
+
+  - name: delete_model_alert_rule
+    desc: Removes an alert rule from a model. Use to disable noisy or outdated alerts.
+    kind: update
+    table: model_alert_rules
+    set: {enabled: false}
+    args: {}
+    example: {alert_rule_id: RULE-000001}
+
+  - name: submit_model_retraining_job
+    desc: Starts a retraining run for a registered model on a chosen dataset. Use to refresh model with newer data.
+    kind: insert
+    table: retraining_jobs
+    id_prefix: RET-
+    defaults: {status: scheduled}
+    args:
+      model_id: {required: true}
+      dataset_version: {required: true, desc: "Training dataset version to use"}
+    example: {model_id: MOD-demand, dataset_version: v2.2}

@@ -305,42 +305,7 @@ def generate(g):
         "dependencies": "Space availability; integration with existing systems"
     })
 
-    # Generate make vs buy scenarios
-    make_vs_buy.append({
-        "case_id": "MVB-900001",
-        "activity": "transport",
-        "description": "In-source vs outsource transport (own fleet vs 3PL)",
-        "capex_in_house_gbp": 5000000,
-        "annual_cost_in_house_gbp": 2800000,
-        "capex_outsourced_gbp": 0,
-        "annual_cost_outsourced_gbp": 3200000,
-        "breakeven_years": 6.25,
-        "five_year_tco_in_house_gbp": 19000000,
-        "five_year_tco_outsourced_gbp": 16000000,
-        "savings_gbp": -3000000,  # Outsourcing is cheaper
-        "flex_benefit": "high",
-        "quality_risk": "medium",
-        "control_loss": "some",
-        "transition_weeks": 12
-    })
-
-    make_vs_buy.append({
-        "case_id": "MVB-900002",
-        "activity": "packaging",
-        "description": "In-source vs outsource packaging operations",
-        "capex_in_house_gbp": 1200000,
-        "annual_cost_in_house_gbp": 800000,
-        "capex_outsourced_gbp": 100000,
-        "annual_cost_outsourced_gbp": 950000,
-        "breakeven_years": 4.3,
-        "five_year_tco_in_house_gbp": 5200000,
-        "five_year_tco_outsourced_gbp": 5850000,
-        "savings_gbp": 650000,  # In-house is better long-term
-        "flex_benefit": "medium",
-        "quality_risk": "low",
-        "control_loss": "none",
-        "transition_weeks": 8
-    })
+    # Generate make vs buy scenarios (seed data provides the story data)
 
     return {
         "should_costs": should_costs,

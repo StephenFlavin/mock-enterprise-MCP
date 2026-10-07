@@ -8,9 +8,9 @@ def generate(g):
     # Get ocean carriers and ports from master
     ocean_carriers = [c["carrier_id"] for c in g.master("carriers") if c["mode"] in ("ocean", "forwarder")]
     all_ports = [p["port_code"] for p in g.master("ports")]
-    asia_ports = ["SGSIN", "CNSHA", "JPYOK", "HKHKG", "CNSZX"]
-    uk_ports = ["GBFXT", "GBSOU", "GBLIV"]
-    eu_ports = ["NLRTM", "DEBXL", "FRHAI"]
+    asia_ports = ["CNSHA", "CNNGB", "CNYTN"]
+    uk_ports = ["GBFXT", "GBSOU", "GBLGP"]
+    eu_ports = ["NLRTM", "DEHAM", "PTLEI"]
 
     disruptions = []
     shipment_tracking = []

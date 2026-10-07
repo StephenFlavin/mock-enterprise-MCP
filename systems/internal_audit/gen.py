@@ -93,11 +93,11 @@ def generate(g):
     control_test_results = []
     for i in range(1, 51):
         test_date = g.date_between(120, 1)
-        result = g.pick(["pass", "fail", "partial"], [0.65, 0.25, 0.10])
+        result = r.choices(["pass", "fail", "partial"], [0.65, 0.25, 0.10])[0]
         control_test_results.append({
             "test_id": f"TST-{i:06d}",
             "site_id": g.pick([s["site_id"] for s in dc_sites]),
-            "control_area": g.pick([
+            "control_area": r.choice([
                 "Stock count verification",
                 "Payment authorization",
                 "Vendor master changes",
@@ -108,10 +108,10 @@ def generate(g):
             "test_description": g.fake.sentence(nb_words=8),
             "result": result,
             "tested_date": test_date,
-            "sample_size": g.rng.randint(20, 200),
-            "exceptions_found": g.rng.randint(0, 15) if result != "pass" else 0,
+            "sample_size": r.randint(20, 200),
+            "exceptions_found": r.randint(0, 15) if result != "pass" else 0,
             "root_cause": g.fake.sentence(nb_words=6) if result != "pass" else None,
-            "audit_action_id": g.pick(audit_actions)["action_id"] if g.rng.random() > 0.7 else None,
+            "audit_action_id": g.pick(audit_actions)["action_id"] if r.random() > 0.7 else None,
             "created_at": g.fake.date_time_this_year(),
         })
 
@@ -124,10 +124,10 @@ def generate(g):
             "site_id": g.pick([s["site_id"] for s in dc_sites]),
             "audit_area": g.pick(audit_areas),
             "description": g.fake.paragraph(),
-            "severity": g.pick(["high", "medium", "low"], [0.2, 0.4, 0.4]),
+            "severity": r.choices(["high", "medium", "low"], [0.2, 0.4, 0.4])[0],
             "audit_date": audit_date,
-            "status": g.pick(["open", "in_remediation", "resolved", "accepted_risk"]),
-            "related_action_id": g.pick(audit_actions)["action_id"] if g.rng.random() > 0.6 else None,
+            "status": r.choice(["open", "in_remediation", "resolved", "accepted_risk"]),
+            "related_action_id": g.pick(audit_actions)["action_id"] if r.random() > 0.6 else None,
             "created_at": g.fake.date_time_this_year(),
         })
 
@@ -140,9 +140,9 @@ def generate(g):
             "case_type": g.pick(fraud_types),
             "description": g.fake.paragraph(),
             "detected_date": detected_date,
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if g.rng.random() > 0.4 else None,
-            "estimated_loss_gbp": g.rng.uniform(500, 75000),
-            "status": g.pick(["reported", "under_investigation", "closed", "referred_to_authorities"]),
+            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
+            "estimated_loss_gbp": r.uniform(500, 75000),
+            "status": r.choice(["reported", "under_investigation", "closed", "referred_to_authorities"]),
             "created_at": g.fake.date_time_this_year(),
         })
 
@@ -154,11 +154,11 @@ def generate(g):
         audit_date = g.date_between(180, 30)
         assurance_findings.append({
             "assurance_finding_id": f"ASSU-{i:06d}",
-            "esg_category": g.pick(esg_categories),
+            "esg_category": r.choice(esg_categories),
             "description": g.fake.paragraph(),
             "audit_date": audit_date,
-            "status": g.pick(["open", "addressed", "under_review"]),
-            "finding_type": g.pick(finding_types),
+            "status": r.choice(["open", "addressed", "under_review"]),
+            "finding_type": r.choice(finding_types),
             "created_at": g.fake.date_time_this_year(),
         })
 

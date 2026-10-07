@@ -155,6 +155,7 @@ def generate(g):
                 "loss_driver": loss_driver,
                 "notes": "",
                 "status": "active",
+                "reason": "",
                 "updated_at": datetime.combine(added_date, datetime.min.time())
             })
 
