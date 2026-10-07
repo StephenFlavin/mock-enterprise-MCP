@@ -1,4 +1,5 @@
 """The task bank: every benchmark task that can be built from the validated bench cases and the persona questions.
+Bench cases whose `question` is not a persona question (the mdm "lookup" cases) become slice tasks without a scenario.
 
     build_bank()   -> slice tasks (one per bench case) + scenario tasks (one per question with >= 1 case)
     load_traps()   -> trap tasks from bench/traps.yaml (written by `eval traps`, already in the Task shape)
@@ -54,7 +55,9 @@ WRITE_VERBS = {"send", "create", "raise", "cancel", "hold", "reassign", "update"
                "raise", "switch", "swap", "remove", "delete", "publish", "enrol", "enroll", "trigger", "start", "launch",
                "initiate", "commit", "confirm", "authorise", "authorize", "put", "mark", "tag", "route", "dispatch",
                "expedite", "recall", "withdraw", "reject", "accept", "sign", "pay", "refund", "adjust", "correct",
-               "rename", "reprice", "markdown", "re-price", "lock", "unlock", "escalate", "allocate", "split", "reroute"}
+               "roll", "post", "prepare", "reclassify", "tighten", "loosen", "cut", "lower", "reverse", "reprocess", "resubmit",
+               "resend", "chase", "remind", "bump", "turn", "save", "take", "pull", "suspend", "push", "enable", "disable", "activate", "deactivate", "apply",
+               "redirect", "shift", "unblock", "bring", "rebalance", "prioritise", "prioritize", "rename", "reprice", "markdown", "re-price", "lock", "unlock", "escalate", "allocate", "split", "reroute"}
 FILLERS = r"(?:then|and|also|please|actually|ok(?:ay)?|so|if so|if it is|if not|if they are|if needed|next|finally|afterwards|" \
           r"after that|now|just|go ahead and|can you|could you|would you|i'd like you to|i want you to|you should|you can)"
 APPROVAL = re.compile(
@@ -92,14 +95,15 @@ STOP = set("the a an and or of to for on in with from by at is are was were as t
            "my we us you me i if when then than also only into onto over under per each every all any some new old same "
            "other which what who whom whose how not no".split())
 LABEL_KEYS = {"category", "region", "brand", "department", "country", "lane", "product_group", "channel", "carrier", "supplier"}
-PERIOD = re.compile(r"\b(?:last|past|previous|next)\s+(?:\d+\s+)?(?:days?|weeks?|months?|quarters?|years?|fortnight)\b", re.I)
+PERIOD = re.compile(r"\b(?:last|past|previous|next)\s+\d+\s+(?:days?|weeks?|months?|quarters?|years?)\b", re.I)
+ENT = re.compile(r"\b[A-Z]{2}\d-[A-Z]{2}\d{2,}\b|" + bench.ID_RX.pattern)  # lanes like DC1-ST215, then bench ids
 
 
-def _entities(prompt: str, known: str) -> list[str]:
+def _entities(prompt: str, known: str) -> list[tuple]:
     """Id-like entities of a slice prompt that the question text does not mention, with their label and trailing name:
     'lane DC1-ST215 (Dundee)', 'Carrier A (CAR-010)', 'ST214 Glasgow Retail Park'."""
     out = []
-    for m in bench.ID_RX.finditer(prompt):
+    for m in ENT.finditer(prompt):
         ident, start, end = m.group(0), m.start(), m.end()
         if ident in known:
             continue
@@ -110,7 +114,7 @@ def _entities(prompt: str, known: str) -> list[str]:
                 label, ident = lm.group(1), f"({ident})"
         elif lm := re.search(r"(?:^|(?<=[\s,(]))([A-Za-z][\w'’-]*)\s+$", before):
             w = lm.group(1)
-            if w.lower() not in STOP and not re.search(r"(?:^|[.?!]\s+)" + re.escape(w) + r"\s+$", before):
+            if w.lower() not in STOP and not w.lower().endswith(("ed", "ing")) and not re.search(r"(?:^|[.?!]\s+)" + re.escape(w) + r"\s+$", before):
                 label = w
                 if pm := re.search(r"(?:^|[,;(]\s*|\s)([A-Z][a-z]+)\s+" + re.escape(w) + r"\s+$", before):
                     if not re.search(r"(?:^|[.?!]\s+)" + re.escape(pm.group(1)) + r"\s+" + re.escape(w) + r"\s+$", before):
@@ -120,30 +124,30 @@ def _entities(prompt: str, known: str) -> list[str]:
             tail = f" ({tm.group(1)})"
         elif tm := re.match(r"((?:\s+[A-Z][\w'’&-]*){1,4})", after):
             tail = tm.group(1)
-        out.append((f"{label} {ident}{tail}").strip())
+        out.append((m.group(0), (f"{label} {ident}{tail}").strip()))
     return out
 
 
-def context_paragraph(qtext: str, slices: list[dict]) -> str:
+def context_paragraph(qtext: str, slices: list[dict], qtype: str = "") -> str:
     """'Context: ...' resolving what the question leaves implicit (ids, sites, categories, period) from the slice prompts."""
     known = qtext  # ids already in the question need no restating
     seen, items = set(), []
+    reads = [s for s in slices if not any(_is_write(s["system"], r["tool"]) for r in s["ref"])]
+    slices = reads or slices  # write slices name what the follow-ups resolve ("the three worst loads"), so they stay out
     for s in slices:
         prompt = " ".join(s["prompt"].split())
         found = _entities(prompt, known)
         for r in s["ref"]:
             for k, v in r.get("args", {}).items():
                 if k in LABEL_KEYS and isinstance(v, str) and not bench._idlike(v) and v in prompt and v not in known:
-                    found.append(f"{k.replace('_', ' ')} {v}")
-        for e in found:
-            key = re.sub(r"^\w+ ", "", e).lower() if " " in e else e.lower()
-            if key not in seen and e.lower() not in seen:
-                seen.add(key), seen.add(e.lower())
-                items.append(e)
+                    found.append((v, f"{k.replace('_', ' ')} {v}"))
+        for key, e in found:
+            if key.lower() not in seen:
+                seen.add(key.lower()), items.append(e)
     parts = []
     if items:
-        parts.append("the ones I mean are " + (", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else items[0]))
-    if not PERIOD.search(qtext):
+        parts.append("I'm asking about " + (", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else items[0]))
+    if qtype != "RESEARCH" and not PERIOD.search(qtext):
         periods = [p.lower() for s in slices for p in PERIOD.findall(s["prompt"])]
         if periods:
             parts.append("unless I say otherwise, look at the " + max(set(periods), key=lambda p: (periods.count(p), p)))
@@ -201,12 +205,16 @@ def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, s
     """Which turn requested this write: the turn whose text best matches the action (tool verb + slice prompt words)."""
     verb = call["tool"].split("_")[0]
     verbs = set(_SYN.get(verb, [verb]))
+    for clause in _CLAUSE.split(slice_["prompt"]):
+        w = re.sub(rf"^(?:{FILLERS}\s+)+", "", clause.strip().lower()).split()
+        if w and w[0] in WRITE_VERBS:
+            verbs |= set(_SYN.get(w[0], [w[0]]))
     pw = {w for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
     scores = []
     for i, t in enumerate(turns):
         words = set(_WORD.findall(t["text"].lower()))
         stems = {w[:6] for w in words}
-        score = 2 * len(verbs & words) + len({w[:6] for w in pw} & stems) * 0.5 + (1 if t["writes_requested"] else 0)
+        score = 2 * len(verbs & words) + min(len({w[:6] for w in pw} & stems) * 0.5, 2) + (1 if t["writes_requested"] else 0)
         if i == 0:
             score += 0.5  # main turn wins ties and near-ties
         scores.append(score)
@@ -222,7 +230,7 @@ def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, s
 
 
 def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
-    ctx = context_paragraph(q["text"], slices)
+    ctx = context_paragraph(q["text"], slices, q["tags"].get("type", ""))
     main = q["text"] + (("\n\n" + ctx) if ctx else "")
     turns = [turn(main, "question")] + [turn(f, "followup") for f in q["followups"]]
     turns[0]["writes_requested"] = writes_requested(q["text"])
@@ -232,7 +240,7 @@ def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
             if _is_write(s["system"], r["tool"]):
                 t, note = _turn_for_write(r, s, turns)
                 expected.append({"tool": r["tool"], "args": r["args"], "turn": t, "system": s["system"]})
-                if note:
+                if note and note not in notes:
                     notes.append(note)
     return _task(f"scn-{qid}", "scenario", qid, q, turns, slices, expected, notes)
 
@@ -261,12 +269,12 @@ def _task(tid, kind, qid, q, turns, slices, expected, notes) -> dict:
 @functools.lru_cache(maxsize=1)
 def _bank() -> tuple:
     qs, sl, out = questions(), _slices(), []
+    generic = {"persona": {}, "domain": "", "tags": {}, "text": "", "followups": []}  # cases not tied to a persona question
     for qid in sorted(sl):
-        if qid not in qs:
-            raise KeyError(f"bench case question {qid} not found in docs/assets/personas/questions-*.md")
-        out += [_slice(qid, qs[qid], s) for s in sl[qid]]
+        out += [_slice(qid, qs.get(qid, generic), s) for s in sl[qid]]
     for qid in sorted(sl):
-        out.append(_scenario(qid, qs[qid], sl[qid]))
+        if qid in qs:
+            out.append(_scenario(qid, qs[qid], sl[qid]))
     return tuple(out)
 
 
