@@ -119,103 +119,130 @@ tools:
 
   # MDM read tools
   - name: get_sku_master_attributes
-    desc: SKU attributes including dimensions, status, handling flags, and supplier info. Use for SKU quality checks.
+    desc: SKU attributes including weight, status, handling flags (hazmat, pack type), supplier and lead time. Use for SKU quality checks.
     kind: select
     from: master.products
     filters:
       sku: {required: true}
-    columns: [sku, name, style_id, department, category, brand, supplier_id, status,
-              hazmat, pack_type, weight_kg, lead_time_days, moq, unit_cost_gbp, launch_date]
+    columns: [sku, name, style_id, department, category, subcategory, colour, size, brand, supplier_id, factory_id, country_of_origin, status,
+              hazmat, pack_type, weight_kg, lead_time_days, moq, unit_cost_gbp, retail_price_gbp, abc_class, launch_date]
     example: {sku: PF-220}
 
   - name: search_duplicate_vendor_candidates
-    desc: Fuzzy-match duplicate vendors by name, address, tax ID or bank account. Returns groups of similar vendors for manual review.
+    desc: Fuzzy-match duplicate vendor pairs on name, address, tax ID and bank account, with the signals shared and a risk flag. Use to group duplicates.
     kind: sql
     args:
       match_type: {type: enum, values: [name, address, tax_id, bank_account, all], default: all, desc: "Type of matching to perform"}
-      min_similarity: {type: float, default: 0.75, desc: "Minimum similarity threshold 0.0-1.0"}
+      min_similarity: {type: float, default: 0.85, desc: "Minimum name similarity 0.0-1.0"}
+      vendor_id: {desc: "Only pairs involving this vendor, e.g. VEN-900001"}
+      name: {type: str, desc: "Only pairs where either vendor name contains these words, e.g. TextileCorp"}
     sql: |
-      WITH candidates AS (
-        SELECT DISTINCT v1.vendor_id AS v1_id, v2.vendor_id AS v2_id,
-               v1.name, v2.name AS match_name,
-               CASE
-                 WHEN jaro_similarity(v1.name, v2.name) > $min_similarity THEN 'name'
-                 WHEN jaro_similarity(v1.address, v2.address) > $min_similarity THEN 'address'
-                 WHEN v1.tax_id IS NOT NULL AND v1.tax_id = v2.tax_id THEN 'tax_id'
-                 WHEN v1.bank_account_hash IS NOT NULL AND v1.bank_account_hash = v2.bank_account_hash THEN 'bank_account'
-                 ELSE NULL
-               END AS match_reason,
-               ROUND(CASE
-                 WHEN jaro_similarity(v1.name, v2.name) > $min_similarity THEN jaro_similarity(v1.name, v2.name)
-                 ELSE 0
-               END, 2) AS similarity_score
+      WITH p AS (
+        SELECT v1.vendor_id AS v1_id, v2.vendor_id AS v2_id, v1.name, v2.name AS match_name,
+               regexp_replace(lower(v1.name), '[^a-z0-9]', '', 'g') AS n1,
+               regexp_replace(lower(v2.name), '[^a-z0-9]', '', 'g') AS n2,
+               v1.address AS a1, v2.address AS a2,
+               v1.tax_id AS t1, v2.tax_id AS t2,
+               v1.bank_account_hash AS b1, v2.bank_account_hash AS b2
         FROM vendor_master v1
         JOIN vendor_master v2 ON v1.vendor_id < v2.vendor_id
         WHERE v1.status IN ('active', 'duplicate') AND v2.status IN ('active', 'duplicate')
-          AND (($match_type = 'all') OR ($match_type = 'name' AND jaro_similarity(v1.name, v2.name) > $min_similarity)
-            OR ($match_type = 'address' AND jaro_similarity(v1.address, v2.address) > $min_similarity)
-            OR ($match_type = 'tax_id' AND v1.tax_id = v2.tax_id)
-            OR ($match_type = 'bank_account' AND v1.bank_account_hash = v2.bank_account_hash))
+          AND ($vendor_id IS NULL OR v1.vendor_id = $vendor_id OR v2.vendor_id = $vendor_id)
+          AND ($name IS NULL OR lower(v1.name) LIKE '%' || lower($name) || '%'
+                             OR lower(v2.name) LIKE '%' || lower($name) || '%'
+                             OR regexp_replace(lower(v1.name), '[^a-z0-9]', '', 'g') LIKE '%' || regexp_replace(lower($name), '[^a-z0-9]', '', 'g') || '%'
+                             OR regexp_replace(lower(v2.name), '[^a-z0-9]', '', 'g') LIKE '%' || regexp_replace(lower($name), '[^a-z0-9]', '', 'g') || '%')
+      ), s AS (
+        SELECT *,
+               round(jaro_similarity(n1, n2), 2) AS name_similarity,
+               (left(n1, 5) = left(n2, 5) AND jaro_similarity(n1, n2) >= $min_similarity) AS name_hit,
+               (jaro_similarity(lower(a1), lower(a2)) >= 0.9) AS address_hit,
+               (t1 IS NOT NULL AND t1 = t2) AS tax_hit,
+               (b1 IS NOT NULL AND b1 <> '' AND b1 = b2) AS bank_hit
+        FROM p
       )
-      SELECT v1_id, v2_id, name, match_name, match_reason, similarity_score
-      FROM candidates
-      WHERE match_reason IS NOT NULL
-      ORDER BY similarity_score DESC, v1_id, v2_id
+      SELECT v1_id, v2_id, name, match_name, name_similarity,
+             array_to_string(list_filter([CASE WHEN name_hit THEN 'name' END, CASE WHEN address_hit THEN 'address' END,
+                                          CASE WHEN tax_hit THEN 'tax_id' END, CASE WHEN bank_hit THEN 'bank_account' END], x -> x IS NOT NULL), ', ') AS match_reasons,
+             CASE WHEN tax_hit THEN 'likely duplicate (same tax id)'
+                  WHEN bank_hit THEN 'possible fraud: shared bank account but different tax id'
+                  ELSE 'review manually' END AS risk
+      FROM s
+      WHERE ($match_type = 'all' AND (name_hit OR address_hit OR tax_hit OR bank_hit))
+         OR ($match_type = 'name' AND name_hit) OR ($match_type = 'address' AND address_hit)
+         OR ($match_type = 'tax_id' AND tax_hit) OR ($match_type = 'bank_account' AND bank_hit)
+      ORDER BY (bank_hit::INT + tax_hit::INT + name_hit::INT + address_hit::INT) DESC, name_similarity DESC, v1_id, v2_id
     limit: 100
     example: {match_type: name}
 
   - name: get_vendor_bank_account_matches
-    desc: Vendors sharing bank accounts (potential fraud or legitimate consolidation). Flags payment risk.
+    desc: Groups of active vendors sharing one bank account, with tax-id count and a payment-risk flag (duplicate vs possible fraud).
     kind: sql
     args:
-      iban_suffix: {type: str, desc: "IBAN suffix to match (e.g. last 4 chars), or blank for all"}
+      iban_suffix: {type: str, desc: "Account/IBAN suffix to match (e.g. last 4 chars), or blank for all"}
+      vendor_id: {desc: "Only groups containing this vendor, e.g. VEN-900001"}
     sql: |
-      WITH account_groups AS (
-        SELECT bd.iban, COUNT(DISTINCT bd.vendor_id) AS vendor_count,
-               STRING_AGG(DISTINCT v.vendor_id, ', ' ORDER BY v.vendor_id) AS vendor_ids,
-               STRING_AGG(DISTINCT v.name, '; ' ORDER BY v.name) AS vendor_names
+      WITH acct AS (
+        SELECT bd.vendor_id, v.name, v.tax_id, v.country, v.status AS vendor_status,
+               coalesce(nullif(bd.iban, ''), bd.sort_code || ' ' || bd.account_number) AS bank_account, bd.bank_name
         FROM vendor_bank_details bd
         JOIN vendor_master v ON bd.vendor_id = v.vendor_id
-        WHERE bd.status = 'active'
-          AND ($iban_suffix IS NULL OR bd.iban LIKE '%' || $iban_suffix)
-        GROUP BY bd.iban
-        HAVING COUNT(DISTINCT bd.vendor_id) > 1
+        WHERE bd.status = 'active' AND v.status IN ('active', 'duplicate')
       )
-      SELECT vendor_ids, vendor_names, iban, vendor_count
-      FROM account_groups
-      ORDER BY vendor_count DESC, iban
+      SELECT string_agg(DISTINCT vendor_id, ', ' ORDER BY vendor_id) AS vendor_ids,
+             string_agg(DISTINCT name, '; ' ORDER BY name) AS vendor_names,
+             bank_account, any_value(bank_name) AS bank_name,
+             count(DISTINCT vendor_id) AS vendor_count,
+             count(DISTINCT tax_id) AS distinct_tax_ids,
+             CASE WHEN count(DISTINCT tax_id) = 1 THEN 'likely duplicate: same tax id'
+                  ELSE 'possible fraud: different tax ids share this account, hold payments' END AS payment_risk
+      FROM acct
+      WHERE ($iban_suffix IS NULL OR bank_account LIKE '%' || $iban_suffix)
+      GROUP BY bank_account
+      HAVING count(DISTINCT vendor_id) > 1 AND ($vendor_id IS NULL OR bool_or(vendor_id = $vendor_id))
+      ORDER BY vendor_count DESC, bank_account
     limit: 100
     example: {}
 
   - name: list_vendor_bank_detail_changes
-    desc: Changes to vendor bank details with user and timestamp. Audit trail for compliance and security.
+    desc: Changes to vendor bank details with user and timestamp, newest first. Audit trail for compliance and security.
     kind: sql
     args:
       vendor_id: {}
       changed_from: {type: date, default: "-90d", desc: "Changes on or after"}
+      changed_to: {type: date, desc: "Changes on or before"}
       change_type: {type: enum, values: [added, modified, archived], desc: "Filter by change type"}
     sql: |
-      SELECT c.change_id, c.vendor_id, v.name, c.changed_at, e.name AS changed_by,
+      SELECT c.change_id, c.vendor_id, v.name AS vendor_name, c.changed_at, c.changed_by AS changed_by_id, e.name AS changed_by,
              c.field_changed, c.old_value, c.new_value, c.change_type
       FROM vendor_bank_changes c
       JOIN vendor_master v ON c.vendor_id = v.vendor_id
       LEFT JOIN master.employees e ON c.changed_by = e.employee_id
       WHERE ($vendor_id IS NULL OR c.vendor_id = $vendor_id)
         AND c.changed_at >= CAST($changed_from AS DATE)
+        AND ($changed_to IS NULL OR CAST(c.changed_at AS DATE) <= CAST($changed_to AS DATE))
         AND ($change_type IS NULL OR c.change_type = $change_type)
       ORDER BY c.changed_at DESC
     limit: 100
     example: {}
 
   - name: get_data_owner_for_dataset
-    desc: Data owner and steward for a dataset or domain. Shows ownership, SLO and last audit date.
-    kind: select
-    from: data_owners
-    filters:
-      domain: {op: like, desc: "Domain name, e.g. vendors, products"}
+    desc: Data owner and steward (ids and names) for a dataset or domain, with accuracy SLO and last audit date.
+    kind: sql
+    args:
+      domain: {type: str, desc: "Domain name, e.g. vendors, products"}
+      dataset: {type: str, desc: "Dataset name or words in it, e.g. OTIF_daily or Vendor Master"}
       owner_id: {}
-    columns: [dataset_id, name, domain, owner_id, steward_id, slo_accuracy_pct, last_audit_date]
-    order: domain
+    sql: |
+      SELECT d.dataset_id, d.name, d.domain, d.owner_id, o.name AS owner_name, d.steward_id, st.name AS steward_name,
+             d.slo_accuracy_pct, d.last_audit_date, date_diff('day', d.last_audit_date, CAST($as_of AS DATE)) AS days_since_audit
+      FROM data_owners d
+      LEFT JOIN master.employees o ON d.owner_id = o.employee_id
+      LEFT JOIN master.employees st ON d.steward_id = st.employee_id
+      WHERE ($domain IS NULL OR lower(d.domain) LIKE '%' || lower($domain) || '%')
+        AND ($dataset IS NULL OR lower(d.name) LIKE '%' || lower($dataset) || '%')
+        AND ($owner_id IS NULL OR d.owner_id = $owner_id)
+      ORDER BY d.dataset_id
     limit: 50
     example: {domain: vendors}
 
@@ -224,7 +251,7 @@ tools:
     desc: Merges duplicate vendor records into a surviving master record. Returns old and new status.
     kind: update
     table: vendor_master
-    set: {status: merged}
+    set: {status: merged, merged_at: "$as_of", updated_at: "$as_of"}
     args:
       merged_into: {required: true, desc: "Master vendor id to merge into, e.g. VEN-0001"}
     example: {vendor_id: VEN-900002, merged_into: VEN-900001}
@@ -233,6 +260,6 @@ tools:
     desc: Archives a duplicate vendor record after merge. Sets status to archived and retains audit trail.
     kind: update
     table: vendor_master
-    set: {status: archived}
+    set: {status: archived, updated_at: "$as_of"}
     args: {}
     example: {vendor_id: VEN-900003}

@@ -11,6 +11,8 @@ def generate(g):
     # Get all suppliers from master
     suppliers = g.master("suppliers")
     employees = g.master("employees")
+    # Bank-detail edits are made by finance staff, not warehouse operatives.
+    finance = [e for e in employees if e["role"] in ("Financial Analyst", "Management Accountant")]
 
     vendor_master = []
     vendor_bank_details = []
@@ -19,6 +21,7 @@ def generate(g):
 
     # Create vendor records: one per supplier, plus some duplicates with typos/variations
     vendor_counter = 1
+    first_bank = {}  # vendor_id -> its first bank detail row
     vendor_map = {}  # Maps supplier_id to vendor_id for consistent references
     bank_detail_counter = 1
     change_counter = 1
@@ -65,12 +68,14 @@ def generate(g):
                 "archived_at": None
             })
 
+            first_bank.setdefault(base_vendor_id, vendor_bank_details[-1])
+
             # Add a change record for this bank detail
             vendor_bank_changes.append({
                 "change_id": f"CHG-{change_counter:06d}",
                 "vendor_id": base_vendor_id,
                 "changed_at": vendor_bank_details[-1]["created_at"],
-                "changed_by": r.choice(employees)["employee_id"],
+                "changed_by": r.choice(finance)["employee_id"],
                 "field_changed": "bank_details",
                 "old_value": "",
                 "new_value": bank_detail_id,
@@ -80,10 +85,11 @@ def generate(g):
 
     # Create duplicate vendor records with typos/variations
     duplicates_created = 0
-    for i in range(min(50, len(vendor_master) // 3)):
+    for i in range(0, 60, 4):  # a modest number of duplicates (15)
         orig = vendor_master[i]
         if orig["status"] != "active":
             continue
+        ob = first_bank[orig["vendor_id"]]
 
         # Create a duplicate with name variation
         dup_name = orig["name"]
@@ -118,20 +124,46 @@ def generate(g):
         # Add bank detail for duplicate pointing to same bank account
         bank_detail_id = f"BNK-{bank_detail_counter:06d}"
         bank_detail_counter += 1
+        created = g.as_of - timedelta(days=r.randint(30, 300))  # old enough not to crowd recent-change questions
 
         vendor_bank_details.append({
             "bank_detail_id": bank_detail_id,
             "vendor_id": dup_vendor_id,
-            "account_number": vendor_bank_details[i * 2]["account_number"],  # Same account as original
-            "sort_code": vendor_bank_details[i * 2]["sort_code"],
-            "iban": vendor_bank_details[i * 2]["iban"],
-            "bank_name": vendor_bank_details[i * 2]["bank_name"],
+            "account_number": ob["account_number"],  # Same account as original
+            "sort_code": ob["sort_code"],
+            "iban": ob["iban"],
+            "bank_name": ob["bank_name"],
             "account_holder": dup_name,
-            "currency": vendor_bank_details[i * 2]["currency"],
+            "currency": ob["currency"],
             "status": "active",
-            "created_at": g.as_of - timedelta(days=r.randint(1, 30)),
+            "created_at": created,
             "archived_at": None
         })
+        vendor_bank_changes.append({
+            "change_id": f"CHG-{change_counter:06d}",
+            "vendor_id": dup_vendor_id,
+            "changed_at": created,
+            "changed_by": r.choice(finance)["employee_id"],
+            "field_changed": "bank_details",
+            "old_value": "",
+            "new_value": bank_detail_id,
+            "change_type": "added"
+        })
+        change_counter += 1
+
+    # Background: a few routine bank-detail edits, all well before the recent window
+    for vid, bd in list(first_bank.items())[40:52]:
+        vendor_bank_changes.append({
+            "change_id": f"CHG-{change_counter:06d}",
+            "vendor_id": vid,
+            "changed_at": g.as_of - timedelta(days=r.randint(70, 240)),
+            "changed_by": r.choice(finance)["employee_id"],
+            "field_changed": "bank_name",
+            "old_value": r.choice(["HSBC", "Barclays", "Lloyds", "NatWest"]),
+            "new_value": bd["bank_name"],
+            "change_type": "modified"
+        })
+        change_counter += 1
 
     # Create data ownership records for different domains
     domains = [
