@@ -1,5 +1,5 @@
 """EPR and packaging compliance data: targets, registrations, fees, regulations."""
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 
 def generate(g):
@@ -11,14 +11,16 @@ def generate(g):
     epr_countries = ["DE", "FR", "NL", "BE", "ES", "IT"]
     materials = ["corrugated", "flexible_plastic", "moulded_pulp", "rigid_plastic", "paper", "cardboard"]
 
-    # Generate packaging targets
+    # Generate packaging targets (with future deadlines)
     targets = []
     for i, prod in enumerate(products[:30]):
         sku = prod["sku"]
         for material in r.sample(materials, k=r.randint(1, 3)):
             for metric in ["recycled_content_pct", "recyclability_pct"]:
                 tid = f"TGT-{len(targets) + 1:06d}"
-                deadline = g.date_between(g.as_of + timedelta(days=180), g.as_of + timedelta(days=900))
+                # deadline between 6-24 months in the future
+                deadline_days_from_now = r.randint(180, 900)
+                deadline = g.as_of + timedelta(days=deadline_days_from_now)
                 current = r.randint(30, 75) if metric == "recycled_content_pct" else r.randint(60, 95)
                 target = min(100, current + r.randint(10, 35))
                 targets.append({
@@ -46,21 +48,23 @@ def generate(g):
                 "scheme_name": scheme,
                 "registration_number": f"REG-{country}-{i:04d}",
                 "status": r.choices(["active", "pending", "suspended"], [85, 10, 5])[0],
-                "registration_date": g.date_between(g.as_of - timedelta(days=730), g.as_of - timedelta(days=90)),
+                "registration_date": g.date_between(730, 90),  # between 90-730 days ago
                 "category": r.choice(["packaging", "textiles", "batteries"])
             })
 
-    # Generate EPR reporting obligations
+    # Generate EPR reporting obligations (with future deadlines)
     obligations = []
     for i, country in enumerate(epr_countries):
         for category in ["packaging", "textiles"]:
             oid = f"OBL-{len(obligations) + 1:06d}"
-            deadline = g.date_between(g.as_of + timedelta(days=30), g.as_of + timedelta(days=365))
+            # deadline 30-365 days from now
+            deadline_days_from_now = r.randint(30, 365)
+            deadline = g.as_of + timedelta(days=deadline_days_from_now)
             obligations.append({
                 "obligation_id": oid,
                 "country": country,
                 "category": category,
-                "data_required": "Packaging volumes by material; Recycled content %%; Disposal route data; Supplier certifications",
+                "data_required": "Packaging volumes by material; Recycled content %; Disposal route data; Supplier certifications",
                 "deadline": deadline,
                 "frequency": r.choice(["annual", "quarterly", "monthly"]),
                 "penalty_gbp": r.choice([5000, 15000, 30000, 75000, 150000])
@@ -167,6 +171,10 @@ def generate(g):
     for i in range(8):
         tid = f"ERT-{len(prep_tasks) + 1:06d}"
         is_past = r.random() > 0.5
+        # Due date: past dates if is_past, future dates otherwise
+        days_offset = r.randint(-60, 90) if is_past else r.randint(1, 90)
+        due_date = g.as_of + timedelta(days=days_offset)
+
         prep_tasks.append({
             "task_id": tid,
             "country": r.choice(epr_countries),
@@ -182,7 +190,7 @@ def generate(g):
                 "Train logistics team on new requirements"
             ]),
             "status": r.choices(["open", "in_progress", "completed", "cancelled"], [30, 35, 30, 5])[0],
-            "due_date": g.date_between(g.as_of - timedelta(days=60) if is_past else g.as_of, g.as_of + timedelta(days=90)),
+            "due_date": due_date,
             "assigned_to": r.choice([e["employee_id"] for e in employees[:20]]) if employees else "EMP-01234",
             "cancel_reason": r.choice([None, "Out of scope", "Resource constraints", "Regulatory change"])[:1][0] if r.random() > 0.8 else None,
             "created_at": g.as_of - timedelta(days=r.randint(30, 120)),

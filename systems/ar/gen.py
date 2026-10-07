@@ -65,7 +65,7 @@ def generate(g):
             continue
 
         inv_id = f"INV-2026-{len(invoices) + 1:06d}"
-        amount = order["value_gbp"]
+        amount = float(order["value_gbp"])
 
         # Determine payment status
         days_since_due = (g.as_of - due_date.date()).days
@@ -145,7 +145,8 @@ def generate(g):
     for cid, stats in customer_stats.items():
         # Generate last 52 weeks of collection data
         for weeks_back in range(0, 52, 4):  # Every 4 weeks
-            recorded_on = g.as_of - timedelta(weeks=weeks_back)
+            recorded_on_date = datetime.combine(g.as_of, datetime.min.time()) - timedelta(weeks=weeks_back)
+            recorded_on = recorded_on_date.date()
 
             # Simulate customer invoices in that period
             period_invoices = r.randint(2, 8)
@@ -154,7 +155,7 @@ def generate(g):
 
             collection_history.append({
                 "customer_id": cid,
-                "recorded_on": recorded_on.date(),
+                "recorded_on": recorded_on,
                 "invoices_in_period": period_invoices,
                 "amount_invoiced_gbp": round(period_amount, 2),
                 "amount_paid_gbp": round(period_paid, 2),

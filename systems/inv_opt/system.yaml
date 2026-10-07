@@ -1,0 +1,322 @@
+id: inv_opt
+name: Inventory Optimisation Tool
+instructions: >
+  Safety stock, reorder points and service level targets for products across DCs.
+  Use for inventory optimisation decisions, what-if lead time changes, and centralisation analysis.
+
+tables:
+  sku_inventory_policies:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      reorder_point_units: {type: int, desc: "Current reorder point in units"}
+      safety_stock_units: {type: int, desc: "Current safety stock in units"}
+      service_level_target_pct: {type: int, desc: "Target service level as percentage, e.g. 95"}
+      lead_time_days: {type: int, desc: "Lead time from supplier in days"}
+      annual_volume_units: {type: int, desc: "Annual demand in units"}
+      cv_demand: {type: float, desc: "Coefficient of variation of demand (0-1)"}
+      category: {type: str, desc: "Product category"}
+      abc_class: {type: enum, values: [A, B, C], desc: "ABC classification"}
+      last_review_date: {type: date, desc: "Date policy was last reviewed"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  segment_service_levels:
+    key: segment_id
+    cols:
+      segment_id: {type: str, desc: "Segment, e.g. SEG-001"}
+      segment_name: {type: str, desc: "Segment name"}
+      sku_count: {type: int, desc: "Number of SKUs in segment"}
+      target_service_level_pct: {type: int, desc: "Target service level percentage"}
+      status: {type: enum, values: [active, review, archived], desc: "Segment status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  sku_demand_analysis:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU"}
+      demand_52w_mean: {type: float, desc: "Mean weekly demand last 52 weeks"}
+      demand_52w_stdev: {type: float, desc: "Standard deviation of weekly demand"}
+      demand_cv: {type: float, desc: "Coefficient of variation"}
+      seasonality_factor: {type: float, desc: "Seasonality adjustment factor (0.8-1.2)"}
+      trend_direction: {type: str, desc: "Trend: up, down, stable"}
+      high_variability: {type: bool, desc: "True if CV > 0.5"}
+      last_calculated_date: {type: date, desc: "Date analysis was calculated"}
+
+  supplier_lead_time_actuals:
+    key: [sku, supplier_id]
+    cols:
+      sku: {type: str, desc: "SKU"}
+      supplier_id: {type: str, desc: "Supplier"}
+      lead_time_days: {type: int, desc: "Actual lead time observed"}
+      lead_time_stdev_days: {type: float, desc: "Standard deviation of lead time"}
+      change_from_baseline_pct: {type: float, desc: "Percentage change from baseline"}
+      sample_size: {type: int, desc: "Number of observations"}
+      measurement_date: {type: date, desc: "Date of measurement"}
+
+tools:
+  - name: get_inventory_policy_parameters
+    desc: Retrieve current reorder points and safety stock parameters for SKUs. Filter by ABC class or category.
+    kind: select
+    from: sku_inventory_policies
+    filters:
+      sku: {op: like, desc: "SKU or style id, e.g. SKU-100234"}
+      abc_class: {}
+      category: {}
+      service_level_target_pct: {type: int, desc: "Filter by target service level"}
+    columns: [sku, reorder_point_units, safety_stock_units, service_level_target_pct, lead_time_days, annual_volume_units, cv_demand, category, abc_class]
+    order: annual_volume_units DESC
+    limit: 50
+    example: {abc_class: A}
+
+  - name: list_high_variability_skus
+    desc: List SKUs with high demand variability (CV > 0.5). Shows demand coefficient of variation and why they are high.
+    kind: sql
+    args:
+      category: {desc: "Product category, e.g. Dresses"}
+      min_cv: {type: float, default: 0.5, desc: "Minimum coefficient of variation"}
+      limit_count: {type: int, default: 50, desc: "Maximum results"}
+    sql: |
+      SELECT a.sku, p.category, a.demand_cv, a.demand_52w_mean, a.demand_52w_stdev,
+             a.seasonality_factor, a.trend_direction, a.high_variability
+      FROM sku_demand_analysis a
+      JOIN sku_inventory_policies p ON a.sku = p.sku
+      WHERE a.demand_cv > $min_cv
+        AND ($category IS NULL OR p.category = $category)
+      ORDER BY a.demand_cv DESC
+      LIMIT $limit_count
+    example: {min_cv: 0.5}
+
+  - name: get_sku_abc_classification
+    desc: Retrieve ABC classification for SKUs based on annual value. A=top 10%, B=next 20%, C=rest.
+    kind: sql
+    args:
+      category: {desc: "Filter by product category"}
+      limit_count: {type: int, default: 200, desc: "Maximum results"}
+    sql: |
+      SELECT sku, abc_class, annual_volume_units, category,
+             round(annual_volume_units * (SELECT unit_cost_gbp FROM master.products WHERE sku = sku_inventory_policies.sku), 2) AS annual_value_gbp
+      FROM sku_inventory_policies
+      WHERE ($category IS NULL OR category = $category)
+      ORDER BY annual_volume_units DESC
+      LIMIT $limit_count
+    example: {}
+
+  - name: get_demand_pattern_for_sku
+    desc: Retrieve demand pattern, seasonality and variability for one SKU to assess centralisation suitability.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT a.sku, a.demand_52w_mean, a.demand_52w_stdev, a.demand_cv,
+             a.seasonality_factor, a.trend_direction, a.high_variability,
+             p.annual_volume_units, p.category, p.service_level_target_pct
+      FROM sku_demand_analysis a
+      JOIN sku_inventory_policies p ON a.sku = p.sku
+      WHERE a.sku = $sku
+    limit: 1
+    example: {sku: SKU-100234}
+
+  - name: get_service_level_vs_inventory_curve
+    desc: Inventory levels vs service level for a SKU category. Show cost of incremental 1% service improvements.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category"}
+    sql: |
+      SELECT category, service_level_pct, safety_stock_units, inventory_cost_gbp,
+             stock_turn_ratio, cost_of_improvement_gbp
+      FROM (
+        SELECT p.category,
+               CASE WHEN row_number() OVER (PARTITION BY p.category ORDER BY p.service_level_target_pct) = 1 THEN 85
+                    WHEN row_number() OVER (PARTITION BY p.category ORDER BY p.service_level_target_pct) = 2 THEN 90
+                    WHEN row_number() OVER (PARTITION BY p.category ORDER BY p.service_level_target_pct) = 3 THEN 95
+                    WHEN row_number() OVER (PARTITION BY p.category ORDER BY p.service_level_target_pct) = 4 THEN 97
+                    ELSE 99 END AS service_level_pct,
+               round(p.safety_stock_units * 1.15, 0) AS safety_stock_units,
+               round(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.25, 2) AS inventory_cost_gbp,
+               round(p.annual_volume_units / p.safety_stock_units, 1) AS stock_turn_ratio,
+               round(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.05, 2) AS cost_of_improvement_gbp
+        FROM sku_inventory_policies p
+        WHERE p.category = $category
+      )
+      ORDER BY service_level_pct DESC
+    example: {category: Dresses}
+
+  - name: calculate_safety_stock
+    desc: Calculate recommended safety stock for a SKU at target service level using demand and lead-time variability.
+    kind: sql
+    args:
+      sku: {required: true}
+      target_service_level_pct: {type: int, desc: "Target service level, e.g. 95, 97, 99", default: 95}
+    sql: |
+      SELECT p.sku, p.category, $target_service_level_pct AS target_service_level_pct,
+             a.demand_52w_mean, a.demand_52w_stdev, p.lead_time_days,
+             round(2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0), 0) AS recommended_safety_stock,
+             round(p.lead_time_days * a.demand_52w_mean / 7.0, 0) AS reorder_point_units,
+             p.service_level_target_pct AS current_service_level_pct,
+             round(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku), 2) AS current_ss_value_gbp,
+             'safety_stock = z_score * demand_stdev * sqrt(lead_time)' AS formula
+      FROM sku_inventory_policies p
+      JOIN sku_demand_analysis a ON p.sku = a.sku
+      WHERE p.sku = $sku
+    limit: 1
+    example: {sku: SKU-100234, target_service_level_pct: 97}
+
+  - name: calculate_working_capital_impact
+    desc: Calculate working capital change from inventory adjustments. Shows cash tied up change.
+    kind: sql
+    args:
+      category: {desc: "Product category"}
+      safety_stock_change_pct: {type: int, desc: "Percentage change in safety stock, e.g. -10 or +5", default: 0}
+    sql: |
+      SELECT p.category,
+             count(*) AS sku_count,
+             round(sum(p.safety_stock_units), 0) AS current_ss_units,
+             round(sum(p.safety_stock_units * (1 + ($safety_stock_change_pct / 100.0))), 0) AS new_ss_units,
+             round(sum(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku)), 2) AS current_value_gbp,
+             round(sum(p.safety_stock_units * (1 + ($safety_stock_change_pct / 100.0)) * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku)), 2) AS new_value_gbp,
+             round(sum(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * ($safety_stock_change_pct / 100.0)), 2) AS wc_change_gbp
+      FROM sku_inventory_policies p
+      WHERE ($category IS NULL OR p.category = $category)
+      GROUP BY p.category
+    example: {category: Dresses, safety_stock_change_pct: 10}
+
+  - name: calculate_service_level_target_options
+    desc: Model service level vs inventory cost at 85%, 90%, 95%, 97%, 99% levels for a segment. Shows trade-offs.
+    kind: sql
+    args:
+      sku_abc_class: {type: enum, values: [A, B, C], desc: "Model for which ABC class"}
+    sql: |
+      SELECT
+        $sku_abc_class AS abc_class,
+        sl.service_level_pct,
+        count(*) AS sku_count,
+        round(avg(p.lead_time_days), 1) AS avg_lead_time_days,
+        round(avg(a.demand_cv), 2) AS avg_demand_cv,
+        round(sum(p.safety_stock_units), 0) AS total_ss_units,
+        round(sum(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku)), 2) AS total_inventory_value_gbp,
+        round(sum(p.annual_volume_units) / 52.0 / count(*), 0) AS avg_weekly_demand
+      FROM sku_inventory_policies p
+      JOIN sku_demand_analysis a ON p.sku = a.sku
+      CROSS JOIN (SELECT CAST(sl AS INT) AS service_level_pct FROM (VALUES (85), (90), (95), (97), (99)) AS t(sl))
+      WHERE p.abc_class = $sku_abc_class
+      GROUP BY sl.service_level_pct, $sku_abc_class
+      ORDER BY sl.service_level_pct DESC
+    example: {sku_abc_class: A}
+
+  - name: calculate_service_level_impact
+    desc: Estimate lost sales impact of lower service level for a product category.
+    kind: sql
+    args:
+      category: {required: true}
+      target_service_level_pct: {type: int, desc: "New service level target", default: 90}
+    sql: |
+      SELECT p.category, $target_service_level_pct AS proposed_service_level,
+             round(sum(p.annual_volume_units), 0) AS annual_units,
+             round(sum((100 - $target_service_level_pct) / 100.0 * p.annual_volume_units * 0.05), 0) AS estimated_lost_units,
+             round(sum((100 - $target_service_level_pct) / 100.0 * p.annual_volume_units * (SELECT avg(retail_price_gbp) FROM master.products WHERE category = p.category LIMIT 1) * 0.05), 2) AS lost_revenue_gbp,
+             'lost_units = (1 - SL) * volume * loss_elasticity' AS formula
+      FROM sku_inventory_policies p
+      WHERE p.category = $category
+      GROUP BY p.category, $target_service_level_pct
+    limit: 1
+    example: {category: Dresses, target_service_level_pct: 92}
+
+  - name: calculate_lead_time_sensitivity_by_category
+    desc: Show which categories are most sensitive to lead time increases. For what-if planning.
+    kind: sql
+    args:
+      lead_time_increase_days: {type: int, desc: "Additional lead time days to model", default: 14}
+    sql: |
+      SELECT p.category,
+             round(avg(p.lead_time_days), 1) AS avg_lead_time_days,
+             round(avg(a.demand_52w_mean), 0) AS avg_weekly_demand,
+             round(avg(a.demand_cv), 2) AS avg_demand_cv,
+             round(sum(p.annual_volume_units), 0) AS category_volume,
+             round(sum(p.safety_stock_units), 0) AS current_safety_stock,
+             round(sum(p.safety_stock_units * (1 + (($lead_time_increase_days / p.lead_time_days) * 0.5))), 0) AS ss_with_extended_lt,
+             round(sum((p.safety_stock_units * (1 + (($lead_time_increase_days / p.lead_time_days) * 0.5)) - p.safety_stock_units) * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku)), 2) AS additional_wc_gbp
+      FROM sku_inventory_policies p
+      JOIN sku_demand_analysis a ON p.sku = a.sku
+      GROUP BY p.category
+      ORDER BY additional_wc_gbp DESC
+    example: {lead_time_increase_days: 14}
+
+  - name: compare_policy_to_recommended_parameters
+    desc: Compare current safety stock and reorder points to recommended based on demand and lead-time variability. Highlights deviations.
+    kind: sql
+    args:
+      sku: {}
+      category: {}
+      variance_threshold_pct: {type: int, desc: "Show only SKUs varying by > this %", default: 10}
+    sql: |
+      SELECT p.sku, p.category, p.abc_class,
+             p.safety_stock_units AS current_safety_stock,
+             round(2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0), 0) AS recommended_safety_stock,
+             round(100.0 * (p.safety_stock_units - (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0))) / (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0)), 1) AS variance_pct,
+             p.reorder_point_units AS current_reorder_point,
+             round(p.lead_time_days * a.demand_52w_mean / 7.0, 0) AS recommended_reorder_point,
+             CASE WHEN p.safety_stock_units < (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0)) * 0.9 THEN 'TOO_LOW'
+                  WHEN p.safety_stock_units > (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0)) * 1.1 THEN 'TOO_HIGH'
+                  ELSE 'OK' END AS assessment
+      FROM sku_inventory_policies p
+      JOIN sku_demand_analysis a ON p.sku = a.sku
+      WHERE ($sku IS NULL OR p.sku = $sku)
+        AND ($category IS NULL OR p.category = $category)
+        AND (abs(100.0 * (p.safety_stock_units - (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0))) / (2.326 * a.demand_52w_stdev * sqrt(p.lead_time_days / 7.0))) > $variance_threshold_pct
+             OR $variance_threshold_pct = 0)
+      ORDER BY variance_pct DESC
+      LIMIT 100
+    example: {category: Dresses, variance_threshold_pct: 15}
+
+  - name: compare_hold_stock_vs_accept_stockouts
+    desc: For long-tail SKUs, compare inventory cost vs lost sales from accepting lower service level.
+    kind: sql
+    args:
+      category: {}
+      current_service_level_pct: {type: int, desc: "Current target", default: 95}
+      proposed_service_level_pct: {type: int, desc: "Proposed target if holding less stock", default: 85}
+    sql: |
+      SELECT p.category, p.sku, p.annual_volume_units,
+             $current_service_level_pct AS current_service_level,
+             $proposed_service_level_pct AS proposed_service_level,
+             round(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.25, 2) AS current_annual_holding_cost_gbp,
+             round(p.safety_stock_units * 0.7 * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.25, 2) AS reduced_holding_cost_gbp,
+             round(p.annual_volume_units * (($current_service_level_pct - $proposed_service_level_pct) / 100.0) * (SELECT avg(retail_price_gbp) FROM master.products WHERE category = p.category LIMIT 1) * 0.08, 2) AS lost_sales_gbp,
+             CASE WHEN (p.annual_volume_units * (($current_service_level_pct - $proposed_service_level_pct) / 100.0) * (SELECT avg(retail_price_gbp) FROM master.products WHERE category = p.category LIMIT 1) * 0.08)
+                       < (p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.25 - p.safety_stock_units * 0.7 * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.25)
+                  THEN 'ACCEPT_STOCKOUTS'
+                  ELSE 'HOLD_STOCK' END AS recommendation
+      FROM sku_inventory_policies p
+      WHERE ($category IS NULL OR p.category = $category)
+      ORDER BY p.annual_volume_units ASC
+      LIMIT 50
+    example: {category: Dresses}
+
+  - name: calculate_centralised_stock_saving
+    desc: Model working capital and transport savings from holding long-tail SKU stock centrally instead of in every store.
+    kind: sql
+    args:
+      sku: {}
+      annual_volume_units: {type: int, desc: "Annual volume threshold for long-tail definition"}
+    sql: |
+      SELECT p.sku, p.category, p.annual_volume_units,
+             round(p.safety_stock_units * 5 * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku), 2) AS distributed_inventory_value_gbp,
+             round(p.safety_stock_units * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku), 2) AS centralised_inventory_value_gbp,
+             round((p.safety_stock_units * 5 - p.safety_stock_units) * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.20, 2) AS working_capital_saving_gbp,
+             round(p.annual_volume_units * 0.15, 2) AS estimated_transport_saving_gbp,
+             round((p.safety_stock_units * 5 - p.safety_stock_units) * (SELECT unit_cost_gbp FROM master.products m WHERE m.sku = p.sku) * 0.20 + p.annual_volume_units * 0.15, 2) AS total_saving_gbp
+      FROM sku_inventory_policies p
+      WHERE ($sku IS NULL OR p.sku = $sku)
+        AND ($annual_volume_units IS NULL OR p.annual_volume_units <= $annual_volume_units)
+      ORDER BY total_saving_gbp DESC
+      LIMIT 50
+    example: {}
+
+  - name: update_service_level_target_for_segment
+    desc: Update the target service level for an SKU segment. For commitment after approval.
+    kind: update
+    table: segment_service_levels
+    set: {target_service_level_pct: "{target_service_level_pct}", updated_at: "$as_of"}
+    args:
+      target_service_level_pct: {type: int, required: true, desc: "New target service level, e.g. 97"}
+    example: {segment_id: SEG-001, target_service_level_pct: 97}

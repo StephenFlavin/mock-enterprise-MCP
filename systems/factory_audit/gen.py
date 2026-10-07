@@ -28,7 +28,7 @@ def generate(g):
         for i in range(audit_count):
             # Spread audits over time
             weeks_ago = 100 - (i * (100 // audit_count)) + r.randint(-2, 2)
-            audit_date = g.days_ago(weeks_ago * 7).date()
+            audit_date = g.days_ago(weeks_ago * 7)
 
             audit_id = f"AUD-{len(audits) + 1:06d}"
             audit_score = r.choices(["A", "B", "C", "D"], [0.4, 0.35, 0.2, 0.05])[0]
@@ -108,7 +108,7 @@ def generate(g):
     for i in range(15):
         factory = r.choice(factories[:20])
         aur_id = f"AUR-{i + 1:06d}"
-        requested_date = g.days_ago(r.randint(5, 60)).date()
+        requested_date = g.days_ago(r.randint(5, 60))
         auditor = r.choice(auditors)
 
         audit_request = {
