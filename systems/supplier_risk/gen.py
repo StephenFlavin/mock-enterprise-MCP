@@ -9,15 +9,15 @@ from datetime import date, timedelta
 # ---- stories -----------------------------------------------------------------------------------------------
 # latent health, quarterly credit scores (newest first, 5 points) and filing shape for story suppliers
 STORY_FIN = {
-    "SUP-0053": dict(h=31, credit=[467, 520, 570, 615, 640], share=0.08, prior=(0.040, 0.18, 0.30, 1.6, 1.5)),
+    "SUP-0053": dict(h=31, credit=[467, 520, 570, 615, 640], share=0.08, prior=(0.040, 0.055, 0.45, 1.6, 1.5)),
     "SUP-0055": dict(h=52, credit=[614, 630, 640, 650, 655], share=0.10),
     "SUP-0001": dict(h=66, credit=[712, 716, 710, 714, 709], share=0.10),
-    "SUP-0072": dict(h=41, credit=[537, 575, 610, 650, 680], share=0.07, prior=(0.055, 0.20, 0.35, 1.1, 1.6)),
-    "SUP-0035": dict(h=48, credit=[586, 620, 650, 690, 700], share=0.07, prior=(0.050, 0.15, 0.35, 1.2, 1.7)),
-    "SUP-0036": dict(h=52, credit=[614, 640, 660, 690, 700], share=0.08, prior=(0.050, 0.14, 0.35, 1.2, 1.7)),
-    "SUP-0038": dict(h=49, credit=[593, 600, 612, 622, 630], share=0.09, prior=(0.045, 0.14, 0.38, 1.4, 1.5)),
-    "SUP-0028": dict(h=38, credit=[516, 560, 600, 640, 680], share=0.09, prior=(0.065, 0.20, 0.30, 1.4, 1.45)),
-    "SUP-0065": dict(h=46, credit=[572, 600, 630, 650, 665], share=0.10, prior=(0.060, 0.20, 0.33, 1.2, 1.35)),
+    "SUP-0072": dict(h=41, credit=[537, 575, 610, 650, 680], share=0.07, prior=(0.055, 0.060, 0.40, 1.1, 1.6)),
+    "SUP-0035": dict(h=48, credit=[586, 620, 650, 690, 700], share=0.07, prior=(0.050, 0.070, 0.38, 1.2, 1.7)),
+    "SUP-0036": dict(h=52, credit=[614, 640, 660, 690, 700], share=0.08, prior=(0.050, 0.085, 0.36, 1.2, 1.7)),
+    "SUP-0038": dict(h=49, credit=[593, 600, 612, 622, 630], share=0.09, prior=(0.045, 0.070, 0.40, 1.4, 1.5)),
+    "SUP-0028": dict(h=38, credit=[516, 560, 600, 640, 680], share=0.09, prior=(0.065, 0.065, 0.36, 1.4, 1.45)),
+    "SUP-0065": dict(h=46, credit=[572, 600, 630, 650, 665], share=0.10, prior=(0.060, 0.080, 0.35, 1.2, 1.35)),
     "SUP-0011": dict(h=78, credit=[796, 790, 786, 780, 775], share=0.12, prior=(0.085, 0.14, 0.22, 0.62, 1.9)),
     "SUP-0014": dict(h=74, credit=[768, 765, 760, 758, 750], share=0.10, prior=(0.070, 0.12, 0.26, 0.75, 1.7)),
     "SUP-0033": dict(h=71, credit=[747, 745, 742, 738, 735], share=0.09, prior=(0.065, 0.13, 0.28, 0.80, 1.6)),
@@ -44,7 +44,7 @@ STORY_FILING = {
 SOLE_SOURCE = {"SUP-0011": "Towels", "SUP-0014": "Scarves", "SUP-0028": "Footwear", "SUP-0033": "Fragrance",
                "SUP-0065": "Knitwear"}
 CRIT_OVERRIDE = {"SUP-0053": "high", "SUP-0055": "medium", "SUP-0038": "high"}
-WATCH = {"SUP-0002": "watch", "SUP-0048": "watch", "SUP-0029": "none"}
+WATCH = {}
 # cyber rating / system access / security rating for the critical suppliers (poor ones are the "weakest three")
 CYBER_STORY = {
     "SUP-0049": ("poor", "financial", "critical"), "SUP-0057": ("poor", "order_placement", "critical"),
@@ -136,7 +136,7 @@ def generate(g):
     crit = {}
     for s in live:
         sid = s["supplier_id"]
-        crit[sid] = ("critical" if spend[sid] >= 7e6 or sid in SOLE_SOURCE else "high" if spend[sid] >= 2.5e6
+        crit[sid] = ("critical" if spend[sid] >= 6.5e6 or sid in SOLE_SOURCE else "high" if spend[sid] >= 2.5e6
                      else "medium" if spend[sid] >= 1e6 else "low")
         crit[sid] = CRIT_OVERRIDE.get(sid, crit[sid])
 
@@ -191,7 +191,7 @@ def generate(g):
         for years, shape, scale in ((0, latest, 1.0), (1, prior, 1.0 if sid not in STORY_FILING else 1.0)):
             margin, cash, debt, de, cr = shape
             growth = 1.0 if years == 0 else (1.07 if sid in ("SUP-0053", "SUP-0028", "SUP-0065", "SUP-0072", "SUP-0035", "SUP-0036") else r.uniform(0.94, 1.04))
-            revenue = rev / growth
+            revenue = rev * growth
             profit = revenue * margin
             equity = revenue * debt / de
             filings.append({
@@ -317,7 +317,7 @@ def generate(g):
         if sid in CYBER_STORY:
             rating, access, sec = CYBER_STORY[sid]
         else:
-            rating = r.choices(["excellent", "good", "fair", "poor"], [22, 48, 26, 4])[0]
+            rating = r.choices(["excellent", "good", "fair"], [24, 48, 28])[0]
             access = r.choice(["read_only", "inventory", "order_placement"]) if r.random() < 0.22 else None
             sec = {"poor": "high", "fair": "medium", "good": "low", "excellent": "low"}[rating]
         sec_rating[sid] = sec
@@ -357,7 +357,7 @@ def generate(g):
         days = int(QUAL_BENCH[s["country"]][0] * r.uniform(0.8, 1.3))
         created = onboarded - timedelta(days=days)
         cid = f"SOC-{case_n:06d}"
-        cases.append({"case_id": cid, "supplier_id": sid, "status": "approved", "risk_rating": s["risk_rating"],
+        cases.append({"case_id": cid, "supplier_id": sid, "status": "approved", "risk_rating": "high" if s["risk_rating"] == "critical" else s["risk_rating"],
                       "conditions": None, "created_at": created, "updated_at": onboarded, "completed_at": onboarded})
         for ctl, seq in controls:
             sub = created + timedelta(days=seq * days // 8)
