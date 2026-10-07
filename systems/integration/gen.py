@@ -231,7 +231,7 @@ def generate(g):
             "wms_balance": wms_qty,
             "difference": diff,
             "difference_pct": (diff / erp_qty * 100) if erp_qty > 0 else 0,
-            "created_at": g.date_between(g.days_ago(30), g.days_ago(0)),
+            "created_at": g.date_between(30, 0),
             "status": r.choices(["new", "investigating", "resolved", "manual_adj"], [10, 20, 60, 10])[0],
             "updated_at": g.days_ago(r.randint(0, 30))
         })
