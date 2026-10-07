@@ -21,7 +21,11 @@ def _words(query):
 
 def _score(words, *texts):
     blob = " ".join(t or "" for t in texts).lower()
-    return sum(1 for w in words if w in blob or (len(w) > 4 and w.endswith("s") and w[:-1] in blob))
+    def hit(w):
+        if len(w) <= 3:  # short words (ip, ppe) must match whole words, not fragments of other words
+            return re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", blob) is not None
+        return w in blob or (len(w) > 4 and w.endswith("s") and w[:-1] in blob)
+    return sum(1 for w in words if hit(w))
 
 
 def _rank(rows, words, fields, title_field):

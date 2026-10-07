@@ -483,4 +483,5 @@ def generate(g):
         "audit_requirements": audit_requirements,
         "lessons_learned": lessons,
         "standard_clauses": clauses,
+        "regulatory_requirements": [],
     }

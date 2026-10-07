@@ -90,6 +90,18 @@ tables:
       effective_date: {type: date, desc: "When clause became standard"}
       version: {type: str, desc: "Clause version"}
 
+  regulatory_requirements:
+    key: requirement_id
+    cols:
+      requirement_id: {type: str, desc: "Requirement id, e.g. REG-001"}
+      jurisdiction: {type: enum, values: [UK, EU, US], desc: Jurisdiction of the law}
+      regulation: {type: str, desc: "Law or regulation name"}
+      topic: {type: enum, values: [forced_labour, due_diligence, product_liability], desc: Subject of the requirement}
+      requirement: {type: text, desc: "What the law requires of our contracts"}
+      required_term: {type: str, desc: "Term the related clause wording should contain to cover the requirement"}
+      clause_id: {type: str, desc: "Standard clause that should cover it, e.g. CLS-007"}
+      penalty: {type: text, desc: "Penalty for non-compliance"}
+
 tools:
   - name: create_knowledge_base_article
     desc: Publish a documented cause and fix to the knowledge base. Returns the new article id.
@@ -358,14 +370,23 @@ tools:
       limit: {type: int, default: 20, desc: "Max clauses to return"}
     example: {}
   - name: compare_clause_library_to_regulations
-    desc: Gap analysis comparing standard clauses to regulatory requirements.
+    desc: Gap analysis of standard clauses against forced labour, due diligence and product liability law in the UK, EU and US. Shows covered or gap, with penalties.
     kind: sql
-    args: {}
+    args:
+      topic: {type: str, desc: "Optional topic: forced_labour, due_diligence or product_liability"}
+      jurisdiction: {type: str, desc: "Optional jurisdiction: UK, EU or US"}
     sql: |
-      SELECT clause_id, clause_name, wording, 'regulatory review required' AS gap_assessment
-      FROM standard_clauses
-      WHERE effective_date <= CAST($as_of AS DATE)
-      ORDER BY clause_name
+      SELECT r.requirement_id, r.jurisdiction, r.regulation, r.topic, r.requirement,
+             c.clause_id, c.clause_name,
+             CASE WHEN c.clause_id IS NULL THEN 'GAP: no standard clause'
+                  WHEN c.wording ILIKE '%' || r.required_term || '%' THEN 'covered'
+                  ELSE 'GAP: wording does not mention ' || r.required_term END AS gap_assessment,
+             r.penalty
+      FROM regulatory_requirements r
+      LEFT JOIN standard_clauses c ON c.clause_id = r.clause_id AND c.effective_date <= CAST($as_of AS DATE)
+      WHERE ($topic IS NULL OR r.topic = lower(replace($topic, ' ', '_')))
+        AND ($jurisdiction IS NULL OR r.jurisdiction = upper($jurisdiction))
+      ORDER BY r.topic, r.jurisdiction, r.requirement_id
     limit: 50
     example: {}
 
