@@ -231,7 +231,7 @@ tools:
       SELECT index_name, index_date, index_value, week_change_pct, year_change_pct, mode
       FROM rate_indices
       WHERE ($index_name IS NULL OR index_name = $index_name)
-        AND index_date >= $as_of - INTERVAL $weeks_back WEEK
+        AND index_date >= $as_of - INTERVAL ($weeks_back * 7) DAY
       ORDER BY index_name, index_date DESC
       LIMIT 200
     example: {index_name: SCFI}
@@ -284,7 +284,7 @@ tools:
       JOIN master.carriers car ON q.carrier_id = car.carrier_id
       WHERE q.origin_airport = $origin_airport
         AND q.valid_until >= $as_of
-        AND q.quote_date >= $as_of - INTERVAL $year_back YEAR
+        AND q.quote_date >= $as_of - INTERVAL ($year_back * 365) DAY
       ORDER BY q.rate_gbp_per_kg
       LIMIT 30
     example: {origin_airport: DAC}
@@ -304,7 +304,7 @@ tools:
       FROM air_freight_quotes q
       WHERE q.origin_airport = $origin_airport
         AND ($destination_airport IS NULL OR q.destination_airport = $destination_airport)
-        AND q.quote_date >= CAST($as_of AS DATE) - INTERVAL CAST($months_back AS INT) MONTH
+        AND q.quote_date >= $as_of - INTERVAL ($months_back * 30) DAY
       ORDER BY q.destination_airport, q.quote_date DESC
       LIMIT 100
     example: {origin_airport: DAC}
@@ -354,19 +354,16 @@ tools:
       carrier_id: {type: str, desc: "Carrier, or blank for all"}
       mode: {type: enum, values: [sea, air, road, parcel], desc: "Transport mode"}
     sql: |
-      SELECT c.carrier_id, car.name AS carrier_name,
-             COALESCE(SUM(CASE WHEN EXTRACT(MONTH FROM f.forecast_date) <= EXTRACT(MONTH FROM $as_of) THEN CAST((cr.rate_gbp * bv.total_volume_units / 100) AS FLOAT) ELSE 0 END), 0) AS forecast_next_quarter_gbp,
-             COALESCE(SUM(CAST((cr.rate_gbp * bv.total_volume_units / 100) AS FLOAT)), 0) AS forecast_annual_gbp
+      SELECT c.carrier_id, car.name AS carrier_name, c.mode,
+             ROUND(COALESCE(AVG(c.rate_gbp * COALESCE(bv.total_volume_units, 100)), 0), 2) AS forecast_annual_gbp
       FROM contract_rates c
       JOIN master.carriers car ON c.carrier_id = car.carrier_id
-      LEFT JOIN booking_volumes bv ON bv.lane_id ILIKE '%' || c.lane_id || '%'
-      LEFT JOIN rate_forecast f ON f.lane_id = c.lane_id
-      LEFT JOIN contract_rates cr ON cr.carrier_id = c.carrier_id
+      LEFT JOIN booking_volumes bv ON bv.lane_id = c.lane_id
       WHERE ($carrier_id IS NULL OR c.carrier_id = $carrier_id)
         AND ($mode IS NULL OR c.mode = $mode)
-        AND c.rate_from <= CAST($as_of AS DATE)
-        AND c.rate_to >= CAST($as_of AS DATE) + INTERVAL 1 YEAR
-      GROUP BY c.carrier_id, car.name
+        AND c.rate_from <= $as_of
+        AND c.rate_to >= $as_of
+      GROUP BY c.carrier_id, car.name, c.mode
       ORDER BY forecast_annual_gbp DESC
       LIMIT 20
     example: {mode: sea}
@@ -583,10 +580,10 @@ tools:
       FROM rate_history r
       WHERE r.lane_id = $lane_id
         AND r.mode = $mode
-        AND r.rate_date >= CAST($as_of AS DATE) - INTERVAL CAST($months_back AS INT) MONTH
+        AND r.rate_date >= $as_of - INTERVAL $months_back MONTH
       ORDER BY r.rate_date DESC
       LIMIT 100
-    example: {lane_id: HCM-FXT, mode: sea}
+    example: {lane_id: VNHCM-GBFXT, mode: sea}
 
   - name: calculate_freight_saving_per_container
     desc: Calculate freight cost saving from packaging optimization per container.
