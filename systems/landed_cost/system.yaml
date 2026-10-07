@@ -1,0 +1,399 @@
+id: landed_cost
+name: Landed Cost Calculator
+instructions: >
+  Landed cost calculations including FOB, freight, duty, FX and inventory holding costs.
+  Calculation and scenario tools to support sourcing decisions and costing.
+  Use to compare suppliers, origins and routes, model tariff and FX impacts, and track actual cost performance.
+
+tables:
+  landed_cost_summary:
+    key: lc_id
+    cols:
+      lc_id: {type: str, desc: "Landed cost summary, e.g. LC-000123"}
+      po_id: {type: str, desc: Purchase order}
+      sku: {type: str, desc: SKU}
+      supplier_id: {type: str, desc: Supplier}
+      origin_country: {type: str, desc: "Country of origin (ISO code)"}
+      units: {type: int, desc: "Units on PO"}
+      fob_unit_gbp: {type: float, desc: "FOB unit cost in GBP"}
+      freight_unit_gbp: {type: float, desc: "Freight per unit in GBP"}
+      duty_unit_gbp: {type: float, desc: "Customs duty per unit in GBP"}
+      insurance_unit_gbp: {type: float, desc: "Insurance per unit in GBP"}
+      handling_unit_gbp: {type: float, desc: "Handling and clearance per unit in GBP"}
+      inventory_holding_unit_gbp: {type: float, desc: "Inventory holding cost per unit in GBP"}
+      landed_cost_unit_gbp: {type: float, desc: "Total landed cost per unit in GBP"}
+      total_landed_cost_gbp: {type: float, desc: "Total landed cost for PO in GBP"}
+      fx_rate: {type: float, desc: "FX rate used (if applicable)"}
+      mode: {type: enum, values: [sea, air, road, rail], desc: Transport mode}
+      lead_time_days: {type: int, desc: Lead time in days}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  freight_rates:
+    key: rate_id
+    cols:
+      rate_id: {type: str, desc: "Freight rate record, e.g. FR-000123"}
+      origin_port: {type: str, desc: "Origin port code (e.g. CNSHA)"}
+      dest_port: {type: str, desc: "Destination port code (e.g. GBFXT)"}
+      dest_site_id: {type: str, desc: "Destination DC"}
+      mode: {type: enum, values: [sea, air, road, rail], desc: Transport mode}
+      carrier_id: {type: str, desc: Carrier or forwarder}
+      rate_per_unit_gbp: {type: float, desc: "Freight cost per unit in GBP"}
+      rate_per_container_gbp: {type: float, desc: "Freight cost per 40ft container in GBP"}
+      min_qty: {type: int, desc: Minimum order quantity}
+      lead_time_days: {type: int, desc: Transit time in days}
+      effective_from: {type: date, desc: Date rate is effective from}
+      effective_to: {type: date, desc: Date rate is effective to}
+      transit_days_p50: {type: int, desc: Median transit days"}
+      transit_days_p95: {type: int, desc: 95th percentile transit days}
+      reliability_pct: {type: float, desc: "On-time arrival % (last 12m)"}
+
+  tariff_rates:
+    key: tariff_id
+    cols:
+      tariff_id: {type: str, desc: "Tariff rate record, e.g. TAR-000123"}
+      hs_code: {type: str, desc: "HS commodity code (6+ digits)"}
+      origin_country: {type: str, desc: "ISO country code of origin"}
+      dest_country: {type: str, desc: "Destination country (ISO code)"}
+      duty_rate_pct: {type: float, desc: "Duty rate as % of value"}
+      vat_rate_pct: {type: float, desc: "VAT/GST rate as %"}
+      effective_from: {type: date, desc: Date rate effective from}
+      effective_to: {type: date, desc: Date rate effective to}
+      contingency_pct: {type: float, desc: "Recommended contingency buffer %"}
+      notes: {type: str, desc: Special terms or restrictions}
+
+  fx_rates:
+    key: [currency_pair, rate_date]
+    cols:
+      currency_pair: {type: str, desc: "Currency pair, e.g. USD/GBP"}
+      rate_date: {type: date, desc: Date of rate}
+      spot_rate: {type: float, desc: Spot exchange rate}
+      forward_30d: {type: float, desc: 30-day forward rate}
+      forward_90d: {type: float, desc: 90-day forward rate}
+      forward_180d: {type: float, desc: 180-day forward rate}
+
+  cost_scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Cost scenario, e.g. SC-000123"}
+      scenario_name: {type: str, desc: "Scenario description"}
+      sku: {type: str, desc: SKU}
+      supplier_id: {type: str, desc: Supplier}
+      origin_country: {type: str, desc: Country of origin}
+      dest_site_id: {type: str, desc: Destination DC}
+      units: {type: int, desc: Units in scenario}
+      mode: {type: enum, values: [sea, air, road, rail], desc: Transport mode}
+      fob_unit_gbp: {type: float, desc: FOB unit cost}
+      freight_unit_gbp: {type: float, desc: Freight per unit}
+      duty_rate_pct: {type: float, desc: Duty rate assumption}
+      fx_rate: {type: float, desc: FX rate assumption}
+      insurance_pct: {type: float, desc: Insurance as % of value}
+      holding_cost_pct_pa: {type: float, desc: "Annual inventory holding cost %"}
+      total_landed_cost_gbp: {type: float, desc: Total landed cost}
+      landed_cost_per_unit_gbp: {type: float, desc: Landed cost per unit}
+      created_at: {type: timestamp, desc: Scenario created at}
+      created_by: {type: str, desc: Employee who created scenario}
+
+tools:
+  - name: calculate_landed_cost_per_unit
+    desc: Landed cost per unit including freight and duty. Returns the full cost breakdown and total.
+    kind: sql
+    args:
+      po_id: {required: true}
+      include_holding_cost: {type: bool, default: true, desc: "Include inventory holding cost"}
+    sql: |
+      SELECT l.lc_id, l.po_id, l.sku, l.supplier_id, l.origin_country,
+             l.fob_unit_gbp, l.freight_unit_gbp, l.duty_unit_gbp,
+             l.insurance_unit_gbp, l.handling_unit_gbp,
+             CASE WHEN $include_holding_cost THEN l.inventory_holding_unit_gbp ELSE 0.0 END AS inventory_holding_unit_gbp,
+             l.landed_cost_unit_gbp, l.total_landed_cost_gbp, l.fx_rate, l.mode, l.lead_time_days,
+             'Landed cost per unit = FOB + freight + duty + insurance + handling (+ inventory holding)' AS formula
+      FROM landed_cost_summary l
+      WHERE l.po_id = $po_id
+      ORDER BY l.updated_at DESC
+    limit: 5
+    example: {po_id: "PO-2026-004512"}
+
+  - name: calculate_landed_cost_by_supplier
+    desc: Landed cost per unit by supplier. For comparing supplier options, filtered by SKU, origin or mode.
+    kind: sql
+    args:
+      sku: {}
+      supplier_id: {}
+      origin_country: {}
+      mode: {}
+      date_from: {type: date, default: "-180d", desc: Calculations from this date onwards}
+    sql: |
+      SELECT l.supplier_id, s.name AS supplier_name,
+             COUNT(*) AS po_count,
+             AVG(l.fob_unit_gbp) AS avg_fob_unit_gbp,
+             AVG(l.freight_unit_gbp) AS avg_freight_unit_gbp,
+             AVG(l.duty_unit_gbp) AS avg_duty_unit_gbp,
+             AVG(l.landed_cost_unit_gbp) AS avg_landed_cost_unit_gbp,
+             MIN(l.landed_cost_unit_gbp) AS min_landed_cost_unit_gbp,
+             MAX(l.landed_cost_unit_gbp) AS max_landed_cost_unit_gbp,
+             'avg_landed_cost = sum(landed_cost_per_unit) / count' AS formula
+      FROM landed_cost_summary l
+      LEFT JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      WHERE ($sku IS NULL OR l.sku = $sku)
+        AND ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+        AND ($origin_country IS NULL OR l.origin_country = $origin_country)
+        AND ($mode IS NULL OR l.mode = $mode)
+        AND l.updated_at >= CAST($date_from AS DATE)
+      GROUP BY l.supplier_id, s.name
+      ORDER BY avg_landed_cost_unit_gbp ASC
+    limit: 20
+    example: {sku: "STY-5520"}
+
+  - name: calculate_landed_cost_by_origin
+    desc: Landed cost per unit by sourcing origin country. For comparing sourcing locations and tariff impacts.
+    kind: sql
+    args:
+      sku: {}
+      date_from: {type: date, default: "-180d", desc: Calculations from date onwards}
+      mode: {}
+    sql: |
+      SELECT l.origin_country,
+             COUNT(*) AS po_count,
+             SUM(l.units) AS total_units,
+             ROUND(AVG(l.fob_unit_gbp), 2) AS avg_fob_unit_gbp,
+             ROUND(AVG(l.freight_unit_gbp), 2) AS avg_freight_unit_gbp,
+             ROUND(AVG(l.duty_unit_gbp), 2) AS avg_duty_unit_gbp,
+             ROUND(AVG(l.landed_cost_unit_gbp), 2) AS avg_landed_cost_unit_gbp,
+             ROUND(AVG(l.lead_time_days), 0) AS avg_lead_time_days,
+             'avg_cost = sum(cost_per_unit) / count' AS formula
+      FROM landed_cost_summary l
+      WHERE ($sku IS NULL OR l.sku = $sku)
+        AND ($mode IS NULL OR l.mode = $mode)
+        AND l.updated_at >= CAST($date_from AS DATE)
+      GROUP BY l.origin_country
+      ORDER BY avg_landed_cost_unit_gbp ASC
+    limit: 20
+    example: {sku: "STY-5520"}
+
+  - name: compare_landed_cost_across_origins
+    desc: Compare landed cost and lead time for the same product across origins to support sourcing decisions.
+    kind: sql
+    args:
+      sku: {required: true}
+      units: {type: int, desc: "Volume to evaluate (for freight calculations)"}
+    sql: |
+      SELECT l.origin_country,
+             l.supplier_id,
+             s.name AS supplier_name,
+             ROUND(AVG(l.fob_unit_gbp), 2) AS fob_unit_gbp,
+             ROUND(AVG(l.freight_unit_gbp), 2) AS freight_unit_gbp,
+             ROUND(AVG(l.duty_unit_gbp), 2) AS duty_unit_gbp,
+             ROUND(AVG(l.landed_cost_unit_gbp), 2) AS landed_cost_unit_gbp,
+             ROUND(AVG(l.landed_cost_unit_gbp) * $units, 2) AS total_landed_cost_gbp,
+             ROUND(AVG(l.lead_time_days), 0) AS lead_time_days,
+             ROUND(AVG(l.reliability_pct), 1) AS reliability_pct
+      FROM landed_cost_summary l
+      LEFT JOIN master.suppliers s ON s.supplier_id = l.supplier_id
+      WHERE l.sku = $sku
+      GROUP BY l.origin_country, l.supplier_id, s.name
+      ORDER BY landed_cost_unit_gbp ASC
+    limit: 20
+    example: {sku: "STY-5520", units: 10000}
+
+  - name: get_landed_cost_by_sku
+    desc: Landed cost breakdown by SKU with historical trend. Shows FOB, freight, duty components.
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-180d", desc: "Calculations from date"}
+    sql: |
+      SELECT l.lc_id, l.po_id, l.sku, l.supplier_id, l.origin_country, l.units,
+             ROUND(l.fob_unit_gbp, 2) AS fob_unit_gbp,
+             ROUND(l.freight_unit_gbp, 2) AS freight_unit_gbp,
+             ROUND(l.duty_unit_gbp, 2) AS duty_unit_gbp,
+             ROUND(l.insurance_unit_gbp, 2) AS insurance_unit_gbp,
+             ROUND(l.handling_unit_gbp, 2) AS handling_unit_gbp,
+             ROUND(l.landed_cost_unit_gbp, 2) AS landed_cost_unit_gbp,
+             l.mode, l.lead_time_days, l.updated_at
+      FROM landed_cost_summary l
+      WHERE l.sku = $sku AND l.updated_at >= CAST($date_from AS DATE)
+      ORDER BY l.updated_at DESC
+    limit: 30
+    example: {sku: "STY-5520"}
+
+  - name: get_landed_cost_history
+    desc: Landed cost components over time by SKU or supplier. Shows cost trend and drivers.
+    kind: sql
+    args:
+      sku: {}
+      supplier_id: {}
+      date_from: {type: date, default: "-180d"}
+      date_to: {type: date, default: "today"}
+    sql: |
+      SELECT DATE_TRUNC('month', CAST(l.updated_at AS DATE)) AS month,
+             l.sku,
+             l.supplier_id,
+             COUNT(*) AS po_count,
+             ROUND(AVG(l.fob_unit_gbp), 2) AS avg_fob_unit_gbp,
+             ROUND(AVG(l.freight_unit_gbp), 2) AS avg_freight_unit_gbp,
+             ROUND(AVG(l.duty_unit_gbp), 2) AS avg_duty_unit_gbp,
+             ROUND(AVG(l.landed_cost_unit_gbp), 2) AS avg_landed_cost_unit_gbp
+      FROM landed_cost_summary l
+      WHERE ($sku IS NULL OR l.sku = $sku)
+        AND ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+        AND l.updated_at >= CAST($date_from AS DATE)
+        AND l.updated_at <= CAST($date_to AS DATE)
+      GROUP BY month, l.sku, l.supplier_id
+      ORDER BY month DESC
+    limit: 24
+    example: {sku: "STY-5520"}
+
+  - name: get_actual_landed_cost_by_purchase_order
+    desc: Actual landed cost for a purchase order with full cost breakdown. For cost variance analysis.
+    kind: sql
+    args:
+      po_id: {required: true}
+    sql: |
+      SELECT l.lc_id, l.po_id, l.sku, l.supplier_id,
+             p.origin_country,
+             l.units,
+             ROUND(l.fob_unit_gbp, 2) AS fob_unit_gbp,
+             ROUND(l.freight_unit_gbp, 2) AS freight_unit_gbp,
+             ROUND(l.duty_unit_gbp, 2) AS duty_unit_gbp,
+             ROUND(l.insurance_unit_gbp, 2) AS insurance_unit_gbp,
+             ROUND(l.handling_unit_gbp, 2) AS handling_unit_gbp,
+             ROUND(l.inventory_holding_unit_gbp, 2) AS inventory_holding_unit_gbp,
+             ROUND(l.landed_cost_unit_gbp, 2) AS landed_cost_unit_gbp,
+             ROUND(l.total_landed_cost_gbp, 2) AS total_landed_cost_gbp,
+             l.mode, l.lead_time_days, l.fx_rate, l.updated_at
+      FROM landed_cost_summary l
+      LEFT JOIN master.products p ON p.sku = l.sku
+      WHERE l.po_id = $po_id
+    limit: 50
+    example: {po_id: "PO-2026-004512"}
+
+  - name: get_landed_cost_for_products
+    desc: Current landed cost for a list of products. For pricing or sourcing analysis.
+    kind: sql
+    args:
+      category: {}
+      supplier_id: {}
+      origin_country: {}
+    sql: |
+      SELECT DISTINCT l.sku, p.name, p.category, l.supplier_id, l.origin_country,
+             ROUND(AVG(l.landed_cost_unit_gbp), 2) AS current_landed_cost_gbp,
+             ROUND(p.retail_price_gbp, 2) AS retail_price_gbp,
+             ROUND(p.retail_price_gbp - AVG(l.landed_cost_unit_gbp), 2) AS gross_margin_gbp,
+             l.mode
+      FROM landed_cost_summary l
+      LEFT JOIN master.products p ON p.sku = l.sku
+      WHERE ($category IS NULL OR p.category = $category)
+        AND ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+        AND ($origin_country IS NULL OR l.origin_country = $origin_country)
+        AND l.updated_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      GROUP BY l.sku, p.name, p.category, l.supplier_id, l.origin_country, p.retail_price_gbp, l.mode
+      ORDER BY l.sku
+    limit: 100
+    example: {category: "Fashion"}
+
+  - name: calculate_landed_cost_by_scenario
+    desc: Calculate landed cost under different what-if scenarios (freight, FX, duty changes).
+    kind: sql
+    args:
+      scenario_id: {required: true}
+    sql: |
+      SELECT scenario_id, scenario_name, sku, supplier_id, origin_country,
+             units, mode, fob_unit_gbp, freight_unit_gbp, duty_rate_pct, fx_rate,
+             ROUND(fob_unit_gbp * fx_rate, 2) AS fob_in_gbp,
+             ROUND(freight_unit_gbp, 2) AS freight_gbp,
+             ROUND((fob_unit_gbp * fx_rate) * (duty_rate_pct / 100.0), 2) AS duty_gbp,
+             ROUND((fob_unit_gbp * fx_rate) * (insurance_pct / 100.0), 2) AS insurance_gbp,
+             ROUND(landed_cost_per_unit_gbp, 2) AS landed_cost_per_unit_gbp,
+             ROUND(total_landed_cost_gbp, 2) AS total_landed_cost_gbp,
+             'landed_cost = (FOB * fx_rate) + freight + (FOB * duty_rate) + insurance + holding' AS formula
+      FROM cost_scenarios
+      WHERE scenario_id = $scenario_id
+    limit: 5
+    example: {scenario_id: "SC-000001"}
+
+  - name: calculate_door_to_door_cost
+    desc: Door-to-door cost for a routing option including all intermediary costs. Use to evaluate logistics routes.
+    kind: sql
+    args:
+      origin_port: {required: true}
+      dest_site_id: {required: true}
+      mode: {required: true}
+      fob_value_gbp: {type: float, required: true, desc: "FOB value in GBP"}
+      units: {type: int, required: true}
+    sql: |
+      SELECT $origin_port AS origin_port, $dest_site_id AS dest_site_id, $mode AS mode,
+             ROUND($fob_value_gbp, 2) AS fob_value_gbp,
+             $units AS units,
+             ROUND(f.rate_per_unit_gbp, 2) AS freight_per_unit_gbp,
+             ROUND(f.rate_per_unit_gbp * $units, 2) AS total_freight_gbp,
+             ROUND($fob_value_gbp * 0.01, 2) AS insurance_gbp,
+             ROUND(($fob_value_gbp + (f.rate_per_unit_gbp * $units)) * 0.02, 2) AS handling_clearance_gbp,
+             ROUND(($fob_value_gbp + (f.rate_per_unit_gbp * $units) +
+                    (($fob_value_gbp + (f.rate_per_unit_gbp * $units)) * 0.015)) / $units, 2) AS door_to_door_cost_per_unit_gbp,
+             f.lead_time_days, f.reliability_pct,
+             'door_to_door = (FOB + freight + insurance + handling) / units' AS formula
+      FROM freight_rates f
+      WHERE f.origin_port = $origin_port
+        AND f.dest_site_id = $dest_site_id
+        AND f.mode = $mode
+        AND f.effective_from <= CAST($as_of AS DATE)
+        AND (f.effective_to IS NULL OR f.effective_to >= CAST($as_of AS DATE))
+      ORDER BY door_to_door_cost_per_unit_gbp ASC
+    limit: 5
+    example: {origin_port: "CNSHA", dest_site_id: "DC1", mode: "sea", fob_value_gbp: 50000, units: 5000}
+
+  - name: calculate_landed_cost_with_tariff
+    desc: Calculates landed cost with tariff. Shows base cost and tariff impact for pricing decisions.
+    kind: sql
+    args:
+      sku: {required: true}
+      origin_country: {required: true}
+      units: {type: int, default: 10000, desc: "Volume for calculation"}
+    sql: |
+      SELECT l.sku, p.name, l.origin_country,
+             ROUND(AVG(l.fob_unit_gbp), 2) AS fob_unit_gbp,
+             ROUND(AVG(l.freight_unit_gbp), 2) AS freight_unit_gbp,
+             ROUND(AVG(l.duty_unit_gbp), 2) AS current_duty_unit_gbp,
+             t.duty_rate_pct AS tariff_rate_pct,
+             ROUND(AVG(l.fob_unit_gbp) * (t.duty_rate_pct / 100.0), 2) AS new_tariff_duty_unit_gbp,
+             ROUND(AVG(l.fob_unit_gbp) + AVG(l.freight_unit_gbp) +
+                   (AVG(l.fob_unit_gbp) * (t.duty_rate_pct / 100.0)), 2) AS landed_cost_with_tariff_unit_gbp,
+             ROUND((ROUND(AVG(l.fob_unit_gbp) * (t.duty_rate_pct / 100.0), 2) -
+                    ROUND(AVG(l.duty_unit_gbp), 2)) * $units, 2) AS tariff_impact_gbp,
+             'with_tariff_cost = FOB + freight + (FOB * tariff_rate)' AS formula
+      FROM landed_cost_summary l
+      LEFT JOIN master.products p ON p.sku = l.sku
+      LEFT JOIN tariff_rates t ON p.hs_code = t.hs_code
+        AND t.origin_country = $origin_country
+        AND t.effective_from <= CAST($as_of AS DATE)
+        AND (t.effective_to IS NULL OR t.effective_to >= CAST($as_of AS DATE))
+      WHERE l.sku = $sku AND l.origin_country = $origin_country
+        AND l.updated_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      GROUP BY l.sku, p.name, l.origin_country, t.duty_rate_pct
+    limit: 5
+    example: {sku: "STY-5520", origin_country: "VN"}
+
+  - name: calculate_tariff_contingency_by_origin
+    desc: Calculate recommended tariff contingency buffer by origin for cost planning and risk mitigation.
+    kind: sql
+    args:
+      origin_country: {required: true}
+      date_from: {type: date, default: "-180d"}
+    sql: |
+      SELECT l.origin_country,
+             COUNT(DISTINCT l.sku) AS sku_count,
+             COUNT(DISTINCT l.po_id) AS po_count,
+             ROUND(AVG(t.contingency_pct), 1) AS recommended_contingency_pct,
+             ROUND(AVG(l.duty_unit_gbp), 2) AS avg_current_duty_unit_gbp,
+             ROUND(AVG(l.fob_unit_gbp), 2) AS avg_fob_unit_gbp,
+             ROUND(AVG(l.fob_unit_gbp) * (AVG(t.contingency_pct) / 100.0), 2) AS contingency_per_unit_gbp,
+             ROUND(AVG(l.fob_unit_gbp) + (AVG(l.fob_unit_gbp) * (AVG(t.contingency_pct) / 100.0)), 2) AS fob_with_contingency_gbp,
+             'contingency_buffer = FOB * contingency_pct' AS formula
+      FROM landed_cost_summary l
+      LEFT JOIN tariff_rates t ON l.origin_country = t.origin_country
+        AND t.effective_from <= CAST($date_from AS DATE)
+      WHERE l.origin_country = $origin_country
+        AND l.updated_at >= CAST($date_from AS DATE)
+      GROUP BY l.origin_country
+    limit: 5
+    example: {origin_country: "VN"}
