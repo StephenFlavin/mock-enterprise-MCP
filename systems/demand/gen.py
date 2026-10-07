@@ -425,6 +425,11 @@ def generate(g):
                 "pull_forward_pct": round(uplift * r.uniform(0.2, 0.4), 1),
             })
 
+    # 08:78:Q3: the Cookware buy-one-get-one and the Audio bundle are pinned in seed/promotion_effects.csv (BOGO nets 23.4% incremental,
+    # the Audio bundle 16.7% after its heavy cannibalisation), so the random history for those two combinations is dropped.
+    PINNED_PROMOS = {("Cookware", "buy_one_get_one"), ("Audio", "bundle")}
+    promotion_effects = [x for x in promotion_effects if (x["category"], x["promo_mechanic"]) not in PINNED_PROMOS]
+
     # ------------------------------------------------------------------------------------------
     # Daily orders: actual for the past 400 days (two peaks), forecast for the next 110 days.
     # Online orders in units; Black Friday to Christmas is the peak.
@@ -486,8 +491,10 @@ def generate(g):
     # ------------------------------------------------------------------------------------------
     uk = [x for x in sites if x["type"] == "store" and x["country"] == "GB"]
     region_of = {x["site_id"]: x["region"] for x in uk}
-    story_avg = {"DC1-ST215": 755, "DC1-ST150": 685, "DC1-ST207": 681, "DC1-ST214": 672, "DC1-ST151": 654,
-                 "DC1-ST148": 582}
+    # Average weekly pallets over the peak: the six busiest store lanes carry about 50 pallets a week (a 190-unit pallet is about
+    # 9,500 units a week to one store), in line with transport's last-year peak plus 10% growth. A typical store lane averages 7 pallets.
+    story_avg = {"DC1-ST215": 50, "DC1-ST150": 53, "DC1-ST207": 48, "DC1-ST214": 45, "DC1-ST151": 51,
+                 "DC1-ST148": 54}
     lanes = [f"DC1-{x['site_id']}" for i, x in enumerate(uk) if i % 3 == 0]
     lanes += [f"DC3-{x['site_id']}" for x in uk if x["region"] in ("UK North", "Scotland")]
     lanes = [ln for ln in lanes if ln not in story_avg]
@@ -504,7 +511,7 @@ def generate(g):
         r = g.rng_for("lane", lane)
         avg = story_avg.get(lane)
         if avg is None:
-            avg = r.randint(10, 45)
+            avg = r.randint(3, 12)
         for k in range(-1, 6):
             wk = bf_week + timedelta(weeks=k)
             pallets = int(round(avg * peak_profile[k] / profile_mean * r.gauss(1.0, 0.02)))
@@ -946,6 +953,7 @@ def generate(g):
     category_groups = [{"group_name": "Toiletries", "category": c} for c in ("Bodycare", "Haircare", "Skincare")]
 
     return {
+        "network_stock": [],   # snapshot rows from the inventory system are seeded (seed/network_stock.csv)
         "demand_history": demand_history,
         "forecasts": forecasts,
         "forecast_configs": forecast_configs,

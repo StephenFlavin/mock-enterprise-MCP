@@ -47,6 +47,8 @@ DEMAND_OVERRIDE = {
     "SKU-101722": 1097.4,
     # order proposal story and similar-issue items
     "SKU-102961": 789.5, "SKU-106251": 1521.0, "SKU-102352": 1388.6, "SKU-102338": 2187.9,
+    # promotion story line: weekly units the demand system forecasts up to the promotion
+    "SKU-104599": 2630.0,
 }
 # Network available units (DCs and stores) the inventory system shows for the same SKUs.
 STOCK_OVERRIDE = {
@@ -58,7 +60,7 @@ STOCK_OVERRIDE = {
     "SKU-101260": 4641, "SKU-102884": 7642, "SKU-105964": 1926, "SKU-100280": 6422, "SKU-103521": 9200,
     "SKU-101722": 5048,
     "SKU-102961": 5092, "SKU-106251": 10831, "SKU-102352": 10088, "SKU-102338": 12910,
-    "SKU-104599": 16984,   # promotion story line: network stock in the inventory system
+    "SKU-104599": 42000,   # promotion story line: network stock in the inventory system (covers base demand to the end of the promotion)
 }
 # Long-tail make-to-order candidates: stay stocked until the planner switches them.
 LONG_TAIL_CANDIDATES = {"SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", "SKU-103038"}
@@ -66,6 +68,7 @@ LONG_TAIL_CANDIDATES = {"SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", 
 # January 3 for 2 on toiletries: the demand system's biggest toiletries line and its promotion uplift.
 PROMO_STORY_SKU = "SKU-104599"
 PROMO_UPLIFT_PCT = 38.7
+PROMO_WINDOW_BASE = 1870   # demand system's base forecast per week in the four January promotion weeks (seasonally lower)
 
 PACKS = [6, 12, 24, 50, 100, 250, 500, 1000, 2000]
 APPAREL = ["Blouses", "Tops", "Dresses", "Knitwear", "Trousers", "Shirts", "Outerwear", "T-Shirts", "Nightwear",
@@ -278,7 +281,7 @@ def generate(g):
         for wk in range(0, 21):
             if sku == PROMO_STORY_SKU:
                 # January 3 for 2 on toiletries: four promotion weeks lifted by the uplift; no open POs in purchasing
-                forecast = int(round(w * (1 + PROMO_UPLIFT_PCT / 100.0))) if 13 <= wk <= 16 else int(round(w))
+                forecast = int(round(PROMO_WINDOW_BASE * (1 + PROMO_UPLIFT_PCT / 100.0))) if 13 <= wk <= 16 else int(round(w))
                 confirmed, planned = 0, 0
             else:
                 forecast = int(round(w * rp.uniform(0.95, 1.08)))

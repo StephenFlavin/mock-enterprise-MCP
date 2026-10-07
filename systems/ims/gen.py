@@ -648,6 +648,27 @@ def generate(g):
             p["safety_stock"] = int(p["safety_stock"] * f)
             p["reorder_point"] = int(p["reorder_point"] * f)
 
+    # (7b) 08:78:Q2 haircare promotion (SKU-104599): network stock (DC3 + stores) of 42,000 units covers the base demand of the
+    # 13 weeks to the January promotion and the four promotion weeks at base rate (41,676 units); only the promotion uplift is
+    # unmet. Network demand equals the demand system's weekly forecast (about 2,630 units before the promotion).
+    PROMO_SKU, PROMO_NETWORK_STOCK, PROMO_WEEKLY = "SKU-104599", 42000, 2630.0
+    rows = [p for p in pos_rows if p["sku"] == PROMO_SKU]
+    st_rows = sorted((p for p in rows if p["site_id"].startswith("ST")), key=lambda p: p["site_id"])
+    if rows and st_rows:
+        want = PROMO_NETWORK_STOCK - sum(p["available"] for p in rows if not p["site_id"].startswith("ST"))
+        f = want / sum(p["available"] for p in st_rows)
+        for p in st_rows:
+            p["allocated"] = int(p["allocated"] * f)
+            p["available"] = int(p["available"] * f)
+            p["on_hand"] = p["available"] + p["allocated"]
+        st_rows[0]["available"] += want - sum(p["available"] for p in st_rows)
+        st_rows[0]["on_hand"] = st_rows[0]["available"] + st_rows[0]["allocated"]
+        f = PROMO_WEEKLY / sum(p["weekly_demand"] for p in rows)
+        for p in rows:
+            p["weekly_demand"] = round(p["weekly_demand"] * f, 1)
+            p["safety_stock"] = int(p["safety_stock"] * f)
+            p["reorder_point"] = int(p["reorder_point"] * f)
+
     # (8) Stock by batch for quality holds: failed lots of three products (stores and DCs).
     def add_batch(sku, batch_id, status, age, site, qty, loc_hint=None):
         cands = [p for p in pos_rows if p["sku"] == sku and p["site_id"] == site]

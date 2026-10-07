@@ -67,8 +67,8 @@ def generate(g):
             big = lane in STORY
             carriers_lanes.append({
                 "carrier_id": cid, "lane": lane, "mode": "road",
-                "status": "active", "weekly_capacity_trips": int((6 if big else 2) * pct / 25) + 1,
-                "weekly_capacity_pallets": int((85 if big else 20) * pct / 25) + (10 if big else 5),
+                "status": "active", "weekly_capacity_trips": int((1 if big else 1) * pct / 25) + 1,
+                "weekly_capacity_pallets": int((6 if big else 8) * pct / 25) + (1 if big else 2),
                 "rate_per_trip_gbp": trip, "rate_per_pallet_gbp": round(trip / 26 * 1.15, 1),
                 "min_pieces": 5, "cutoff_hour": {"CAR-001": 17, "CAR-002": 16, "CAR-003": 15}[cid],
                 "cutoff_day_offset": 1, "pct_allocation": pct, "updated_at": g.as_of})
@@ -173,10 +173,17 @@ def generate(g):
                 "created_at": g.as_of, "updated_at": g.as_of})
 
     # Generate 2025 shipments for peak capacity analysis
+    peak_dropped = set()
     dc1_st214_lane = "DC1-ST214"
     for i in range(950):
         # Ensure some shipments are on DC1-ST214 lane for test
         lane = r.choice(sorted(STORY)) if i < 900 else r.choice(lanes)
+        # Story lanes carry about 40 pallets a week in the peak (a DC outbound of about 510,000 units a week is roughly 2,700 pallets in all):
+        # only every 15th story draw is kept, spread evenly, so each of the five story lanes has 11 loads of 18-24 pallets over the five peak weeks.
+        # DC1-ST214 already has its own seeded 2025 peak loads (seed/shipments.csv), so the other five lanes share the generated ones.
+        keep = i >= 900 or (i % 15 == 0 and i // 15 < 55)
+        if i < 900:
+            lane = [x_ for x_ in sorted(STORY) if x_ != "DC1-ST214"][(i // 15) % 5]
         origin, dest = lane.split("-")
         carrier = r.choice(road_carriers)
 
@@ -198,7 +205,7 @@ def generate(g):
         fill_rate = float(round(pallets / 26 * 100))
         cost = float(round(lane_base(origin, dest) * (0.45 + 0.55 * pallets / 26)))
 
-        shipments.append({
+        peak_row = ({
             "shipment_id": f"SHP-{len(shipments) + 1:06d}",
             "order_id": r.choice(orders)["order_id"] if r.random() < 0.7 else None,
             "po_id": None,
@@ -225,6 +232,9 @@ def generate(g):
             "created_at": ts(),
             "updated_at": ts()
         })
+        shipments.append(peak_row)   # kept here so the random stream downstream is unchanged; dropped rows are removed at the end
+        if not keep:
+            peak_dropped.add(peak_row["shipment_id"])
     
     lane_fill = {}
     # Generate carrier_performance
@@ -726,7 +736,7 @@ def generate(g):
     return {
         "lane_distances": lane_distances,
         "shipment_lines": shipment_lines, "lane_buffers": lane_buffers, "node_dwell": node_dwell, "freight_invoices": freight_invoices,
-        "shipments": shipments,
+        "shipments": [x_ for x_ in shipments if x_["shipment_id"] not in peak_dropped],
         "carriers_lanes": carriers_lanes,
         "carrier_performance": carrier_performance,
         "carrier_incidents": carrier_incidents,

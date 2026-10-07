@@ -19,6 +19,13 @@ tables:
       correction_reason: {type: str, desc: Reason for correction}
       updated_at: {type: timestamp, desc: Last update}
 
+  network_stock:
+    key: sku
+    cols:
+      sku: {type: str, desc: SKU}
+      available_units: {type: int, desc: "Network stock (DCs and stores) available, as reported by the inventory system"}
+      as_of_date: {type: date, desc: Snapshot date}
+
   forecasts:
     key: forecast_id
     cols:
@@ -530,7 +537,7 @@ tools:
     example: {config_id: CFG-000001, period_start: -26w, period_end: "$as_of"}
 
   - name: calculate_stock_out_risk
-    desc: Stock-out risk score (0-100) for a SKU in a window from forecast, stock, open POs and variability, with shortfall and safety stock. Pass promotion uplift to test a promotion.
+    desc: Stock-out risk score (0-100) for a SKU in a window from forecast, network stock, open POs and variability, with shortfall and safety stock. Pass promotion uplift to test a promotion.
     kind: sql
     args:
       sku: {required: true, desc: SKU}
@@ -559,7 +566,7 @@ tools:
       v AS (
         SELECT COALESCE(STDDEV_SAMP(h.units_sold), 0) AS sigma, COALESCE(AVG(h.units_sold), 0) AS avg_hist
         FROM demand_history h WHERE h.sku = $sku AND h.period_date >= CAST($as_of AS DATE) - INTERVAL 182 DAY),
-      st AS (SELECT COALESCE(SUM(s.available), 0) AS available FROM master.dc_stock s WHERE s.sku = $sku),
+      st AS (SELECT COALESCE((SELECT MAX(n.available_units) FROM network_stock n WHERE n.sku = $sku), (SELECT SUM(s.available) FROM master.dc_stock s WHERE s.sku = $sku), 0) AS available),
       inb AS (
         SELECT COALESCE(SUM(l.qty_ordered - l.qty_received), 0) AS inbound
         FROM master.po_lines l JOIN master.purchase_orders o USING (po_id), w
