@@ -63,6 +63,14 @@ OPTION_TWEAKS = {
     ("Drinkware", "markdown"): (60, 70, 8, "stores and online", 0.60, 5.0),
 }
 
+ALIASES = {
+    "Cookware": "kitchenware, pans, pots", "Outerwear": "jackets, coats", "Trousers": "denim, jeans",
+    "Knitwear": "knits, jumpers, cardigans", "Small Appliances": "kettles, toasters, small kitchen appliances",
+    "Bags": "backpacks, handbags", "Bedding": "duvets, bed linen", "Drinkware": "mugs, glasses, bottles",
+    "Footwear": "shoes, boots, trainers", "Scarves": "scarfs", "Tops": "tees", "Personal Care": "personal care electricals",
+    "Audio": "headphones, speakers", "Dresses": "dress", "Towels": "bath towels",
+}
+
 NOISE_CATS = ["Dresses", "Tops", "Shirts", "Audio", "Smart Home", "Lighting", "Storage", "Towels", "Jewellery",
               "Babywear", "Fragrance", "Skincare", "Haircare", "Blouses"]
 
@@ -100,7 +108,7 @@ def generate(g):
     positioning = []
     for cat, (dept, pe, ie, ci, pts, pos, lo, hi, cann) in CATS.items():
         positioning.append({
-            "category": cat, "target_position": pos, "min_price_index": lo, "max_price_index": hi,
+            "category": cat, "title": f"{cat} ({ALIASES[cat]})" if cat in ALIASES else cat, "target_position": pos, "min_price_index": lo, "max_price_index": hi,
             "markdown_policy_min_depth_pct": 20 if pos != "premium" else 15,
             "markdown_policy_max_depth_pct": 50 if pos != "premium" else 40,
             "full_price_cannibalisation_pct_per_10pts": cann, "updated_at": day(-30)})

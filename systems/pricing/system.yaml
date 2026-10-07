@@ -1,16 +1,18 @@
 id: pricing
 name: Pricing & Promotion Engine
 instructions: >
-  Pricing strategy, promotions, markdowns and elasticity. Track price changes, promotions, markdown events,
-  price tests and pricing analytics. Use for demand elasticity, promotion ROI, markdown scenarios and price positioning.
-  Price change ids look like PC-000123, promotion ids like PROMO-000123, markdown ids like MDE-000123.
+  Pricing strategy, promotions, markdowns and elasticity. Categories and SKUs are master data (category e.g. Cookware,
+  Outerwear, Knitwear; kitchenware = Cookware, denim = Trousers). Ids: price change PC-000123, promotion PROMO-000123,
+  markdown event MDE-000123, markdown review request MRR-000123.
 
 tables:
   promotions:
     key: promotion_id
     cols:
       promotion_id: {type: str, desc: "Promotion, e.g. PROMO-000123"}
-      category: {type: str, desc: "Category being promoted, e.g. kitchenware"}
+      event_name: {type: str, desc: "Event name if any, e.g. Denim Days"}
+      category: {type: str, desc: "Category being promoted (master category), e.g. Cookware"}
+      department: {type: str, desc: "Department if the promotion covers only part of the category, blank for all"}
       promotion_type: {type: enum, values: [percentage_discount, fixed_discount, bundle, bogo, other], desc: "Type of promotion"}
       discount_depth_pct: {type: float, desc: "Discount percentage"}
       start_date: {type: date, desc: "Promotion start date"}
@@ -21,6 +23,9 @@ tables:
       actual_uplift_pct: {type: float, desc: "Actual uplift achieved %"}
       actual_margin_gbp: {type: float, desc: "Actual contribution margin in GBP"}
       supplier_funded_pct: {type: float, desc: "Percent funded by supplier"}
+      cannibalisation_pct: {type: float, desc: "Share of the uplift taken from other lines or full-price sales, %"}
+      post_promo_dip_pct: {type: float, desc: "Sales dip below baseline after the promotion ended, %"}
+      post_promo_dip_weeks: {type: int, desc: "Weeks the post-promotion dip lasted"}
       created_at: {type: timestamp, desc: "When created"}
       updated_at: {type: timestamp, desc: "Last updated"}
       cancel_reason: {type: str, desc: "Reason if cancelled"}
@@ -30,30 +35,44 @@ tables:
     cols:
       markdown_id: {type: str, desc: "Markdown event, e.g. MDE-000123"}
       sku: {desc: "SKU being marked down"}
-      category: {type: str, desc: "Category code"}
-      markdown_depth_pct: {type: float, desc: "Markdown percentage"}
+      markdown_depth_pct: {type: float, desc: "Markdown percentage off the original price"}
       start_date: {type: date, desc: "Markdown start date"}
       end_date: {type: date, desc: "Markdown end date"}
       status: {type: enum, values: [draft, scheduled, active, completed, cancelled], desc: "Markdown status"}
       stock_at_start: {type: int, desc: "Stock on hand at markdown start"}
-      units_sold: {type: int, desc: "Units sold during markdown"}
-      original_price_gbp: {type: float, desc: "Full price in GBP"}
-      markdown_price_gbp: {type: float, desc: "Markdown price in GBP"}
-      cost_gbp: {type: float, desc: "Unit cost in GBP"}
-      margin_gbp: {type: float, desc: "Total margin from markdown event"}
-      review_reason: {type: str, desc: "Reason for review if applicable"}
+      units_sold: {type: int, desc: "Units sold during markdown so far"}
+      original_price_gbp: {type: float, desc: "Full price before markdown in GBP"}
+      review_reason: {type: str, desc: "Reason for review or deletion if any"}
       created_at: {type: timestamp, desc: "When created"}
       updated_at: {type: timestamp, desc: "Last updated"}
+
+  markdown_history:
+    key: [markdown_id, history_date]
+    cols:
+      markdown_id: {type: str, desc: "Markdown event, e.g. MDE-000123"}
+      history_date: {type: date, desc: "Start of the week observed"}
+      weekly_units_sold: {type: int, desc: "Units sold that week at the markdown price"}
+      weekly_revenue_gbp: {type: float, desc: "Revenue that week"}
+      remaining_stock: {type: int, desc: "Stock left at the end of the week"}
+
+  markdown_review_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Review request, e.g. MRR-000123"}
+      category: {type: str, desc: "Master category to review, e.g. Bedding"}
+      department: {type: str, desc: "Department if only part of the category"}
+      sku: {desc: "SKU if the review is for one line"}
+      review_reason: {type: str, desc: "Why a review is requested"}
+      status: {type: enum, values: [open, in_review, actioned, closed], desc: "Request status"}
+      created_at: {type: timestamp, desc: "When requested"}
 
   price_changes:
     key: pc_id
     cols:
       pc_id: {type: str, desc: "Price change request, e.g. PC-000123"}
       sku: {desc: "SKU affected"}
-      category: {type: str, desc: "Category code"}
       old_price_gbp: {type: float, desc: "Previous price in GBP"}
       new_price_gbp: {type: float, desc: "New price in GBP"}
-      price_change_pct: {type: float, desc: "Price change percentage"}
       change_reason: {type: str, desc: "Reason for change"}
       status: {type: enum, values: [draft, submitted, approved, scheduled, active, rolled_back, cancelled], desc: "Change status"}
       cancel_reason: {type: str, desc: "Reason if cancelled"}
@@ -81,13 +100,14 @@ tables:
       created_at: {type: timestamp, desc: "When created"}
 
   elasticity_data:
-    key: [category, measure_date]
+    key: elasticity_id
     cols:
-      category: {type: str, desc: "Category code"}
-      sku: {desc: "SKU if product-level elasticity"}
+      elasticity_id: {type: str, desc: "Measurement, e.g. EL-000123"}
+      category: {type: str, desc: "Master category, e.g. Outerwear"}
+      sku: {desc: "SKU if product-level elasticity, blank for the category estimate"}
       measure_date: {type: date, desc: "Date of measurement"}
-      elasticity_to_price: {type: float, desc: "Price elasticity of demand"}
-      elasticity_to_income: {type: float, desc: "Income elasticity of demand"}
+      elasticity_to_price: {type: float, desc: "Price elasticity of demand (negative)"}
+      elasticity_to_income: {type: float, desc: "Income elasticity of demand (positive = normal good)"}
       elasticity_confidence_interval: {type: float, desc: "95% CI range +/-"}
       data_points: {type: int, desc: "Number of observations"}
       last_updated: {type: timestamp, desc: "When last calculated"}
@@ -104,26 +124,30 @@ tables:
       margin_gbp: {type: float, desc: "Contribution margin"}
       stock_outs: {type: int, desc: "Number of stock-outs"}
 
-  markdown_history:
-    key: [markdown_id, history_date]
-    cols:
-      markdown_id: {type: str, desc: "Reference to markdown"}
-      history_date: {type: date, desc: "Date of observation"}
-      daily_units_sold: {type: int, desc: "Units sold that day"}
-      daily_revenue_gbp: {type: float, desc: "Revenue that day"}
-      remaining_stock: {type: int, desc: "Stock remaining"}
-      cumulative_margin_gbp: {type: float, desc: "Margin to date"}
-
   price_positioning:
     key: category
     cols:
-      category: {type: str, desc: "Category code"}
+      category: {type: str, desc: "Master category, e.g. Cookware"}
+      title: {type: str, desc: "Category with everyday names, e.g. Cookware (kitchenware, pans)"}
       target_position: {type: enum, values: [premium, mid_market, value], desc: "Pricing position"}
-      min_price_pct_of_high: {type: float, desc: "Min price as % of high tier"}
-      max_price_pct_of_high: {type: float, desc: "Max price as % of high tier"}
+      min_price_index: {type: float, desc: "Lowest allowed price as index to the category median price"}
+      max_price_index: {type: float, desc: "Highest allowed price as index to the category median price"}
       markdown_policy_min_depth_pct: {type: float, desc: "Minimum markdown allowed"}
       markdown_policy_max_depth_pct: {type: float, desc: "Maximum markdown allowed"}
+      full_price_cannibalisation_pct_per_10pts: {type: float, desc: "Full-price sales lost on similar items per 10 points of markdown depth, %"}
       updated_at: {type: timestamp, desc: "Policy last updated"}
+
+  clearance_options:
+    key: [category, option]
+    cols:
+      category: {type: str, desc: "Master category, e.g. Footwear"}
+      option: {type: enum, values: [markdown, outlet, bundle, donate, liquidate], desc: "Clearance route"}
+      recovery_pct_of_price: {type: float, desc: "Average selling price as % of current full price"}
+      sell_through_pct: {type: float, desc: "Share of the stock the route clears, %"}
+      weeks_to_clear: {type: int, desc: "Typical weeks to clear"}
+      best_channel: {type: str, desc: "Channel that suits the route"}
+      handling_cost_per_unit_gbp: {type: float, desc: "Handling cost per unit in GBP"}
+      fp_cannibalisation_pct: {type: float, desc: "Full-price sales lost on similar items, %"}
 
   promotion_calendar:
     key: [site_id, start_date]
@@ -137,115 +161,239 @@ tables:
 
 tools:
   - name: calculate_category_demand_elasticity_to_income
-    desc: Calculate elasticity of demand to income changes for a category. Use for scenario planning around economic cycles.
+    desc: Income elasticity of demand by category, with the demand change implied by an income shock, lowest elasticity (most resilient) first. Omit category to rank all.
     kind: sql
     args:
-      category: {required: true, desc: "Category code, e.g. kitchenware"}
-      lookback_weeks: {type: int, default: 52, desc: "Weeks of history to use"}
+      category: {desc: "Category, e.g. Cookware (kitchenware) or Outerwear. Omit to rank every category"}
+      income_change_pct: {type: float, default: -3, desc: "Assumed change in household real income %, e.g. -3"}
+      lookback_weeks: {type: int, default: 52, desc: "Only use measurements newer than this many weeks"}
     sql: |
+      WITH latest AS (
+        SELECT category, elasticity_to_income, elasticity_confidence_interval, data_points, measure_date,
+               row_number() OVER (PARTITION BY category ORDER BY measure_date DESC) AS rn
+        FROM elasticity_data
+        WHERE sku IS NULL
+          AND measure_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+          AND ($category IS NULL OR lower(category) = lower($category)))
       SELECT category,
-             round(elasticity_to_income, 3) AS elasticity_to_income,
-             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             round(elasticity_to_income, 2) AS elasticity_to_income,
+             round(elasticity_confidence_interval, 2) AS confidence_interval_95pct,
              data_points,
-             'elasticity = % demand change / % income change' AS formula
-      FROM elasticity_data
-      WHERE category = $category AND sku IS NULL
-      ORDER BY measure_date DESC
-      LIMIT 1
+             round($income_change_pct, 1) AS income_change_pct,
+             round(elasticity_to_income * $income_change_pct, 1) AS estimated_demand_change_pct,
+             rank() OVER (ORDER BY elasticity_to_income) AS resilience_rank,
+             'demand change % = income elasticity x income change %; rank 1 holds up best' AS formula
+      FROM latest WHERE rn = 1
+      ORDER BY elasticity_to_income
+    limit: 40
     example: {category: Cookware}
 
   - name: calculate_clearance_option_recovery
-    desc: Compare recovery potential (margin %) for markdown, outlet, bundle, donate, liquidate clearance options.
+    desc: Expected margin, units cleared and time for each clearance option (markdown, outlet, bundle, donate, liquidate) on stock of one SKU, best margin first.
     kind: sql
     args:
       sku: {required: true}
-      current_price_gbp: {type: float, required: true, desc: "Current price in GBP"}
-      cost_gbp: {type: float, required: true, desc: "Unit cost in GBP"}
       stock_on_hand: {type: int, required: true, desc: "Units of stock to clear"}
+      current_price_gbp: {type: float, desc: "Current full price in GBP. Defaults to the product retail price"}
+      cost_gbp: {type: float, desc: "Unit cost in GBP. Defaults to the product unit cost"}
     sql: |
-      SELECT 'markdown 50% off' AS option,
-             round($current_price_gbp * 0.5, 2) AS option_price_gbp,
-             round(($current_price_gbp * 0.5 - $cost_gbp) / ($current_price_gbp * 0.5) * 100, 1) AS margin_pct,
-             round($stock_on_hand * 0.7, 0) AS expected_units_recovered
-      UNION ALL
-      SELECT 'outlet 70% off', round($current_price_gbp * 0.3, 2), round(($current_price_gbp * 0.3 - $cost_gbp) / ($current_price_gbp * 0.3) * 100, 1), round($stock_on_hand * 0.6, 0)
-      UNION ALL
-      SELECT 'liquidate 85% off', round($current_price_gbp * 0.15, 2), round(($current_price_gbp * 0.15 - $cost_gbp) / ($current_price_gbp * 0.15) * 100, 1), round($stock_on_hand * 0.95, 0)
-      UNION ALL
-      SELECT 'bundle 40% off', round($current_price_gbp * 0.6, 2), round(($current_price_gbp * 0.6 - $cost_gbp) / ($current_price_gbp * 0.6) * 100, 1), round($stock_on_hand * 0.8, 0)
-      ORDER BY expected_units_recovered DESC
-    example: {sku: "K-1700", current_price_gbp: 35.0, cost_gbp: 15.0, stock_on_hand: 500}
+      WITH par AS (
+        SELECT p.sku, p.name, p.category,
+               COALESCE(CAST($current_price_gbp AS DOUBLE), p.retail_price_gbp) AS price,
+               COALESCE(CAST($cost_gbp AS DOUBLE), p.unit_cost_gbp) AS cost
+        FROM master.products p WHERE p.sku = $sku),
+      opt AS (
+        SELECT par.sku, par.name, par.category, o.option, o.best_channel, o.weeks_to_clear, o.fp_cannibalisation_pct,
+               par.price * o.recovery_pct_of_price / 100 AS opt_price,
+               par.cost + o.handling_cost_per_unit_gbp AS unit_cost_all_in,
+               CAST($stock_on_hand AS DOUBLE) * o.sell_through_pct / 100 AS units
+        FROM par JOIN clearance_options o ON lower(o.category) = lower(par.category))
+      SELECT sku, option, best_channel AS channel,
+             round(opt_price, 2) AS option_price_gbp,
+             round(units) AS units_cleared,
+             round(opt_price - unit_cost_all_in, 2) AS margin_per_unit_gbp,
+             round(units * (opt_price - unit_cost_all_in), 2) AS expected_margin_gbp,
+             round(100 * (opt_price - unit_cost_all_in) / NULLIF(opt_price, 0), 1) AS margin_pct,
+             weeks_to_clear,
+             fp_cannibalisation_pct AS full_price_sales_lost_on_similar_items_pct,
+             'expected margin = units cleared x (option price - unit cost - handling)' AS formula
+      FROM opt ORDER BY expected_margin_gbp DESC
+    example: {sku: "SKU-104277", stock_on_hand: 2000}
 
   - name: calculate_earlier_markdown_impact
-    desc: Calculate impact on margin and sell-through if markdown depth or timing changes.
+    desc: Compare closing stock, sell-through and margin over a 12-week season if a markdown starts some weeks earlier, versus the current plan.
     kind: sql
     args:
       sku: {required: true}
-      current_markdown_depth_pct: {type: float, required: true, desc: "Current markdown depth %"}
-      earlier_markdown_depth_pct: {type: float, required: true, desc: "Proposed earlier markdown depth %"}
-      weeks_earlier: {type: int, default: 2, desc: "How many weeks earlier to apply"}
+      stock_on_hand: {type: int, required: true, desc: "Units in stock now"}
+      weekly_baseline_units: {type: int, required: true, desc: "Weekly units at full price"}
+      current_markdown_depth_pct: {type: float, required: true, desc: "Planned markdown depth %"}
+      earlier_markdown_depth_pct: {type: float, required: true, desc: "Depth % of the earlier markdown"}
+      weeks_earlier: {type: int, default: 2, desc: "How many weeks earlier to start"}
+      markdown_start_week: {type: int, default: 8, desc: "Season week the planned markdown starts, 1-12"}
     sql: |
-      SELECT round($current_markdown_depth_pct, 1) AS current_depth_pct,
-             round($earlier_markdown_depth_pct, 1) AS earlier_depth_pct,
-             'Earlier markdown typically increases sell-through by 15-25%' AS impact_on_sellthrough,
-             'Margin impact depends on cost basis and timing' AS margin_impact,
-             'Recommend earlier action if turnover risk high' AS recommendation
-    example: {sku: "SKU-101904", current_markdown_depth_pct: 30, earlier_markdown_depth_pct: 40, weeks_earlier: 2}
+      WITH par AS (
+        SELECT p.sku, p.retail_price_gbp AS price, p.unit_cost_gbp AS cost,
+               COALESCE((SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku = p.sku ORDER BY e.measure_date DESC LIMIT 1),
+                        (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku IS NULL AND e.category = p.category ORDER BY e.measure_date DESC LIMIT 1),
+                        -1.5) AS el
+        FROM master.products p WHERE p.sku = $sku),
+      scn AS (
+        SELECT 1 AS n, 'current plan' AS scenario, CAST($current_markdown_depth_pct AS DOUBLE) AS depth, CAST($markdown_start_week AS INT) AS start_wk
+        UNION ALL
+        SELECT 2, 'earlier markdown', CAST($earlier_markdown_depth_pct AS DOUBLE), greatest(1, CAST($markdown_start_week AS INT) - CAST($weeks_earlier AS INT))),
+      wk AS (
+        SELECT s.n, s.scenario, s.depth, s.start_wk, w, par.price, par.cost,
+               CASE WHEN w >= s.start_wk THEN 1 - s.depth / 100 ELSE 1 END AS idx,
+               CAST($weekly_baseline_units AS DOUBLE) * POWER(CASE WHEN w >= s.start_wk THEN 1 - s.depth / 100 ELSE 1 END, par.el) AS demand
+        FROM scn s CROSS JOIN par CROSS JOIN range(1, 13) AS t(w)),
+      sold AS (
+        SELECT *, greatest(0, least(demand, CAST($stock_on_hand AS DOUBLE) - (sum(demand) OVER (PARTITION BY n ORDER BY w) - demand))) AS units
+        FROM wk),
+      agg AS (
+        SELECT n, scenario, depth, start_wk, sum(units) AS units_sold, sum(units * price * idx) AS revenue, sum(units * cost) AS cogs
+        FROM sold GROUP BY n, scenario, depth, start_wk)
+      SELECT scenario, round(depth, 1) AS markdown_depth_pct, start_wk AS markdown_start_week,
+             round(units_sold) AS units_sold_12_weeks,
+             round(100 * units_sold / CAST($stock_on_hand AS DOUBLE), 1) AS sell_through_pct,
+             round(CAST($stock_on_hand AS DOUBLE) - units_sold) AS closing_stock_units,
+             round(revenue, 2) AS revenue_gbp,
+             round(revenue - cogs, 2) AS margin_gbp,
+             round((revenue - cogs) - max(CASE WHEN n = 1 THEN revenue - cogs END) OVER (), 2) AS margin_vs_current_plan_gbp,
+             'demand = baseline x price index ^ elasticity, capped at stock; 12-week season' AS formula
+      FROM agg ORDER BY n
+    example: {sku: "SKU-103472", stock_on_hand: 2400, weekly_baseline_units: 150, current_markdown_depth_pct: 30, earlier_markdown_depth_pct: 20, weeks_earlier: 3}
 
   - name: calculate_markdown_cost_projection
-    desc: Project total markdown cost for a line based on current sell-through, stock and elasticity.
+    desc: Project units left at season end, markdown cost and closing stock for a line if current sell-through continues and leftovers are marked down.
     kind: sql
     args:
       sku: {required: true}
-      current_price_gbp: {type: float, required: true, desc: "Current price in GBP"}
-      cost_gbp: {type: float, required: true, desc: "Unit cost in GBP"}
-      stock_on_hand: {type: int, required: true, desc: "Current stock units"}
-      weekly_baseline_units: {type: int, required: true, desc: "Expected weekly sales"}
+      stock_on_hand: {type: int, required: true, desc: "Units in stock now"}
+      weekly_baseline_units: {type: int, required: true, desc: "Current weekly sales in units"}
+      weeks_remaining: {type: int, default: 10, desc: "Selling weeks left in the season"}
+      markdown_depth_pct: {type: float, desc: "Depth % for the clearance markdown. Defaults to the category average of completed markdowns"}
     sql: |
-      SELECT $sku AS sku,
-             round(CAST($stock_on_hand AS FLOAT) / $weekly_baseline_units, 1) AS weeks_of_stock_at_baseline,
-             round($current_price_gbp - $cost_gbp, 2) AS current_margin_gbp,
-             round(($current_price_gbp - $cost_gbp) * $stock_on_hand, 2) AS full_margin_if_all_sold_gbp,
-             round(($current_price_gbp * 0.7 - $cost_gbp) * $stock_on_hand * 0.8, 2) AS projected_margin_at_30pct_markdown_gbp,
-             'Projection assumes 30% markdown and 80% sell-through' AS basis
-    example: {sku: "SKU-103164", current_price_gbp: 45.0, cost_gbp: 18.0, stock_on_hand: 1200, weekly_baseline_units: 150}
+      WITH par AS (
+        SELECT p.sku, p.name, p.category, p.retail_price_gbp AS price, p.unit_cost_gbp AS cost
+        FROM master.products p WHERE p.sku = $sku),
+      done AS (
+        SELECT q.category, md.markdown_depth_pct AS depth, md.units_sold * 100.0 / md.stock_at_start AS st
+        FROM markdown_events md JOIN master.products q ON q.sku = md.sku
+        WHERE md.status = 'completed' AND md.stock_at_start > 0),
+      dep AS (
+        SELECT par.*, COALESCE(CAST($markdown_depth_pct AS DOUBLE), (SELECT avg(d.depth) FROM done d WHERE d.category = par.category), 30) AS depth
+        FROM par),
+      st AS (
+        SELECT dep.*, COALESCE((SELECT avg(d.st) FROM done d WHERE d.category = dep.category AND abs(d.depth - dep.depth) <= 10),
+                               (SELECT avg(d.st) FROM done d WHERE d.category = dep.category), 60) AS md_st,
+               (SELECT count(*) FROM done d WHERE d.category = dep.category AND abs(d.depth - dep.depth) <= 10) AS n_events
+        FROM dep),
+      calc AS (
+        SELECT st.*, CAST($stock_on_hand AS DOUBLE) AS stock, CAST($weekly_baseline_units AS DOUBLE) AS wk,
+               CAST($weeks_remaining AS DOUBLE) AS wks,
+               greatest(0, CAST($stock_on_hand AS DOUBLE) - CAST($weekly_baseline_units AS DOUBLE) * CAST($weeks_remaining AS DOUBLE)) AS leftover
+        FROM st)
+      SELECT sku, name, category,
+             round(stock / wk, 1) AS weeks_of_cover,
+             round(least(stock, wk * wks)) AS units_sold_at_current_pace,
+             round(leftover) AS units_left_at_season_end,
+             round(depth, 1) AS clearance_markdown_depth_pct,
+             round(md_st, 1) AS markdown_sell_through_pct,
+             n_events AS comparable_past_markdowns,
+             round(leftover * price * depth / 100, 2) AS markdown_cost_gbp,
+             round(leftover * md_st / 100 * (price * (1 - depth / 100) - cost), 2) AS margin_on_cleared_units_gbp,
+             round(leftover * (1 - md_st / 100)) AS projected_closing_stock_units,
+             'markdown cost = units left x price x depth; closing stock = units left x (1 - past markdown sell-through)' AS formula
+      FROM calc
+    example: {sku: "SKU-103472", stock_on_hand: 2400, weekly_baseline_units: 150}
 
   - name: calculate_markdown_depth_scenario
-    desc: Model sell-through, margin and clearance time at different markdown depths for a product.
+    desc: Model weekly units, unit margin and weeks to clear the remaining stock of a product at several markdown depths, relative to its current markdown.
     kind: sql
     args:
       sku: {required: true}
-      current_price_gbp: {type: float, required: true, desc: "Current price in GBP"}
-      cost_gbp: {type: float, required: true, desc: "Unit cost in GBP"}
-      elasticity_to_price: {type: float, default: -1.5, desc: "Price elasticity estimate"}
+      stock_on_hand: {type: int, desc: "Units left. Defaults to stock left on the latest markdown event"}
+      current_markdown_depth_pct: {type: float, desc: "Current depth %. Defaults to the latest markdown event"}
+      weekly_units_at_current_depth: {type: float, desc: "Observed weekly units. Defaults to the latest markdown's weekly average"}
+      elasticity_to_price: {type: float, desc: "Override the stored product or category elasticity"}
     sql: |
-      SELECT '20% markdown' AS scenario,
-             round($current_price_gbp * 0.8, 2) AS price_gbp,
-             round(100 * POWER(0.8, $elasticity_to_price), 0) AS volume_index,
-             round(($current_price_gbp * 0.8 - $cost_gbp) / ($current_price_gbp * 0.8), 3) AS margin_pct,
-             '6-8 weeks' AS clearance_time
-      UNION ALL
-      SELECT '40% markdown', round($current_price_gbp * 0.6, 2), round(100 * POWER(0.6, $elasticity_to_price), 0),
-             round(($current_price_gbp * 0.6 - $cost_gbp) / ($current_price_gbp * 0.6), 3), '3-4 weeks'
-      ORDER BY scenario
-    example: {sku: "SKU-101904", current_price_gbp: 65.0, cost_gbp: 22.0, elasticity_to_price: -1.5}
+      WITH par AS (
+        SELECT p.sku, p.name, p.retail_price_gbp AS price, p.unit_cost_gbp AS cost,
+               COALESCE(CAST($elasticity_to_price AS DOUBLE),
+                        (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku = p.sku ORDER BY e.measure_date DESC LIMIT 1),
+                        (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku IS NULL AND e.category = p.category ORDER BY e.measure_date DESC LIMIT 1),
+                        -1.5) AS el
+        FROM master.products p WHERE p.sku = $sku),
+      ev AS (
+        SELECT md.markdown_id, md.markdown_depth_pct AS depth, md.stock_at_start - md.units_sold AS left_units
+        FROM markdown_events md WHERE md.sku = $sku AND md.status IN ('active', 'completed')
+        ORDER BY md.start_date DESC LIMIT 1),
+      base AS (
+        SELECT par.*,
+               COALESCE(CAST($current_markdown_depth_pct AS DOUBLE), (SELECT depth FROM ev)) AS cur_depth,
+               COALESCE(CAST($stock_on_hand AS DOUBLE), (SELECT left_units FROM ev)) AS stock,
+               COALESCE(CAST($weekly_units_at_current_depth AS DOUBLE),
+                        (SELECT avg(h.weekly_units_sold) FROM markdown_history h WHERE h.markdown_id = (SELECT markdown_id FROM ev))) AS cur_wk
+        FROM par),
+      scn AS (
+        SELECT DISTINCT depth FROM (SELECT unnest([20.0, 30.0, 40.0, 50.0, 60.0]) AS depth UNION ALL SELECT cur_depth FROM base)),
+      calc AS (
+        SELECT b.sku, b.name, s.depth, b.cur_depth, b.stock, b.cur_wk, b.el, b.price, b.cost,
+               b.price * (1 - s.depth / 100) AS md_price,
+               b.cur_wk * POWER((1 - s.depth / 100) / (1 - b.cur_depth / 100), b.el) AS wk_units
+        FROM base b CROSS JOIN scn s)
+      SELECT sku, round(depth, 1) AS markdown_depth_pct,
+             CASE WHEN depth = cur_depth THEN 'current' ELSE '' END AS marker,
+             round(md_price, 2) AS markdown_price_gbp,
+             round(wk_units, 1) AS weekly_units,
+             round(100 * wk_units / cur_wk - 100, 1) AS weekly_units_vs_current_pct,
+             round(md_price - cost, 2) AS unit_margin_gbp,
+             round(wk_units * (md_price - cost), 2) AS weekly_margin_gbp,
+             round(stock) AS stock_left_units,
+             round(stock / NULLIF(wk_units, 0), 1) AS weeks_to_clear,
+             round(el, 2) AS elasticity_used,
+             'weekly units = current units x (new price / current price) ^ elasticity' AS formula
+      FROM calc ORDER BY depth
+    example: {sku: "SKU-100168"}
 
   - name: calculate_markdown_sell_through_scenario
-    desc: Project sell-through percentage at different markdown depths for a product.
+    desc: Project sell-through, closing stock and margin over a 12-week season for one markdown depth starting in a given week.
     kind: sql
     args:
       sku: {required: true}
-      elasticity_to_price: {type: float, default: -1.5}
+      markdown_depth_pct: {type: float, required: true, desc: "Markdown depth %, e.g. 20"}
+      markdown_start_week: {type: int, default: 3, desc: "Season week the markdown starts, 1-12"}
+      stock_on_hand: {type: int, required: true, desc: "Units in stock now"}
+      weekly_baseline_units: {type: int, required: true, desc: "Weekly units at full price"}
     sql: |
-      SELECT '10% markdown' AS scenario, 91 AS expected_sell_through_pct, '12 weeks' AS time_to_clear
-      UNION ALL
-      SELECT '20% markdown', 74, '8 weeks'
-      UNION ALL
-      SELECT '30% markdown', 56, '5 weeks'
-      UNION ALL
-      SELECT '40% markdown', 38, '3 weeks'
-      ORDER BY scenario
-    example: {sku: "SKU-101904", elasticity_to_price: -1.5}
+      WITH par AS (
+        SELECT p.sku, p.retail_price_gbp AS price, p.unit_cost_gbp AS cost,
+               COALESCE((SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku = p.sku ORDER BY e.measure_date DESC LIMIT 1),
+                        (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku IS NULL AND e.category = p.category ORDER BY e.measure_date DESC LIMIT 1),
+                        -1.5) AS el
+        FROM master.products p WHERE p.sku = $sku),
+      wk AS (
+        SELECT par.sku, par.price, par.cost, par.el, w,
+               CASE WHEN w >= CAST($markdown_start_week AS INT) THEN 1 - CAST($markdown_depth_pct AS DOUBLE) / 100 ELSE 1 END AS idx
+        FROM par CROSS JOIN range(1, 13) AS t(w)),
+      dem AS (SELECT *, CAST($weekly_baseline_units AS DOUBLE) * POWER(idx, el) AS demand FROM wk),
+      sold AS (
+        SELECT *, greatest(0, least(demand, CAST($stock_on_hand AS DOUBLE) - (sum(demand) OVER (ORDER BY w) - demand))) AS units FROM dem)
+      SELECT sku,
+             round(CAST($markdown_depth_pct AS DOUBLE), 1) AS markdown_depth_pct,
+             CAST($markdown_start_week AS INT) AS markdown_start_week,
+             round(sum(units)) AS units_sold,
+             round(100 * sum(units) / CAST($stock_on_hand AS DOUBLE), 1) AS sell_through_pct,
+             round(CAST($stock_on_hand AS DOUBLE) - sum(units)) AS closing_stock_units,
+             round(sum(units * price * idx), 2) AS revenue_gbp,
+             round(sum(units * (price * idx - cost)), 2) AS margin_gbp,
+             min(w) FILTER (WHERE sum_units_to_w >= CAST($stock_on_hand AS DOUBLE) - 0.5) AS week_stock_clears,
+             round(min(el), 2) AS elasticity_used,
+             'demand = baseline x price index ^ elasticity, capped at stock; 12-week season' AS formula
+      FROM (SELECT *, sum(units) OVER (ORDER BY w) AS sum_units_to_w FROM sold)
+      GROUP BY sku
+    example: {sku: "SKU-100959", markdown_depth_pct: 20, markdown_start_week: 3, stock_on_hand: 2000, weekly_baseline_units: 120}
 
   - name: calculate_price_increase_to_offset_cost
     desc: Calculate price increase needed to offset a cost increase and maintain margin.
@@ -334,35 +482,68 @@ tools:
     example: {pc_id: PC-900001, cancel_reason: "Competitive pressure eased"}
 
   - name: compare_clearance_options
-    desc: Compare recovery margin % and time to clear for different clearance strategies.
-    kind: select
-    from: markdown_events
-    filters:
-      category: {op: like}
-      status: {}
-    columns: [markdown_id, sku, category, markdown_depth_pct, status, units_sold, margin_gbp]
-    limit: 10
-    example: {category: Outerwear, status: completed}
+    desc: Compare clearance options for a category on typical recovery, margin on full price, time to clear, channel and full-price cannibalisation.
+    kind: sql
+    args:
+      category: {required: true, desc: "Category, e.g. Footwear or Drinkware"}
+    sql: |
+      WITH cr AS (
+        SELECT category, avg(unit_cost_gbp / retail_price_gbp) AS cost_ratio
+        FROM master.products WHERE lower(category) = lower($category) GROUP BY category)
+      SELECT o.category, o.option, o.best_channel AS channel,
+             o.recovery_pct_of_price,
+             round(o.recovery_pct_of_price - 100 * cr.cost_ratio, 1) AS margin_pct_of_full_price,
+             o.sell_through_pct, o.weeks_to_clear,
+             o.fp_cannibalisation_pct AS full_price_sales_lost_on_similar_items_pct
+      FROM clearance_options o JOIN cr ON cr.category = o.category
+      WHERE lower(o.category) = lower($category)
+      ORDER BY margin_pct_of_full_price * o.sell_through_pct DESC
+    example: {category: Footwear}
 
   - name: compare_markdown_scenarios
-    desc: Compare sell-through, margin and timing outcomes for different markdown depths.
+    desc: Compare two markdown scenarios (depth and start week) on sell-through, closing stock and margin over a 12-week season, and flag the higher margin.
     kind: sql
     args:
       sku: {required: true}
-      scenario_a_depth_pct: {type: float, required: true, desc: "First markdown depth %"}
-      scenario_b_depth_pct: {type: float, required: true, desc: "Second markdown depth %"}
+      stock_on_hand: {type: int, required: true, desc: "Units in stock now"}
+      weekly_baseline_units: {type: int, required: true, desc: "Weekly units at full price"}
+      scenario_a_depth_pct: {type: float, required: true, desc: "Scenario A markdown depth %"}
+      scenario_a_start_week: {type: int, required: true, desc: "Scenario A start week, 1-12"}
+      scenario_b_depth_pct: {type: float, required: true, desc: "Scenario B markdown depth %"}
+      scenario_b_start_week: {type: int, required: true, desc: "Scenario B start week, 1-12"}
     sql: |
-      SELECT 'Scenario A: ' || $scenario_a_depth_pct || '% markdown' AS scenario,
-             round((100 - $scenario_a_depth_pct) * 70, 0) AS units_sold,
-             round((100 - $scenario_a_depth_pct) * 70 * (100 - $scenario_a_depth_pct) / 100, 0) AS margin_gbp,
-             '5-6 weeks' AS time_to_clear
-      UNION ALL
-      SELECT 'Scenario B: ' || $scenario_b_depth_pct || '% markdown',
-             round((100 - $scenario_b_depth_pct) * 85, 0),
-             round((100 - $scenario_b_depth_pct) * 85 * (100 - $scenario_b_depth_pct) / 100, 0),
-             '3-4 weeks'
-      ORDER BY margin_gbp DESC
-    example: {sku: "SKU-101904", scenario_a_depth_pct: 20, scenario_b_depth_pct: 40}
+      WITH par AS (
+        SELECT p.sku, p.retail_price_gbp AS price, p.unit_cost_gbp AS cost,
+               COALESCE((SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku = p.sku ORDER BY e.measure_date DESC LIMIT 1),
+                        (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku IS NULL AND e.category = p.category ORDER BY e.measure_date DESC LIMIT 1),
+                        -1.5) AS el
+        FROM master.products p WHERE p.sku = $sku),
+      scn AS (
+        SELECT 'A' AS scenario, CAST($scenario_a_depth_pct AS DOUBLE) AS depth, CAST($scenario_a_start_week AS INT) AS start_wk
+        UNION ALL
+        SELECT 'B', CAST($scenario_b_depth_pct AS DOUBLE), CAST($scenario_b_start_week AS INT)),
+      wk AS (
+        SELECT s.scenario, s.depth, s.start_wk, w, par.price, par.cost, par.el,
+               CASE WHEN w >= s.start_wk THEN 1 - s.depth / 100 ELSE 1 END AS idx
+        FROM scn s CROSS JOIN par CROSS JOIN range(1, 13) AS t(w)),
+      dem AS (SELECT *, CAST($weekly_baseline_units AS DOUBLE) * POWER(idx, el) AS demand FROM wk),
+      sold AS (
+        SELECT *, greatest(0, least(demand, CAST($stock_on_hand AS DOUBLE) - (sum(demand) OVER (PARTITION BY scenario ORDER BY w) - demand))) AS units FROM dem),
+      agg AS (
+        SELECT scenario, depth, start_wk, sum(units) AS units_sold, sum(units * price * idx) AS revenue,
+               sum(units * (price * idx - cost)) AS margin, min(el) AS el
+        FROM sold GROUP BY scenario, depth, start_wk)
+      SELECT scenario, round(depth, 1) AS markdown_depth_pct, start_wk AS markdown_start_week,
+             round(units_sold) AS units_sold,
+             round(100 * units_sold / CAST($stock_on_hand AS DOUBLE), 1) AS sell_through_pct,
+             round(CAST($stock_on_hand AS DOUBLE) - units_sold) AS closing_stock_units,
+             round(revenue, 2) AS revenue_gbp,
+             round(margin, 2) AS margin_gbp,
+             CASE WHEN margin = max(margin) OVER () THEN 'higher margin' ELSE '' END AS verdict,
+             round(el, 2) AS elasticity_used,
+             'demand = baseline x price index ^ elasticity, capped at stock; 12-week season' AS formula
+      FROM agg ORDER BY scenario
+    example: {sku: "SKU-100959", stock_on_hand: 2000, weekly_baseline_units: 120, scenario_a_depth_pct: 20, scenario_a_start_week: 3, scenario_b_depth_pct: 40, scenario_b_start_week: 6}
 
   - name: compare_promotion_with_past_events
     desc: Compare planned promotion to past similar events on sales uplift, margin and timing.
@@ -384,48 +565,46 @@ tools:
     example: {category: Cookware, planned_discount_pct: 25}
 
   - name: create_markdown_event
-    desc: Create a scheduled markdown event for selected SKUs.
+    desc: Create a draft markdown event for a SKU with depth, dates, full price and stock at start. Returns the new event.
     kind: insert
     table: markdown_events
     id_prefix: MDE-
-    defaults: {status: draft}
+    defaults: {status: draft, units_sold: 0}
     args:
       sku: {required: true}
-      category: {required: true}
       markdown_depth_pct: {required: true}
       start_date: {type: date, required: true}
       end_date: {type: date, required: true}
       original_price_gbp: {required: true, type: float}
-      cost_gbp: {required: true, type: float}
-    example: {sku: "SKU-101904", category: "Outerwear", markdown_depth_pct: 40, start_date: "+14d", end_date: "+42d", original_price_gbp: 65.0, cost_gbp: 22.0}
+      stock_at_start: {required: true, type: int}
+    example: {sku: "SKU-100959", markdown_depth_pct: 20, start_date: "+14d", end_date: "+42d", original_price_gbp: 102.99, stock_at_start: 2000}
 
   - name: create_markdown_review_request
-    desc: Request pricing team to review markdown options for category or line.
+    desc: Ask the pricing team to review markdown options for a category, department or line, with the reason. Returns the new request.
     kind: insert
-    table: markdown_events
-    id_prefix: MDE-
-    defaults: {status: draft, markdown_depth_pct: 0}
+    table: markdown_review_requests
+    id_prefix: MRR-
+    defaults: {status: open}
     args:
-      category: {required: true}
-      sku: {desc: "SKU if line-level, blank for category"}
-      review_reason: {required: true, desc: "Reason for review request"}
-      original_price_gbp: {type: float, desc: "Current price in GBP"}
-      cost_gbp: {type: float, desc: "Unit cost in GBP"}
-    example: {category: "Outerwear", review_reason: "End-of-season stock clearance", original_price_gbp: 45.0, cost_gbp: 15.0}
+      category: {required: true, desc: "Category to review, e.g. Bedding"}
+      department: {desc: "Department if only part of the category"}
+      sku: {desc: "SKU if the review is for one line"}
+      review_reason: {required: true, desc: "Why a review is needed"}
+    example: {category: Bedding, review_reason: "Projected to end the season heavy on stock"}
 
   - name: create_price_change_request
-    desc: Create a draft price change request for products.
+    desc: Create a draft price change request for a SKU with its old and new price, reason and proposed date.
     kind: insert
     table: price_changes
     id_prefix: PC-
     defaults: {status: draft}
     args:
       sku: {required: true}
-      category: {required: true}
+      old_price_gbp: {required: true, type: float}
       new_price_gbp: {required: true, type: float}
       change_reason: {required: true}
       proposed_date: {type: date}
-    example: {sku: "K-1700", category: "Cookware", new_price_gbp: 38.50, change_reason: "Cost increase passthrough"}
+    example: {sku: "K-1700", old_price_gbp: 35.0, new_price_gbp: 38.5, change_reason: "Cost increase passthrough"}
 
   - name: create_price_test
     desc: Create a price test with test and control cells.
@@ -459,7 +638,7 @@ tools:
     set: {status: cancelled, updated_at: "$as_of"}
     args:
       review_reason: {desc: "Reason for deletion"}
-    example: {markdown_id: MDE-900001, review_reason: "Forecast revised, markdown no longer needed"}
+    example: {markdown_id: MDE-900005, review_reason: "Forecast revised, markdown no longer needed"}
 
   - name: delete_draft_price_for_product
     desc: Delete an unapproved draft price change for a product.
@@ -478,17 +657,28 @@ tools:
     example: {promotion_id: PROMO-900001}
 
   - name: get_cannibalisation_estimate
-    desc: Estimate sales cannibalisation (lost full-price sales) from a planned promotion or markdown.
+    desc: Estimate how much of a promotion's uplift is cannibalised versus incremental, from past completed promotions in the category.
     kind: sql
     args:
-      category: {required: true}
-      promotion_depth_pct: {type: float, default: 25, desc: "Discount or markdown depth %"}
+      category: {required: true, desc: "Category, e.g. Cookware (kitchenware)"}
+      promotion_depth_pct: {type: float, default: 25, desc: "Planned discount depth %"}
     sql: |
-      SELECT $category AS category,
-             round($promotion_depth_pct, 1) AS discount_depth_pct,
-             'Cannibalisation rate typically 30-50% of incremental volume for similar products' AS cannibalisation_assumption,
-             round($promotion_depth_pct * 0.4, 1) AS estimated_cannibalisation_pct_of_incremental,
-             'Avoid heavy promotional overlap in related SKUs to minimise cannibalisation' AS recommendation
+      WITH h AS (
+        SELECT * FROM promotions
+        WHERE lower(category) = lower($category) AND status = 'completed'
+          AND actual_uplift_pct IS NOT NULL AND cannibalisation_pct IS NOT NULL AND discount_depth_pct > 0),
+      est AS (SELECT avg(actual_uplift_pct / discount_depth_pct) * $promotion_depth_pct AS uplift FROM h)
+      SELECT $category AS category, round($promotion_depth_pct, 1) AS promotion_depth_pct,
+             count(*) AS past_promotions_used,
+             round(est.uplift, 1) AS estimated_total_uplift_pct,
+             round(avg(h.cannibalisation_pct), 1) AS cannibalised_share_of_uplift_pct,
+             round(100 - avg(h.cannibalisation_pct), 1) AS incremental_share_of_uplift_pct,
+             round(est.uplift * (1 - avg(h.cannibalisation_pct) / 100), 1) AS estimated_incremental_uplift_pct,
+             round(min(h.cannibalisation_pct), 1) AS lowest_past_cannibalisation_pct,
+             round(max(h.cannibalisation_pct), 1) AS highest_past_cannibalisation_pct,
+             arg_min(h.promotion_id, abs(h.discount_depth_pct - $promotion_depth_pct)) AS closest_past_promotion,
+             'cannibalised share = average of past promotions (share of uplift taken from other lines or full-price sales)' AS basis
+      FROM h CROSS JOIN est GROUP BY est.uplift
     example: {category: Cookware, promotion_depth_pct: 25}
 
   - name: get_discounting_depth_for_category
@@ -498,122 +688,154 @@ tools:
       category: {required: true}
       lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
     sql: |
-      SELECT $category AS category,
-             round(AVG(markdown_depth_pct), 1) AS avg_markdown_depth_pct,
-             round(MAX(markdown_depth_pct), 1) AS max_markdown_depth_pct,
-             round(MIN(markdown_depth_pct), 1) AS min_markdown_depth_pct,
+      SELECT p.category,
+             round(AVG(md.markdown_depth_pct), 1) AS avg_markdown_depth_pct,
+             round(MAX(md.markdown_depth_pct), 1) AS max_markdown_depth_pct,
+             round(MIN(md.markdown_depth_pct), 1) AS min_markdown_depth_pct,
              count(*) AS markdown_events_in_period
-      FROM markdown_events
-      WHERE category = $category
-        AND end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
-    example: {category: Outerwear, lookback_weeks: 26}
+      FROM markdown_events md JOIN master.products p ON p.sku = md.sku
+      WHERE lower(p.category) = lower($category)
+        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+      GROUP BY p.category
+    example: {category: Dresses, lookback_weeks: 26}
 
   - name: get_elasticity_confidence_for_category
-    desc: Retrieve 95% confidence interval width for price elasticity estimate for a category.
+    desc: Show how reliable the price elasticity estimate for a category is, with confidence interval, sample size and product-level coverage.
     kind: sql
     args:
-      category: {required: true}
-      measure_date: {type: date, desc: "Date of measurement", default: "$as_of"}
+      category: {required: true, desc: "Category, e.g. Outerwear"}
+      measure_date: {type: date, desc: "Use the latest estimate on or before this date. Defaults to today"}
     sql: |
-      SELECT category,
-             round(elasticity_to_price, 2) AS elasticity_to_price,
-             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
-             data_points,
-             'Narrow CI = high confidence in elasticity; wide CI = estimate with caution' AS interpretation
-      FROM elasticity_data
-      WHERE category = $category
-        AND measure_date <= CAST($measure_date AS DATE)
-      ORDER BY measure_date DESC
-      LIMIT 1
+      SELECT e.category,
+             round(e.elasticity_to_price, 2) AS elasticity_to_price,
+             round(e.elasticity_confidence_interval, 2) AS confidence_interval_95pct,
+             round(e.elasticity_to_price - e.elasticity_confidence_interval, 2) AS lower_bound,
+             round(e.elasticity_to_price + e.elasticity_confidence_interval, 2) AS upper_bound,
+             round(100 * e.elasticity_confidence_interval / abs(e.elasticity_to_price), 1) AS interval_pct_of_estimate,
+             e.data_points,
+             CASE WHEN e.elasticity_confidence_interval / abs(e.elasticity_to_price) < 0.12 THEN 'high'
+                  WHEN e.elasticity_confidence_interval / abs(e.elasticity_to_price) < 0.2 THEN 'medium'
+                  ELSE 'low' END AS confidence,
+             (SELECT count(*) FROM elasticity_data x WHERE x.category = e.category AND x.sku IS NOT NULL) AS products_with_own_estimate,
+             e.measure_date
+      FROM elasticity_data e
+      WHERE lower(e.category) = lower($category) AND e.sku IS NULL
+        AND e.measure_date <= CAST(COALESCE(CAST($measure_date AS DATE), CAST($as_of AS DATE)) AS DATE)
+      ORDER BY e.measure_date DESC LIMIT 1
     example: {category: Outerwear}
 
   - name: get_elasticity_confidence_intervals
-    desc: Get elasticity estimates with confidence intervals for all categories. Use for identifying high/low confidence estimates.
+    desc: Get the latest price elasticity estimate with confidence interval for every category, tightest first. Use to spot high and low confidence estimates.
     kind: sql
     args:
-      min_confidence_pct: {type: float, default: 50, desc: "Minimum data points as % of best estimate"}
+      min_data_points: {type: int, default: 0, desc: "Only categories with at least this many observations"}
     sql: |
       SELECT category,
              round(elasticity_to_price, 2) AS elasticity_to_price,
-             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             round(elasticity_confidence_interval, 2) AS confidence_interval_95pct,
              data_points,
              round(elasticity_to_price - elasticity_confidence_interval, 2) AS lower_bound,
-             round(elasticity_to_price + elasticity_confidence_interval, 2) AS upper_bound
+             round(elasticity_to_price + elasticity_confidence_interval, 2) AS upper_bound,
+             measure_date
       FROM elasticity_data
-      WHERE measure_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      ORDER BY ABS(elasticity_confidence_interval) ASC
+      WHERE sku IS NULL AND data_points >= $min_data_points
+        AND measure_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+      QUALIFY row_number() OVER (PARTITION BY category ORDER BY measure_date DESC) = 1
+      ORDER BY elasticity_confidence_interval / abs(elasticity_to_price)
+    limit: 40
     example: {}
 
   - name: get_full_price_cannibalisation_estimate
-    desc: Estimate total sales lost from full-price SKUs when related items are marked down.
+    desc: Estimate full-price sales lost on similar items when stock in a category is marked down to a given depth.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Category, e.g. Footwear"}
       markdown_depth_pct: {type: float, required: true, desc: "Planned markdown depth %"}
+      weekly_full_price_sales_gbp: {type: float, desc: "Weekly full-price sales of similar items, to express the loss in GBP"}
     sql: |
-      SELECT $category AS category,
+      SELECT pp.category,
              round($markdown_depth_pct, 1) AS markdown_depth_pct,
-             'Cannibalisation estimated at 35-50% of incremental volume for most categories' AS model_basis,
-             round($markdown_depth_pct * 0.45, 1) AS full_price_sales_loss_pct_of_incremental,
-             'Higher depth = higher cannibalisation; test on similar SKUs first' AS recommendation
-    example: {category: Bedding, markdown_depth_pct: 40}
+             pp.full_price_cannibalisation_pct_per_10pts AS loss_pct_per_10pts_of_depth,
+             round(pp.full_price_cannibalisation_pct_per_10pts * $markdown_depth_pct / 10, 1) AS full_price_sales_loss_pct,
+             CASE WHEN $weekly_full_price_sales_gbp IS NULL THEN NULL
+                  ELSE round(pp.full_price_cannibalisation_pct_per_10pts * $markdown_depth_pct / 100 * $weekly_full_price_sales_gbp, 2) END AS weekly_full_price_sales_lost_gbp,
+             'loss % = category cannibalisation per 10 points of depth x depth / 10' AS formula
+      FROM price_positioning pp
+      WHERE lower(pp.category) = lower($category)
+    example: {category: Footwear, markdown_depth_pct: 40}
 
   - name: get_markdown_performance_for_product
-    desc: Get actual performance (sell-through, margin achieved, duration) for a product's recent markdown events.
+    desc: Actual sell-through, units per week, stock left and margin for a product's markdown events. Give a SKU, or a style id for all its sizes.
     kind: sql
     args:
-      sku: {required: true}
+      sku: {desc: "SKU to look up"}
+      style_id: {desc: "Style id, e.g. STY-4102, to see every size of the style"}
     sql: |
-      SELECT md.markdown_id, md.sku, md.category,
+      SELECT md.markdown_id, md.sku, p.name, p.size,
              round(md.markdown_depth_pct, 1) AS markdown_depth_pct,
              md.start_date, md.end_date, md.status,
-             md.stock_at_start, md.units_sold,
-             CASE WHEN md.stock_at_start > 0 THEN round(md.units_sold * 100 / md.stock_at_start, 1) ELSE 0 END AS sell_through_pct,
-             round(md.margin_gbp, 2) AS total_margin_gbp,
-             round(CAST(md.units_sold AS FLOAT) / NULLIF((md.end_date - md.start_date), 0), 1) AS units_per_day
-      FROM markdown_events md
-      WHERE md.sku = $sku
-      ORDER BY md.end_date DESC
-      LIMIT 10
-    example: {sku: "SKU-101904"}
+             md.stock_at_start, md.units_sold, md.stock_at_start - md.units_sold AS units_left,
+             round(md.units_sold * 100.0 / NULLIF(md.stock_at_start, 0), 1) AS sell_through_pct,
+             (SELECT count(*) FROM markdown_history h WHERE h.markdown_id = md.markdown_id) AS weeks_live,
+             (SELECT round(avg(h.weekly_units_sold), 1) FROM markdown_history h WHERE h.markdown_id = md.markdown_id) AS units_per_week,
+             round((md.stock_at_start - md.units_sold) / NULLIF((SELECT avg(h.weekly_units_sold) FROM markdown_history h WHERE h.markdown_id = md.markdown_id), 0), 1) AS weeks_to_clear_at_this_rate,
+             round(md.original_price_gbp * (1 - md.markdown_depth_pct / 100), 2) AS markdown_price_gbp,
+             round(md.original_price_gbp * (1 - md.markdown_depth_pct / 100) - p.unit_cost_gbp, 2) AS unit_margin_gbp,
+             round(md.units_sold * (md.original_price_gbp * (1 - md.markdown_depth_pct / 100) - p.unit_cost_gbp), 2) AS margin_to_date_gbp
+      FROM markdown_events md JOIN master.products p ON p.sku = md.sku
+      WHERE ($sku IS NOT NULL OR $style_id IS NOT NULL)
+        AND ($sku IS NULL OR md.sku = $sku)
+        AND ($style_id IS NULL OR lower(p.style_id) = lower($style_id))
+      ORDER BY md.start_date DESC, md.sku
+    limit: 20
+    example: {style_id: "STY-4102"}
 
   - name: get_markdown_rate_by_category
-    desc: Get current markdown rate (% of sales from marked-down products) by category.
+    desc: Get current markdown rate (% of full-price value sold at markdown) by category over the last 90 days.
     kind: sql
     args:
       category: {required: true}
     sql: |
-      SELECT md.category,
-             count(DISTINCT md.markdown_id) AS active_markdown_events,
+      SELECT p.category,
+             count(DISTINCT md.markdown_id) AS markdown_events,
              round(AVG(md.markdown_depth_pct), 1) AS avg_depth_pct,
              round(SUM(md.units_sold), 0) AS total_units_cleared,
-             round(SUM(md.margin_gbp), 2) AS total_margin_gbp,
-             'Markdown rate = % of category sales from promotional markdowns' AS metric_definition
-      FROM markdown_events md
-      WHERE md.category = $category
+             round(SUM(md.units_sold * (md.original_price_gbp * (1 - md.markdown_depth_pct / 100) - p.unit_cost_gbp)), 2) AS total_margin_gbp,
+             round(100 * SUM(md.units_sold * md.original_price_gbp * md.markdown_depth_pct / 100) / NULLIF(SUM(md.units_sold * md.original_price_gbp), 0), 1) AS markdown_cost_pct_of_full_price_value,
+             'markdown rate = discount given / full-price value of units sold on markdown' AS metric_definition
+      FROM markdown_events md JOIN master.products p ON p.sku = md.sku
+      WHERE lower(p.category) = lower($category)
         AND md.status IN ('active', 'completed')
         AND md.end_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-      GROUP BY md.category
-    example: {category: Outerwear}
+      GROUP BY p.category
+    example: {category: Dresses}
 
   - name: get_markdown_spend_by_category
-    desc: Total margin impact from markdown events (margin foregone) by category over a period.
+    desc: Markdown cost (discount given) and markdown rate for a category over the last N weeks versus the N weeks before. Add department for part of a category.
     kind: sql
     args:
-      category: {required: true}
-      lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
+      category: {required: true, desc: "Category, e.g. Knitwear"}
+      department: {desc: "Department if only part of the category, e.g. Womenswear"}
+      lookback_weeks: {type: int, default: 4, desc: "Length of each period in weeks"}
     sql: |
-      SELECT md.category,
-             count(*) AS markdown_events,
-             round(SUM(md.stock_at_start * md.original_price_gbp), 2) AS value_of_markdown_stock_gbp,
-             round(SUM((md.original_price_gbp - md.markdown_price_gbp) * md.units_sold), 2) AS markdown_discount_cost_gbp,
-             round(SUM(md.margin_gbp), 2) AS realized_margin_gbp,
-             'Markdown cost = (full price - markdown price) * units sold' AS calculation
-      FROM markdown_events md
-      WHERE md.category = $category
-        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
-      GROUP BY md.category
-    example: {category: Outerwear, lookback_weeks: 26}
+      WITH ev AS (
+        SELECT md.*, p.unit_cost_gbp,
+               CASE WHEN md.start_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY THEN 'last period'
+                    WHEN md.start_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 14 AS INT)) DAY THEN 'previous period' END AS period
+        FROM markdown_events md JOIN master.products p ON p.sku = md.sku
+        WHERE lower(p.category) = lower($category)
+          AND ($department IS NULL OR lower(p.department) = lower($department))
+          AND md.status IN ('active', 'completed') AND md.start_date <= CAST($as_of AS DATE))
+      SELECT period, count(*) AS markdown_events, sum(units_sold) AS units_sold,
+             round(avg(markdown_depth_pct), 1) AS avg_depth_pct,
+             round(sum(units_sold * original_price_gbp), 2) AS full_price_value_of_units_sold_gbp,
+             round(sum(units_sold * original_price_gbp * markdown_depth_pct / 100), 2) AS markdown_cost_gbp,
+             round(100 * sum(units_sold * original_price_gbp * markdown_depth_pct / 100) / NULLIF(sum(units_sold * original_price_gbp), 0), 1) AS markdown_rate_pct,
+             round(sum(units_sold * (original_price_gbp * (1 - markdown_depth_pct / 100) - unit_cost_gbp)), 2) AS margin_after_markdown_gbp,
+             'markdown cost = full price x depth x units sold; rate = markdown cost / full-price value' AS calculation
+      FROM ev WHERE period IS NOT NULL
+      GROUP BY period ORDER BY period
+    example: {category: Knitwear, department: Womenswear}
 
   - name: get_our_black_friday_results_last_year
     desc: Retrieve results of our last Black Friday promotion for benchmarking and planning next year.
@@ -636,23 +858,32 @@ tools:
     example: {}
 
   - name: get_our_markdown_depth_and_timing
-    desc: Compare our current markdown depth and timing to historical patterns by category.
+    desc: Our current markdown depth, duration and timing by category and department over the last 13 weeks. Omit category to compare all categories.
     kind: sql
     args:
-      category: {required: true}
+      category: {desc: "Category, e.g. Outerwear. Omit to compare all"}
+      department: {desc: "Department, e.g. Menswear"}
+      lookback_weeks: {type: int, default: 13, desc: "Weeks of markdown starts to include"}
     sql: |
-      SELECT md.category,
-             'Current' AS period,
-             round(AVG(md.markdown_depth_pct), 1) AS avg_markdown_depth_pct,
-             'weeks' AS timing_unit,
-             round(AVG(CAST((md.end_date - md.start_date) AS NUMERIC) / 7), 1) AS avg_duration_weeks,
-             count(*) AS number_of_events
-      FROM markdown_events md
-      WHERE md.category = $category
-        AND md.end_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-        AND md.status IN ('active', 'completed')
-      GROUP BY md.category
-    example: {category: Outerwear}
+      SELECT p.category, p.department,
+             count(*) AS markdown_events,
+             count(*) FILTER (WHERE md.status = 'active') AS live_now,
+             round(avg(md.markdown_depth_pct), 1) AS avg_markdown_depth_pct,
+             round(max(md.markdown_depth_pct), 1) AS max_markdown_depth_pct,
+             round(avg(CAST((md.end_date - md.start_date) AS INT)) / 7.0, 1) AS avg_duration_weeks,
+             round(avg(CAST((md.start_date - p.launch_date) AS INT)) / 7.0, 0) AS avg_weeks_from_launch_to_markdown,
+             min(md.start_date) AS first_markdown_start,
+             sum(md.units_sold) AS units_sold,
+             round(100.0 * sum(md.units_sold) / NULLIF(sum(md.stock_at_start), 0), 1) AS sell_through_pct
+      FROM markdown_events md JOIN master.products p ON p.sku = md.sku
+      WHERE md.status IN ('active', 'completed')
+        AND md.start_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+        AND ($department IS NULL OR lower(p.department) = lower($department))
+      GROUP BY p.category, p.department
+      ORDER BY p.category, p.department
+    limit: 40
+    example: {category: Outerwear, department: Menswear}
 
   - name: get_own_product_prices_and_quality_scores
     desc: Get our current prices, costs and quality positioning for products in a category for competitive analysis.
@@ -673,17 +904,21 @@ tools:
     example: {category: Cookware}
 
   - name: get_post_promotion_dip_for_category
-    desc: Estimate post-promotion sales dip (customer wait behaviour) after a promotion ends.
+    desc: Sales dip after past promotions in a category (dip % and weeks), most recent first, with the average and the closest-depth event.
     kind: sql
     args:
-      category: {required: true}
-      promotion_depth_pct: {type: float, default: 25, desc: "Promotion discount %"}
+      category: {required: true, desc: "Category, e.g. Cookware (kitchenware)"}
+      promotion_depth_pct: {type: float, default: 25, desc: "Planned discount depth % to compare against"}
     sql: |
-      SELECT $category AS category,
-             round($promotion_depth_pct, 1) AS promotion_depth_pct,
-             'Post-promo dip typically 15-30% below baseline for 2-3 weeks after end' AS historical_pattern,
-             round($promotion_depth_pct * 0.5, 1) AS estimated_post_promo_dip_pct,
-             'Higher dips for regular promoters; run longer gaps between events' AS recommendation
+      SELECT p.promotion_id, p.event_name, p.discount_depth_pct, p.start_date, p.end_date,
+             p.post_promo_dip_pct, p.post_promo_dip_weeks,
+             round(avg(p.post_promo_dip_pct) OVER (), 1) AS average_dip_pct_all_events,
+             CASE WHEN abs(p.discount_depth_pct - $promotion_depth_pct) = min(abs(p.discount_depth_pct - $promotion_depth_pct)) OVER ()
+                  THEN 'closest depth to plan' ELSE '' END AS comparable
+      FROM promotions p
+      WHERE lower(p.category) = lower($category) AND p.status = 'completed' AND p.post_promo_dip_pct IS NOT NULL
+      ORDER BY p.end_date DESC
+    limit: 10
     example: {category: Cookware, promotion_depth_pct: 25}
 
   - name: get_price_change_history_for_sku
@@ -692,13 +927,12 @@ tools:
     args:
       sku: {required: true}
     sql: |
-      SELECT pc.pc_id, pc.sku, pc.category,
+      SELECT pc.pc_id, pc.sku,
              round(pc.old_price_gbp, 2) AS old_price_gbp,
              round(pc.new_price_gbp, 2) AS new_price_gbp,
-             round(pc.price_change_pct, 1) AS price_change_pct,
+             round((pc.new_price_gbp / pc.old_price_gbp - 1) * 100, 1) AS price_change_pct,
              pc.change_reason, pc.status,
-             pc.proposed_date, pc.effective_date, pc.created_at,
-             'Price change history for SKU' AS history
+             pc.proposed_date, pc.effective_date, pc.created_at
       FROM price_changes pc
       WHERE pc.sku = $sku
       ORDER BY pc.created_at DESC
@@ -706,59 +940,62 @@ tools:
     example: {sku: "K-1700"}
 
   - name: get_price_changes_for_category
-    desc: Get all price changes (past and pending) for a category, with effective dates and reasons.
+    desc: Price changes for a category, past and pending, with old and new price, change %, reason, status and date. Add department for part of a category.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Category, e.g. Outerwear"}
+      department: {desc: "Department if only part of the category, e.g. Womenswear"}
       lookback_weeks: {type: int, default: 26, desc: "Weeks of history"}
     sql: |
-      SELECT pc.pc_id, pc.sku, pc.category,
+      SELECT pc.pc_id, pc.sku, p.name, p.department,
              round(pc.old_price_gbp, 2) AS old_price_gbp,
              round(pc.new_price_gbp, 2) AS new_price_gbp,
-             round(pc.price_change_pct, 1) AS price_change_pct,
-             pc.change_reason, pc.status, pc.effective_date
-      FROM price_changes pc
-      WHERE pc.category = $category
-        AND pc.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
-      ORDER BY pc.effective_date DESC, pc.created_at DESC
-      LIMIT 30
+             round((pc.new_price_gbp / pc.old_price_gbp - 1) * 100, 1) AS price_change_pct,
+             pc.change_reason, pc.status,
+             COALESCE(pc.effective_date, pc.proposed_date) AS change_date
+      FROM price_changes pc JOIN master.products p ON p.sku = pc.sku
+      WHERE lower(p.category) = lower($category)
+        AND ($department IS NULL OR lower(p.department) = lower($department))
+        AND COALESCE(pc.effective_date, pc.proposed_date) >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+      ORDER BY change_date DESC, pc.pc_id
+      LIMIT 50
     example: {category: Outerwear}
 
   - name: get_price_elasticity_for_category
-    desc: Get price elasticity of demand for a category. Use to model volume impact of price changes.
+    desc: Latest price elasticity of demand for a category with confidence interval, sample size and the previous estimate. Use to model volume impact of price changes.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Category, e.g. Outerwear"}
     sql: |
       SELECT category,
              round(elasticity_to_price, 2) AS elasticity_to_price,
-             round(elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             round(elasticity_confidence_interval, 2) AS confidence_interval_95pct,
              data_points,
-             'Elasticity < -1 = elastic (% price up > % volume down); > -1 = inelastic' AS interpretation,
-             'Last updated: ' || last_updated AS data_freshness
+             round(lead(elasticity_to_price) OVER (ORDER BY measure_date DESC), 2) AS previous_elasticity,
+             measure_date,
+             'Below -1 = elastic: a 1% price rise loses more than 1% of volume' AS interpretation
       FROM elasticity_data
-      WHERE category = $category
+      WHERE lower(category) = lower($category) AND sku IS NULL
       ORDER BY measure_date DESC
       LIMIT 1
     example: {category: Cookware}
 
   - name: get_price_elasticity_for_product
-    desc: Get price elasticity of demand for a specific product SKU. Use to model volume impact of price changes for one product.
+    desc: Price elasticity of demand for one SKU. Uses the product's own estimate if there is one, otherwise its category estimate.
     kind: sql
     args:
       sku: {required: true}
     sql: |
-      SELECT ed.sku,
-             round(ed.elasticity_to_price, 2) AS elasticity_to_price,
-             round(ed.elasticity_confidence_interval, 3) AS confidence_interval_95pct,
-             ed.data_points,
-             ed.measure_date,
-             'Product-level elasticity estimate' AS level
-      FROM elasticity_data ed
-      WHERE ed.sku = $sku
-      ORDER BY ed.measure_date DESC
-      LIMIT 1
-    example: {sku: "K-1700"}
+      SELECT p.sku, p.name, p.category,
+             CASE WHEN e.sku IS NOT NULL THEN 'product' ELSE 'category (no product-level estimate)' END AS level,
+             round(e.elasticity_to_price, 2) AS elasticity_to_price,
+             round(e.elasticity_confidence_interval, 2) AS confidence_interval_95pct,
+             e.data_points, e.measure_date
+      FROM master.products p
+      JOIN elasticity_data e ON e.sku = p.sku OR (e.sku IS NULL AND e.category = p.category)
+      WHERE p.sku = $sku
+      QUALIFY row_number() OVER (ORDER BY CASE WHEN e.sku IS NOT NULL THEN 0 ELSE 1 END, e.measure_date DESC) = 1
+    example: {sku: "SKU-100168"}
 
   - name: get_price_elasticity_for_products
     desc: Get price elasticity for multiple products. Returns elasticity estimates with confidence intervals for each SKU.
@@ -775,58 +1012,82 @@ tools:
       WHERE ed.category = $category AND ed.sku IS NOT NULL
       ORDER BY ed.measure_date DESC, ed.sku
       LIMIT 50
-    example: {category: Cookware}
+    example: {category: "Small Appliances"}
 
   - name: get_price_positioning_for_product
-    desc: Get pricing position rules for the category a product belongs to. Use for understanding pricing constraints.
+    desc: Where a product's price sits in its category (index to category median, percentile) against the category's target position and price band.
     kind: sql
     args:
       sku: {required: true}
     sql: |
-      SELECT p.sku, p.category, pp.target_position,
-             round(pp.min_price_pct_of_high, 1) AS min_price_pct_of_high,
-             round(pp.max_price_pct_of_high, 1) AS max_price_pct_of_high,
-             round(pp.markdown_policy_min_depth_pct, 1) AS min_markdown_allowed_pct,
-             round(pp.markdown_policy_max_depth_pct, 1) AS max_markdown_allowed_pct
+      WITH cat AS (
+        SELECT category, count(*) AS n, min(retail_price_gbp) AS lo, max(retail_price_gbp) AS hi,
+               avg(retail_price_gbp) AS avg_price, median(retail_price_gbp) AS med
+        FROM master.products WHERE status <> 'discontinued' GROUP BY category)
+      SELECT p.sku, p.name, p.category,
+             p.retail_price_gbp AS price_gbp,
+             round(c.med, 2) AS category_median_price_gbp,
+             round(c.lo, 2) AS category_lowest_price_gbp,
+             round(c.hi, 2) AS category_highest_price_gbp,
+             round(p.retail_price_gbp / c.med, 2) AS price_index_vs_category_median,
+             round(100.0 * (SELECT count(*) FROM master.products q WHERE q.category = p.category AND q.status <> 'discontinued' AND q.retail_price_gbp < p.retail_price_gbp) / c.n, 0) AS price_percentile_in_category,
+             pp.target_position,
+             pp.min_price_index AS allowed_index_min, pp.max_price_index AS allowed_index_max,
+             CASE WHEN p.retail_price_gbp / c.med < pp.min_price_index THEN 'below target band'
+                  WHEN p.retail_price_gbp / c.med > pp.max_price_index THEN 'above target band'
+                  ELSE 'within target band' END AS position_check,
+             round(c.med * pp.min_price_index, 2) AS band_low_gbp,
+             round(c.med * pp.max_price_index, 2) AS band_high_gbp,
+             pp.markdown_policy_min_depth_pct AS min_markdown_allowed_pct,
+             pp.markdown_policy_max_depth_pct AS max_markdown_allowed_pct
       FROM master.products p
+      JOIN cat c ON c.category = p.category
       LEFT JOIN price_positioning pp ON pp.category = p.category
       WHERE p.sku = $sku
-    example: {sku: "K-1700"}
+    example: {sku: "SKU-103423"}
 
   - name: get_price_positioning_rules_for_category
-    desc: Get pricing positioning and markdown policy rules for a category. Use for understanding strategic pricing constraints.
+    desc: Get pricing positioning, allowed price band index and markdown policy rules for a category. Use for understanding strategic pricing constraints.
     kind: sql
     args:
       category: {required: true}
     sql: |
       SELECT category, target_position,
-             round(min_price_pct_of_high, 1) AS min_price_pct_of_high,
-             round(max_price_pct_of_high, 1) AS max_price_pct_of_high,
-             round(markdown_policy_min_depth_pct, 1) AS min_markdown_allowed_pct,
-             round(markdown_policy_max_depth_pct, 1) AS max_markdown_allowed_pct,
+             min_price_index AS allowed_index_min,
+             max_price_index AS allowed_index_max,
+             markdown_policy_min_depth_pct AS min_markdown_allowed_pct,
+             markdown_policy_max_depth_pct AS max_markdown_allowed_pct,
+             full_price_cannibalisation_pct_per_10pts,
              updated_at
       FROM price_positioning
-      WHERE category = $category
+      WHERE lower(category) = lower($category)
     example: {category: Cookware}
 
   - name: get_promotion_calendar_for_category
-    desc: Get all scheduled promotions for a category in the next 26 weeks. Use to see promotional calendar and avoid conflicts.
+    desc: Promotions for a category from a few weeks back to weeks ahead, with depth, dates, status and cancellations. Use to see the calendar and avoid clashes.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Category, e.g. Outerwear or Trousers"}
+      department: {desc: "Department if only part of the category, e.g. Menswear"}
+      weeks_back: {type: int, default: 8, desc: "How many weeks back to show"}
       weeks_ahead: {type: int, default: 26, desc: "How many weeks ahead to show"}
+      status: {type: enum, values: [draft, scheduled, active, completed, cancelled], desc: "Only this status. Omit for all"}
     sql: |
-      SELECT DISTINCT promo.promotion_id, promo.category, promo.promotion_type,
-             round(promo.discount_depth_pct, 1) AS discount_depth_pct,
+      SELECT promo.promotion_id, promo.event_name, promo.category, COALESCE(promo.department, 'all') AS department,
+             promo.promotion_type, round(promo.discount_depth_pct, 1) AS discount_depth_pct,
              promo.start_date, promo.end_date, promo.status,
-             round(promo.planned_uplift_pct, 1) AS planned_uplift_pct
+             round(promo.planned_uplift_pct, 1) AS planned_uplift_pct,
+             round(promo.actual_uplift_pct, 1) AS actual_uplift_pct,
+             promo.cancel_reason
       FROM promotions promo
-      WHERE promo.category = $category
+      WHERE lower(promo.category) = lower($category)
+        AND ($department IS NULL OR promo.department IS NULL OR lower(promo.department) = lower($department))
+        AND ($status IS NULL OR promo.status = $status)
+        AND promo.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks_back * 7 AS INT)) DAY
         AND promo.start_date < CAST($as_of AS DATE) + INTERVAL (CAST($weeks_ahead * 7 AS INT)) DAY
-        AND promo.status IN ('scheduled', 'active', 'completed')
       ORDER BY promo.start_date
       LIMIT 50
-    example: {category: Cookware, weeks_ahead: 26}
+    example: {category: Outerwear}
 
   - name: get_promotion_calendar_for_store
     desc: Get promotions scheduled for a specific store in next 26 weeks. Use for store operations planning.
@@ -879,20 +1140,26 @@ tools:
     example: {sku: "K-1700"}
 
   - name: get_promotion_history_for_category
-    desc: Get promotion history (actual uplift, margin, performance) for a category over past 12 months.
+    desc: Past promotions in a category with discount depth, actual uplift, margin, cannibalisation and post-promotion dip, most recent first.
     kind: sql
     args:
-      category: {required: true}
+      category: {required: true, desc: "Category, e.g. Cookware (kitchenware)"}
+      department: {desc: "Department if only part of the category"}
       lookback_weeks: {type: int, default: 52, desc: "Weeks of history"}
     sql: |
-      SELECT p.promotion_id, p.category, p.promotion_type,
+      SELECT p.promotion_id, p.event_name, p.category, p.promotion_type,
              round(p.discount_depth_pct, 1) AS discount_depth_pct,
              p.start_date, p.end_date,
+             round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
              round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
              round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
+             round(p.cannibalisation_pct, 1) AS cannibalisation_pct_of_uplift,
+             round(p.post_promo_dip_pct, 1) AS post_promo_dip_pct,
+             p.post_promo_dip_weeks,
              p.status
       FROM promotions p
-      WHERE p.category = $category
+      WHERE lower(p.category) = lower($category)
+        AND ($department IS NULL OR p.department IS NULL OR lower(p.department) = lower($department))
         AND p.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
         AND p.status IN ('completed', 'cancelled')
       ORDER BY p.end_date DESC
@@ -938,17 +1205,26 @@ tools:
     example: {promotion_id: "PROMO-900002"}
 
   - name: get_promotion_uplift_estimate
-    desc: Estimate likely sales uplift for a planned promotion based on historical category patterns and discount depth.
+    desc: Estimate sales uplift for a planned promotion from the uplift per discount point of past completed promotions in the category, with range and closest event.
     kind: sql
     args:
-      category: {required: true}
-      discount_pct: {type: float, required: true, desc: "Discount percentage"}
+      category: {required: true, desc: "Category, e.g. Cookware (kitchenware)"}
+      discount_pct: {type: float, required: true, desc: "Planned discount %, e.g. 25"}
     sql: |
-      SELECT $category AS category,
-             round($discount_pct, 1) AS discount_pct,
-             round($discount_pct * 0.8, 1) AS estimated_uplift_pct,
-             'Uplift estimate = discount depth * 0.8 (assumes elasticity ~-0.8)' AS basis,
-             'Actual may vary by 20-30% based on category, timing, and competitive actions' AS caveat
+      WITH h AS (
+        SELECT * FROM promotions
+        WHERE lower(category) = lower($category) AND status = 'completed'
+          AND actual_uplift_pct IS NOT NULL AND discount_depth_pct > 0)
+      SELECT $category AS category, round($discount_pct, 1) AS discount_pct,
+             count(*) AS past_promotions_used,
+             round(avg(actual_uplift_pct / discount_depth_pct) * $discount_pct, 1) AS estimated_uplift_pct,
+             round(min(actual_uplift_pct / discount_depth_pct) * $discount_pct, 1) AS low_uplift_pct,
+             round(max(actual_uplift_pct / discount_depth_pct) * $discount_pct, 1) AS high_uplift_pct,
+             arg_min(promotion_id, abs(discount_depth_pct - $discount_pct)) AS closest_past_promotion,
+             arg_min(discount_depth_pct, abs(discount_depth_pct - $discount_pct)) AS closest_depth_pct,
+             arg_min(actual_uplift_pct, abs(discount_depth_pct - $discount_pct)) AS closest_actual_uplift_pct,
+             'uplift = average of (actual uplift % / discount %) over past completed promotions x planned discount %' AS basis
+      FROM h
     example: {category: Cookware, discount_pct: 25}
 
   - name: list_promotions_in_calendar
@@ -1040,14 +1316,13 @@ tools:
     example: {pc_id: PC-900001}
 
   - name: update_markdown_price_for_product
-    desc: Update the live markdown depth and price on a product. Use to adjust markdown in-flight.
+    desc: Change the markdown depth on an existing markdown event, which sets the new markdown price. Returns the old and new depth.
     kind: update
     table: markdown_events
-    set: {status: active, updated_at: "$as_of"}
+    set: {updated_at: "$as_of"}
     args:
-      markdown_depth_pct: {type: float, required: true, desc: "New markdown depth %"}
-      markdown_price_gbp: {type: float, required: true, desc: "New markdown price in GBP"}
-    example: {markdown_id: MDE-900001, markdown_depth_pct: 40, markdown_price_gbp: 39.0}
+      markdown_depth_pct: {type: float, required: true, desc: "New markdown depth %, e.g. 40"}
+    example: {markdown_id: MDE-900101, markdown_depth_pct: 40}
 
   - name: update_promotion_start_date
     desc: Move the start and end dates of a scheduled promotion. Use to adjust promotional timing.

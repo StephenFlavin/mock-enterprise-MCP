@@ -813,6 +813,41 @@ tables:
       notes:
         type: str
         desc: Comments
+  structure_costs:
+    key: cost_id
+    cols:
+      cost_id:
+        type: str
+        desc: Cost line id, e.g. STC-MX-001
+      country:
+        type: str
+        desc: ISO country code, e.g. MX
+      country_name:
+        type: str
+        desc: Country name, e.g. Mexico
+      structure:
+        type: enum
+        values:
+        - subsidiary
+        - franchise
+        desc: Market-entry structure the cost belongs to
+      cost_type:
+        type: enum
+        values:
+        - setup
+        - annual_fixed
+        - pct_of_revenue
+        - exit
+        desc: setup and exit are one-off GBP; annual_fixed is GBP a year; pct_of_revenue is % of retail revenue
+      item:
+        type: str
+        desc: What the cost covers
+      amount:
+        type: float
+        desc: GBP, or % of revenue when cost_type is pct_of_revenue
+      notes:
+        type: text
+        desc: Basis or assumption
 tools:
 - name: calculate_air_vs_sea_margin_impact
   desc: Margin for a style shipped late by sea versus air, from planned volume, weekly demand and lost-sales rate. Use to decide whether airfreight pays.
@@ -1267,31 +1302,48 @@ tools:
     category: Small Appliances
     department: Electricals
 - name: calculate_margin_impact_of_fee_changes
-  desc: Calculates how shipping, service or handling fee changes impact product margin by channel and category.
+  desc: Margin impact of a marketplace commission or handling fee change for a category - current and new margin %, points lost and total cost.
   kind: sql
   args:
     fee_type:
       type: str
-      desc: Fee category, e.g. inbound_freight, handling, packaging
+      desc: Fee being changed, e.g. commission, returns_handling
+    category:
+      type: str
+      desc: Product category, e.g. Bedding; leave empty for all categories
+    fee_change_pct:
+      type: float
+      desc: Fee change as % of selling price, e.g. 2 for commission from 10% to 12%
+      default: 0
     fee_change_gbp:
       type: float
-      required: true
       desc: Fee change per unit in GBP
+      default: 0
     volume_units:
       type: int
-      desc: Volume affected
+      desc: Units sold through the channel in the period
       default: 1000
   sql: |
-    SELECT
-      $fee_type AS fee_type,
-      ROUND($fee_change_gbp, 2) AS fee_change_per_unit_gbp,
+    WITH b AS (
+      SELECT count(*) AS sku_count, avg(retail_price_gbp) AS price, avg(total_cost_gbp) AS cost
+      FROM product_costings
+      WHERE status = 'active' AND ($category IS NULL OR lower(category) = lower($category))
+    )
+    SELECT $fee_type AS fee_type, COALESCE($category, 'All categories') AS category, sku_count,
+      ROUND(price, 2) AS avg_retail_price_gbp, ROUND(cost, 2) AS avg_unit_cost_gbp,
+      ROUND((price - cost) / price * 100, 1) AS current_margin_pct,
+      ROUND($fee_change_pct * price / 100.0 + $fee_change_gbp, 2) AS fee_change_per_unit_gbp,
+      ROUND((price - cost - $fee_change_pct * price / 100.0 - $fee_change_gbp) / price * 100, 1) AS new_margin_pct,
+      ROUND(($fee_change_pct * price / 100.0 + $fee_change_gbp) / price * 100, 2) AS margin_points_lost,
       $volume_units AS volume_units,
-      ROUND($fee_change_gbp * $volume_units, 2) AS total_fee_impact_gbp,
-      'margin_impact = fee_change * volume' AS formula
+      ROUND(($fee_change_pct * price / 100.0 + $fee_change_gbp) * $volume_units, 2) AS total_fee_impact_gbp,
+      'impact = (fee change % * price + fee change per unit) * volume' AS formula
+    FROM b
   limit: 1
   example:
-    fee_type: inbound_freight
-    fee_change_gbp: 0.5
+    fee_type: commission
+    category: Bedding
+    fee_change_pct: 2
     volume_units: 5000
 - name: calculate_margin_recovery_from_price_change
   desc: Margin recovered by a retail price rise for a category, using last 13 weeks of sales, demand elasticity and an optional cost increase to recover.
@@ -1477,21 +1529,29 @@ tools:
     sku: K-1700
     volume_units: 10000
 - name: calculate_next_day_margin_impact
-  desc: Calculates margin impact of expedited next-day or premium freight cost for urgent shipments.
+  desc: Margin impact of next-day delivery - freight premium per order and in total, plus margin from extra orders if conversion rises, net of both.
   kind: sql
   args:
     standard_freight_cost_gbp:
       type: float
       required: true
-      desc: Standard freight cost per unit
+      desc: Standard delivery cost per order in GBP
     expedited_freight_cost_gbp:
       type: float
       required: true
-      desc: Expedited freight cost per unit
+      desc: Next-day delivery cost per order in GBP
     volume_units:
       type: int
-      desc: Volume requiring expedite
+      desc: Orders in the period that would take next-day delivery
       default: 100
+    conversion_uplift_pct:
+      type: float
+      desc: Extra orders won by next-day, as % of volume, e.g. 4
+      default: 0
+    avg_order_margin_gbp:
+      type: float
+      desc: Margin per order before delivery cost, in GBP
+      default: 0
   sql: |
     SELECT
       ROUND($standard_freight_cost_gbp, 2) AS standard_freight_gbp,
@@ -1499,31 +1559,45 @@ tools:
       ROUND($expedited_freight_cost_gbp - $standard_freight_cost_gbp, 2) AS premium_per_unit_gbp,
       $volume_units AS volume_units,
       ROUND(($expedited_freight_cost_gbp - $standard_freight_cost_gbp) * $volume_units, 2) AS total_premium_gbp,
-      'premium = (expedited - standard) * volume' AS formula
+      $conversion_uplift_pct AS conversion_uplift_pct,
+      ROUND($volume_units * $conversion_uplift_pct / 100.0, 0) AS extra_orders,
+      ROUND($volume_units * $conversion_uplift_pct / 100.0 * ($avg_order_margin_gbp - $expedited_freight_cost_gbp), 2) AS margin_from_extra_orders_gbp,
+      ROUND($volume_units * $conversion_uplift_pct / 100.0 * ($avg_order_margin_gbp - $expedited_freight_cost_gbp)
+            - ($expedited_freight_cost_gbp - $standard_freight_cost_gbp) * $volume_units, 2) AS net_margin_impact_gbp,
+      'net = extra orders * (order margin - next-day cost) - (next-day - standard) * volume' AS formula
   limit: 1
   example:
     standard_freight_cost_gbp: 2.5
     expedited_freight_cost_gbp: 12.0
     volume_units: 500
 - name: calculate_price_floor_from_cost
-  desc: Calculates minimum retail price floor given cost of goods, target margin and channel mix.
+  desc: Minimum retail price from unit cost and target margin, with margin per unit. Give a SKU to use its costed total cost and target margin.
   kind: sql
   args:
+    sku:
+      desc: SKU; uses its latest costing for total cost and target margin
     total_cost_gbp:
       type: float
-      required: true
-      desc: Total cost per unit including all freight and overhead
+      desc: Total cost per unit including all freight and overhead; overrides the SKU's costed cost
     target_margin_pct:
       type: float
-      desc: Target gross margin %
-      default: 50
+      desc: Target gross margin %; defaults to the SKU's target margin, else 50
   sql: |
-    SELECT
-      ROUND($total_cost_gbp, 2) AS total_cost_gbp,
-      ROUND($target_margin_pct, 1) AS target_margin_pct,
-      ROUND($total_cost_gbp / (1 - $target_margin_pct / 100), 2) AS minimum_retail_price_gbp,
-      ROUND($total_cost_gbp * ($target_margin_pct / 100) / (1 - $target_margin_pct / 100), 2) AS margin_gbp_at_floor,
-      'floor_price = cost / (1 - margin_pct)' AS formula
+    WITH c AS (
+      SELECT pc.sku, pc.total_cost_gbp, pc.target_margin_pct, pc.retail_price_gbp
+      FROM product_costings pc
+      WHERE pc.sku = $sku AND pc.version = (SELECT max(p2.version) FROM product_costings p2 WHERE p2.sku = $sku)
+    ), x AS (
+      SELECT COALESCE($total_cost_gbp, (SELECT total_cost_gbp FROM c)) AS cost,
+             COALESCE($target_margin_pct, (SELECT target_margin_pct FROM c), 50.0) AS tm,
+             (SELECT retail_price_gbp FROM c) AS current_price
+    )
+    SELECT $sku AS sku, ROUND(cost, 2) AS total_cost_gbp, ROUND(tm, 1) AS target_margin_pct,
+           ROUND(cost / (1 - tm / 100), 2) AS minimum_retail_price_gbp,
+           ROUND(cost * (tm / 100) / (1 - tm / 100), 2) AS margin_gbp_at_floor,
+           ROUND(current_price, 2) AS current_retail_price_gbp,
+           'floor_price = cost / (1 - margin_pct)' AS formula
+    FROM x WHERE cost IS NOT NULL
   limit: 1
   example:
     total_cost_gbp: 15
@@ -1643,30 +1717,52 @@ tools:
     min_age_days: 180
     stock_value_gbp: 1000000
 - name: calculate_structure_cost_comparison
-  desc: Compare total cost structure between two sourcing origins or manufacturing scenarios.
+  desc: Compares market-entry structures (subsidiary versus franchise) for a country - set-up, fixed, variable and exit cost over a period, cheaper option and break-even revenue.
   kind: sql
   args:
-    style_id:
+    country:
+      type: str
+      desc: Country name or ISO code, e.g. Mexico or MX
       required: true
-      desc: Style
-    origin_1:
-      type: str
-      desc: Origin country code 1
-    origin_2:
-      type: str
-      desc: Origin country code 2
+    annual_revenue_gbp:
+      type: float
+      desc: Expected annual retail revenue in the country, GBP
+      default: 6000000
+    years:
+      type: int
+      desc: Years in the comparison period
+      default: 5
   sql: |
-    SELECT
-      $style_id AS style_id,
-      $origin_1 AS origin_1,
-      $origin_2 AS origin_2,
-      'Compare material, labour and freight costs between origins' AS comparison_type,
-      'Requires costing versions for each origin to be seeded separately' AS note
-  limit: 1
+    WITH s AS (
+      SELECT structure, any_value(country) AS country,
+             sum(amount) FILTER (cost_type = 'setup') AS setup,
+             sum(amount) FILTER (cost_type = 'annual_fixed') AS fixed,
+             sum(amount) FILTER (cost_type = 'pct_of_revenue') AS var_pct,
+             sum(amount) FILTER (cost_type = 'exit') AS exit_cost
+      FROM structure_costs
+      WHERE lower($country) IN (lower(country), lower(country_name))
+      GROUP BY structure
+    ), t AS (
+      SELECT *, setup + fixed * $years + var_pct / 100.0 * $annual_revenue_gbp * $years + exit_cost AS total_cost FROM s
+    ), b AS (
+      SELECT ((max(setup + exit_cost) FILTER (structure = 'subsidiary') - max(setup + exit_cost) FILTER (structure = 'franchise')) / $years
+              + max(fixed) FILTER (structure = 'subsidiary') - max(fixed) FILTER (structure = 'franchise'))
+             / ((max(var_pct) FILTER (structure = 'franchise') - max(var_pct) FILTER (structure = 'subsidiary')) / 100.0) AS break_even
+      FROM t
+    )
+    SELECT t.country, t.structure, $years AS years, ROUND($annual_revenue_gbp, 0) AS annual_revenue_gbp,
+           ROUND(t.setup, 0) AS setup_cost_gbp, ROUND(t.fixed, 0) AS annual_fixed_cost_gbp, ROUND(t.var_pct, 1) AS variable_cost_pct_of_revenue,
+           ROUND(t.exit_cost, 0) AS exit_cost_gbp, ROUND(t.total_cost, 0) AS total_cost_over_period_gbp,
+           ROUND(t.total_cost / $years, 0) AS avg_annual_cost_gbp,
+           ROUND(t.total_cost / $years / $annual_revenue_gbp * 100, 1) AS cost_pct_of_revenue,
+           CASE WHEN t.total_cost = min(t.total_cost) OVER () THEN 'cheaper' ELSE '' END AS cheaper_option,
+           ROUND(b.break_even, 0) AS break_even_annual_revenue_gbp,
+           'total = set-up + fixed * years + variable % * revenue * years + exit; break-even revenue is where both structures cost the same' AS formula
+    FROM t CROSS JOIN b
+    ORDER BY t.total_cost
+  limit: 4
   example:
-    style_id: STY-5520
-    origin_1: VN
-    origin_2: PT
+    country: Mexico
 - name: calculate_target_cost
   desc: Target landed cost implied by retail price and margin goal, split into material, labour and other budgets, compared with a SKU's current cost.
   kind: sql
@@ -2029,7 +2125,7 @@ tools:
   example:
     category: Dresses
 - name: get_channel_margin_for_product
-  desc: Retrieves channel margin for product.
+  desc: Margin by sales channel (store, online) for a SKU over a period - units, gross and net margin %, markdown, net margin per unit and unit share.
   kind: sql
   args:
     sku:
@@ -2042,23 +2138,28 @@ tools:
       - outlet
       - wholesale
       - marketplace
-      desc: Sales channel
+      desc: Sales channel; leave empty to compare all channels
+    period_from:
+      type: date
+      default: -84d
+      desc: Periods starting on or after this date
   sql: |
-    SELECT
-      m.sku,
-      m.channel,
-      ROUND(AVG(m.revenue_gbp), 2) AS avg_revenue_gbp,
-      ROUND(AVG(m.cost_of_goods_gbp), 2) AS avg_cogs_gbp,
-      ROUND(AVG(m.gross_margin_gbp), 2) AS avg_margin_gbp,
-      ROUND(AVG(m.gross_margin_pct), 1) AS avg_margin_pct,
-      COUNT(*) AS periods_recorded
-    FROM margin_analyses m
-    WHERE m.sku = $sku AND m.channel = $channel
-    GROUP BY m.sku, m.channel
-  limit: 1
+    WITH c AS (
+      SELECT m.sku, m.channel, sum(m.volume_units) AS units, sum(m.revenue_gbp) AS revenue, sum(m.gross_margin_gbp) AS gross,
+             sum(m.markdown_gbp) AS markdown, sum(m.net_margin_gbp) AS net
+      FROM margin_analyses m
+      WHERE m.sku = $sku AND m.period_start >= CAST($period_from AS DATE)
+      GROUP BY m.sku, m.channel
+    )
+    SELECT sku, channel, units, ROUND(revenue, 0) AS revenue_gbp,
+           ROUND(gross / revenue * 100, 1) AS gross_margin_pct, ROUND(markdown / revenue * 100, 1) AS markdown_pct_of_revenue,
+           ROUND(net / revenue * 100, 1) AS net_margin_pct, ROUND(net / units, 2) AS net_margin_per_unit_gbp,
+           ROUND(units * 100.0 / sum(units) OVER (), 1) AS share_of_units_pct
+    FROM c WHERE ($channel IS NULL OR channel = $channel)
+    ORDER BY net_margin_pct DESC
+  limit: 5
   example:
     sku: K-1700
-    channel: store
 - name: get_channel_revenue_and_margin
   desc: Revenue, units, cost of goods and margin by sales channel (store, online) over a period, optionally split by department segment.
   kind: sql
@@ -2094,26 +2195,38 @@ tools:
   limit: 20
   example: {}
 - name: get_cost_price_changes_for_category
-  desc: Retrieves cost price changes for category.
+  desc: Supplier cost price movement for a category or department by month - average cost index, unit cost, month-on-month and cumulative % change.
   kind: sql
   args:
     category:
-      required: true
+      type: str
+      desc: Product category, e.g. Bedding
+    department:
+      type: str
+      desc: Department, e.g. Home
+    period_from:
+      type: date
+      default: -180d
+      desc: Months starting on or after this date
   sql: |
-    SELECT
-      m.category,
-      m.period,
-      ROUND(AVG(m.revenue_gbp), 2) AS avg_revenue_gbp,
-      ROUND(AVG(m.cost_of_goods_gbp), 2) AS avg_cogs_gbp,
-      COUNT(DISTINCT m.sku) AS sku_count
-    FROM margin_analyses m
-    WHERE m.category = $category
-    GROUP BY m.category, m.period
-    ORDER BY m.period DESC
-    LIMIT 12
-  limit: 12
+    WITH m AS (
+      SELECT p.department, p.category, h.period, h.period_start, count(DISTINCT h.sku) AS sku_count,
+             avg(h.supplier_price_index) AS idx, avg(h.actual_cost_gbp) AS unit_cost
+      FROM supplier_cost_history h JOIN master.products p ON p.sku = h.sku
+      WHERE ($category IS NOT NULL OR $department IS NOT NULL)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+        AND ($department IS NULL OR lower(p.department) = lower($department))
+        AND h.period_start >= CAST($period_from AS DATE)
+      GROUP BY p.department, p.category, h.period, h.period_start
+    )
+    SELECT department, category, period, sku_count, ROUND(idx, 1) AS avg_supplier_price_index, ROUND(unit_cost, 2) AS avg_unit_cost_gbp,
+           ROUND((idx / lag(idx) OVER w - 1) * 100, 2) AS change_vs_previous_month_pct,
+           ROUND((idx / first_value(idx) OVER (PARTITION BY department, category ORDER BY period_start) - 1) * 100, 2) AS change_since_first_month_pct
+    FROM m WINDOW w AS (PARTITION BY department, category ORDER BY period_start)
+    ORDER BY department, category, period_start DESC
+  limit: 24
   example:
-    category: Dresses
+    category: Bedding
 - name: get_costed_margin_for_product
   desc: Costed price, unit cost, gross margin and margin % for a SKU against its target margin, with the gap to target. Use to find products below target.
   kind: sql
@@ -2443,14 +2556,13 @@ tools:
   example:
     category: Outerwear
 - name: get_margin_bridge_for_category
-  desc: Margin bridge for a category and period - price, cost, mix, markdown, shrink, FX and supplier effects in points, with notes on causes.
+  desc: Margin bridge for a category or whole department - price, cost, mix, markdown, shrink, FX and supplier effects in points, with notes on causes.
   kind: sql
   args:
     category:
-      required: true
-      desc: Product category, e.g. Knitwear
+      desc: Product category, e.g. Knitwear; leave empty to bridge every category in the department
     department:
-      desc: Department, e.g. Womenswear
+      desc: Department, e.g. Womenswear or Home
     basis:
       type: enum
       values:
@@ -2463,15 +2575,35 @@ tools:
       default: -35d
       desc: Periods starting on or after this date; the default is the last 4-week period
   sql: |
-    SELECT v.category, v.department, v.basis, v.period_start, ROUND(v.total_variance_pct, 1) AS total_variance_pts,
-           ROUND(v.price_driver_pct, 1) AS price_pts, ROUND(v.cost_driver_pct, 1) AS cost_pts, ROUND(v.mix_driver_pct, 1) AS mix_pts,
-           ROUND(v.markdown_driver_pct, 1) AS markdown_pts, ROUND(v.shrink_driver_pct, 1) AS shrink_pts, ROUND(v.fx_driver_pct, 1) AS fx_pts,
-           ROUND(v.supplier_driver_pct, 1) AS supplier_pts, ROUND(v.other_driver_pct, 1) AS other_pts, v.notes
-    FROM cost_variance_drivers v
-    WHERE lower(v.category) = lower($category) AND ($department IS NULL OR lower(v.department) = lower($department))
-      AND v.basis = $basis AND v.period_start >= CAST($period_from AS DATE)
-    ORDER BY v.department, v.period_start DESC
-  limit: 6
+    WITH rev AS (
+      SELECT department, category, period_start, sum(revenue_gbp) AS revenue FROM margin_analyses GROUP BY ALL
+    ), v AS (
+      SELECT d.*, COALESCE(r.revenue, 1.0) AS w
+      FROM cost_variance_drivers d
+      LEFT JOIN rev r ON r.department = d.department AND r.category = d.category AND r.period_start = d.period_start
+      WHERE ($category IS NOT NULL OR $department IS NOT NULL)
+        AND ($category IS NULL OR lower(d.category) = lower($category))
+        AND ($department IS NULL OR lower(d.department) = lower($department))
+        AND d.basis = $basis AND d.period_start >= CAST($period_from AS DATE)
+    ), allrows AS (
+      SELECT department, category, basis, period_start, total_variance_pct, price_driver_pct, cost_driver_pct, mix_driver_pct,
+             markdown_driver_pct, shrink_driver_pct, fx_driver_pct, supplier_driver_pct, other_driver_pct, notes, 1 AS ord
+      FROM v
+      UNION ALL
+      SELECT department, 'All ' || department || ' categories', basis, period_start,
+             sum(total_variance_pct * w) / sum(w), sum(price_driver_pct * w) / sum(w), sum(cost_driver_pct * w) / sum(w),
+             sum(mix_driver_pct * w) / sum(w), sum(markdown_driver_pct * w) / sum(w), sum(shrink_driver_pct * w) / sum(w),
+             sum(fx_driver_pct * w) / sum(w), sum(supplier_driver_pct * w) / sum(w), sum(other_driver_pct * w) / sum(w),
+             'Department total, weighted by category revenue', 0
+      FROM v WHERE $category IS NULL GROUP BY department, basis, period_start
+    )
+    SELECT category, department, basis, period_start, ROUND(total_variance_pct, 1) AS total_variance_pts,
+           ROUND(price_driver_pct, 1) AS price_pts, ROUND(cost_driver_pct, 1) AS cost_pts, ROUND(mix_driver_pct, 1) AS mix_pts,
+           ROUND(markdown_driver_pct, 1) AS markdown_pts, ROUND(shrink_driver_pct, 1) AS shrink_pts, ROUND(fx_driver_pct, 1) AS fx_pts,
+           ROUND(supplier_driver_pct, 1) AS supplier_pts, ROUND(other_driver_pct, 1) AS other_pts, notes
+    FROM allrows
+    ORDER BY department, period_start DESC, ord, category
+  limit: 20
   example:
     category: Knitwear
     department: Womenswear
@@ -2711,12 +2843,11 @@ tools:
   example:
     sku: SKU-102590
 - name: get_shrink_by_category
-  desc: Stock-loss (shrink) cost for a category - % of revenue in the period against the 12 weeks before, plus markdown % of revenue.
+  desc: Stock-loss (shrink) cost by category - % of revenue in the period against the 12 weeks before, plus markdown %. Leave category empty to rank all, highest shrink first.
   kind: sql
   args:
     category:
-      required: true
-      desc: Product category, e.g. Knitwear
+      desc: Product category, e.g. Knitwear; leave empty to rank every category
     department:
       desc: Department, e.g. Womenswear
     period_from:
@@ -2728,9 +2859,9 @@ tools:
       SELECT m.*, CASE WHEN m.period_start >= CAST($period_from AS DATE) THEN 'now'
                        WHEN m.period_start >= CAST($period_from AS DATE) - INTERVAL 84 DAY THEN 'before' END AS win
       FROM margin_analyses m
-      WHERE lower(m.category) = lower($category) AND ($department IS NULL OR lower(m.department) = lower($department))
+      WHERE ($category IS NULL OR lower(m.category) = lower($category)) AND ($department IS NULL OR lower(m.department) = lower($department))
     )
-    SELECT any_value(category) AS category, any_value(department) AS department,
+    SELECT category, department,
            ROUND(sum(shrink_gbp) FILTER (win = 'now'), 0) AS shrink_gbp,
            ROUND(sum(shrink_gbp) FILTER (win = 'now') / sum(revenue_gbp) FILTER (win = 'now') * 100, 2) AS shrink_pct_of_revenue,
            ROUND(sum(shrink_gbp) FILTER (win = 'before') / sum(revenue_gbp) FILTER (win = 'before') * 100, 2) AS prior_12_weeks_shrink_pct,
@@ -2739,7 +2870,9 @@ tools:
            ROUND(sum(markdown_gbp) FILTER (win = 'now') / sum(revenue_gbp) FILTER (win = 'now') * 100, 2) AS markdown_pct_of_revenue,
            ROUND(sum(revenue_gbp) FILTER (win = 'now'), 0) AS revenue_gbp
     FROM f WHERE win IS NOT NULL
-  limit: 1
+    GROUP BY category, department
+    ORDER BY shrink_pct_of_revenue DESC
+  limit: 10
   example:
     category: Knitwear
     department: Womenswear
@@ -3059,12 +3192,13 @@ tools:
   example:
     category: Drinkware
 - name: get_product_cost_sheet
-  desc: 'Detailed product cost sheet with line items: material, labour, overhead, freight and tooling per unit.'
+  desc: 'Detailed product cost sheet with line items: material, labour, overhead, freight and tooling per unit. Give a SKU for its latest costing.'
   kind: sql
   args:
     costing_id:
-      required: true
       desc: Costing id, e.g. CST-SKU-102590-V1
+    sku:
+      desc: SKU; returns the sheet of its latest costing version
   sql: |
     SELECT
       csd.costing_id,
@@ -3077,33 +3211,46 @@ tools:
       ROUND(csd.total_cost_gbp, 2) AS total_cost_gbp,
       ROUND(csd.as_pct_of_total, 1) AS pct_of_total_cost
     FROM cost_sheet_details csd
-    WHERE csd.costing_id = $costing_id
+    JOIN product_costings pc ON pc.costing_id = csd.costing_id
+    WHERE ($costing_id IS NOT NULL OR $sku IS NOT NULL)
+      AND ($costing_id IS NULL OR csd.costing_id = $costing_id)
+      AND ($sku IS NULL OR (pc.sku = $sku AND pc.version = (SELECT max(p2.version) FROM product_costings p2 WHERE p2.sku = $sku)))
     ORDER BY csd.line_no
   limit: 50
   example:
     costing_id: CST-SKU-102590-V1
 - name: get_products_requiring_modification
-  desc: Products where cost structure or sourcing needs review due to margin or cost pressure.
+  desc: Active SKUs whose gross margin falls below a threshold, optionally at a lower local selling price; filter by department or category, lowest margin first.
   kind: sql
   args:
     margin_threshold_pct:
       type: float
       desc: Margin threshold for review
       default: 60
+    department:
+      desc: Department, e.g. Home
+    category:
+      desc: Product category, e.g. Storage
+    price_adjustment_pct:
+      type: float
+      desc: Change to UK retail price for a new market, e.g. -20 for prices 20% lower
+      default: 0
   sql: |
-    SELECT
-      pc.sku,
-      pc.style_id,
-      ROUND(pc.gross_margin_pct, 1) AS gross_margin_pct,
-      ROUND(pc.target_margin_pct, 1) AS target_margin_pct,
-      CASE WHEN pc.gross_margin_pct < $margin_threshold_pct THEN 'YES' ELSE 'NO' END AS needs_modification,
-      ROUND(pc.material_cost_gbp, 2) AS material_cost_gbp,
-      ROUND(pc.labour_cost_gbp, 2) AS labour_cost_gbp,
-      ROUND(pc.freight_cost_gbp, 2) AS freight_cost_gbp,
-      'Review sourcing, material or labour efficiency' AS action
-    FROM product_costings pc
-    WHERE pc.status = 'active' AND pc.gross_margin_pct < $margin_threshold_pct
-    ORDER BY pc.gross_margin_pct ASC
+    WITH x AS (
+      SELECT pc.*, pc.retail_price_gbp * (1 + $price_adjustment_pct / 100.0) AS local_price
+      FROM product_costings pc
+      WHERE pc.status = 'active' AND ($department IS NULL OR lower(pc.department) = lower($department))
+        AND ($category IS NULL OR lower(pc.category) = lower($category))
+    )
+    SELECT x.sku, x.style_id, x.category, ROUND(x.total_cost_gbp, 2) AS total_cost_gbp, ROUND(x.retail_price_gbp, 2) AS uk_retail_price_gbp,
+      ROUND(x.local_price, 2) AS local_price_gbp, ROUND(x.gross_margin_pct, 1) AS gross_margin_pct,
+      ROUND((x.local_price - x.total_cost_gbp) / x.local_price * 100, 1) AS margin_at_local_price_pct,
+      ROUND(x.target_margin_pct, 1) AS target_margin_pct, 'YES' AS needs_modification,
+      ROUND(x.material_cost_gbp, 2) AS material_cost_gbp, ROUND(x.labour_cost_gbp, 2) AS labour_cost_gbp,
+      ROUND(x.freight_cost_gbp, 2) AS freight_cost_gbp, 'Review sourcing, material or labour efficiency' AS action
+    FROM x
+    WHERE (x.local_price - x.total_cost_gbp) / x.local_price * 100 < $margin_threshold_pct
+    ORDER BY margin_at_local_price_pct ASC
   limit: 50
   example:
     margin_threshold_pct: 60
