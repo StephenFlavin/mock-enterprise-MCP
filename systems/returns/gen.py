@@ -45,8 +45,12 @@ CAT_RULES = {
 }
 LIQ_RATE = {"Electricals": 0.38, "Home": 0.28, "Womenswear": 0.16, "Menswear": 0.16, "Kids": 0.15,
             "Accessories": 0.18, "Beauty": 0.12}
+# share of non-faulty returns that pass inspection and go back on sale as new
+RESTOCK_OK = {"Outerwear": 0.93, "Knitwear": 0.9, "Footwear": 0.55, "Small Appliances": 0.5, "Smart Home": 0.55,
+              "Personal Care": 0.5, "Audio": 0.65, "Womenswear": 0.8, "Menswear": 0.8, "Kids": 0.78,
+              "Accessories": 0.75, "Beauty": 0.5, "Electricals": 0.6, "Home": 0.7}
 COUNTRY_SHIP = {"GB": 0.0, "IE": 2.4, "DE": 3.6, "NL": 3.4, "FR": 3.8, "US": 6.5}
-HANDLING = {"restocked": 3.0, "refurbished": 9.5, "liquidated": 6.0, "recycled": 4.5, "destroyed": 2.5}
+HANDLING = {"restocked": 4.5, "refurbished": 11.0, "liquidated": 7.0, "recycled": 5.5, "destroyed": 3.0}
 GRADE_BY_ROUTE = {"restocked": (("A", 70), ("B", 30)), "refurbished": (("B", 40), ("C", 60)),
                   "liquidated": (("C", 45), ("D", 55)), "recycled": (("D", 30), ("E", 70)),
                   "destroyed": (("E", 100),)}
@@ -177,6 +181,8 @@ def generate(g):
             route = band_route(cat, age)
             if faulty and route == "restocked":
                 route = r.choices(["refurbished", "liquidated", "recycled"], [60, 25, 15])[0]
+            elif route == "restocked" and r.random() > RESTOCK_OK.get(cat, RESTOCK_OK.get(dept, 0.8)):
+                route = r.choices(["refurbished", "liquidated"], [70, 30])[0]  # fails inspection for resale as new
             if age > 60 and r.random() < 0.12:
                 route = "liquidated"
             if route == "recycled" and order["country"] in ("DE", "FR") and r.random() < 0.3:
@@ -311,27 +317,27 @@ def generate(g):
     # STY-4042 knitwear: not as described / colour
     k_skus = sorted(p["sku"] for p in products if p["style_id"] == "STY-4042")
     pickk = choose({"NOT_AS_DESCRIBED": 40, "WRONG_COLOUR": 22, "CHANGED_MIND": 20, "WRONG_SIZE": 8, "DEFECT": 6, "DAMAGE": 4})
-    story_rows(k_skus, 78, lambda p, i: pickk(), flat_date)
+    story_rows(k_skus, 90, lambda p, i: pickk(), flat_date)
 
     # K-1700 kettle: defects rising
-    kd = binned([(61, 88, 8), (31, 60, 22), (1, 30, 42)])
+    kd = binned([(61, 88, 10), (31, 60, 26), (1, 30, 48)])
     pickkt = choose({"DEFECT": 70, "NOT_AS_DESCRIBED": 12, "CHANGED_MIND": 10, "DAMAGE": 5, "WRONG_ITEM": 3})
     pickdef = choose({"LID_LEAK": 55, "ELEMENT_FAIL": 30, "SWITCH_FAIL": 15})
-    story_rows("K-1700", 72, lambda p, i: pickkt(), kd,
+    story_rows("K-1700", 84, lambda p, i: pickkt(), kd,
                defect_fn=lambda p, reason: pickdef() if reason == "DEFECT" else None)
 
     # Audio disposition story: old items are recycled, a few manual liquidations show what liquidating pays
     audio = [p["sku"] for p in products if p["category"] == "Audio" and p["status"] != "new"
              and p["launch_date"] <= "2026-05-31"]
     pa = choose({"CHANGED_MIND": 35, "DEFECT": 30, "NOT_AS_DESCRIBED": 15, "DAMAGE": 10, "WRONG_ITEM": 10})
-    story_rows(audio, 150, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(30, WINDOW_DAYS - 2)),
+    story_rows(audio, 100, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(30, WINDOW_DAYS - 2)),
                delay_fn=lambda i: r.randint(3, 30),
                route_fn=lambda p, reason, d: ("restocked" if reason not in FAULTY else
                                               r.choices(["refurbished", "liquidated", "recycled"], [55, 25, 20])[0]))
-    story_rows(audio, 40, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(40, WINDOW_DAYS - 2)),
+    story_rows(audio, 30, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(40, WINDOW_DAYS - 2)),
                delay_fn=lambda i: r.randint(31, 60),
                route_fn=lambda p, reason, d: r.choices(["refurbished", "liquidated"], [80, 20])[0])
-    story_rows(audio, 70, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(62, WINDOW_DAYS - 2)),
+    story_rows(audio, 60, lambda p, i: pa(), lambda i: win_start + timedelta(days=r.randint(62, WINDOW_DAYS - 2)),
                delay_fn=lambda i: r.randint(61, 105),
                route_fn=lambda p, reason, d: r.choices(["recycled", "liquidated"], [75, 25])[0])
 
@@ -377,7 +383,7 @@ def generate(g):
             "target_throughput_units": fc,
             "actual_throughput_units": daily_actual.get(d, 0) if off < 0 else None,
             "staffing_needed": -(-fc // per_staff), "planned_staff": staff_plan,
-            "peak_day": fc >= 0.8 * capacity_units,
+            "peak_day": fc > capacity_units,
         })
 
     # ---- liquidators ------------------------------------------------------------------------------------------

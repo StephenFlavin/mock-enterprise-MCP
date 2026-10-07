@@ -169,12 +169,12 @@ def generate(g):
             if country == "BD" and dest == "DC1":
                 continue
             for k, car in enumerate(ocean[:2]):
-                cont = round(2600 * (1 + 0.08 * k) * r.uniform(0.9, 1.15) + (200 if dest != "DC1" else 0))
+                cont = round(6500 * (1 + 0.08 * k) * r.uniform(0.9, 1.15) + (500 if dest != "DC1" else 0))
                 fr.append({"rate_id": f"FR-{len(fr) + 1:06d}", "origin_port": port, "via_port": "GBFXT", "dest_port": "GBFXT",
                            "dest_site_id": dest, "origin_country": country,
                            "routing": f"Sea to Felixstowe, road to {dest}", "mode": "sea", "carrier_id": car,
-                           "rate_per_kg_gbp": round(cont / 2600.0, 2), "rate_per_container_gbp": cont,
-                           "port_charges_per_container_gbp": 310, "inland_per_container_gbp": 480 if dest == "DC1" else 560,
+                           "rate_per_kg_gbp": round(SEA_KG[country] * 3.0 * r.uniform(0.95, 1.05), 2), "rate_per_container_gbp": cont,
+                           "port_charges_per_container_gbp": 450, "inland_per_container_gbp": 620 if dest == "DC1" else 700,
                            "min_qty": 0, "lead_time_days": LEAD["sea"][country], "effective_from": g.as_of - timedelta(days=60),
                            "effective_to": g.as_of + timedelta(days=120), "transit_days_p50": LEAD["sea"][country],
                            "transit_days_p95": LEAD["sea"][country] + 9, "reliability_pct": round(r.uniform(68, 84), 1)})
@@ -190,7 +190,7 @@ def generate(g):
             fr.append({"rate_id": f"FR-{len(fr) + 1:06d}", "origin_port": port, "via_port": "", "dest_port": "GBDVR",
                        "dest_site_id": dest, "origin_country": country, "routing": f"Road/ferry via Dover to {dest}", "mode": "road",
                        "carrier_id": "CAR-004", "rate_per_kg_gbp": ROAD_KG[country],
-                       "rate_per_container_gbp": 2100 if country == "PT" else 2900,
+                       "rate_per_container_gbp": 3600 if country == "PT" else 4800,
                        "port_charges_per_container_gbp": 0, "inland_per_container_gbp": 0, "min_qty": 0,
                        "lead_time_days": LEAD["road"][country], "effective_from": g.as_of - timedelta(days=60),
                        "effective_to": g.as_of + timedelta(days=120), "transit_days_p50": LEAD["road"][country],

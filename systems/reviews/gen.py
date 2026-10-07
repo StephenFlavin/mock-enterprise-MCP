@@ -13,6 +13,7 @@ so planted stories stand out. Stories (all dated relative to as_of, weekly grain
   competitors       lunch boxes (leaking is the top complaint) and wellness (cold plunge, compression boots,
                     sauna blanket flopped) with review text
 """
+import random
 from datetime import datetime, timedelta
 
 APPAREL = {
@@ -109,9 +110,9 @@ COUNTRY_W = [82, 8, 4, 3, 3]
 # outerwear theme weights by (is 25-34, is Germany)
 OUTER_W = {
     (False, False): {"waterproofing": 18, "warmth": 16, "lightweight": 8, "pockets": 8, "fit": 14, "durability": 14, "value": 10, "sustainability": 6, "packaging": 6},
-    (True, False): {"waterproofing": 14, "warmth": 5, "lightweight": 24, "pockets": 20, "fit": 7, "durability": 5, "value": 7, "sustainability": 14, "packaging": 4},
+    (True, False): {"waterproofing": 11, "warmth": 3, "lightweight": 28, "pockets": 24, "fit": 5, "durability": 3, "value": 5, "sustainability": 17, "packaging": 4},
     (False, True): {"waterproofing": 14, "warmth": 24, "lightweight": 6, "pockets": 6, "fit": 10, "durability": 12, "value": 8, "sustainability": 16, "packaging": 4},
-    (True, True): {"waterproofing": 10, "warmth": 20, "lightweight": 8, "pockets": 6, "fit": 6, "durability": 6, "value": 6, "sustainability": 34, "packaging": 4},
+    (True, True): {"waterproofing": 9, "warmth": 22, "lightweight": 6, "pockets": 4, "fit": 5, "durability": 5, "value": 5, "sustainability": 40, "packaging": 4},
 }
 
 
@@ -192,6 +193,7 @@ def generate(g):
         return f
 
     # ---------------- stories ----------------
+    r = random.Random("reviews-k1700")
     # K-1700 1.7L kettle: ratings fall over the last eight weeks, lid seal leaks dominate
     k_pos = [("performance", "Boils fast and quiet"), ("design", "Looks great on the worktop"),
              ("ease_of_use", "Easy to pour, no drips"), ("value", "Good value for a glass kettle"),
@@ -210,6 +212,7 @@ def generate(g):
     plan += [(k, 9, 4.4) for k in range(9, 14)] + [(k, 5, 4.4) for k in range(14, 27)]
     story("K-1700", "STY-K-1700", plan, pooled(k_pos, None, k_mid, k_neg), pack=(set(range(1, 11)), k_pack))
 
+    r = random.Random("reviews-pf220")
     # PF-220 desk fan: gentle decline (outlier vs plan)
     f_pos = [("performance", "Great airflow for a desk fan"), ("design", "Compact and looks smart"),
              ("value", "Good value, quiet on low"), ("ease_of_use", "Charges quickly and easy to use")]
@@ -218,6 +221,7 @@ def generate(g):
     plan = [(k, 5, 3.8) for k in range(1, 5)] + [(k, 5, 4.2) for k in range(5, 14)] + [(k, 3, 4.2) for k in range(14, 27)]
     story("PF-220", "STY-PF-220", plan, pooled(f_pos, f_neg, f_neg))
 
+    r = random.Random("reviews-shoe")
     # SKU-100301 shoe: sole separation climbing over the last 13 weeks
     sole = ["Sole separation after only three weeks of wear", "Sole separation at the toe, the glue has given way",
             "The sole is separating from the upper after a month", "Sole separation on both shoes within weeks, very poor",
@@ -234,6 +238,7 @@ def generate(g):
         for i in range(m):
             add("SKU-100301", "STY-4171", 1 + (i % 2), "durability", r.choice(sole), when(k), country="GB")
 
+    r = random.Random("reviews-jeans")
     # SKU-100637 jeans (style STY-T-4410): waistband gapes at the back; comfort praised
     j_neg = [(("fit", "Waistband gapes at the back, I have to wear a belt"), 5),
              (("fit", "Gap at the back of the waistband whenever I sit down"), 4),
@@ -262,6 +267,7 @@ def generate(g):
             th, tx = jeans(rt, k)
             add(sku, "STY-T-4410", rt, th, tx, when(k), country="GB")
 
+    r = random.Random("reviews-athleisure")
     # STY-4056 athleisure tops: product liked, size 14 hard to find
     a_pos = [("quality", "Lovely soft fabric and the stitching is neat"), ("comfort", "Comfortable to train in, moves well"),
              ("fit", "Great fit, flattering and stays put"), ("value", "Good value for a gym top"),
@@ -285,6 +291,7 @@ def generate(g):
                 th, tx = r.choice(a_size)
                 add(r.choice(["SKU-100070", "SKU-100077"]), "STY-4056", 3, th, tx, when(k), country="GB")
 
+    r = random.Random("reviews-blouses")
     # SKU-100014 / SKU-100007 / SKU-100021 blouses (STY-4012): 100014 is the outlier; polybag tears
     b_pos = [("quality", "Lovely soft blouse, looks smart"), ("colour", "Blush colour is lovely"),
              ("fit", "Flattering fit, true to size"), ("value", "Good value for a work blouse")]
@@ -301,6 +308,7 @@ def generate(g):
     plan21 = [(k, 3, 4.2) for k in range(1, 27)]
     story("SKU-100021", "STY-4012", plan21, pooled(b_pos, None, [("quality", "Okay blouse, fabric a bit thin")], b_neg))
 
+    r = random.Random("reviews-bottle")
     # SKU-102590 750ml insulated bottle (style STY-5905): insulation and leakproof lid are what customers value
     bt_pos = [(("insulation", "Keeps drinks ice cold for a full day, genuinely impressive"), 7),
               (("insulation", "Hot coffee still hot after 12 hours"), 5),
@@ -315,6 +323,7 @@ def generate(g):
     story("SKU-102590", "STY-5905", plan, lambda rt, k: (weighted(bt_pos) if rt >= 4 else weighted(bt_neg) if rt <= 2 else r.choice(bt_mid)),
           pack=(set(range(1, 6)), [("packaging", "Bottle arrived dented, no outer box"), ("packaging", "Arrived scuffed, thin packaging")]))
 
+    r = random.Random("reviews-suppliers")
     # Outerwear suppliers in Portugal / Turkey: SUP-0058 (STY-4102), SUP-0030 (STY-4605), SUP-0079 (STY-6070, STY-9089),
     # SUP-0065 (STY-8880), SUP-0037 (STY-5613, STY-9100)
     sup_story = {
@@ -344,19 +353,20 @@ def generate(g):
                         th, tx = r.choice(neg or pos)
                     else:
                         th, tx = r.choice(neg) if neg else ("fit", "Okay jacket, nothing special")
-                    seg = r.choices(SEGMENTS, SEG_W)[0]
+                    seg = r.choices(SEGMENTS[1:], SEG_W[1:])[0] 
                     add(r.choice(skus), style, rt, th, tx, when(k), seg=seg)
 
+    r = random.Random("reviews-returns")
     # Top returned styles that have launched: dominant complaint theme
     ret_story = {
-        "STY-8683": ("expectation", 3.4, ["Not as described, nothing like the product page", "Looks completely different to the photos", "Texture and scent are not what the listing promised", "Smaller than the picture suggests, not as advertised"],
-                     ["Lovely product", "Does what it says"]),
-        "STY-5094": ("quality", 3.2, ["Strap snapped within a month", "Zip failed after two weeks", "Stitching on the handle came apart", "Lining ripped on first use"],
-                     ["Well made and roomy", "Good quality for the price"]),
-        "STY-4123": ("sizing", 3.3, ["Runs very small, had to return", "Sizing is nothing like the chart, far too tight", "Ordered my usual size and it was too small", "Much smaller than the age on the label"],
-                     ["Fits well", "Good sizing for my daughter"]),
-        "STY-8908": ("sizing", 3.1, ["Runs a full size small", "Narrow and too tight, had to send them back", "Sizing is off, ordered two sizes to compare", "Too small even in my usual size"],
-                     ["Comfortable once I got the right size", "Nice shoes"]),
+        "STY-8683": ("expectation", 3.2, ["Not as described, nothing like the product page", "Looks completely different to the photos", "Texture and scent are not what the listing promised", "Smaller than the picture suggests, not as advertised"],
+                     [("quality", "Lovely product, does what it says"), ("scent", "Pleasant fragrance")]),
+        "STY-5094": ("quality", 3.0, ["Strap snapped within a month", "Zip failed after two weeks", "Stitching on the handle came apart", "Lining ripped on first use"],
+                     [("value", "Good value for the price"), ("design", "Roomy and looks smart")]),
+        "STY-4123": ("sizing", 3.1, ["Runs very small, had to return", "Sizing is nothing like the chart, far too tight", "Ordered my usual size and it was too small", "Much smaller than the age on the label"],
+                     [("value", "Good value for school"), ("comfort", "Comfortable for school days")]),
+        "STY-8908": ("sizing", 2.9, ["Runs a full size small", "Narrow and too tight, had to send them back", "Sizing is off, ordered two sizes to compare", "Too small even in my usual size"],
+                     [("comfort", "Comfortable once worn in"), ("value", "Nice shoes for the price")]),
     }
     for style, (th, mean, negs, poss) in ret_story.items():
         prods = by_style[style]
@@ -364,14 +374,16 @@ def generate(g):
         for k in range(1, 27):
             if k > 13 and k % 2:
                 continue
-            for rt in ratings_for(r, 2, mean if k <= 13 else 4.1):
+            for rt in ratings_for(r, 2, mean if k <= 13 else 4.1, 1.5):
                 if rt <= 3:
                     add(sku, style, rt, th, r.choice(negs), when(k), country="GB")
                 else:
-                    add(sku, style, rt, "value", r.choice(poss), when(k), country="GB")
+                    pt, px = r.choice(poss)
+                    add(sku, style, rt, pt, px, when(k), country="GB")
 
     story_styles = {"STY-K-1700", "STY-PF-220", "STY-4171", "STY-T-4410", "STY-4056", "STY-4012", "STY-5905"} | set(sup_story) | set(ret_story)
 
+    r = random.Random("reviews-background")
     # ---------------- background: every launched style, one primary SKU ----------------
     cutoff = (as_of - timedelta(days=21)).isoformat()
     for style in sorted(by_style):
@@ -386,11 +398,11 @@ def generate(g):
         grp = GROUP.get(cat, APPAREL)
         base = r.choice([3.9, 4.0, 4.1, 4.2, 4.3, 4.4])
         for lo, hi in [(1, 89), (91, 180)]:
-            n = r.randint(4, 8)
+            n = r.randint(7, 12) if grp is OUTER else r.randint(4, 8)
             mean = max(3.0, min(4.8, base + r.uniform(-0.1, 0.1)))
             for rt in ratings_for(r, n, mean, 0.9):
-                seg = r.choices(SEGMENTS, SEG_W)[0]
-                country = r.choices(COUNTRIES, COUNTRY_W)[0]
+                seg = r.choices(SEGMENTS, [35, 14, 8, 10, 6, 3, 8, 8, 8] if grp is OUTER else SEG_W)[0]
+                country = r.choices(COUNTRIES, [68, 20, 5, 4, 3] if grp is OUTER else COUNTRY_W)[0]
                 if grp is OUTER:
                     w = OUTER_W[(seg == "25-34", country == "DE")]
                     theme = r.choices(list(w), list(w.values()))[0]
@@ -400,6 +412,7 @@ def generate(g):
                 store = r.choice(stores) if r.random() < 0.08 else None
                 add(prim["sku"], style, rt, theme, text, when(days=r.randint(lo, hi)), seg=seg, country=country, store=store)
 
+    r = random.Random("reviews-competitors")
     # ---------------- competitor products and their reviews ----------------
     comp = [
         # id, competitor, category, name, price, status, features, our sku, avg rating, review count

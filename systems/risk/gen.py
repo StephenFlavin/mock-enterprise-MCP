@@ -1,385 +1,231 @@
+"""Background (noise) data for the risk system. Story rows live in seed/*.csv with RSK-9xxxxx style ids.
+
+Noise is deliberately small, low-exposure and master-consistent: suppliers are matched to the country of the
+event or alert, SKUs and styles come from master products, owners are real employees.
+"""
+
+
 def generate(g):
-    """Generate realistic risk management data around the enterprise."""
-
-    # Get suppliers for realistic risk generation
-    suppliers = g.master("suppliers")
-    employees = g.master("employees")
-    sites = g.master("sites")
-    skus = g.master("products")[:50]  # Sample
-
     rng = g.rng
-    fake = g.fake
+    suppliers = [s for s in g.master("suppliers") if s["status"] == "active"]
+    by_country = {}
+    for s in suppliers:
+        by_country.setdefault(s["country"], []).append(s)
+    products = g.master("products")
+    owners = [f"EMP-{i:05d}" for i in range(2, 10)]
+    dcs = ["DC1", "DC2", "DC3", "DC4", "DC5"]
 
-    # Risk register entries - diverse portfolio
-    risk_register = []
-    risk_ids = ["RSK-000001", "RSK-000002", "RSK-000003", "RSK-000004", "RSK-000005"]
+    def sup(country):
+        return rng.choice(by_country[country])
 
-    for i, risk_id in enumerate(risk_ids[:3]):
-        risk_register.append({
-            "risk_id": risk_id,
-            "risk_category": ["supply_chain", "geopolitical", "financial"][i % 3],
-            "description": [
-                "Concentration in Vietnam sourcing - 40% of SKUs at risk if port closes",
-                "Energy price volatility affecting production costs - current hedges expire Q1",
-                "Single carrier dependency for European distribution"
-            ][i],
-            "owner_id": g.pick(employees)["employee_id"],
-            "likelihood_pct": rng.randint(30, 85),
-            "impact_gbp": float(rng.randint(200000, 2000000)),
-            "exposure_gbp": 0,  # Will be calculated in SQL
-            "rating": ["low", "medium", "high", "critical"][rng.randint(0, 3)],
-            "affected_sku": g.pick(skus)["sku"] if rng.random() > 0.3 else None,
-            "affected_supplier_id": g.pick(suppliers)["supplier_id"] if rng.random() > 0.2 else None,
-            "affected_site_id": g.pick(sites)["site_id"] if rng.random() > 0.4 else None,
-            "mitigation_plan": "Review and diversify sourcing; build buffer stock; negotiate contracts",
-            "status": "active",
-            "assumptions": "Assumes current geopolitical stability; assumes carrier capacity unchanged",
-            "created_at": g.days_ago(rng.randint(30, 180)),
-            "updated_at": g.days_ago(rng.randint(1, 30)),
-            "archived_at": None,
-        })
-
-    # Add a mitigated risk
-    risk_register.append({
-        "risk_id": "RSK-000004",
-        "risk_category": "operational",
-        "description": "Warehouse management system integration delays - mitigated with phased rollout",
-        "owner_id": g.pick(employees)["employee_id"],
-        "likelihood_pct": 20,
-        "impact_gbp": 150000,
-        "exposure_gbp": 30000,
-        "rating": "low",
-        "affected_sku": None,
-        "affected_supplier_id": None,
-        "affected_site_id": "DC1",
-        "mitigation_plan": "Implemented phased rollout plan with fallback procedures",
-        "status": "mitigated",
-        "assumptions": "Assumes IT team capacity; assumes vendor support available",
-        "created_at": g.days_ago(120),
-        "updated_at": g.days_ago(15),
-        "archived_at": None,
-    })
-
-    # Risk alert rules
-    alert_rules = []
-    for i in range(8):
-        alert_rules.append({
-            "rule_id": f"ARU-{i+1:06d}",
-            "rule_name": [
-                "Vietnam geopolitical risk escalation",
-                "Critical supplier financial warning",
-                "Port disruption in Asia-Pacific",
-                "Extreme weather in sourcing regions",
-                "Regulatory compliance breach alerts",
-                "Key carrier capacity constraint",
-                "Exchange rate volatility threshold",
-                "Supplier quality failure threshold"
-            ][i],
-            "trigger_type": ["country_risk", "supplier_risk", "port_risk", "weather", "regulatory", "carrier", "financial", "other"][i],
-            "trigger_country": "VN" if i < 4 else None,
-            "trigger_supplier_id": g.pick(suppliers)["supplier_id"] if i in [1, 6] else None,
-            "severity_level": ["info", "warning", "critical"][rng.randint(0, 2)],
-            "description": ["Watch Vietnam political developments", "Monitor supplier credit rating",
-                           "Track port status", "Monitor weather forecasts", "Track new regulations",
-                           "Monitor carrier capacity", "Track FX movements", "Track quality metrics"][i],
-            "action_required": ["Review contingency plans", "Prepare dual sourcing", "Activate air freight",
-                               "Accelerate shipments", "Review compliance", "Negotiate additional capacity",
-                               "Adjust hedges", "Notify quality team"][i],
-            "active": rng.random() > 0.2,
-            "created_at": g.days_ago(rng.randint(30, 180)),
-            "last_triggered_at": g.days_ago(rng.randint(1, 30)) if rng.random() > 0.4 else None,
-        })
-
-    # Risk events - current monitoring
-    risk_events = []
-    event_types = ["geopolitical", "weather", "port_disruption", "supplier_issue", "regulatory", "financial"]
-    for i in range(12):
-        detected = g.days_ago(rng.randint(1, 20))
-        risk_events.append({
-            "event_id": f"RVT-{i+1:06d}",
-            "event_type": event_types[i % len(event_types)],
-            "location": ["Vietnam", "South China Sea", "Port of Singapore", "Bangladesh", "Thailand"][rng.randint(0, 4)],
-            "description": [
-                "Typhoon season escalation - potential impact on port operations",
-                "Supplier liquidity concerns reported in news",
-                "Labor unrest at key port affecting throughput",
-                "New export restrictions on electronics components",
-                "Carrier rate hike announcement for Q4",
-                "Political tensions affecting shipping lanes"
-            ][i % 6],
-            "severity": ["low", "medium", "high", "critical"][rng.randint(0, 3)],
-            "affected_suppliers": ",".join([g.pick(suppliers)["supplier_id"] for _ in range(rng.randint(1, 3))]),
-            "affected_ports": "Singapore,HCMC Port,Hai Phong" if i % 3 == 0 else None,
-            "time_to_impact_days": rng.randint(3, 45),
-            "revenue_at_risk_gbp": float(rng.randint(50000, 800000)),
-            "status": ["emerging", "active", "monitoring"][rng.randint(0, 2)],
-            "first_detected_at": detected,
-            "impact_felt_at": g.days_ago(rng.randint(0, 10)) if rng.random() > 0.7 else None,
-        })
-
-    # Risk scenarios
-    risk_scenarios = []
-    scenario_names = [
-        "Vietnam port closure - 6 weeks",
-        "Major supplier bankruptcy",
-        "Geopolitical escalation - shipping blocked",
-        "Climate event - production facility damaged"
+    # ---- risk register: small background risks, mostly closed or low exposure ----
+    register = []
+    templates = [
+        ("operational", "Stock count variances at {site} above tolerance after the autumn cycle count", "site"),
+        ("operational", "Dock appointment overruns at {site} during inbound peaks", "site"),
+        ("supply_chain", "Late deliveries from {name} ({sid}) on autumn replenishment orders", "sup"),
+        ("supply_chain", "Quality rework cost at {name} ({sid}) above agreed tolerance", "sup"),
+        ("financial", "Supplier price increase requests from {name} ({sid}) not yet negotiated", "sup"),
+        ("financial", "Customs duty classification queries on recent imports", None),
+        ("operational", "Forklift fleet ageing at {site}; higher breakdown rate", "site"),
+        ("technology", "Legacy EDI link to {name} ({sid}) unsupported by the vendor", "sup"),
+        ("regulatory", "Updated product labelling rules for small electricals", None),
+        ("demand", "Returns rate on online dresses above forecast", None),
+        ("supply_chain", "Single haulier for DC4 Venlo inbound during January", None),
+        ("operational", "Pick accuracy dip at {site} after temporary staff intake", "site"),
+        ("financial", "Late payment interest on disputed supplier invoices", None),
+        ("regulatory", "Data retention rules for supplier audit evidence", None),
+        ("climate", "Heat-related productivity loss at {site} next summer", "site"),
+        ("operational", "Security tagging gaps on high-value electricals at {site}", "site"),
     ]
-    for i, name in enumerate(scenario_names):
-        risk_scenarios.append({
-            "scenario_id": f"RSC-{i+1:06d}",
-            "scenario_name": name,
-            "description": [
-                "Saigon port closed for 6 weeks due to typhoon or political event",
-                "Major Vietnam supplier bankruptcy triggers supply interruption",
-                "US-China tensions escalate, blocking shipping through Taiwan strait",
-                "Flooding damages key Bangladesh production facility for 8 weeks"
-            ][i],
-            "trigger_event": ["Typhoon/political event", "Financial crisis", "Geopolitical escalation", "Extreme weather"][i],
-            "likelihood_pct": [35, 15, 20, 25][i],
-            "revenue_impact_gbp": float([750000, 500000, 1200000, 400000][i]),
-            "margin_impact_pct": [8.5, 6.2, 12.0, 5.8][i],
-            "affected_skus": "STY-5520,K-1700,PF-220" if i < 2 else "STY-7731",
-            "mitigation_options": ["Air freight, alternate ports, buffer stock", "Dual source activation",
-                                  "Reroute via alternate lanes", "Shift to secondary facilities"][i],
-            "cost_to_mitigate_gbp": float([250000, 180000, 320000, 150000][i]),
-            "payback_weeks": [12, 14, 16, 10][i],
-            "created_at": g.days_ago(rng.randint(60, 180)),
-            "created_by_id": g.pick(employees)["employee_id"],
+    statuses = ["active"] * 7 + ["mitigated"] * 3 + ["closed"] * 4 + ["archived"] * 2
+    rng.shuffle(statuses)
+    for i, (cat, tpl, kind) in enumerate(templates):
+        s = rng.choice(suppliers)
+        site = rng.choice(dcs)
+        status = statuses[i]
+        created = rng.randint(70, 420)
+        row = {
+            "risk_id": f"RSK-{i + 1:06d}",
+            "risk_category": cat,
+            "description": tpl.format(site=site, name=s["name"], sid=s["supplier_id"]),
+            "owner_id": rng.choice(owners),
+            "likelihood_pct": rng.randint(10, 35),
+            "impact_gbp": float(rng.randint(20, 180) * 1000),
+            "horizon_months": rng.choice([3, 6, 9, 12, 18, 24]),
+            "affected_supplier_id": s["supplier_id"] if kind == "sup" else None,
+            "affected_site_id": site if kind == "site" else None,
+            "mitigation_plan": rng.choice(["Monitor monthly; no action needed beyond routine controls",
+                                           "Agreed corrective action plan with owner",
+                                           "Covered by existing insurance and contract terms"]),
+            "status": status,
+            "assumptions": "Business as usual conditions",
+            "created_at": g.days_ago(created),
+            "updated_at": g.days_ago(rng.randint(5, min(created, 60))),
+            "archived_at": g.days_ago(rng.randint(5, 50)) if status == "archived" else None,
+        }
+        register.append(row)
+
+    # ---- alert rules: non-story monitoring rules (old, inactive or outside the Asia story) ----
+    alerts = []
+    alert_defs = [
+        ("country_risk", "TR", "info", "Turkey lira volatility and wage unrest", "Monitor Turkish lira swings and factory wage disputes", "Review pricing and payment terms with Turkish suppliers", 12),
+        ("country_risk", "PT", "info", "Portugal national transport strike notice", "Strike notice by haulage unions affecting Leixoes port", "Check inbound ETAs for Portuguese POs", 20),
+        ("country_risk", "MX", "info", "Mexico border crossing delays", "Border inspection delays on road freight to the US", "Reroute urgent loads", 30),
+        ("country_risk", "CN", "info", "China port congestion at Shanghai (cleared)", "Congestion at Shanghai during golden week; since cleared", "Resume normal booking cadence", 120),
+        ("country_risk", "IN", "info", "India monsoon delays at Nhava Sheva (seasonal, cleared)", "Seasonal rain delays at Nhava Sheva", "Resume normal booking cadence", 160),
+        ("weather", "BD,VN", "warning", "Extreme weather in sourcing regions (superseded)", "General weather watch replaced by country-specific rules", "None", 210),
+        ("supplier_risk", None, "warning", "Critical supplier financial warning", "Monitor credit rating of suppliers rated high or critical", "Prepare dual sourcing", 9),
+        ("port_risk", None, "info", "Port congestion watch - UK ports", "Track dwell time at Felixstowe and Southampton", "Check inbound status", 14),
+        ("financial", None, "info", "Exchange rate volatility threshold", "GBP/USD moves over 2% in a week", "Review hedge cover", 6),
+        ("regulatory", None, "info", "Regulatory change watch", "New UK and EU product compliance notices", "Notify compliance team", 40),
+        ("other", None, "info", "Supplier quality failure threshold", "Defect rate above 2% on inbound QC", "Notify quality team", 25),
+    ]
+    for i, (ttype, country, sev, name, desc, action, days) in enumerate(alert_defs):
+        alerts.append({
+            "rule_id": f"ARU-{i + 1:06d}",
+            "rule_name": name,
+            "trigger_type": ttype,
+            "trigger_country": country,
+            "trigger_supplier_id": rng.choice(suppliers)["supplier_id"] if ttype == "supplier_risk" else None,
+            "severity_level": sev,
+            "description": desc,
+            "action_required": action,
+            "active": not name.endswith("(superseded)"),
+            "created_at": g.days_ago(days + rng.randint(30, 150)),
+            "last_triggered_at": g.days_ago(days),
         })
 
-    # Disruption incidents - historical
-    disruption_incidents = []
-    for i in range(3):
-        started = g.days_ago(rng.randint(30, 180))
-        ended = g.days_ago(rng.randint(5, 25))
-        disruption_incidents.append({
-            "incident_id": f"DIS-{i+1:06d}",
-            "incident_name": [
-                "Port congestion at Singapore - March 2026",
-                "Supplier quality issue - electronics batch recall",
-                "Carrier capacity shortage - rate spike"
-            ][i],
-            "description": [
-                "Unexpected port congestion caused 3-week dwell time for inbound container",
-                "Defective component batch from Bangladesh supplier affected 2,500 units",
-                "Major carrier cut capacity, doubled rates for Asia-Europe lanes"
-            ][i],
-            "root_cause": [
-                "Understaffing at port due to labor disputes",
-                "Quality control gap in supplier's new line",
-                "Carrier vessel breakdown cascade effect"
-            ][i],
-            "started_at": started,
-            "ended_at": ended,
-            "duration_days": (started - ended).days,
-            "revenue_impact_gbp": float([320000, 280000, 150000][i]),
-            "cost_impact_gbp": float([85000, 120000, 200000][i]),
-            "affected_suppliers": g.pick(suppliers)["supplier_id"] if i > 0 else None,
-            "affected_skus": "K-1700" if i == 1 else None,
-            "lessons_learned": [
-                "Need real-time port visibility; consider port insurance",
-                "Tighten supplier quality audits; require redundant testing",
-                "Diversify carriers; negotiate long-term rate protection"
-            ][i],
-            "assumptions_wrong": [
-                "Assumed port operates at normal capacity; actual: 30% reduction in throughput",
-                "Assumed supplier's quality certifications meant zero defects; actual: needed tighter audits",
-                "Assumed carrier capacity stable; actual: highly volatile during peak season"
-            ][i],
+    # ---- risk events: noisy, low-severity or already resolved ----
+    events = []
+    event_defs = [
+        ("port_disruption", "UK", "Southampton", "Post-strike normalisation at UK ports; dwell times back near normal", "low", None, "Southampton", None, "resolved", 24),
+        ("weather", "Philippines", None, "Tropical storm forms east of the Philippines; track away from our sourcing ports", "low", None, None, None, "monitoring", 9),
+        ("financial", "Global", None, "Oil price swings of 3% this week; no change to freight surcharges yet", "low", None, None, None, "monitoring", 11),
+        ("cyber", "UK", None, "Phishing campaign against logistics firms; no incident at our suppliers", "low", None, None, None, "monitoring", 12),
+        ("regulatory", "EU", None, "Consultation on packaging labels; no deadline set", "low", None, None, None, "monitoring", 15),
+        ("supplier_issue", "Turkey", "Mersin", "Short factory holiday at a Turkish supplier; orders unaffected", "low", "TR", "Mersin", None, "resolved", 21),
+        ("geopolitical", "India", "Nhava Sheva", "Election-related road blockades in Gujarat lifted after two days", "low", "IN", "Nhava Sheva", None, "resolved", 33),
+        ("weather", "China", "Shanghai", "Typhoon passes south of Shanghai; port closed for one day", "medium", "CN", "Shanghai", None, "resolved", 40),
+        ("port_disruption", "Netherlands", "Rotterdam", "Strike at Rotterdam terminal ended after 48 hours", "medium", None, "Rotterdam", None, "resolved", 45),
+        ("supplier_issue", "Portugal", "Leixoes", "Fire drill at Portuguese supplier site; no production lost", "low", "PT", "Leixoes", None, "resolved", 52),
+    ]
+    for i, (etype, loc, port, desc, sev, country, ports, lanes, status, days) in enumerate(event_defs):
+        supplier_ids = None
+        if country:
+            supplier_ids = ",".join(sorted({sup(country)["supplier_id"] for _ in range(rng.randint(1, 2))}))
+        events.append({
+            "event_id": f"RVT-{i + 1:06d}",
+            "event_type": etype,
+            "location": loc,
+            "description": desc,
+            "severity": sev,
+            "affected_suppliers": supplier_ids,
+            "affected_ports": ports,
+            "affected_lanes": lanes,
+            "time_to_impact_days": rng.randint(20, 60) if status != "resolved" else 0,
+            "revenue_at_risk_gbp": float(rng.randint(5, 35) * 1000) if status != "resolved" else float(rng.randint(10, 60) * 1000),
+            "status": status,
+            "first_detected_at": g.days_ago(days),
+            "impact_felt_at": g.days_ago(days - 1) if status == "resolved" and sev == "medium" else None,
+        })
+
+    # ---- older disruption incidents with their assumptions ----
+    incidents, assumptions = [], []
+    old = [
+        ("Sourcing office power cut in Hong Kong", "Two-day power failure at the Hong Kong sourcing office delayed PO confirmations",
+         "Utility substation fault", 330, 3, 22000.0, 4000.0, "Backup power for the sourcing office"),
+        ("UK haulier IT outage", "Haulier booking system outage delayed inbound collections at DC1 for four days",
+         "Third-party system failure", 280, 4, 41000.0, 9000.0, "Manual booking fallback agreed with hauliers"),
+    ]
+    for i, (name, desc, cause, ago, dur, rev, cost, lesson) in enumerate(old):
+        iid = f"DIS-{i + 1:06d}"
+        started = g.days_ago(ago)
+        incidents.append({
+            "incident_id": iid, "incident_name": name, "description": desc, "root_cause": cause,
+            "started_at": started, "ended_at": g.days_ago(ago - dur), "duration_days": dur,
+            "revenue_impact_gbp": rev, "cost_impact_gbp": cost, "affected_suppliers": None, "affected_skus": None,
+            "lessons_learned": lesson, "assumptions_wrong": "Assumed the fallback process was tested; it was not",
             "status": "closed",
         })
-
-    # Risk assumptions for the disruption incidents
-    risk_assumptions = []
-    for incident_idx, incident in enumerate(disruption_incidents):
-        for j in range(3):
-            risk_assumptions.append({
-                "incident_id": incident["incident_id"],
-                "assumption_id": j + 1,
-                "assumption_text": [
-                    "Port operates at 85-90% normal capacity during peak season",
-                    "Supplier's ISO certifications guarantee <0.1% defect rate",
-                    "Carrier maintains 15% capacity buffer year-round"
-                ][j],
-                "expected_value": ["85-90%", "<0.1% defect", "15% buffer"][j],
-                "actual_value": ["50-60% capacity", "2.5% defect rate", "No buffer available"][j],
-                "impact_of_error": [
-                    "Delayed 8 containers, cascading into 18-day shipment delays",
-                    "Cost £120k in rework + brand risk; lost 5% of month's revenue",
-                    "Rates tripled for 3 weeks, added £200k unbudgeted cost"
-                ][j],
-                "recorded_at": g.days_ago(rng.randint(5, 20)),
-            })
-
-    # Guidance risks
-    guidance_risks = []
-    for i in range(4):
-        guidance_risks.append({
-            "guidance_risk_id": f"GRK-{i+1:06d}",
-            "risk_description": [
-                "Vietnam supply disruption could impact Q4 revenue guidance",
-                "Energy cost volatility could reduce margin guidance by 50bps",
-                "Supply chain delays could push inventory buildup into next year",
-                "Tariff escalation scenarios could impact FY 2027 margin guidance"
-            ][i],
-            "guidance_range_gbp": ["850-880m", "870-910m", "890-920m", "900-950m"][i],
-            "likelihood_pct": [40, 35, 25, 45][i],
-            "impact_gbp": float([200000, 150000, 100000, 250000][i]),
-            "mitigation": [
-                "Activated contingency sourcing plan; prepared communication",
-                "Hedging program in place; quarterly rebalancing",
-                "Working with ops on acceleration plan; buffering capacity",
-                "Monitoring tariff proposals; scenario analysis underway"
-            ][i],
-            "status": ["active", "mitigated", "active", "active"][i],
-            "created_at": g.days_ago(rng.randint(45, 120)),
+        assumptions.append({
+            "incident_id": iid, "assumption_id": 1, "assumption_text": "Fallback process restores service within one day",
+            "expected_value": "1 day", "actual_value": f"{dur} days", "expected_num": 1.0, "actual_num": float(dur),
+            "unit": "days", "impact_of_error": "Orders waited for manual handling", "recorded_at": g.days_ago(ago - dur - 7),
         })
 
-    # Single points of failure
-    single_points_of_failure = []
-    spof_data = [
-        {
-            "failure_type": "supplier",
-            "description": "Vietnam supplier (SUP-0001) sole source for Style 5520 - 35% of Q4 sales",
-            "critical_skus": "STY-5520",
-            "affected_supplier_id": "SUP-0001",
-            "revenue_dependent_gbp": 450000,
-            "mitigation_options": "Dual source with India supplier; 6-week lead time agreed",
-            "option_cost_gbp": 35000,
-            "priority": "critical"
-        },
-        {
-            "failure_type": "route",
-            "description": "70% of inbound via Suez Canal - blocked or congested cuts access",
-            "critical_skus": "K-1700,PF-220",
-            "revenue_dependent_gbp": 820000,
-            "mitigation_options": "Activate Cape of Good Hope reroute; air freight for critical SKUs",
-            "option_cost_gbp": 180000,
-            "priority": "high"
-        },
-        {
-            "failure_type": "facility",
-            "description": "DC1 (Northampton) handles 45% of inbound - single facility point of failure",
-            "revenue_dependent_gbp": 1200000,
-            "mitigation_options": "Load balance to DC2 and DC3; pre-position buffer inventory",
-            "option_cost_gbp": 95000,
-            "priority": "high"
-        },
-        {
-            "failure_type": "carrier",
-            "description": "Carrier CAR-0042 handles 60% of Europe distribution",
-            "revenue_dependent_gbp": 650000,
-            "mitigation_options": "Contract with secondary carrier CAR-0043; negotiate standby capacity",
-            "option_cost_gbp": 42000,
-            "priority": "medium"
-        }
+    # ---- guidance risks: resolved or mitigated background ----
+    guidance = [
+        {"guidance_risk_id": "GRK-000001", "risk_description": "Delayed autumn range launch resolved after supplier caught up",
+         "guidance_range_gbp": "2026-Q3 revenue", "likelihood_pct": 10, "impact_gbp": 150000.0, "mitigation": "Range landed on time",
+         "mitigable_this_quarter": True, "trigger_point": "Launch slips beyond week 36", "status": "resolved", "created_at": g.days_ago(140)},
+        {"guidance_risk_id": "GRK-000002", "risk_description": "Card payment fee increase absorbed in budget",
+         "guidance_range_gbp": "2026-Q4 EBITDA 5.28-6.24m", "likelihood_pct": 20, "impact_gbp": 90000.0, "mitigation": "Fee negotiated down; within budget",
+         "mitigable_this_quarter": True, "trigger_point": "Fee increase above 5bps", "status": "mitigated", "created_at": g.days_ago(95)},
     ]
 
-    for i, data in enumerate(spof_data):
-        single_points_of_failure.append({
-            "spof_id": f"SPF-{i+1:06d}",
-            "failure_type": data["failure_type"],
-            "description": data["description"],
-            "critical_skus": data.get("critical_skus"),
-            "affected_supplier_id": data.get("affected_supplier_id"),
-            "affected_route": "Suez Canal" if i == 1 else None,
-            "revenue_dependent_gbp": data["revenue_dependent_gbp"],
-            "mitigation_options": data["mitigation_options"],
-            "option_cost_gbp": data["option_cost_gbp"],
-            "priority": data["priority"],
-            "status": ["identified", "planning"][rng.randint(0, 1)],
-            "created_at": g.days_ago(rng.randint(30, 90)),
+    # ---- single points of failure: small style-level background ----
+    rev = {}
+    for s in g.master("sales_weekly"):
+        rev[s["sku"]] = rev.get(s["sku"], 0.0) + float(s["revenue_gbp"])
+    style_rev, style_sup = {}, {}
+    for p in products:
+        style_rev[p["style_id"]] = style_rev.get(p["style_id"], 0.0) + rev.get(p["sku"], 0.0)
+        style_sup[p["style_id"]] = p["supplier_id"]
+    story_styles = {"STY-8766", "STY-5520"}
+    cands = sorted(st for st, v in style_rev.items() if 40000 <= v <= 250000 and st not in story_styles and not st.startswith("STY-PF") and not st.startswith("STY-K"))
+    spofs = []
+    opts = [("Qualify a second factory for the style", 35000.0), ("Hold 4 weeks buffer stock", 22000.0),
+            ("Agree capacity reservation clause", 12000.0), ("Dual source 30% of volume", 28000.0)]
+    for i, st in enumerate(rng.sample(cands, 8)):
+        opt = rng.choice(opts)
+        spofs.append({
+            "spof_id": f"SPF-{i + 1:06d}", "failure_type": "supplier",
+            "description": f"Style {st} made only by {style_sup[st]}; no approved alternative",
+            "critical_skus": st, "affected_supplier_id": style_sup[st], "affected_site_id": None, "affected_route": None,
+            "revenue_dependent_gbp": round(style_rev[st], -3),
+            "mitigation_options": opt[0], "option_cost_gbp": opt[1],
+            "priority": rng.choice(["low", "low", "medium"]),
+            "status": rng.choice(["identified", "planning", "mitigated"]),
+            "created_at": g.days_ago(rng.randint(40, 300)),
         })
 
-    # Cutover risks
-    cutover_risks = []
-    for i in range(3):
-        cutover_risks.append({
-            "cutover_risk_id": f"CTO-{i+1:06d}",
-            "project_name": ["WMS Migration Go-Live", "SAP S/4HANA Cutover", "Network Redesign Phase 2"][i],
-            "risk_description": [
-                "Inventory discrepancies discovered at cutover could delay go-live by 2 weeks",
-                "Data migration validation incomplete; risk of corrupted master records",
-                "New network paths not fully tested; risk of traffic congestion at cutover"
-            ][i],
-            "probability": ["medium", "high", "medium"][i],
-            "business_impact": [
-                "Delays operations, unable to process receipts/shipments for up to 2 weeks",
-                "Could discover data issues post-cutover requiring emergency fixes",
-                "Could cause service interruption affecting customer deliveries"
-            ][i],
-            "impact_severity": ["high", "critical", "medium"][i],
-            "mitigation_steps": [
-                "Completed inventory audit; parallel run in progress; rollback plan ready",
-                "Incremental testing plan; parallel run for 1 week; data reconciliation daily",
-                "Load testing at 150% peak; alternate routing configured; traffic monitoring 24/7"
-            ][i],
-            "owner_id": g.pick(employees)["employee_id"],
-            "status": ["open", "mitigated", "resolved"][i],
-            "created_at": g.days_ago(rng.randint(60, 180)),
-        })
-
-    # Risk opportunities
-    risk_opportunities = []
-    for i in range(5):
-        risk_opportunities.append({
-            "opportunity_id": f"OPP-{i+1:06d}",
-            "opportunity_name": [
-                "Nearshore sourcing in Morocco for Europe SKUs",
-                "Supplier consolidation to gain volume discounts",
-                "Predictive supply chain visibility platform",
-                "Blockchain traceability for high-value items",
-                "Route optimization using AI algorithms"
-            ][i],
-            "description": [
-                "Move 25% of European SKUs to Morocco supplier; 30-day lead vs 60-day from Asia",
-                "Reduce supplier base by 30%; negotiate better rates and terms",
-                "Real-time end-to-end visibility could reduce safety stock by 15%",
-                "Full traceability chain reduces fraud risk and enables premium pricing",
-                "Machine learning route optimization saves 8-12% on logistics costs"
-            ][i],
-            "category": ["efficiency", "cost_saving", "risk_reduction", "revenue_growth", "cost_saving"][i],
-            "potential_benefit_gbp": float([120000, 280000, 95000, 180000, 220000][i]),
-            "probability_pct": [65, 45, 55, 35, 60][i],
-            "expected_value_gbp": float([78000, 126000, 52250, 63000, 132000][i]),
-            "owner_id": g.pick(employees)["employee_id"],
-            "status": ["identified", "approved", "in_progress", "identified", "approved"][i],
-            "created_at": g.days_ago(rng.randint(30, 150)),
-        })
-
-    # Risk mitigation options
-    risk_mitigation_options = []
-    mito_data = [
-        {"risk": "RSK-000001", "name": "Activate Vietnam alternative supplier", "cost": 45000, "residual": 35},
-        {"risk": "RSK-000001", "name": "Implement port visibility system", "cost": 28000, "residual": 25},
-        {"risk": "RSK-000002", "name": "Extend energy hedging program", "cost": 15000, "residual": 40},
-        {"risk": "RSK-000003", "name": "Contract with secondary carrier", "cost": 52000, "residual": 50},
+    # ---- opportunities: small or already closed ----
+    opps = [
+        ("Reuse returned cartons in DC3", "Reuse returns cartons for outbound online parcels", "cost_saving", 45000.0, 60, "realized", 200),
+        ("Pilot store-to-door delivery", "Pilot same-day delivery from 10 stores", "revenue_growth", 120000.0, 20, "cancelled", 150),
+        ("LED lighting at DC4", "Replace lighting at Venlo DC", "cost_saving", 60000.0, 70, "realized", 260),
     ]
+    opportunities = []
+    for i, (name, desc, cat, benefit, prob, status, ago) in enumerate(opps):
+        opportunities.append({
+            "opportunity_id": f"OPP-{i + 1:06d}", "opportunity_name": name, "description": desc, "category": cat,
+            "potential_benefit_gbp": benefit, "probability_pct": prob, "expected_value_gbp": round(benefit * prob / 100.0),
+            "owner_id": rng.choice(owners), "status": status, "created_at": g.days_ago(ago),
+        })
 
-    for i, data in enumerate(mito_data):
-        risk_mitigation_options.append({
-            "mitigation_id": f"MIT-{i+1:06d}",
-            "related_risk_id": data["risk"],
-            "option_name": data["name"],
-            "option_description": f"Implement {data['name'].lower()} to reduce exposure",
-            "cost_gbp": data["cost"],
-            "residual_risk_pct": data["residual"],
-            "implementation_weeks": rng.randint(2, 12),
-            "effectiveness": ["medium", "high", "high", "very_high"][i],
-            "owner_id": g.pick(employees)["employee_id"],
+    # ---- a few mitigation options for background risks ----
+    mitigations = []
+    active_noise = [r for r in register if r["status"] == "active"][:4]
+    for i, r in enumerate(active_noise):
+        mitigations.append({
+            "mitigation_id": f"MIT-{i + 1:06d}", "related_risk_id": r["risk_id"],
+            "option_name": "Routine control improvement", "option_description": "Tighten monthly checks and review with the owner",
+            "cost_gbp": float(rng.randint(3, 15) * 1000), "residual_risk_pct": rng.choice([40, 50, 60]),
+            "implementation_weeks": rng.randint(2, 8), "effectiveness": rng.choice(["low", "medium"]), "owner_id": r["owner_id"],
         })
 
     return {
-        "risk_register": risk_register,
-        "risk_alert_rules": alert_rules,
-        "risk_events": risk_events,
-        "risk_scenarios": risk_scenarios,
-        "disruption_incidents": disruption_incidents,
-        "risk_assumptions": risk_assumptions,
-        "guidance_risks": guidance_risks,
-        "single_points_of_failure": single_points_of_failure,
-        "cutover_risks": cutover_risks,
-        "risk_opportunities": risk_opportunities,
-        "risk_mitigation_options": risk_mitigation_options,
+        "risk_register": register,
+        "risk_alert_rules": alerts,
+        "risk_events": events,
+        "risk_briefings": [],
+        "risk_scenarios": [],
+        "disruption_incidents": incidents,
+        "risk_assumptions": assumptions,
+        "guidance_risks": guidance,
+        "single_points_of_failure": spofs,
+        "cutover_risks": [],
+        "risk_opportunities": opportunities,
+        "risk_mitigation_options": mitigations,
     }

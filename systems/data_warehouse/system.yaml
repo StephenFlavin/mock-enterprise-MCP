@@ -537,19 +537,21 @@ tools:
       )
       SELECT sku, style_id, category, department, launch_date, initial_allocation_units, units_sold_week1, units_sold_month1,
              peak_week_demand_units, sell_through_rate_pct, forecast_vs_actual_pct, status,
-             NULL::INT AS launches, NULL::DOUBLE AS avg_abs_forecast_error_pct, NULL::DOUBLE AS pct_launches_error_over_20
+             NULL::INT AS launches, NULL::DOUBLE AS avg_week1_units, NULL::DOUBLE AS avg_month1_units,
+             NULL::DOUBLE AS avg_sell_through_pct, NULL::DOUBLE AS avg_forecast_vs_actual_pct,
+             NULL::DOUBLE AS avg_abs_forecast_error_pct, NULL::DOUBLE AS pct_launches_error_over_20
       FROM l WHERE $group_by = 'launch'
       UNION ALL
-      SELECT NULL, NULL, category, NULL, NULL, round(avg(initial_allocation_units)), round(avg(units_sold_week1)),
-             round(avg(units_sold_month1)), round(avg(peak_week_demand_units)), round(avg(sell_through_rate_pct), 1),
-             round(avg(forecast_vs_actual_pct), 1), NULL, count(*), round(avg(abs_error_pct), 1),
+      SELECT NULL, NULL, coalesce(category, 'ALL'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+             count(*), round(avg(units_sold_week1)), round(avg(units_sold_month1)), round(avg(sell_through_rate_pct), 1),
+             round(avg(forecast_vs_actual_pct), 1), round(avg(abs_error_pct), 1),
              round(100.0 * count(*) FILTER (WHERE abs_error_pct > 20) / count(*), 1)
-      FROM l WHERE $group_by = 'category' GROUP BY category
+      FROM l WHERE $group_by = 'category' GROUP BY ROLLUP (category)
       ORDER BY launches DESC NULLS LAST, launch_date DESC
     limit: 60
     example: {category: Outerwear}
   - name: get_otif_by_dimension
-    desc: OTIF % for the latest N weeks versus the N weeks before, sliced by supplier, category, DC, weekday, inbound mode or week. Shows each slice's share of the drop.
+    desc: OTIF % for the latest N weeks versus the N weeks before, sliced by supplier, category, DC, weekday, inbound mode or week. Each slice shows its share of the drop; week gives the trend.
     kind: sql
     args:
       group_by: {required: true, values: [supplier_id, category, site_id, weekday, inbound_mode, week], desc: "Dimension to slice by; week gives the weekly trend"}
@@ -576,7 +578,9 @@ tools:
       ),
       tot AS (
         SELECT sum(total_units) FILTER (WHERE period = 'current') AS t_cur, sum(total_units) FILTER (WHERE period = 'prior') AS t_pri,
-               sum(on_time_units) FILTER (WHERE period = 'current') AS o_cur, sum(on_time_units) FILTER (WHERE period = 'prior') AS o_pri
+               sum(on_time_units) FILTER (WHERE period = 'current') AS o_cur, sum(on_time_units) FILTER (WHERE period = 'prior') AS o_pri,
+               100.0 * (sum(on_time_units) FILTER (WHERE period = 'current') / sum(total_units) FILTER (WHERE period = 'current')
+                        - sum(on_time_units) FILTER (WHERE period = 'prior') / sum(total_units) FILTER (WHERE period = 'prior')) AS chg
         FROM o
       ),
       g AS (
@@ -589,15 +593,20 @@ tools:
                         - coalesce(sum(on_time_units) FILTER (WHERE period = 'prior'), 0) / (SELECT t_pri FROM tot)) AS contrib
         FROM o GROUP BY slice
       )
-      SELECT $group_by AS dimension, slice AS value, units_prior, units_current,
-             round(otif_prior, 1) AS otif_pct_prior, round(otif_current, 1) AS otif_pct_current,
-             round(otif_current - otif_prior, 1) AS change_pts,
-             round(contrib, 2) AS contribution_to_total_change_pts,
-             round(100.0 * contrib / nullif(100.0 * ((SELECT o_cur FROM tot) / (SELECT t_cur FROM tot) - (SELECT o_pri FROM tot) / (SELECT t_pri FROM tot)), 0), 1) AS share_of_total_change_pct,
-             round(100.0 * (SELECT o_pri FROM tot) / (SELECT t_pri FROM tot), 1) AS total_otif_pct_prior,
-             round(100.0 * (SELECT o_cur FROM tot) / (SELECT t_cur FROM tot), 1) AS total_otif_pct_current
+      SELECT $group_by AS dimension, slice AS value,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE units_prior END AS units_prior,
+             CASE WHEN $group_by = 'week' THEN coalesce(units_current, units_prior) ELSE units_current END AS units_current,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE round(otif_prior, 1) END AS otif_pct_prior,
+             CASE WHEN $group_by = 'week' THEN round(coalesce(otif_current, otif_prior), 1) ELSE round(otif_current, 1) END AS otif_pct_current,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE round(otif_current - otif_prior, 1) END AS change_pts,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE round(contrib, 2) END AS contribution_to_total_change_pts,
+             CASE WHEN $group_by = 'week' THEN NULL
+                  WHEN abs((SELECT chg FROM tot)) < 0.5 THEN NULL
+                  ELSE round(100.0 * contrib / (SELECT chg FROM tot), 1) END AS share_of_total_change_pct,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE round(100.0 * (SELECT o_pri FROM tot) / (SELECT t_pri FROM tot), 1) END AS total_otif_pct_prior,
+             CASE WHEN $group_by = 'week' THEN NULL ELSE round(100.0 * (SELECT o_cur FROM tot) / (SELECT t_cur FROM tot), 1) END AS total_otif_pct_current
       FROM g
-      ORDER BY CASE WHEN $group_by = 'week' THEN 0 ELSE 1 END, contrib, slice
+      ORDER BY CASE WHEN $group_by = 'week' THEN slice END, contrib, slice
     limit: 50
     example: {group_by: inbound_mode}
   - name: calculate_units_affected_by_grade_change
@@ -646,10 +655,10 @@ tools:
              category AS variance_category, variance_explanation, adjustment_required, NULL::INT AS items
       FROM r WHERE $group_by = 'item'
       UNION ALL
-      SELECT max(date), coalesce($site_id, 'all DCs'), NULL, sum(wms_units), sum(erp_units), sum(finance_units), sum(physical_count_units),
-             sum(wms_erp_variance), sum(erp_finance_variance), sum(wms_units - finance_units),
-             round(sum((wms_units - finance_units) * unit_cost_gbp), 2),
-             category, string_agg(DISTINCT variance_explanation, ' | '), bool_or(adjustment_required), count(*)
+      SELECT max(date), coalesce($site_id, 'all DCs'), string_agg(sku, ', ' ORDER BY sku), NULL, NULL, NULL, NULL,
+             sum(abs(wms_erp_variance)), sum(abs(erp_finance_variance)), sum(abs(wms_units - finance_units)),
+             round(sum(abs(wms_units - finance_units) * unit_cost_gbp), 2),
+             category, 'Gross absolute units and cost over ' || count(*) || ' SKU differences', bool_or(adjustment_required), count(*)
       FROM r WHERE $group_by = 'category' GROUP BY category
       ORDER BY site_id, date DESC, sku
     limit: 100

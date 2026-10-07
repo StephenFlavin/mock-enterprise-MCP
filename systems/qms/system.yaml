@@ -164,28 +164,38 @@ tables:
 
 tools:
   - name: calculate_factory_quality_risk_score
-    desc: Composite quality risk score per factory. Combines defect rate, critical issues and trend data.
+    desc: Composite quality risk score per factory from defect rate, critical defects, late delivery and trend, highest risk first. Omit factory_id to rank all factories.
     kind: sql
     args:
-      factory_id: {required: true}
+      factory_id: {}
       period_weeks: {type: int, default: 12, desc: "Number of weeks to analyse"}
     sql: |
-      WITH recent AS (
-        SELECT factory_id, defect_rate_pct, critical_defects, pass_rate_pct, risk_score
+      WITH w AS (
+        SELECT factory_id, period, defect_rate_pct, critical_defects, risk_score, on_time_delivery_pct,
+               CASE WHEN period > CAST($as_of AS DATE) - INTERVAL 28 DAY THEN 1 ELSE 0 END AS recent
         FROM factory_quality_scorecards
-        WHERE factory_id = $factory_id
+        WHERE ($factory_id IS NULL OR factory_id = $factory_id)
           AND period >= CAST($as_of AS DATE) - INTERVAL (CAST($period_weeks AS INT) * 7) DAY
-        ORDER BY period DESC
+      ), agg AS (
+        SELECT factory_id, count(*) AS weeks_data,
+               round(avg(defect_rate_pct), 1) AS avg_defect_rate_pct,
+               round(avg(defect_rate_pct) FILTER (WHERE recent = 1), 1) AS recent_defect_rate_pct,
+               round(avg(defect_rate_pct) FILTER (WHERE recent = 0), 1) AS earlier_defect_rate_pct,
+               round(avg(critical_defects) FILTER (WHERE recent = 1), 1) AS recent_critical_per_week,
+               round(avg(on_time_delivery_pct) FILTER (WHERE recent = 1), 1) AS recent_on_time_pct,
+               round(avg(risk_score) FILTER (WHERE recent = 1), 1) AS recent_weekly_risk
+        FROM w GROUP BY factory_id
       )
-      SELECT $factory_id AS factory_id,
-             ROUND(AVG(defect_rate_pct), 1) AS avg_defect_rate_pct,
-             COUNT(*) AS weeks_data,
-             MAX(defect_rate_pct) AS peak_defect_rate_pct,
-             ROUND(AVG(critical_defects), 1) AS avg_critical_per_week,
-             ROUND(MAX(risk_score), 0) AS current_risk_score,
-             'score = max(defect_rate_pct, critical_defects_weighted)' AS formula
-      FROM recent
-    example: {factory_id: FAC-0001}
+      SELECT a.factory_id, f.name AS factory_name, f.supplier_id, a.weeks_data, a.avg_defect_rate_pct,
+             a.recent_defect_rate_pct, a.earlier_defect_rate_pct,
+             round(a.recent_defect_rate_pct - COALESCE(a.earlier_defect_rate_pct, a.recent_defect_rate_pct), 1) AS defect_trend_pp,
+             a.recent_critical_per_week, a.recent_on_time_pct, a.recent_weekly_risk,
+             round(least(100, a.recent_weekly_risk + 5 * greatest(a.recent_defect_rate_pct - COALESCE(a.earlier_defect_rate_pct, a.recent_defect_rate_pct), 0)), 1) AS risk_score,
+             'risk_score = last 4 weeks average weekly risk + 5 x rise in defect rate (points) vs earlier weeks, capped at 100' AS formula
+      FROM agg a JOIN master.factories f ON f.factory_id = a.factory_id
+      ORDER BY risk_score DESC, a.factory_id
+    limit: 10
+    example: {factory_id: FAC-0087}
 
   - name: calculate_measurement_deviation_vs_tolerance
     desc: Calculate deviation of actual measurement from spec vs tolerance. Shows if within spec and by how much.
@@ -217,17 +227,19 @@ tools:
     example: {factory_id: FAC-0107, material: cotton, measurement_type: length}
 
   - name: create_inspection_booking
-    desc: Book an additional inspection at a factory.
+    desc: Book an additional inspection (inline by default) at a factory for a future date. Returns the booking with its inspection id.
     kind: insert
     table: quality_inspections
     id_prefix: INS-
-    defaults: {inspection_type: inline, pass_fail: pending}
+    defaults: {pass_fail: pending}
     args:
-      lot_id: {required: true}
       factory_id: {required: true}
-      units_inspected: {type: int, required: true}
-      scheduled_at: {type: timestamp, required: true, desc: "When to inspect (e.g. +5d at 09:00)"}
-    example: {lot_id: LOT-900001, factory_id: FAC-0001, units_inspected: 50, scheduled_at: "+5d"}
+      scheduled_at: {type: timestamp, required: true, desc: "When to inspect (e.g. +5d)"}
+      inspection_type: {type: enum, values: [inline, final, pre_production, sample], default: inline, desc: "Inspection type"}
+      lot_id: {}
+      units_inspected: {type: int, default: 100, desc: "Planned sample size in units"}
+      notes: {desc: "Why the extra inspection is booked"}
+    example: {factory_id: FAC-0001, scheduled_at: "+5d", notes: "Rising defect rate"}
 
   - name: create_quality_hold_for_sku
     desc: Place a quality hold on a SKU or batch pending investigation.
@@ -256,18 +268,20 @@ tools:
     example: {sku: PF-220, factory_id: FAC-0107, issue_description: "Sole separation failures in returns"}
 
   - name: create_quality_investigation
-    desc: Open a quality investigation on items or a supplier.
+    desc: Open a quality investigation on an item (sku), a supplier or an incident, with its scope. Returns the new investigation.
     kind: insert
     table: quality_investigations
     id_prefix: INV-
     defaults: {status: open}
     args:
-      related_incident_id: {}
       scope: {required: true, desc: "What is being investigated"}
-    example: {scope: "Glass item breakage claims up 40% — packaging vs carrier vs handling"}
+      sku: {}
+      supplier_id: {}
+      related_incident_id: {}
+    example: {sku: K-1700, scope: "Glass breakage claims up 40% - packaging vs carrier vs handling"}
 
   - name: create_quality_review_request
-    desc: Create a QA review request for named styles.
+    desc: Open a QA review request for one style, with the review type and why it is needed. Call once per style.
     kind: insert
     table: quality_reviews
     id_prefix: REV-
@@ -275,10 +289,11 @@ tools:
     args:
       style_id: {required: true}
       review_type: {required: true, desc: "E.g. fit, durability, appearance, top_returns"}
-    example: {style_id: STY-5520, review_type: fit}
+      reason: {}
+    example: {style_id: STY-5520, review_type: top_returns, reason: "Top returned style"}
 
   - name: create_supplier_corrective_action_request
-    desc: Create a corrective action request record against a supplier.
+    desc: Create a draft corrective action request against a supplier, optionally for a factory and SKU. Send it with send_supplier_corrective_action_request.
     kind: insert
     table: supplier_corrective_actions
     id_prefix: CAR-
@@ -286,74 +301,113 @@ tools:
     args:
       supplier_id: {required: true}
       factory_id: {}
+      sku: {}
       issue_description: {required: true}
       requested_action: {required: true}
-    example: {supplier_id: SUP-0042, issue_description: "Colourfastness test failures in polyester blouses", requested_action: "Audit dye house process and supplier controls"}
+      due_date: {type: date, default: "+14d", desc: "Date the supplier must respond by"}
+    example: {supplier_id: SUP-0064, factory_id: FAC-0121, sku: SKU-100007, issue_description: "Colourfastness to rubbing failures on polyester blouse lots", requested_action: "Audit the dye house process and provide root cause analysis"}
 
   - name: draft_root_cause_report
-    desc: Draft a root cause report for a quality failure or stock discrepancy.
+    desc: Draft a root cause report for a stock discrepancy or quality failure, showing stock currently on quality hold by site, hold history and open incidents.
     kind: draft
     args:
-      analysis_context: {type: str, required: true, desc: "Brief context for the analysis, e.g. SKU, date range, or issue type"}
+      analysis_context: {type: str, required: true, desc: "What is being analysed, e.g. ERP vs WMS stock gap"}
+      site_id: {}
     sql:
-      incidents: SELECT incident_id, issue_description, severity, created_at FROM quality_incidents WHERE issue_description LIKE CONCAT('%', $analysis_context, '%') ORDER BY created_at DESC LIMIT 5
-      holds: SELECT hold_id, hold_reason, created_at FROM quality_holds WHERE hold_reason LIKE CONCAT('%', $analysis_context, '%') ORDER BY created_at DESC LIMIT 3
+      held: >
+        SELECT h.site_id, count(*) AS holds, sum(h.qty_held) AS units, round(sum(h.qty_held * p.unit_cost_gbp), 2) AS value_gbp
+        FROM quality_holds h JOIN master.products p ON p.sku = h.sku
+        WHERE h.status = 'active' AND h.qty_held > 0 AND ($site_id IS NULL OR h.site_id = $site_id)
+        GROUP BY h.site_id ORDER BY value_gbp DESC
+      top: >
+        SELECT h.hold_id, h.sku, p.name, h.site_id, h.qty_held, round(h.qty_held * p.unit_cost_gbp) AS value_gbp, CAST(h.created_at AS DATE) AS placed_on
+        FROM quality_holds h JOIN master.products p ON p.sku = h.sku
+        WHERE h.status = 'active' AND h.qty_held > 0 AND ($site_id IS NULL OR h.site_id = $site_id)
+        ORDER BY value_gbp DESC LIMIT 5
+      waves: >
+        SELECT CAST(h.created_at AS DATE) AS placed_on, count(*) AS holds, sum(h.qty_held) AS units, round(sum(h.qty_held * p.unit_cost_gbp), 2) AS value_gbp,
+               count(*) FILTER (WHERE h.status = 'active') AS still_active
+        FROM quality_holds h JOIN master.products p ON p.sku = h.sku
+        WHERE h.qty_held > 0 AND h.created_at >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        GROUP BY CAST(h.created_at AS DATE) HAVING count(*) >= 5 ORDER BY placed_on DESC
+      incidents: >
+        SELECT DISTINCT i.incident_id, i.severity, i.status, i.issue_description, i.created_at
+        FROM quality_incidents i JOIN quality_holds h ON h.related_incident_id = i.incident_id
+        WHERE h.status = 'active' AND h.qty_held > 0 AND ($site_id IS NULL OR h.site_id = $site_id)
+        ORDER BY i.created_at DESC LIMIT 5
     template: |
       ROOT CAUSE ANALYSIS REPORT
       Generated: {{ as_of }}
       Prepared by: Quality Team
+      Subject: {{ analysis_context }}
 
-      Issue Summary:
-      Analysis focus: {{ analysis_context }}
-
-      Related Incidents:
-      {% for i in incidents %}
-      - {{ i.incident_id }} ({{ i.severity }}): {{ i.issue_description }}
+      1. Stock on quality hold (WMS status quarantine)
+      {% for h in held %}- {{ h.site_id }}: {{ h.holds }} holds, {{ h.units }} units, {{ h.value_gbp | money }}
+      {% endfor %}
+      Total on hold: {{ held | sum(attribute='holds') }} holds, {{ held | sum(attribute='units') }} units, {{ held | sum(attribute='value_gbp') | money }}.
+      Largest holds:
+      {% for t in top %}- {{ t.hold_id }} {{ t.sku }} ({{ t.name }}) at {{ t.site_id }}: {{ t.qty_held }} units, {{ t.value_gbp | money }}, placed {{ t.placed_on }}
       {% endfor %}
 
-      Related Holds:
-      {% for h in holds %}
-      - {{ h.hold_id }}: {{ h.hold_reason }}
+      2. Is it recurring? Large hold waves (5 or more holds placed on one day) in the last 180 days
+      {% for w in waves %}- {{ w.placed_on }}: {{ w.holds }} holds, {{ w.units }} units, {{ w.value_gbp | money }} ({{ w.still_active }} still active)
       {% endfor %}
 
-      Root Cause:
-      [To be completed after investigation]
+      3. Incidents behind the active holds
+      {% for i in incidents %}- {{ i.incident_id }} ({{ i.severity }}, {{ i.status }}): {{ i.issue_description }}
+      {% endfor %}
 
-      Recommended Actions:
-      [To be completed after investigation]
+      Finding:
+      Stock on quality hold is shown by the WMS as quarantine and excluded from available stock, but the ERP interface keeps it in book stock until the QA release is confirmed. The held value above is therefore part of the ERP-WMS difference until the holds are released or written off.
+
+      Recommended actions:
+      1. Release or write off the active holds above and confirm the release to ERP.
+      2. Make the QA release step post to ERP when a hold is placed, so the two systems agree.
 
       Contact: Quality Team
-    example: {analysis_context: "stock discrepancy"}
+    example: {analysis_context: "ERP vs WMS stock gap"}
 
   - name: draft_supplier_corrective_action_request
-    desc: Draft a corrective action request for supplier.
+    desc: Draft a corrective action request to a supplier listing its failed lots, units produced and failed tests from the last weeks. Optionally limit to one SKU.
     kind: draft
     args:
-      car_id: {required: true}
+      supplier_id: {required: true}
+      sku: {}
+      weeks: {type: int, default: 12, desc: "Weeks of failed inspections to include"}
     sql:
-      car: SELECT car_id, supplier_id, factory_id, issue_description, requested_action FROM supplier_corrective_actions WHERE car_id = $car_id
-      supplier: SELECT name, country FROM master.suppliers WHERE supplier_id = (SELECT supplier_id FROM supplier_corrective_actions WHERE car_id = $car_id LIMIT 1)
+      sup: SELECT supplier_id, name, country FROM master.suppliers WHERE supplier_id = $supplier_id
+      lots: >
+        SELECT pl.lot_id, COALESCE(pl.batch_id, '-') AS batch_id, pl.sku, pl.factory_id, pl.qty_produced, CAST(qi.inspected_at AS DATE) AS inspected_on,
+               qi.defects_found, qi.units_inspected,
+               COALESCE((SELECT string_agg(m.measurement_type || ' ' || CAST(m.actual_value AS VARCHAR) || ' ' || m.unit || ' vs spec ' || CAST(m.spec_value AS VARCHAR), '; ')
+                         FROM inspection_measurements m WHERE m.lot_id = pl.lot_id AND NOT m.pass), 'defects found at inspection') AS failed_tests
+        FROM quality_inspections qi
+        JOIN production_lots pl ON pl.lot_id = qi.lot_id
+        JOIN master.factories f ON f.factory_id = pl.factory_id
+        WHERE f.supplier_id = $supplier_id AND qi.pass_fail = 'fail' AND ($sku IS NULL OR pl.sku = $sku)
+          AND qi.inspection_type = 'final'
+          AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+        ORDER BY qi.inspected_at
     template: |
-      CORRECTIVE ACTION REQUEST
+      CORRECTIVE ACTION REQUEST (DRAFT)
 
-      To: {{ supplier[0].name }}
+      To: {{ sup[0].name }} ({{ sup[0].supplier_id }})
       From: Harbour & Vale Quality Team
       Date: {{ as_of }}
-      Reference: {{ car[0].car_id }}
 
       Issue:
-      {{ car[0].issue_description }}
+      {{ lots | length }} lots failed final inspection in the last {{ weeks }} weeks, {{ lots | sum(attribute='qty_produced') }} units produced in total:
+      {% for l in lots %}- {{ l.lot_id }} (batch {{ l.batch_id }}, {{ l.sku }}, {{ l.factory_id }}, {{ l.qty_produced }} units), inspected {{ l.inspected_on }}: {{ l.defects_found }} of {{ l.units_inspected }} units defective; {{ l.failed_tests }}
+      {% endfor %}
 
-      Requested Actions:
-      {{ car[0].requested_action }}
+      Requested actions:
+      1. Contain: stop shipping from the affected lots and quarantine unshipped stock.
+      2. Root cause analysis covering raw material, process changes and the dye house or sub-contractor involved.
+      3. Corrective and preventive action plan with dates.
+      4. Evidence of retest results on the next three lots before shipment.
 
-      Please confirm receipt and provide:
-      1. Root cause analysis
-      2. Corrective action plan with timelines
-      3. Preventive measures for future
-
-      Deadline for response: 5 business days
-    example: {car_id: CAR-900001}
+      Please confirm receipt and respond within 14 days.
+    example: {supplier_id: SUP-0064}
 
   - name: draft_supplier_notification
     desc: Draft a quality notification to affected suppliers.
@@ -389,24 +443,28 @@ tools:
     example: {incident_id: INC-900001}
 
   - name: get_damage_rate_by_pack_type
-    desc: Damage rate by pack type. Returns damage data for cost-benefit analysis of packaging options.
+    desc: Damage rate by pack type or material, for a SKU or product category and sales channel. Use to compare packaging options on breakage.
     kind: sql
     args:
       sku: {}
+      category: {desc: "Product category, e.g. Small Appliances"}
       pack_type: {}
+      channel: {}
       period_weeks: {type: int, default: 12, desc: "Weeks of history"}
     sql: |
-      SELECT pack_type, SUM(units_shipped) AS total_units_shipped, SUM(units_damaged) AS total_units_damaged,
-             ROUND(100.0 * SUM(units_damaged) / NULLIF(SUM(units_shipped), 0), 2) AS damage_rate_pct,
-             COUNT(*) AS periods_tracked
-      FROM pack_damage_tracking
-      WHERE ($sku IS NULL OR sku = $sku)
-        AND ($pack_type IS NULL OR pack_type = $pack_type)
-        AND period >= CAST($as_of AS DATE) - INTERVAL (CAST($period_weeks AS INT) * 7) DAY
-      GROUP BY pack_type
+      SELECT d.pack_type, SUM(d.units_shipped) AS total_units_shipped, SUM(d.units_damaged) AS total_units_damaged,
+             ROUND(100.0 * SUM(d.units_damaged) / NULLIF(SUM(d.units_shipped), 0), 2) AS damage_rate_pct,
+             COUNT(DISTINCT d.sku) AS skus_tracked, COUNT(DISTINCT d.period) AS weeks_tracked
+      FROM pack_damage_tracking d JOIN master.products p ON p.sku = d.sku
+      WHERE ($sku IS NULL OR d.sku = $sku)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+        AND ($pack_type IS NULL OR lower(d.pack_type) = lower($pack_type))
+        AND ($channel IS NULL OR d.channel = $channel)
+        AND d.period >= CAST($as_of AS DATE) - INTERVAL (CAST($period_weeks AS INT) * 7) DAY
+      GROUP BY d.pack_type
       ORDER BY damage_rate_pct DESC
     limit: 20
-    example: {pack_type: carton}
+    example: {category: Small Appliances}
 
   - name: get_factory_defect_inspection_results
     desc: Inline and final inspection results by factory. Shows defect trends and pass rates.
@@ -430,20 +488,21 @@ tools:
     example: {factory_id: FAC-0001, inspection_type: inline}
 
   - name: get_factory_defect_rate_trend
-    desc: Defect rate trend by factory over time. Shows weekly defect percentages to identify patterns and improvements.
+    desc: Weekly defect rate trend for one factory with the change on the previous week, newest first. Use to see whether a factory is improving or worsening.
     kind: sql
     args:
       factory_id: {required: true}
       weeks: {type: int, default: 12, desc: "Number of weeks of history"}
     sql: |
-      SELECT factory_id, period, defect_rate_pct, total_units_inspected, defects_found,
-             pass_rate_pct, critical_defects, risk_score
-      FROM factory_quality_scorecards
-      WHERE factory_id = $factory_id
-        AND period >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
-      ORDER BY period DESC
+      SELECT s.factory_id, f.name AS factory_name, s.period, s.defect_rate_pct,
+             round(s.defect_rate_pct - lag(s.defect_rate_pct) OVER (PARTITION BY s.factory_id ORDER BY s.period), 1) AS change_vs_prev_week_pp,
+             s.total_units_inspected, s.defects_found, s.pass_rate_pct, s.critical_defects, s.risk_score
+      FROM factory_quality_scorecards s JOIN master.factories f ON f.factory_id = s.factory_id
+      WHERE s.factory_id = $factory_id
+        AND s.period >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+      ORDER BY s.period DESC
     limit: 52
-    example: {factory_id: FAC-0001, weeks: 12}
+    example: {factory_id: FAC-0087, weeks: 12}
 
   - name: get_factory_process_capability
     desc: Factory process capability metrics. Shows defect rates, pass rates and trend over 12 weeks.
@@ -487,22 +546,37 @@ tools:
     example: {style_id: "STY-5520"}
 
   - name: get_production_lot_details
-    desc: Production lot details including factory, SKU, status and disposition. Use to trace quality issues back to source.
+    desc: Production lots with factory, supplier, SKU, batch, units produced, disposition, inspection results and failed measurements. Filter by lot, SKU, style, factory or batch.
     kind: sql
     args:
-      lot_id: {required: true}
+      lot_id: {}
+      sku: {}
+      factory_id: {}
+      style_id: {type: str, desc: "Style id, e.g. STY-4012"}
+      batch_id: {desc: "Material or dye batch, e.g. BATCH-POL-PINK-001"}
+      failed_only: {type: bool, desc: "True to list only lots with a failed inspection"}
+      date_from: {type: date, default: "-90d", desc: "Produced on or after this date (ignored when lot_id is given)"}
     sql: |
-      SELECT pl.lot_id, pl.sku, pl.factory_id, pl.po_id, pl.qty_produced,
-             pl.produced_at, pl.status, pl.lot_disposition, pl.created_at, pl.updated_at,
-             COUNT(DISTINCT qi.inspection_id) AS inspections_count,
-             COUNT(DISTINCT im.measurement_id) AS measurements_count
+      SELECT pl.lot_id, pl.batch_id, pl.sku, p.name AS product_name, pl.factory_id, f.name AS factory_name, f.supplier_id,
+             pl.po_id, pl.qty_produced, pl.produced_at, pl.status, pl.lot_disposition,
+             (SELECT count(*) FROM quality_inspections qi WHERE qi.lot_id = pl.lot_id AND qi.pass_fail <> 'pending') AS inspections,
+             (SELECT count(*) FROM quality_inspections qi WHERE qi.lot_id = pl.lot_id AND qi.pass_fail = 'fail') AS failed_inspections,
+             (SELECT string_agg(m.measurement_type || ' ' || CAST(m.actual_value AS VARCHAR) || ' ' || m.unit || ' (spec ' || CAST(m.spec_value AS VARCHAR) || ')', '; ')
+                FROM inspection_measurements m WHERE m.lot_id = pl.lot_id AND NOT m.pass) AS failed_measurements,
+             (SELECT count(*) FROM quality_holds h WHERE h.lot_id = pl.lot_id AND h.status = 'active') AS active_holds
       FROM production_lots pl
-      LEFT JOIN quality_inspections qi ON qi.lot_id = pl.lot_id
-      LEFT JOIN inspection_measurements im ON im.lot_id = pl.lot_id
-      WHERE pl.lot_id = $lot_id
-      GROUP BY pl.lot_id, pl.sku, pl.factory_id, pl.po_id, pl.qty_produced,
-               pl.produced_at, pl.status, pl.lot_disposition, pl.created_at, pl.updated_at
-    example: {lot_id: LOT-900001}
+      JOIN master.products p ON p.sku = pl.sku
+      JOIN master.factories f ON f.factory_id = pl.factory_id
+      WHERE ($lot_id IS NULL OR pl.lot_id = $lot_id)
+        AND ($sku IS NULL OR pl.sku = $sku)
+        AND ($factory_id IS NULL OR pl.factory_id = $factory_id)
+        AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($batch_id IS NULL OR pl.batch_id = $batch_id)
+        AND (NOT COALESCE($failed_only, false) OR EXISTS (SELECT 1 FROM quality_inspections qf WHERE qf.lot_id = pl.lot_id AND qf.pass_fail = 'fail'))
+        AND ($lot_id IS NOT NULL OR pl.produced_at >= CAST($date_from AS DATE))
+      ORDER BY pl.produced_at, pl.lot_id
+    limit: 50
+    example: {lot_id: LOT-900009}
 
   - name: get_quality_defects_for_sku
     desc: Quality defects and issues for a SKU. Lists incidents, holds and defect trends for investigation.
@@ -525,81 +599,113 @@ tools:
     example: {sku: SKU-100007}
 
   - name: get_supplier_qa_results_by_style
-    desc: Supplier QA results for a style. Shows inspection results and pass rates across supplier factories.
+    desc: Supplier QA results for a style, per factory and supplier. Returns inspections, defect rate, pass rate and open incidents over recent weeks.
     kind: sql
     args:
-      style_id: {required: true}
+      style_id: {required: true, desc: "Style id, e.g. STY-5520"}
+      weeks: {type: int, default: 13, desc: "Weeks of inspections to include"}
     sql: |
-      SELECT DISTINCT f.factory_id, f.supplier_id, s.name AS supplier_name,
-             COUNT(DISTINCT qi.inspection_id) AS total_inspections,
-             ROUND(100.0 * COUNT(CASE WHEN qi.pass_fail = 'pass' THEN 1 END) / NULLIF(COUNT(qi.inspection_id), 0), 1) AS pass_rate_pct,
-             ROUND(AVG(CAST(qi.defects_found AS FLOAT) / NULLIF(qi.units_inspected, 0)) * 100, 1) AS avg_defect_rate_pct
+      SELECT f.factory_id, f.name AS factory_name, f.supplier_id, s.name AS supplier_name,
+             count(*) AS inspections, sum(qi.units_inspected) AS units_inspected, sum(qi.defects_found) AS defects_found,
+             round(100.0 * sum(qi.defects_found) / nullif(sum(qi.units_inspected), 0), 1) AS defect_rate_pct,
+             round(100.0 * count(*) FILTER (WHERE qi.pass_fail = 'pass') / count(*), 1) AS pass_rate_pct,
+             count(*) FILTER (WHERE qi.pass_fail = 'fail') AS failed_inspections,
+             (SELECT count(*) FROM quality_incidents qn JOIN master.products p2 ON p2.sku = qn.sku
+               WHERE p2.style_id = $style_id AND qn.status IN ('open', 'investigating')) AS open_incidents
       FROM quality_inspections qi
-      JOIN production_lots pl ON qi.lot_id = pl.lot_id
+      JOIN production_lots pl ON pl.lot_id = qi.lot_id
       JOIN master.products p ON p.sku = pl.sku
-      JOIN master.factories f ON f.factory_id = qi.factory_id
+      JOIN master.factories f ON f.factory_id = pl.factory_id
       JOIN master.suppliers s ON s.supplier_id = f.supplier_id
-      WHERE p.style_id = $style_id
-        AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-      GROUP BY f.factory_id, f.supplier_id, s.name
-      ORDER BY pass_rate_pct DESC
+      WHERE p.style_id = $style_id AND qi.pass_fail <> 'pending'
+        AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+      GROUP BY f.factory_id, f.name, f.supplier_id, s.name
+      ORDER BY defect_rate_pct DESC
     example: {style_id: STY-5520}
 
   - name: get_supplier_quality_incidents
-    desc: Quality incidents for a supplier. Shows all incidents linked to supplier's factories and products.
+    desc: Quality incidents for a supplier, newest first, across its factories and products. Optionally filter by severity or status.
     kind: sql
     args:
       supplier_id: {required: true}
       weeks: {type: int, default: 12, desc: "Weeks of history"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Only incidents of this severity"}
+      status: {type: enum, values: [open, investigating, resolved, closed], desc: "Only incidents with this status"}
     sql: |
-      SELECT qi.incident_id, qi.sku, qi.factory_id, f.name AS factory_name,
-             f.supplier_id, qi.issue_description, qi.severity, qi.status, qi.created_at
-      FROM quality_incidents qi
-      INNER JOIN master.factories f ON f.factory_id = qi.factory_id
+      SELECT qn.incident_id, qn.sku, p.name AS product_name, f.factory_id, f.name AS factory_name, f.supplier_id,
+             qn.lot_id, qn.issue_description, qn.severity, qn.status, qn.created_at
+      FROM quality_incidents qn
+      LEFT JOIN master.products p ON p.sku = qn.sku
+      JOIN master.factories f ON f.factory_id = COALESCE(qn.factory_id, p.factory_id)
       WHERE f.supplier_id = $supplier_id
-        AND qi.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
-      ORDER BY qi.created_at DESC
+        AND qn.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+        AND ($severity IS NULL OR qn.severity = $severity)
+        AND ($status IS NULL OR qn.status = $status)
+      ORDER BY qn.created_at DESC
     limit: 50
-    example: {supplier_id: "SUP-0001"}
+    example: {supplier_id: SUP-0053, weeks: 26}
 
   - name: get_supplier_quality_record
-    desc: Supplier defect and inspection record. Shows defect rate, pass rate and incident history over 12 weeks.
+    desc: "Supplier defect and inspection record over recent weeks: defect rate, pass rate, incidents and active holds. Optionally restrict to one product category."
     kind: sql
     args:
       supplier_id: {required: true}
+      weeks: {type: int, default: 12, desc: "Weeks of history"}
+      category: {desc: "Product category to restrict to, e.g. Bedding"}
     sql: |
-      SELECT s.supplier_id, s.name,
-             COUNT(DISTINCT qi.inspection_id) AS total_inspections,
-             SUM(qi.units_inspected) AS total_units_inspected,
-             SUM(qi.defects_found) AS total_defects,
-             ROUND(100.0 * SUM(qi.defects_found) / NULLIF(SUM(qi.units_inspected), 0), 1) AS defect_rate_pct,
-             COUNT(DISTINCT qi.lot_id) AS lots_inspected,
-             COUNT(DISTINCT inc.incident_id) AS total_incidents,
-             COUNT(DISTINCT qh.hold_id) AS active_holds
-      FROM master.suppliers s
-      JOIN master.factories f ON f.supplier_id = s.supplier_id
-      LEFT JOIN quality_inspections qi ON qi.factory_id = f.factory_id
-                                       AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
-      LEFT JOIN production_lots pl ON qi.lot_id = pl.lot_id
-      LEFT JOIN quality_incidents inc ON inc.factory_id = f.factory_id
-                                      AND inc.created_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
-      LEFT JOIN quality_holds qh ON qh.status = 'active'
-                                 AND qh.created_at >= CAST($as_of AS DATE) - INTERVAL 84 DAY
-      WHERE s.supplier_id = $supplier_id
-      GROUP BY s.supplier_id, s.name
-    example: {supplier_id: SUP-0001}
+      WITH sup_f AS (SELECT factory_id FROM master.factories WHERE supplier_id = $supplier_id),
+      ins AS (
+        SELECT qi.lot_id, qi.units_inspected, qi.defects_found, qi.pass_fail
+        FROM quality_inspections qi
+        JOIN production_lots pl ON pl.lot_id = qi.lot_id
+        JOIN master.products p ON p.sku = pl.sku
+        WHERE pl.factory_id IN (SELECT factory_id FROM sup_f) AND qi.pass_fail <> 'pending'
+          AND qi.inspected_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+      ), inc AS (
+        SELECT qn.incident_id, qn.severity, qn.status
+        FROM quality_incidents qn
+        LEFT JOIN master.products p ON p.sku = qn.sku
+        JOIN master.factories f ON f.factory_id = COALESCE(qn.factory_id, p.factory_id)
+        WHERE f.supplier_id = $supplier_id
+          AND qn.created_at >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks AS INT) * 7) DAY
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+      ), hld AS (
+        SELECT h.hold_id FROM quality_holds h JOIN master.products p ON p.sku = h.sku
+        WHERE p.supplier_id = $supplier_id AND h.status = 'active'
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+      )
+      SELECT s.supplier_id, s.name AS supplier_name, s.country,
+             (SELECT count(*) FROM ins) AS inspections,
+             (SELECT count(DISTINCT lot_id) FROM ins) AS lots_inspected,
+             (SELECT sum(units_inspected) FROM ins) AS units_inspected,
+             (SELECT sum(defects_found) FROM ins) AS defects_found,
+             round(100.0 * (SELECT sum(defects_found) FROM ins) / nullif((SELECT sum(units_inspected) FROM ins), 0), 1) AS defect_rate_pct,
+             round(100.0 * (SELECT count(*) FROM ins WHERE pass_fail = 'pass') / nullif((SELECT count(*) FROM ins), 0), 1) AS pass_rate_pct,
+             (SELECT count(*) FROM inc) AS incidents,
+             (SELECT count(*) FROM inc WHERE severity IN ('high', 'critical')) AS high_or_critical_incidents,
+             (SELECT count(*) FROM inc WHERE status IN ('open', 'investigating')) AS open_incidents,
+             (SELECT count(*) FROM hld) AS active_holds
+      FROM master.suppliers s WHERE s.supplier_id = $supplier_id
+    example: {supplier_id: SUP-0039, category: Bedding}
 
   - name: list_factory_quality_scorecards
-    desc: Quality scorecards by factory. Lists weekly performance data for inspection and risk assessment.
-    kind: select
-    from: factory_quality_scorecards
-    filters:
+    desc: Weekly quality scorecards (defect rate, pass rate, critical defects, on-time delivery, risk score). Omit factory_id to list the riskiest factory-weeks first.
+    kind: sql
+    args:
       factory_id: {}
-      period_from: {col: period, op: ">=", default: "-90d"}
-    columns: [scorecard_id, factory_id, period, defect_rate_pct, pass_rate_pct, risk_score, total_units_inspected, defects_found]
-    order: period DESC
+      period_from: {type: date, default: "-28d", desc: "Earliest week to include (YYYY-MM-DD or e.g. -90d)"}
+      min_risk_score: {type: float, desc: "Only weeks with at least this risk score"}
+    sql: |
+      SELECT s.scorecard_id, s.factory_id, f.name AS factory_name, s.period, s.defect_rate_pct, s.pass_rate_pct, s.critical_defects,
+             s.on_time_delivery_pct, s.risk_score, s.total_units_inspected, s.defects_found
+      FROM factory_quality_scorecards s JOIN master.factories f ON f.factory_id = s.factory_id
+      WHERE ($factory_id IS NULL OR s.factory_id = $factory_id)
+        AND s.period >= CAST($period_from AS DATE)
+        AND ($min_risk_score IS NULL OR s.risk_score >= CAST($min_risk_score AS DOUBLE))
+      ORDER BY CASE WHEN $factory_id IS NULL THEN s.risk_score ELSE 0 END DESC, s.period DESC, s.factory_id
     limit: 20
-    example: {factory_id: FAC-0001}
+    example: {factory_id: FAC-0087}
 
   - name: list_preproduction_sample_acceptance_criteria
     desc: Preproduction sample acceptance criteria by style. Lists acceptance thresholds for sample testing.
@@ -692,35 +798,33 @@ tools:
     example: {search_term: "cotton shrinkage"}
 
   - name: send_supplier_corrective_action_request
-    desc: Send a corrective action request to the supplier. Updates status from draft to sent.
+    desc: Send a drafted corrective action request to the supplier. Sets its status from draft to sent and records the send time.
     kind: update
     table: supplier_corrective_actions
-    set: {status: sent, sent_at: "$as_of"}
+    set: {status: sent, sent_on: "$as_of"}
     args:
       car_id: {required: true}
     example: {car_id: CAR-900001}
 
   - name: send_supplier_notification
-    desc: Send a quality notification to a supplier. Records the notification as sent.
+    desc: Send a quality notification to a supplier or factory about an issue, lot or incident, and record it as sent.
     kind: insert
-    table: supplier_corrective_actions
+    table: supplier_notifications
     id_prefix: SPN-
     defaults: {status: sent}
     args:
       supplier_id: {required: true}
       factory_id: {}
+      lot_id: {}
+      incident_id: {}
       issue_description: {required: true}
-      requested_action: {required: true, desc: "Action requested from supplier"}
-    example: {supplier_id: SUP-0001, issue_description: "Chromium VI test failure - regulatory notification", requested_action: "Audit leather supplier and provide material batch certificates"}
+      requested_action: {required: true, desc: "Action requested from the supplier"}
+    example: {supplier_id: SUP-0036, factory_id: FAC-0072, lot_id: LOT-900016, issue_description: "Lot rejected: zip strength 4% under specification", requested_action: "Investigate zip supplier and confirm corrective action"}
 
   - name: update_lot_disposition
-    desc: Set production lot disposition to release, rework or reject. Records the QA decision.
-    kind: insert
-    table: disposition_decisions
-    id_prefix: DSP-
+    desc: Set a production lot's QA disposition to release, rework or reject. Returns the old and new disposition.
+    kind: update
+    table: production_lots
     args:
-      lot_id: {required: true}
-      disposition: {required: true, type: enum, values: [release, rework, reject], desc: "QA disposition decision"}
-      decided_by: {default: "QA Team", desc: "QA decision maker"}
-      decision_notes: {default: "Lot disposition decision", desc: "Notes on the decision"}
-    example: {lot_id: "LOT-900001", disposition: "release"}
+      lot_disposition: {required: true, type: enum, values: [release, rework, reject], desc: "QA disposition decision"}
+    example: {lot_id: LOT-900001, lot_disposition: reject}

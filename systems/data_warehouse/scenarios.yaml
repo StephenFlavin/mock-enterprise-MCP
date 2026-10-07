@@ -162,89 +162,99 @@
     - Knitwear
     - '43.2'
 - question: 06:59:Q5
-  story: Product compliance data completeness. Sales rank identifies best sellers needing urgent compliance data.
+  story: >
+    Products missing EU/Ireland compliance data (compliance_db) are all real sellers in the warehouse. Among them SKU-105551
+    (non-compliant Drinkware, overall rank 9), SKU-101813 (non-compliant Bags, rank 16) and SKU-104732 (Small Appliances, rank 18)
+    are in the overall top 20; K-1700 is rank 39 and PF-220 rank 153, so the best sellers and the most urgent requests are clear.
   checks:
-  - tool: get_product_sales_rank
-    args:
-      sku: K-1700
-    expect:
-    - sku
-    - category_rank
-    - overall_rank
+    - tool: get_product_sales_rank
+      args: {skus: [SKU-105551, SKU-101813, SKU-104732, K-1700, PF-220]}
+      expect: ["SKU-105551", "SKU-101813", "SKU-104732", "K-1700", "PF-220", "overall_rank"]
+    - tool: get_product_sales_rank
+      args: {limit_rows: 20}
+      expect: ["SKU-100644", "SKU-101813", "SKU-105551"]
 - question: 09:81:Q1
-  story: 'OTIF drop from 94% to 89%. Seed data shows OTIF decline: September 16 (95.5%), September 23 (87.6%), September 30 (86.7%), October 6 weekly (88.5%). Break down by supplier (SUP-0001, SUP-0002),
-    category (Dresses, Small Appliances), DC (DC1, DC2), weekday, inbound mode.'
+  story: >
+    OTIF fell from 94.0% to 89.0% between the four weeks before and the four weeks after the definition change (no grace day, from
+    the first September week). Inbound mode truck explains almost all of it (94.1% to 84.3%) and three suppliers, SUP-0079,
+    SUP-0037 and SUP-0030 (Portuguese and Turkish road hauliers), carry 88% of the drop; Friday and Monday arrivals fall hardest.
+    Sea, air and rail barely move.
   checks:
-  - tool: get_otif_by_dimension
-    args:
-      supplier_id: SUP-0001
-    expect:
-    - week
-    - otif_pct
-    - on_time_units
-    - late_units
+    - tool: get_otif_by_dimension
+      args: {group_by: inbound_mode}
+      expect: ["truck", "84.3", "94.1", "total_otif_pct_prior"]
+    - tool: get_otif_by_dimension
+      args: {group_by: supplier_id}
+      expect: ["SUP-0079", "SUP-0037", "SUP-0030", "-13"]
+    - tool: get_otif_by_dimension
+      args: {group_by: weekday}
+      expect: ["Fri", "Mon", "83.1"]
+    - tool: get_otif_by_dimension
+      args: {group_by: week}
+      expect: ["2026-08-31", "93.2", "2026-09-07", "89"]
 - question: 09:81:Q2
-  story: 'Inventory reconciliation: WMS vs ERP vs Finance. Multiple discrepancies recorded showing timing and definitional differences. DC1 has errors in K-1700 (50 unit variance), DC2 has outerwear products
-    with variance (30 units).'
+  story: >
+    Month-end reconciliation of WMS, ERP and finance units. Physical counts agree with WMS (operations is authoritative for units).
+    Timing: SKU-103157 at DC2 (30-unit count correction posted after the close), SKU-101897 and others. Definitional: SKU-100651 at DC2
+    (50 units in transit to ST165), SKU-101757 (3 damaged units), K-1700 at DC1 (50 reserved units). Errors needing a journal:
+    SKU-105068 at DC2 (duplicate -4) and SKU-102345 at DC3 (duplicate 20-unit write-off).
   checks:
-  - tool: compare_inventory_balances
-    args:
-      site_id: DC1
-      adjustment_required: true
-    expect:
-    - wms_erp_variance
-    - erp_finance_variance
-    - variance_explanation
+    - tool: compare_inventory_balances
+      args: {site_id: DC2}
+      expect: ["SKU-103157", "SKU-100651", "SKU-105068", "in transit", "timing", "definitional", "error"]
+    - tool: compare_inventory_balances
+      args: {adjustment_required: true}
+      expect: ["SKU-105068", "SKU-102345", "duplicate"]
+    - tool: compare_inventory_balances
+      args: {group_by: category}
+      expect: ["timing", "definitional", "error"]
 - question: 09:81:Q3
-  story: KPI forecast for next month. Historical monthly data shows OTIF at 89%, markdown_rate at 38.2%, sell_through_rate at 65.2%. Variance from target -1.0%, +18.2%, -9.8%.
+  story: >
+    Eighteen months of monthly KPIs with last year's November and December peak: OTIF 94.0 then 89.0 last month (target 90, fell to 88.2
+    in last December's peak), markdown_rate 23.4 against a target of 20, sell_through_rate 71.9 against 75, cost_per_unit_gbp 2.42 against 2.41
+    (2.63 last December), inventory_turns 5.9 against 6.0 and inventory_accuracy 98.7 against 98.5. Peak hits OTIF, cost per unit,
+    sell-through and accuracy; markdown rate is above target all year.
   checks:
-  - tool: get_kpi_history
-    args:
-      kpi_name: OTIF
-      period_type: monthly
-    expect:
-    - kpi_value
-    - target_value
-    - variance_pct
+    - tool: get_kpi_history
+      args: {kpi_name: OTIF}
+      expect: ["2025-12-01", "88.2", "2026-09-01", "89"]
+    - tool: get_kpi_history
+      args: {kpi_name: cost_per_unit_gbp}
+      expect: ["2.63", "2.41", "2.42"]
+    - tool: get_kpi_history
+      args: {}
+      expect: ["markdown_rate", "sell_through_rate", "inventory_turns", "inventory_accuracy", "higher_is_better"]
 - question: 09:81:Q4
-  story: Data warehouse schema documentation. Query warehouse catalogue to design cost per order model joining WMS, TMS, ERP data. Tables tracked in warehouse_data_catalogue.
+  story: >
+    The warehouse holds staging copies of the three source systems: wms_order_costs (pick, pack, handling per order),
+    tms_shipment_costs (freight per shipment; split orders have several) and erp_order_headers (revenue and charges), keyed by order_id
+    and joinable to master.orders. ORD-2026-0108564 is split over two shipments (11.75 and 11.44). The cost-per-order SQL can be tested
+    with run_sql_query and saved with create_warehouse_view.
   checks:
-  - tool: search_data_catalogue
-    args:
-      table_name: sales
-    expect:
-    - table_name
-    - grain
-    - primary_key
-  - tool: get_table_schema
-    args:
-      table_name: product_sales_fact
-    expect:
-    - column_name
-    - column_type
-    - description
-  - tool: run_sql_query
-    args:
-      sku: K-1700
-    expect:
-    - sku
-    - units_sold
-  - tool: create_warehouse_view
-    args:
-      view_name: Test View
-      sql_query: SELECT sku, sum(units_sold) FROM product_sales_fact GROUP BY sku LIMIT 10
-      description: Test
-      created_by: system
-    expect:
-    - VIEW-
-    - Test View
+    - tool: search_data_catalogue
+      args: {query: freight}
+      expect: ["tms_shipment_costs", "One row per shipment"]
+    - tool: get_table_schema
+      args: {table_name: wms_order_costs}
+      expect: ["order_id", "handling_cost_gbp", "total_cost_gbp"]
+    - tool: run_sql_query
+      args: {query: "SELECT o.order_id, w.total_cost_gbp AS wms_cost, t.freight, t.shipments, e.revenue_gbp FROM master.orders o JOIN wms_order_costs w USING (order_id) JOIN (SELECT order_id, sum(freight_cost_gbp) AS freight, count(*) AS shipments FROM tms_shipment_costs GROUP BY order_id) t USING (order_id) JOIN erp_order_headers e USING (order_id) WHERE o.order_id = 'ORD-2026-0108564'"}
+      expect: ["ORD-2026-0108564", "1.55", "23.19", "59.57"]
+    - tool: run_sql_query
+      args: {query: "DROP TABLE wms_order_costs"}
+      expect: ["read-only"]
+    - tool: create_warehouse_view
+      args: {view_name: cost_per_order, sql_query: "SELECT w.order_id, w.total_cost_gbp + coalesce(sum(t.freight_cost_gbp), 0) AS cost FROM wms_order_costs w LEFT JOIN tms_shipment_costs t USING (order_id) GROUP BY w.order_id, w.total_cost_gbp", description: Cost per order}
+      expect: ["VIEW-", "cost_per_order", "active"]
 - question: 09:82:Q4
-  story: New product demand forecasting. Historical launch data shows launch performance metrics for forecasting methods.
+  story: >
+    About 760 past launches with week-1 and month-1 units. Basics (Trousers, Towels, Haircare) are forecast within 5-7 points on average,
+    fashion-forward lines (Knitwear 21, Footwear 23, Fragrance 21 points) are much worse, with 40-50% of launches missing by over 20 points,
+    which is why similar-item and attribute-based cold-start methods matter.
   checks:
-  - tool: get_new_product_launch_history
-    args:
-      status: launched
-    expect:
-    - sku
-    - units_sold_month1
-    - forecast_vs_actual_pct
+    - tool: get_new_product_launch_history
+      args: {group_by: category}
+      expect: ["Footwear", "Knitwear", "avg_abs_forecast_error_pct", "ALL"]
+    - tool: get_new_product_launch_history
+      args: {category: Outerwear}
+      expect: ["units_sold_week1", "units_sold_month1", "forecast_vs_actual_pct"]

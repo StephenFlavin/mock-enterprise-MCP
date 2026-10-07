@@ -1,31 +1,35 @@
 id: returns
 name: Returns Management System (RMS)
 instructions: >
-  Returned items, disposition routes, recovery analytics, and circularity pilots.
-  Return ids look like RET-000123. Use it for return reasons, damage assessment,
-  disposition routing (resale, repair, liquidation, recycle), recovery value,
-  and take-back or repair pilots.
+  Returned items (one row per item), disposition routes and rules, recovery analytics, returns centre capacity,
+  returns charge trials and circularity pilots. Return ids look like RET-000123, styles STY-5520, countries are
+  ISO codes (GB, DE). Record-level data covers the last 13 weeks; weekly history goes back two years.
 
 tables:
   returns:
     key: return_id
     cols:
       return_id: {type: str, desc: "Return record, e.g. RET-000123"}
-      order_id: {type: str, desc: "Customer order, e.g. ORD-2026-0123456"}
+      order_id: {type: str, desc: "Customer order, e.g. ORD-2026-0100003"}
       sku: {type: str, desc: "SKU being returned"}
       style_id: {type: str, desc: "Style, e.g. STY-5520"}
       return_date: {type: date, desc: When item was returned to us}
       return_reason_code: {type: str, desc: "Reason code, e.g. WRONG_SIZE, DAMAGE"}
+      defect_code: {type: str, desc: "Defect detail for quality returns, e.g. LID_LEAK, SOLE_PEEL"}
       pack_type: {type: str, desc: "Pack type, e.g. polybag, carton, hanging"}
-      item_age_days: {type: int, desc: "Age in days when returned"}
+      item_age_days: {type: int, desc: "Days from order to return"}
       condition_grade: {type: enum, values: [A, B, C, D, E], desc: "Condition A-E (A best)"}
       damage_code: {type: str, desc: "If damaged, damage type code"}
-      category: {type: str, desc: "Product category"}
-      channel: {type: enum, values: [web, app, click_collect, store], desc: "Sales channel"}
-      disposition_route: {type: str, desc: "How item was handled (restocked, refurbished, liquidated, recycled)"}
+      category: {type: str, desc: "Product category, as in the product master, e.g. Footwear"}
+      fit: {type: str, desc: "Fit variant where the style has one (skinny, regular, comfort)"}
+      country: {type: str, desc: "Market of the order, ISO code e.g. GB, DE"}
+      channel: {type: enum, values: [web, app, click_collect, marketplace, store], desc: "Sales channel"}
+      disposition_route: {type: str, desc: "How the item was handled (restocked, refurbished, liquidated, recycled, destroyed)"}
       disposition_date: {type: date, desc: When disposition decision was made}
-      recovery_gbp: {type: float, desc: "Recovery value if liquidated or resold"}
-      handling_cost_gbp: {type: float, desc: "Cost to handle and disposition"}
+      recovery_gbp: {type: float, desc: "Value recovered per item (resale at cost, liquidator price, material value)"}
+      handling_cost_gbp: {type: float, desc: "Cost to ship back, handle and disposition the item"}
+      unit_cost_gbp: {type: float, desc: "Unit cost of the item, as in the product master"}
+      days_to_sale: {type: int, desc: "Days from disposition to sale; blank for recycled or destroyed"}
       outcome: {type: enum, values: [restocked, refurbished, liquidated, recycled, destroyed], desc: "Final outcome"}
       updated_at: {type: timestamp, desc: Last updated}
 
@@ -48,15 +52,30 @@ tables:
       effective_from: {type: date, desc: "Date rule became effective"}
       updated_at: {type: timestamp, desc: Last updated}
 
+  disposition_outcomes:
+    key: route
+    cols:
+      route: {type: str, desc: "Disposition route"}
+      brand_risk: {type: enum, values: [low, medium, high], desc: "Brand risk of the route"}
+      brand_risk_note: {type: str, desc: "Why the route carries that brand risk"}
+
   liquidator_rates:
     key: liquidator_id
     cols:
-      liquidator_id: {type: str, desc: "Liquidator id, e.g. LQD-000001"}
+      liquidator_id: {type: str, desc: "Liquidator offer id, e.g. LQD-000001"}
       name: {type: str, desc: "Liquidator name"}
       product_category: {type: str, desc: "Category this rate applies to"}
-      recovery_rate_pct: {type: float, desc: "Recovery as % of original cost"}
+      recovery_rate_pct: {type: float, desc: "Recovery as % of original unit cost"}
       payment_terms_days: {type: int, desc: "Payment terms"}
       effective_date: {type: date, desc: "When rate became effective"}
+
+  weekly_returns_history:
+    key: [week_start, category]
+    cols:
+      week_start: {type: date, desc: "Monday of the week"}
+      category: {type: str, desc: "Product category"}
+      returns_count: {type: int, desc: "Items returned in the week"}
+      handling_cost_gbp: {type: float, desc: "Handling cost of those returns"}
 
   returns_centre_capacity:
     key: [capacity_id, date]
@@ -64,10 +83,11 @@ tables:
       capacity_id: {type: str, desc: "Capacity record id"}
       date: {type: date, desc: "Date"}
       capacity_units_per_day: {type: int, desc: "Processing capacity in units per day"}
-      target_throughput_units: {type: int, desc: "Target units to process"}
-      actual_throughput_units: {type: int, desc: "Actual units processed"}
-      staffing_needed: {type: int, desc: "Staff headcount needed"}
-      peak_day: {type: bool, desc: "Whether this is a peak day"}
+      target_throughput_units: {type: int, desc: "Forecast returns to process that day"}
+      actual_throughput_units: {type: int, desc: "Actual units processed; blank for future days"}
+      staffing_needed: {type: int, desc: "Staff needed to process the forecast"}
+      planned_staff: {type: int, desc: "Staff already rostered"}
+      peak_day: {type: bool, desc: "Forecast exceeds capacity"}
 
   circularity_pilots:
     key: pilot_id
@@ -79,9 +99,9 @@ tables:
       end_date: {type: date, desc: "Pilot end date"}
       status: {type: enum, values: [planned, active, completed, cancelled], desc: "Status"}
       units_collected: {type: int, desc: "Units collected via pilot"}
-      units_outcome_a: {type: int, desc: "Units with outcome A"}
-      units_outcome_b: {type: int, desc: "Units with outcome B"}
-      units_outcome_c: {type: int, desc: "Units with outcome C"}
+      units_reused: {type: int, desc: "Units resold or reused"}
+      units_repaired: {type: int, desc: "Units repaired"}
+      units_recycled: {type: int, desc: "Units recycled"}
       recovery_gbp: {type: float, desc: "Total recovery value"}
       handling_cost_gbp: {type: float, desc: "Total handling cost"}
       updated_at: {type: timestamp, desc: Last updated}
@@ -90,13 +110,13 @@ tables:
     key: trial_id
     cols:
       trial_id: {type: str, desc: "Trial id, e.g. TRL-000001"}
-      market: {type: str, desc: "Market/country code"}
+      market: {type: str, desc: "Market/country code, e.g. DE"}
       charge_gbp: {type: float, desc: "Returns charge amount in GBP"}
       start_date: {type: date, desc: "Trial start date"}
       end_date: {type: date, desc: "Trial end date"}
       status: {type: enum, values: [planned, active, completed], desc: "Trial status"}
       units_returned: {type: int, desc: "Units returned during trial"}
-      baseline_units_returned: {type: int, desc: "Baseline returns without charge"}
+      baseline_units_returned: {type: int, desc: "Units that would have been returned without the charge"}
       impact_on_rate_pct: {type: float, desc: "% change in return rate"}
       impact_on_conversion_pct: {type: float, desc: "% change in conversion"}
       updated_at: {type: timestamp, desc: Last updated}
@@ -104,109 +124,137 @@ tables:
   pack_type_damage:
     key: [pack_type, category]
     cols:
-      pack_type: {type: str, desc: "Pack type"}
+      pack_type: {type: str, desc: "Pack type, e.g. carton, polybag, moulded_pulp, recycled_plastic"}
       category: {type: str, desc: "Product category"}
-      damage_rate_pct: {type: float, desc: "Damage rate as % of returns"}
-      sample_size: {type: int, desc: "Number of returns sampled"}
+      material: {type: str, desc: "Pack material"}
+      basis: {type: str, desc: "Where the rate comes from: current pack returns data or supplier pilot"}
+      damage_rate_pct: {type: float, desc: "Damaged items as % of the sample"}
+      sample_size: {type: int, desc: "Number of items sampled"}
       measured_from_date: {type: date, desc: "When measurement period started"}
 
   returns_handling_practices:
     key: practice_id
     cols:
-      practice_id: {type: str, desc: "Practice id"}
+      practice_id: {type: str, desc: "Practice id, e.g. PRC-001"}
       country: {type: str, desc: "ISO country code"}
-      practice_description: {type: str, desc: "Description of practice"}
+      practice_description: {type: str, desc: "What we do with returned goods"}
       regulatory_reference: {type: str, desc: "Regulation this relates to"}
-
-  disposition_outcomes:
-    key: [route, condition_grade]
-    cols:
-      route: {type: str, desc: "Disposition route"}
-      condition_grade: {type: str, desc: "Condition grade"}
-      avg_handling_cost_gbp: {type: float, desc: "Average handling cost"}
-      avg_recovery_gbp: {type: float, desc: "Average recovery value"}
-      avg_days_to_sale: {type: int, desc: "Average days to sell"}
+      compliance_status: {type: enum, values: [compliant, review, conflict], desc: "Compliance review result"}
+      issue_note: {type: text, desc: "Why the practice may conflict with the regulation"}
 
 tools:
   - name: get_historical_weekly_returns
-    desc: Weekly returns volume by week for the last 52 weeks. Use to forecast capacity needs and staffing.
+    desc: "Items returned per week, oldest first, with handling cost and index against the period average. Use to see last year's pattern and the peak week for capacity planning."
     kind: sql
     args:
-      category: {type: str, desc: "Filter by category (default all)"}
-      weeks_back: {type: int, default: 52, desc: "Number of weeks of history"}
+      category: {type: str, desc: "Filter by product category, e.g. Outerwear (default all)"}
+      weeks_back: {type: int, default: 52, desc: "Number of weeks of history, up to 104"}
     sql: |
-      SELECT date_trunc('week', r.return_date) AS week_start,
-             count(*) AS returns_count,
-             round(sum(r.handling_cost_gbp), 2) AS total_handling_cost_gbp
-      FROM returns r
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks_back AS INT) * 7) DAY
-        AND ($category IS NULL OR r.category = $category)
-      GROUP BY date_trunc('week', r.return_date)
-      ORDER BY week_start DESC
-    limit: 52
+      WITH live AS (
+        SELECT CAST(date_trunc('week', r.return_date) AS DATE) AS week_start, r.category,
+               count(*) AS returns_count, sum(r.handling_cost_gbp) AS handling_cost_gbp
+        FROM returns r GROUP BY ALL),
+      hist AS (
+        SELECT h.week_start, h.category, h.returns_count, h.handling_cost_gbp
+        FROM weekly_returns_history h
+        WHERE h.week_start < (SELECT min(week_start) FROM live)),
+      allw AS (SELECT * FROM live UNION ALL SELECT * FROM hist),
+      w AS (
+        SELECT week_start, sum(returns_count) AS returns_count,
+               round(sum(handling_cost_gbp), 2) AS total_handling_cost_gbp
+        FROM allw
+        WHERE week_start >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL (CAST($weeks_back AS INT) * 7) DAY
+          AND ($category IS NULL OR category = $category)
+        GROUP BY week_start)
+      SELECT week_start, returns_count, total_handling_cost_gbp,
+             round(100.0 * returns_count / avg(returns_count) OVER () - 100, 1) AS vs_period_average_pct,
+             returns_count = max(returns_count) OVER () AS is_peak_week
+      FROM w ORDER BY week_start
+    limit: 104
     example: {}
 
   - name: get_return_cost_per_order
-    desc: Average return cost by channel and segment. Returns handling cost, recovery value and net cost per return.
+    desc: "Return rate and cost of returns per order by market, optionally for one channel, with handling cost, recovery and net loss per return. Use to size what a return costs us in a market."
     kind: sql
     args:
-      channel: {}
-      days_back: {type: int, default: 180, desc: "Days of history to include"}
+      country: {type: str, desc: "Market, ISO code e.g. DE (default all)"}
+      channel: {desc: "Sales channel: web, app, click_collect, marketplace (default all)"}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
     sql: |
-      SELECT r.channel,
-             count(*) AS returns_count,
-             round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp,
-             round(avg(r.recovery_gbp), 2) AS avg_recovery_gbp,
-             round(avg(r.handling_cost_gbp - COALESCE(r.recovery_gbp, 0)), 2) AS avg_net_cost_gbp,
-             'net_cost = handling_cost - recovery' AS formula
-      FROM returns r
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
-        AND ($channel IS NULL OR r.channel = $channel)
-      GROUP BY r.channel
+      WITH ret AS (
+        SELECT r.country, count(*) AS returned_units,
+               round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp,
+               round(avg(COALESCE(r.recovery_gbp, 0)), 2) AS avg_recovery_gbp,
+               round(avg(r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)), 2) AS avg_net_loss_per_return_gbp,
+               sum(r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)) AS total_net_loss_gbp
+        FROM returns r
+        WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+          AND ($country IS NULL OR upper(r.country) = upper($country))
+          AND ($channel IS NULL OR r.channel = $channel)
+        GROUP BY r.country),
+      ord AS (
+        SELECT o.country, count(*) AS orders, sum(o.units) AS units_ordered
+        FROM master.orders o
+        WHERE o.order_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY AND o.status <> 'cancelled'
+          AND ($channel IS NULL OR o.channel = $channel)
+        GROUP BY o.country)
+      SELECT ret.country, COALESCE($channel, 'all') AS channel, ord.orders, ret.returned_units,
+             round(100.0 * ret.returned_units / ord.units_ordered, 1) AS return_rate_pct,
+             ret.avg_handling_cost_gbp, ret.avg_recovery_gbp, ret.avg_net_loss_per_return_gbp,
+             round(ret.total_net_loss_gbp / ord.orders, 2) AS return_cost_per_order_gbp,
+             'net loss = handling + (unit cost - recovery); per order = total net loss / orders' AS formula
+      FROM ret JOIN ord USING (country)
+      ORDER BY ret.country
     limit: 10
-    example: {channel: web}
+    example: {country: DE}
 
   - name: get_damage_rate_by_pack_type
-    desc: Damage rate on return by pack type and category. Shows which packs have highest damage risk.
-    kind: sql
-    args:
-      category: {type: str, desc: "Product category (default all)"}
-    sql: |
-      SELECT p.pack_type, p.category,
-             round(p.damage_rate_pct, 1) AS damage_rate_pct,
-             p.sample_size,
-             p.measured_from_date
-      FROM pack_type_damage p
-      WHERE ($category IS NULL OR p.category = $category)
-      ORDER BY p.damage_rate_pct DESC
-    limit: 20
-    example: {}
+    desc: "Damage rate by pack type and category, from current-pack returns data and supplier pilots of alternative materials. Use to compare how well packs protect goods."
+    kind: select
+    from: pack_type_damage
+    filters:
+      category: {desc: "Product category, e.g. Small Appliances"}
+      pack_type: {desc: "Pack type, e.g. carton, moulded_pulp, recycled_plastic"}
+    columns: [pack_type, category, material, basis, damage_rate_pct, sample_size, measured_from_date]
+    order: damage_rate_pct DESC
+    limit: 40
+    example: {category: Small Appliances}
 
   - name: get_disposition_route_outcomes
-    desc: Outcomes by disposition route (restocked, refurbished, liquidated, recycled). Shows recovery value and handling cost.
+    desc: "Outcomes by disposition route and item age band (0-60 days, 60+ days) for a category: items, recovery, handling cost, net value, days to sell and brand risk."
     kind: sql
     args:
+      category: {type: str, desc: "Product category, e.g. Audio (default all)"}
       route: {type: str, desc: "Disposition route (default all)"}
       condition_grade: {type: str, desc: "Condition grade A-E (default all)"}
     sql: |
-      SELECT d.route, d.condition_grade,
-             round(d.avg_handling_cost_gbp, 2) AS avg_handling_cost_gbp,
-             round(d.avg_recovery_gbp, 2) AS avg_recovery_gbp,
-             d.avg_days_to_sale,
-             round(d.avg_recovery_gbp - d.avg_handling_cost_gbp, 2) AS avg_net_value_gbp,
-             'net = recovery - handling' AS formula
-      FROM disposition_outcomes d
-      WHERE ($route IS NULL OR d.route = $route)
-        AND ($condition_grade IS NULL OR d.condition_grade = $condition_grade)
-      ORDER BY d.avg_recovery_gbp DESC
+      SELECT r.disposition_route AS route,
+             CASE WHEN r.item_age_days > 60 THEN '60+ days' ELSE '0-60 days' END AS age_band,
+             count(*) AS items,
+             round(avg(r.recovery_gbp), 2) AS avg_recovery_gbp,
+             round(100.0 * sum(r.recovery_gbp) / sum(r.unit_cost_gbp), 1) AS recovery_pct_of_cost,
+             round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp,
+             round(avg(r.recovery_gbp - r.handling_cost_gbp), 2) AS avg_net_value_gbp,
+             round(avg(r.days_to_sale), 1) AS avg_days_to_sale,
+             any_value(d.brand_risk) AS brand_risk,
+             'net value = recovery - handling' AS formula
+      FROM returns r LEFT JOIN disposition_outcomes d ON d.route = r.disposition_route
+      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        AND ($category IS NULL OR r.category = $category)
+        AND ($route IS NULL OR r.disposition_route = $route)
+        AND ($condition_grade IS NULL OR r.condition_grade = $condition_grade)
+      GROUP BY ALL
+      ORDER BY age_band, avg_net_value_gbp DESC
     limit: 30
-    example: {}
+    example: {category: Audio}
 
   - name: get_handling_cost_by_disposition_route
-    desc: Actual handling cost by disposition route from returns processed in last 6 months.
+    desc: "Actual handling cost per item by disposition route from returns processed in the last 6 months, optionally for one category or items older than a given age."
     kind: sql
     args:
-      route: {type: str, desc: "Disposition route (restocked, refurbished, liquidated, recycled)"}
+      route: {type: str, desc: "Disposition route (restocked, refurbished, liquidated, recycled, destroyed); default all"}
+      category: {type: str, desc: "Product category, e.g. Audio (default all)"}
+      min_item_age_days: {type: int, default: 0, desc: "Only items at least this many days old"}
     sql: |
       SELECT r.disposition_route,
              count(*) AS return_count,
@@ -217,129 +265,153 @@ tools:
       FROM returns r
       WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
         AND ($route IS NULL OR r.disposition_route = $route)
+        AND ($category IS NULL OR r.category = $category)
+        AND r.item_age_days >= CAST($min_item_age_days AS INT)
       GROUP BY r.disposition_route
       ORDER BY total_cost_gbp DESC
     limit: 10
-    example: {route: liquidated}
+    example: {category: Audio, route: liquidated}
 
   - name: get_return_item_age_profile
-    desc: Distribution of returned items by age (days since purchase). Shows what % are 0-30, 31-60, 60+ days old.
+    desc: "Returned items by age band (0-30, 31-60, 60+ days since order) with share of returns and, for one category, the active disposition rules covering each band."
     kind: sql
     args:
-      category: {type: str, desc: "Product category (default all)"}
+      category: {type: str, desc: "Product category, e.g. Audio (default all; rules shown only for one category)"}
     sql: |
-      SELECT CASE
-               WHEN r.item_age_days <= 30 THEN '0-30 days'
-               WHEN r.item_age_days <= 60 THEN '31-60 days'
-               ELSE '60+ days'
-             END AS age_band,
-             count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_total
-      FROM returns r
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-        AND ($category IS NULL OR r.category = $category)
-      GROUP BY age_band
-      ORDER BY age_band
+      WITH bands(age_band, lo, hi) AS (
+        VALUES ('0-30 days', 0, 30), ('31-60 days', 31, 60), ('60+ days', 61, 9999)),
+      cnt AS (
+        SELECT b.age_band, b.lo, b.hi, count(r.return_id) AS return_count
+        FROM bands b LEFT JOIN returns r
+          ON r.item_age_days BETWEEN b.lo AND b.hi
+         AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+         AND ($category IS NULL OR r.category = $category)
+        GROUP BY b.age_band, b.lo, b.hi)
+      SELECT c.age_band, c.return_count,
+             round(100.0 * c.return_count / sum(c.return_count) OVER (), 1) AS pct_of_total,
+             CASE WHEN $category IS NULL THEN NULL ELSE
+               (SELECT string_agg(d.rule_id || ': ' || d.min_age_days || '-' || d.max_age_days || ' days -> ' || d.disposition_route, '; ' ORDER BY d.rule_id)
+                FROM disposition_rules d
+                WHERE d.status = 'active' AND d.product_category = $category AND d.min_age_days <= c.hi AND d.max_age_days >= c.lo)
+             END AS active_rules
+      FROM cnt c ORDER BY c.lo
     limit: 10
-    example: {}
+    example: {category: Audio}
 
   - name: get_liquidator_recovery_rates
-    desc: Recovery rates offered by liquidators by product category. Shows what % of cost we recover via liquidation.
+    desc: "Recovery rates offered by each liquidator by product category, as % of unit cost and in pounds per unit at our average cost. Use to price the liquidation route."
     kind: sql
     args:
-      category: {type: str, desc: "Product category (default all)"}
+      category: {type: str, desc: "Product category, e.g. Audio (default all)"}
     sql: |
-      SELECT l.name AS liquidator,
-             l.product_category,
+      WITH cost AS (
+        SELECT p.category, avg(p.unit_cost_gbp) AS avg_unit_cost FROM master.products p GROUP BY p.category)
+      SELECT l.name AS liquidator, l.product_category,
              round(l.recovery_rate_pct, 1) AS recovery_rate_pct,
-             l.payment_terms_days,
-             l.effective_date
-      FROM liquidator_rates l
+             round(c.avg_unit_cost, 2) AS avg_unit_cost_gbp,
+             round(l.recovery_rate_pct / 100.0 * c.avg_unit_cost, 2) AS est_recovery_per_unit_gbp,
+             l.payment_terms_days, l.effective_date
+      FROM liquidator_rates l LEFT JOIN cost c ON c.category = l.product_category
       WHERE ($category IS NULL OR l.product_category = $category)
-      ORDER BY l.recovery_rate_pct DESC
-    limit: 20
-    example: {}
+      ORDER BY l.product_category, l.recovery_rate_pct DESC
+    limit: 100
+    example: {category: Audio}
 
   - name: list_top_returned_styles
-    desc: Top 10-20 returned styles by volume in last 90 days. Use to identify quality or fit issues.
+    desc: "Most returned styles by item count in the last 90 days with their top return reason. Use to find the styles with sizing, quality or expectation problems."
     kind: sql
     args:
-      category: {type: str, desc: "Filter by category (default all)"}
-      limit_count: {type: int, default: 10, desc: "Number to return"}
+      category: {type: str, desc: "Filter by category, e.g. Dresses (default all)"}
+      limit_count: {type: int, default: 10, desc: "Number of styles to return"}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
     sql: |
       SELECT r.style_id,
-             p.name AS style_name,
+             regexp_replace(min(p.name), ' (\d+|XS|S|M|L|XL|XXL|ONE|\d+-\d+Y)$', '') AS style_name,
+             min(r.category) AS category,
              count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_category_returns
+             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_returns,
+             mode(r.return_reason_code) AS top_reason_code
       FROM returns r
-      JOIN master.products p ON p.style_id = r.style_id
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      JOIN master.products p ON p.sku = r.sku
+      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
         AND ($category IS NULL OR r.category = $category)
-      GROUP BY r.style_id, p.name
+      GROUP BY r.style_id
       ORDER BY return_count DESC
       LIMIT CAST($limit_count AS INT)
-    example: {category: "Apparel"}
+    limit: 50
+    example: {limit_count: 5}
 
   - name: get_return_reasons_by_style
-    desc: Return reasons breakdown for a style. Shows which issues (sizing, quality, etc) are driving returns.
+    desc: "Return reasons for a style with counts and share, from the last 90 days. Shows whether sizing, quality or expectation drives its returns."
     kind: sql
     args:
       style_id: {required: true}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
     sql: |
       SELECT r.style_id,
              r.return_reason_code,
              rr.description,
+             rr.category AS reason_group,
              count(*) AS return_count,
              round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
       FROM returns r
       LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
       WHERE r.style_id = $style_id
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      GROUP BY r.style_id, r.return_reason_code, rr.description
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.style_id, r.return_reason_code, rr.description, rr.category
       ORDER BY return_count DESC
     limit: 20
     example: {style_id: "STY-5520"}
 
   - name: get_return_reasons_for_style
-    desc: Return reasons for a specific style. Shows distribution of reasons customers return this style.
+    desc: "Return reasons for a style by size, with counts and share within each size. Use to see which sizes drive fit complaints such as too tight at the hip."
     kind: sql
     args:
       style_id: {required: true}
+      size: {type: str, desc: "Size to look at, e.g. 14 (default all sizes)"}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
     sql: |
-      SELECT r.style_id,
+      SELECT r.style_id, p.size,
              r.return_reason_code,
              rr.description,
              count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+             round(100.0 * count(*) / sum(count(*)) OVER (PARTITION BY p.size), 1) AS pct_of_size_returns,
+             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_style_returns
       FROM returns r
+      JOIN master.products p ON p.sku = r.sku
       LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
       WHERE r.style_id = $style_id
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      GROUP BY r.style_id, r.return_reason_code, rr.description
+        AND ($size IS NULL OR p.size = $size)
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.style_id, p.size, r.return_reason_code, rr.description
       ORDER BY return_count DESC
-    limit: 20
-    example: {style_id: "STY-T-4410"}
+    limit: 40
+    example: {style_id: "STY-T-4410", size: "14"}
 
   - name: get_returns_grading_data
-    desc: Condition grades on return by category for last 6 months. Shows % in A-E grades for resale assessment.
+    desc: "Condition grades A-E on return for one category over the last 6 months, with share, recovery and handling cost per grade. Use to assess resale potential, optionally for older items only."
     kind: sql
     args:
-      category: {required: true, desc: "Product category"}
+      category: {required: true, desc: "Product category, e.g. Audio"}
+      min_item_age_days: {type: int, default: 0, desc: "Only items at least this many days old"}
     sql: |
       SELECT r.category,
              r.condition_grade,
              count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_category
+             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_category,
+             round(avg(r.recovery_gbp), 2) AS avg_recovery_gbp,
+             round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp
       FROM returns r
       WHERE r.category = $category
         AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        AND r.item_age_days >= CAST($min_item_age_days AS INT)
       GROUP BY r.category, r.condition_grade
       ORDER BY r.condition_grade
     limit: 10
-    example: {category: "Electronics"}
+    example: {category: Audio}
 
   - name: get_return_reasons_by_product
-    desc: Return reasons by product. Shows which reasons drive returns across products in a category.
+    desc: "Return reasons by product. Shows which reasons drive returns across products in a category."
     kind: sql
     args:
       category: {type: str, desc: "Product category (default all)"}
@@ -358,212 +430,291 @@ tools:
       GROUP BY r.sku, p.name, r.return_reason_code, rr.description
       ORDER BY return_count DESC
     limit: 50
-    example: {category: "Apparel"}
+    example: {category: Footwear}
 
   - name: calculate_return_reduction_savings
-    desc: Calculate annual savings from reducing returns for top styles. Returns impact on cost and inventory.
+    desc: "Annual saving from cutting a style's returns by a given percentage, from its recent return volume and the cost of each return (handling plus written-down value)."
     kind: sql
     args:
-      style_id: {required: true, desc: "Style to analyze"}
+      style_id: {required: true, desc: "Style to analyze, e.g. STY-5520"}
       reduction_pct: {type: float, default: 10, desc: "% reduction to assume"}
+      period_days: {type: int, default: 90, desc: "Days of returns used to annualise"}
     sql: |
+      WITH s AS (
+        SELECT count(*) AS n,
+               avg(r.handling_cost_gbp) AS avg_handling,
+               avg(greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)) AS avg_writedown
+        FROM returns r
+        WHERE r.style_id = $style_id
+          AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY)
       SELECT $style_id AS style_id,
-             count(r.return_id) AS current_returns,
-             round(count(r.return_id) * CAST($reduction_pct AS FLOAT) / 100.0) AS returns_avoided,
-             round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp,
-             round(count(r.return_id) * CAST($reduction_pct AS FLOAT) / 100.0 * avg(r.handling_cost_gbp), 2) AS annual_saving_gbp,
-             'saving = avoided_returns * avg_cost' AS formula
-      FROM returns r
-      WHERE r.style_id = $style_id
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+             s.n AS returns_in_period,
+             CAST($period_days AS INT) AS period_days,
+             round(s.n * 365.0 / $period_days) AS annualised_returns,
+             CAST($reduction_pct AS FLOAT) AS reduction_pct,
+             round(s.n * 365.0 / $period_days * CAST($reduction_pct AS FLOAT) / 100.0) AS returns_avoided_per_year,
+             round(s.avg_handling, 2) AS avg_handling_cost_gbp,
+             round(s.avg_writedown, 2) AS avg_written_down_value_gbp,
+             round(s.n * 365.0 / $period_days * CAST($reduction_pct AS FLOAT) / 100.0 * (s.avg_handling + s.avg_writedown), 2) AS annual_saving_gbp,
+             'saving = annualised returns x reduction % x (avg handling + avg written-down value)' AS formula
+      FROM s
     limit: 1
     example: {style_id: "STY-5520", reduction_pct: 15}
 
   - name: calculate_annual_disposition_change_value
-    desc: Financial impact of changing disposition route. Returns savings from better recovery or lower handling cost.
+    desc: "Annual value of moving a category's items from one disposition route to another, from actual net value per item on each route over the last 6 months."
     kind: sql
     args:
-      category: {required: true, desc: "Product category"}
+      category: {required: true, desc: "Product category, e.g. Audio"}
       old_route: {required: true, desc: "Current route (restocked, refurbished, liquidated, recycled)"}
       new_route: {required: true, desc: "Proposed route"}
-      annual_volume: {type: int, default: 10000, desc: "Annual units affected"}
+      min_item_age_days: {type: int, default: 61, desc: "Only items at least this many days old"}
+      annual_volume: {type: int, desc: "Annual units affected (default: observed volume of items this old, annualised)"}
     sql: |
+      WITH base AS (
+        SELECT r.disposition_route, r.recovery_gbp, r.handling_cost_gbp, r.return_date
+        FROM returns r
+        WHERE r.category = $category
+          AND r.item_age_days >= CAST($min_item_age_days AS INT)
+          AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY),
+      per AS (
+        SELECT disposition_route, count(*) AS items, avg(recovery_gbp - handling_cost_gbp) AS net_per_item
+        FROM base GROUP BY disposition_route),
+      obs AS (
+        SELECT count(*) AS items,
+               date_diff('day', CAST($as_of AS DATE) - INTERVAL 180 DAY, CAST($as_of AS DATE)) AS days_window,
+               date_diff('day', (SELECT min(return_date) FROM returns), (SELECT max(return_date) FROM returns)) + 1 AS days_observed
+        FROM base)
       SELECT $category AS category,
-             $old_route AS old_route,
-             $new_route AS new_route,
-             CAST($annual_volume AS INT) AS annual_volume,
-             round((SELECT avg_recovery_gbp - avg_handling_cost_gbp FROM disposition_outcomes
-                    WHERE route = $new_route LIMIT 1) -
-                   (SELECT avg_recovery_gbp - avg_handling_cost_gbp FROM disposition_outcomes
-                    WHERE route = $old_route LIMIT 1), 2) * CAST($annual_volume AS INT) AS annual_benefit_gbp,
-             'benefit = (new_route_value - old_route_value) * volume' AS formula
+             CAST($min_item_age_days AS INT) AS min_item_age_days,
+             $old_route AS old_route, $new_route AS new_route,
+             (SELECT items FROM per WHERE disposition_route = $old_route) AS old_route_items,
+             (SELECT items FROM per WHERE disposition_route = $new_route) AS new_route_items,
+             round((SELECT net_per_item FROM per WHERE disposition_route = $old_route), 2) AS old_net_value_per_item_gbp,
+             round((SELECT net_per_item FROM per WHERE disposition_route = $new_route), 2) AS new_net_value_per_item_gbp,
+             COALESCE(CAST($annual_volume AS INT), CAST(round(obs.items * 365.0 / obs.days_observed) AS INT)) AS annual_volume,
+             round(((SELECT net_per_item FROM per WHERE disposition_route = $new_route)
+                    - (SELECT net_per_item FROM per WHERE disposition_route = $old_route))
+                   * COALESCE(CAST($annual_volume AS INT), round(obs.items * 365.0 / obs.days_observed)), 2) AS annual_benefit_gbp,
+             'benefit = (new route net value - old route net value) x annual volume; net value = recovery - handling' AS formula
+      FROM obs
     limit: 1
-    example: {category: "Electronics", old_route: "liquidated", new_route: "refurbished", annual_volume: 5000}
+    example: {category: Audio, old_route: recycled, new_route: liquidated}
 
   - name: calculate_returns_charge_impact
-    desc: Estimate effect of returns charge on return rate, conversion and margin. Compares with/without charge scenarios.
+    desc: "Estimate the effect of a returns charge in a market on return rate, conversion and annual margin, using its return costs and our own completed charge trials."
     kind: sql
     args:
-      market: {required: true, desc: "Market/country"}
-      charge_gbp: {required: true, type: float, desc: "Proposed charge amount"}
+      market: {required: true, type: str, desc: "Market, ISO code e.g. DE"}
+      charge_gbp: {required: true, type: float, desc: "Proposed charge per return in GBP"}
+      rate_reduction_pct: {type: float, desc: "Assumed % cut in returned units (default: scaled from our completed trials)"}
+      gross_margin_pct: {type: float, default: 45, desc: "Gross margin % on lost sales"}
     sql: |
-      SELECT $market AS market,
-             CAST($charge_gbp AS FLOAT) AS charge_gbp,
-             round(avg(r.handling_cost_gbp), 2) AS avg_return_cost_gbp,
-             round(CAST($charge_gbp AS FLOAT) / avg(r.handling_cost_gbp) * 100.0, 1) AS charge_vs_cost_pct,
-             round(avg(CASE WHEN r.outcome IN ('restocked', 'refurbished') THEN 1 ELSE 0 END) * 100.0, 1) AS baseline_resale_pct,
-             round(avg(CASE WHEN r.outcome IN ('restocked', 'refurbished') THEN 1 ELSE 0 END) * 100.0 * 0.85, 1) AS projected_resale_pct_with_charge,
-             'impact: charge reduces returns by estimated 15%' AS formula
-      FROM returns r
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+      WITH ret AS (
+        SELECT count(*) AS returned_units,
+               avg(r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)) AS avg_cost,
+               avg(CASE WHEN r.return_reason_code IN ('DAMAGE', 'DEFECT', 'SOLE_SEPARATION', 'WRONG_ITEM') THEN 0 ELSE 1 END) AS chargeable_share
+        FROM returns r
+        WHERE upper(r.country) = upper($market) AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY),
+      ord AS (
+        SELECT count(*) AS orders, sum(o.units) AS units, sum(o.value_gbp) AS value_gbp
+        FROM master.orders o
+        WHERE upper(o.country) = upper($market) AND o.status <> 'cancelled'
+          AND o.order_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY),
+      ev AS (
+        SELECT avg(t.impact_on_rate_pct / t.charge_gbp) AS rate_per_gbp, avg(t.impact_on_conversion_pct / t.charge_gbp) AS conv_per_gbp,
+               string_agg(t.market || ' trial at GBP ' || t.charge_gbp || ': returns ' || t.impact_on_rate_pct || '%, conversion ' || t.impact_on_conversion_pct || '%', '; ') AS evidence
+        FROM returns_charge_trials t WHERE t.status = 'completed'),
+      calc AS (
+        SELECT ret.*, ord.*, ev.evidence,
+               COALESCE(CAST($rate_reduction_pct AS FLOAT), least(-ev.rate_per_gbp * CAST($charge_gbp AS FLOAT), 30)) AS cut_pct,
+               ev.conv_per_gbp * CAST($charge_gbp AS FLOAT) AS conv_pct
+        FROM ret, ord, ev)
+      SELECT upper($market) AS market, CAST($charge_gbp AS FLOAT) AS charge_gbp,
+             orders AS orders_90d,
+             round(100.0 * returned_units / units, 1) AS return_rate_pct,
+             round(avg_cost, 2) AS avg_cost_per_return_gbp,
+             round(100.0 * chargeable_share, 1) AS chargeable_returns_pct,
+             round(cut_pct, 1) AS assumed_return_cut_pct,
+             round(conv_pct, 2) AS assumed_conversion_change_pct,
+             round(returned_units * 365.0 / 90) AS returns_per_year,
+             round(returned_units * 365.0 / 90 * cut_pct / 100) AS returns_avoided_per_year,
+             round(returned_units * 365.0 / 90 * cut_pct / 100 * avg_cost, 0) AS cost_saving_gbp,
+             round(returned_units * 365.0 / 90 * (1 - cut_pct / 100) * chargeable_share * CAST($charge_gbp AS FLOAT), 0) AS charge_income_gbp,
+             round(value_gbp * 365.0 / 90 * (-conv_pct) / 100 * CAST($gross_margin_pct AS FLOAT) / 100, 0) AS lost_margin_gbp,
+             round(returned_units * 365.0 / 90 * cut_pct / 100 * avg_cost
+                   + returned_units * 365.0 / 90 * (1 - cut_pct / 100) * chargeable_share * CAST($charge_gbp AS FLOAT)
+                   - value_gbp * 365.0 / 90 * (-conv_pct) / 100 * CAST($gross_margin_pct AS FLOAT) / 100, 0) AS net_annual_margin_impact_gbp,
+             evidence,
+             'net = avoided returns x cost per return + charge income on remaining chargeable returns - lost gross margin from lower conversion' AS formula
+      FROM calc
     limit: 1
-    example: {market: "GB", charge_gbp: 5.0}
+    example: {market: DE, charge_gbp: 4.99}
 
   - name: get_returns_centre_capacity
-    desc: Returns centre capacity and staffing needs by date. Shows utilization vs target for planning.
+    desc: "Returns centre capacity, forecast returns, utilisation and staffing by day, including planned staff and the agency staff gap. Use for capacity and staffing plans."
     kind: sql
     args:
       date_from: {type: date, default: "-14d", desc: "From date"}
       date_to: {type: date, default: "+14d", desc: "To date"}
+      peak_only: {type: bool, default: false, desc: "Only days where forecast exceeds capacity"}
     sql: |
       SELECT c.date,
              c.capacity_units_per_day,
-             c.target_throughput_units,
+             c.target_throughput_units AS forecast_units,
              c.actual_throughput_units,
-             round(COALESCE(100.0 * c.actual_throughput_units / c.target_throughput_units, 0), 1) AS utilization_pct,
+             round(100.0 * COALESCE(c.actual_throughput_units, c.target_throughput_units) / c.capacity_units_per_day, 1) AS utilization_pct,
+             greatest(c.target_throughput_units - c.capacity_units_per_day, 0) AS units_over_capacity,
              c.staffing_needed,
+             c.planned_staff,
+             greatest(c.staffing_needed - c.planned_staff, 0) AS agency_staff_needed,
              c.peak_day
       FROM returns_centre_capacity c
       WHERE c.date >= CAST($date_from AS DATE) AND c.date <= CAST($date_to AS DATE)
+        AND (NOT $peak_only OR c.peak_day)
       ORDER BY c.date
-    limit: 60
+    limit: 200
     example: {}
 
   - name: get_circularity_volumes_by_outcome
-    desc: Units collected, reused, repaired, recycled from take-back programs. Shows circular economy progress.
+    desc: "Units collected, reused, repaired and recycled across take-back, resale and repair pilots, with recovery value and handling cost, for the last 12 months and the 12 months before."
     kind: sql
     args:
       pilot_type: {type: enum, values: [take_back, resale, repair], desc: "Type of pilot (default all)"}
     sql: |
-      SELECT CASE WHEN p.pilot_type = 'take_back' THEN 'Collected'
-                  WHEN p.pilot_type = 'resale' THEN 'Reused'
-                  WHEN p.pilot_type = 'repair' THEN 'Repaired'
-                  ELSE 'Other'
-             END AS outcome,
-             sum(p.units_collected) AS total_units,
-             sum(p.recovery_gbp) AS total_recovery_gbp,
-             round(sum(p.recovery_gbp) / NULLIF(sum(p.units_collected), 0), 2) AS recovery_per_unit_gbp
+      SELECT CASE WHEN p.start_date > CAST($as_of AS DATE) - INTERVAL 365 DAY THEN 'last 12 months' ELSE 'previous 12 months' END AS period,
+             count(*) AS pilots,
+             sum(p.units_collected) AS units_collected,
+             sum(p.units_reused) AS units_reused,
+             sum(p.units_repaired) AS units_repaired,
+             sum(p.units_recycled) AS units_recycled,
+             sum(p.recovery_gbp) AS recovery_gbp,
+             sum(p.handling_cost_gbp) AS handling_cost_gbp,
+             round(sum(p.recovery_gbp) / NULLIF(sum(p.handling_cost_gbp), 0), 2) AS recovery_per_gbp_handling
       FROM circularity_pilots p
       WHERE p.status IN ('active', 'completed')
         AND ($pilot_type IS NULL OR p.pilot_type = $pilot_type)
-      GROUP BY p.pilot_type
-      ORDER BY outcome
+      GROUP BY 1
+      ORDER BY period DESC
     limit: 10
     example: {}
 
   - name: draft_pilot_plan
-    desc: Draft plan for a take-back, resale or repair pilot including scope, targets and timeline.
+    desc: "Draft plan for a take-back, resale or repair pilot in a category, with condition mix, weekly return volume, benchmarks from earlier pilots and suggested volumes."
     kind: draft
     args:
       pilot_type: {required: true, type: enum, values: [take_back, resale, repair], desc: "Type of pilot"}
-      category: {required: true, desc: "Product category"}
+      category: {required: true, desc: "Product category, e.g. Outerwear"}
       pilot_duration_weeks: {type: int, default: 12, desc: "Duration in weeks"}
     sql:
       grading: |
-        SELECT r.category,
-               r.condition_grade,
+        SELECT r.condition_grade,
                count(*) AS return_count,
                round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
         FROM returns r
         WHERE r.category = $category
           AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-        GROUP BY r.category, r.condition_grade
+        GROUP BY r.condition_grade
         ORDER BY r.condition_grade
+      volume: |
+        SELECT count(*) AS returns_91d,
+               round(count(*) / 13.0) AS weekly_returns,
+               round(avg(r.recovery_gbp), 2) AS avg_recovery_gbp,
+               round(avg(r.handling_cost_gbp), 2) AS avg_handling_gbp,
+               round(100.0 * count(*) FILTER (WHERE r.condition_grade IN ('A', 'B')) / count(*), 1) AS resale_ready_pct
+        FROM returns r
+        WHERE r.category = $category AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
       pilots: |
-        SELECT p.pilot_type, p.product_category, avg(p.recovery_gbp) AS avg_recovery, avg(p.handling_cost_gbp) AS avg_cost
+        SELECT p.product_category, p.status, p.units_collected,
+               round(p.recovery_gbp / NULLIF(p.units_collected, 0), 2) AS recovery_per_unit,
+               round(p.handling_cost_gbp / NULLIF(p.units_collected, 0), 2) AS cost_per_unit
         FROM circularity_pilots p
         WHERE p.pilot_type = $pilot_type AND p.status IN ('active', 'completed')
-        GROUP BY p.pilot_type, p.product_category
+        ORDER BY p.start_date DESC
     template: |
-      Pilot Plan: {{ pilot_type|title }} Program for {{ category }}
+      Pilot plan: {{ pilot_type|replace('_', ' ')|title }} pilot for {{ category }}
 
       Duration: {{ pilot_duration_weeks }} weeks
 
-      Condition Distribution:
+      Condition on return (last 6 months):
       {% for row in grading -%}
-      - Grade {{ row.condition_grade }}: {{ row.pct }}% ({{ row.return_count }} units)
+      - Grade {{ row.condition_grade }}: {{ row.pct }}% ({{ row.return_count }} items)
       {% endfor %}
+      {% if volume and volume[0].returns_91d %}
+      Volume: about {{ volume[0].weekly_returns|int }} {{ category }} items returned per week; {{ volume[0].resale_ready_pct }}% are grade A or B.
+      Average recovery per item £{{ volume[0].avg_recovery_gbp|num(2) }}, average handling cost £{{ volume[0].avg_handling_gbp|num(2) }}.
+      Suggested target: capture 25% of weekly returns, about {{ (volume[0].weekly_returns * 0.25 * pilot_duration_weeks)|int }} items over the pilot.
+      {% endif %}
 
-      Benchmarks from similar pilots:
+      Benchmarks from earlier {{ pilot_type|replace('_', ' ') }} pilots:
       {% for row in pilots -%}
-      - Average recovery: £{{ row.avg_recovery|num(2) }} per unit
-      - Average handling cost: £{{ row.avg_cost|num(2) }} per unit
+      - {{ row.product_category }} ({{ row.status }}): {{ row.units_collected }} items collected, recovery £{{ row.recovery_per_unit|num(2) }} and handling £{{ row.cost_per_unit|num(2) }} per item
       {% endfor %}
 
-      Success metrics: Pilot viability determined by recovery exceeding handling cost.
-    example: {pilot_type: take_back, category: "Electronics", pilot_duration_weeks: 12}
+      Success metric: recovery per item above handling cost per item, and at least half of collected items reused or repaired.
+    example: {pilot_type: resale, category: Outerwear, pilot_duration_weeks: 12}
 
   - name: create_circularity_pilot
-    desc: Create a take-back, resale or repair pilot record. Starts a new pilot in active status.
+    desc: "Create a take-back, resale or repair pilot record for a category. Returns the new pilot, planned until it starts."
     kind: insert
     table: circularity_pilots
     id_prefix: PIL-
-    defaults: {status: active}
+    defaults: {status: planned, units_collected: 0, units_reused: 0, units_repaired: 0, units_recycled: 0, recovery_gbp: 0, handling_cost_gbp: 0, updated_at: "$as_of"}
     args:
       pilot_type: {required: true, type: enum, values: [take_back, resale, repair], desc: "Type of pilot"}
-      product_category: {required: true, desc: "Category being piloted"}
+      product_category: {required: true, desc: "Category being piloted, e.g. Outerwear"}
       start_date: {required: true, type: date, desc: "Pilot start date"}
       end_date: {type: date, desc: "Expected end date"}
-    example: {pilot_type: repair, product_category: "Electronics", start_date: "+7d", end_date: "+91d"}
+    example: {pilot_type: resale, product_category: Outerwear, start_date: "+14d", end_date: "+98d"}
 
   - name: draft_returns_charge_trial_plan
-    desc: Draft plan for returns charge trial including market selection, charge amount and expected impact.
+    desc: "Draft a returns charge trial plan for a market and charge, with its baseline return rate and cost, evidence from earlier trials and expected impact."
     kind: draft
     args:
-      market: {required: true, desc: "Target market/country code"}
+      market: {required: true, desc: "Target market, ISO code e.g. DE"}
       proposed_charge_gbp: {required: true, type: float, desc: "Charge amount in GBP"}
     sql:
-      baseline: |
-        SELECT count(*) AS returns_count,
-               round(avg(r.handling_cost_gbp), 2) AS avg_cost_gbp,
-               round(sum(r.handling_cost_gbp), 2) AS total_cost_gbp
-        FROM returns r
-        WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+      base: |
+        SELECT (SELECT count(*) FROM returns r WHERE upper(r.country) = upper($market) AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS returns_count,
+               (SELECT round(avg(r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)), 2) FROM returns r WHERE upper(r.country) = upper($market) AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS avg_cost_gbp,
+               (SELECT count(*) FROM master.orders o WHERE upper(o.country) = upper($market) AND o.status <> 'cancelled' AND o.order_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS orders_count,
+               (SELECT round(100.0 * count(*) / (SELECT sum(o.units) FROM master.orders o WHERE upper(o.country) = upper($market) AND o.status <> 'cancelled' AND o.order_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY), 1) FROM returns r WHERE upper(r.country) = upper($market) AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS return_rate_pct
+      trials: |
+        SELECT t.market, t.charge_gbp, t.status, t.impact_on_rate_pct, t.impact_on_conversion_pct
+        FROM returns_charge_trials t ORDER BY t.start_date
     template: |
-      Returns Charge Trial Plan
+      Returns charge trial plan
 
       Market: {{ market|upper }}
-      Proposed Charge: £{{ proposed_charge_gbp|num(2) }}
+      Proposed charge: £{{ proposed_charge_gbp|num(2) }} per return
 
-      Baseline (last 6 months):
-      {% if baseline %}- Total returns: {{ baseline[0].returns_count }}
-      - Average handling cost per return: £{{ baseline[0].avg_cost_gbp|num(2) }}
-      - Total handling cost: £{{ baseline[0].total_cost_gbp|money }}
-      {% endif %}
+      Baseline (last 90 days):
+      - Orders: {{ base[0].orders_count }}; items returned: {{ base[0].returns_count }} (return rate {{ base[0].return_rate_pct }}% of units)
+      - Average cost per return: £{{ base[0].avg_cost_gbp|num(2) }}
 
-      Expected impact:
-      - Return rate reduction: 10-15% estimated
-      - Improved conversion rate
-      - Enhanced customer consideration of purchases
-
-      Trial duration: 8-12 weeks
-    example: {market: "GB", proposed_charge_gbp: 3.99}
+      Evidence from our earlier trials:
+      {% for t in trials -%}
+      - {{ t.market }}, £{{ t.charge_gbp|num(2) }} charge ({{ t.status }}): return rate {{ t.impact_on_rate_pct }}%, conversion {{ t.impact_on_conversion_pct }}%
+      {% endfor %}
+      Design: trial market vs. a matched control market, charge shown at basket and in the returns portal, faulty and wrong-item returns exempt.
+      Duration: 8 weeks plus 4 weeks of measurement. Success: return rate down at least 8% with conversion down no more than 1%.
+    example: {market: DE, proposed_charge_gbp: 4.99}
 
   - name: create_returns_charge_trial
-    desc: Create a returns charge trial record in selected markets. Starts a new trial in active status.
+    desc: "Create a returns charge trial record in one market. Returns the new trial, planned until it starts; call once per market."
     kind: insert
     table: returns_charge_trials
     id_prefix: TRL-
-    defaults: {status: active}
+    defaults: {status: planned, updated_at: "$as_of"}
     args:
-      market: {required: true, desc: "Market/country code"}
-      charge_gbp: {required: true, type: float, desc: "Charge amount"}
+      market: {required: true, desc: "Market, ISO code e.g. DE"}
+      charge_gbp: {required: true, type: float, desc: "Charge amount per return in GBP"}
       start_date: {required: true, type: date, desc: "Trial start date"}
       end_date: {type: date, desc: "Trial end date"}
-    example: {market: "GB", charge_gbp: 3.99, start_date: "+7d", end_date: "+91d"}
+    example: {market: DE, charge_gbp: 4.99, start_date: "+14d", end_date: "+84d"}
 
   - name: delete_disposition_rule
-    desc: Delete a superseded disposition rule. Soft-deletes by archiving the rule.
+    desc: "Retire a superseded disposition rule by id. Soft-deletes by archiving the rule."
     kind: update
     table: disposition_rules
     set: {status: archived}
@@ -571,90 +722,122 @@ tools:
     example: {rule_id: DIS-000003}
 
   - name: update_disposition_rule
-    desc: Update a disposition rule to change the route for a product category and age band.
+    desc: "Change the disposition route of an existing rule, which applies to one product category and item age band. Returns the old and new route."
     kind: update
     table: disposition_rules
     set: {updated_at: "$as_of"}
     args:
       disposition_route: {required: true, desc: "New route (restocked, refurbished, liquidated, recycled)"}
-    example: {rule_id: DIS-000003, disposition_route: liquidated}
+    example: {rule_id: DIS-000003, disposition_route: refurbished}
 
   - name: get_returns_by_reason_code
-    desc: Returns grouped by reason code. Use to identify patterns and quality issues.
+    desc: "Returns by reason code, category and SKU over the last 90 days, with counts for each 30-day period and the factory. Use to find quality patterns and whether they are rising."
     kind: sql
     args:
-      reason_code: {type: str, desc: "Filter by reason code (default all)"}
-      category: {type: str, desc: "Filter by category (default all)"}
+      reason_code: {type: str, desc: "Reason code, e.g. SOLE_SEPARATION (default all)"}
+      category: {type: str, desc: "Product category, e.g. Footwear (default all)"}
+      sku: {}
+      style_id: {}
     sql: |
       SELECT r.return_reason_code,
              rr.description,
              r.category,
+             r.sku,
+             p.factory_id,
              count(*) AS return_count,
+             count(*) FILTER (WHERE r.return_date > CAST($as_of AS DATE) - INTERVAL 30 DAY) AS last_30_days,
+             count(*) FILTER (WHERE r.return_date <= CAST($as_of AS DATE) - INTERVAL 30 DAY
+                              AND r.return_date > CAST($as_of AS DATE) - INTERVAL 60 DAY) AS days_31_to_60,
+             count(*) FILTER (WHERE r.return_date <= CAST($as_of AS DATE) - INTERVAL 60 DAY) AS days_61_to_90,
              round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
       FROM returns r
+      JOIN master.products p ON p.sku = r.sku
       LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
       WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
         AND ($reason_code IS NULL OR r.return_reason_code = $reason_code)
         AND ($category IS NULL OR r.category = $category)
-      GROUP BY r.return_reason_code, rr.description, r.category
+        AND ($sku IS NULL OR r.sku = $sku)
+        AND ($style_id IS NULL OR r.style_id = $style_id)
+      GROUP BY r.return_reason_code, rr.description, r.category, r.sku, p.factory_id
       ORDER BY return_count DESC
     limit: 30
-    example: {}
+    example: {category: Footwear}
 
   - name: get_returns_condition_grading_by_category
-    desc: Condition grades on return by category. Shows resale opportunity by condition.
+    desc: "Condition on return by category, one row each: share in grades A-E, resale-ready share (A or B), average recovery and handling cost. Use to rank categories for resale, repair or take-back."
     kind: sql
     args:
-      category: {required: true, desc: "Product category"}
+      category: {type: str, desc: "Product category, e.g. Outerwear (default all)"}
+      min_returns: {type: int, default: 30, desc: "Skip categories with fewer returns in the last 6 months"}
     sql: |
       SELECT r.category,
-             r.condition_grade,
              count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_category
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade = 'A') / count(*), 1) AS pct_grade_a,
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade = 'B') / count(*), 1) AS pct_grade_b,
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade = 'C') / count(*), 1) AS pct_grade_c,
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade = 'D') / count(*), 1) AS pct_grade_d,
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade = 'E') / count(*), 1) AS pct_grade_e,
+             round(100.0 * count(*) FILTER (WHERE r.condition_grade IN ('A', 'B')) / count(*), 1) AS pct_resale_ready,
+             round(avg(r.unit_cost_gbp), 2) AS avg_unit_cost_gbp,
+             round(avg(r.recovery_gbp), 2) AS avg_recovery_gbp,
+             round(avg(r.handling_cost_gbp), 2) AS avg_handling_cost_gbp
       FROM returns r
-      WHERE r.category = $category
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      GROUP BY r.category, r.condition_grade
-      ORDER BY r.condition_grade
-    limit: 10
-    example: {category: "Electronics"}
+      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
+        AND ($category IS NULL OR r.category = $category)
+      GROUP BY r.category
+      HAVING count(*) >= CAST($min_returns AS INT)
+      ORDER BY pct_resale_ready DESC
+    limit: 40
+    example: {}
 
   - name: calculate_cost_of_returns_by_error_type
-    desc: Cost of returns by error type (data, quality, fulfillment). Shows cost per error category.
+    desc: "Cost of returns by error type (data, quality, fulfillment). Shows cost per error category."
     kind: sql
     args:
       error_type: {type: str, desc: "Error type to analyze (default all)"}
     sql: |
-      SELECT CASE r.return_reason_code
-               WHEN 'WRONG_ITEM' THEN 'Fulfillment'
-               WHEN 'DAMAGE_IN_TRANSIT' THEN 'Fulfillment'
-               WHEN 'WRONG_SIZE' THEN 'Data'
-               WHEN 'WRONG_COLOUR' THEN 'Data'
-               WHEN 'DEFECT' THEN 'Quality'
-               WHEN 'NOT_AS_DESCRIBED' THEN 'Data'
-               ELSE 'Other'
-             END AS error_type,
+      WITH t AS (
+        SELECT CASE r.return_reason_code
+                 WHEN 'WRONG_ITEM' THEN 'Fulfillment'
+                 WHEN 'DAMAGE' THEN 'Fulfillment'
+                 WHEN 'WRONG_SIZE' THEN 'Data'
+                 WHEN 'TOO_TIGHT_HIP' THEN 'Data'
+                 WHEN 'WRONG_COLOUR' THEN 'Data'
+                 WHEN 'NOT_AS_DESCRIBED' THEN 'Data'
+                 WHEN 'DEFECT' THEN 'Quality'
+                 WHEN 'SOLE_SEPARATION' THEN 'Quality'
+                 ELSE 'Other'
+               END AS error_type,
+               r.handling_cost_gbp AS handling, COALESCE(r.recovery_gbp, 0) AS recovery,
+               r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0) AS net_loss
+        FROM returns r
+        WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY)
+      SELECT t.error_type,
              count(*) AS return_count,
-             round(sum(r.handling_cost_gbp), 2) AS total_handling_cost_gbp,
-             round(sum(COALESCE(r.recovery_gbp, 0)), 2) AS total_recovery_gbp,
-             round(sum(r.handling_cost_gbp - COALESCE(r.recovery_gbp, 0)), 2) AS total_net_cost_gbp,
-             round(avg(r.handling_cost_gbp - COALESCE(r.recovery_gbp, 0)), 2) AS avg_net_cost_per_return_gbp,
-             'net_cost = handling_cost - recovery' AS formula
-      FROM returns r
-      WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
-      GROUP BY error_type
+             round(sum(t.handling), 2) AS total_handling_cost_gbp,
+             round(sum(t.recovery), 2) AS total_recovery_gbp,
+             round(sum(t.net_loss), 2) AS total_net_cost_gbp,
+             round(avg(t.net_loss), 2) AS avg_net_cost_per_return_gbp,
+             'net cost = handling + (unit cost - recovery)' AS formula
+      FROM t
+      WHERE $error_type IS NULL OR lower(t.error_type) = lower($error_type)
+      GROUP BY t.error_type
       ORDER BY total_net_cost_gbp DESC
     limit: 10
     example: {}
 
   - name: get_return_reasons_for_product
-    desc: Return reasons for a specific product (SKU). Use to identify quality or fitment issues.
+    desc: "Return reasons for one product (SKU) or a whole style over the last 6 months, optionally for one fit, with counts and share. Use to find quality or fit problems."
     kind: sql
     args:
-      sku: {required: true, desc: "Product SKU"}
+      sku: {}
+      style_id: {}
+      fit: {type: str, desc: "Fit variant, e.g. skinny, regular, comfort (default all)"}
+      days_back: {type: int, default: 180, desc: "Days of history to include"}
     sql: |
-      SELECT r.sku,
-             p.name,
+      SELECT min(r.style_id) AS style_id,
+             CASE WHEN $sku IS NOT NULL THEN min(p.name)
+                  ELSE regexp_replace(min(p.name), ' (\d+|XS|S|M|L|XL|XXL|ONE|\d+-\d+Y)$', '') END AS name,
              r.return_reason_code,
              rr.description,
              count(*) AS return_count,
@@ -662,34 +845,42 @@ tools:
       FROM returns r
       JOIN master.products p ON p.sku = r.sku
       LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
-      WHERE r.sku = $sku
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      GROUP BY r.sku, p.name, r.return_reason_code, rr.description
+      WHERE ($sku IS NOT NULL OR $style_id IS NOT NULL)
+        AND ($sku IS NULL OR r.sku = $sku)
+        AND ($style_id IS NULL OR r.style_id = $style_id)
+        AND ($fit IS NULL OR lower(r.fit) = lower($fit))
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.return_reason_code, rr.description
       ORDER BY return_count DESC
     limit: 20
-    example: {sku: "K-1700"}
+    example: {style_id: "STY-T-4410"}
 
   - name: get_return_reasons_for_sku
-    desc: Return reasons breakdown for a SKU. Shows distribution of why customers return this product.
+    desc: "Return reasons for a SKU with defect detail over the last 8 weeks, split into the latest and the earlier 4 weeks. Shows why customers return this product and whether it is getting worse."
     kind: sql
     args:
-      sku: {required: true, desc: "SKU"}
+      sku: {required: true}
+      days_back: {type: int, default: 56, desc: "Days of history to include"}
     sql: |
       SELECT r.sku,
              r.return_reason_code,
+             r.defect_code,
              rr.description,
              count(*) AS return_count,
+             count(*) FILTER (WHERE r.return_date > CAST($as_of AS DATE) - INTERVAL 28 DAY) AS last_4_weeks,
+             count(*) FILTER (WHERE r.return_date <= CAST($as_of AS DATE) - INTERVAL 28 DAY) AS earlier_weeks,
              round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
       FROM returns r
       LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
       WHERE r.sku = $sku
-      GROUP BY r.sku, r.return_reason_code, rr.description
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.sku, r.return_reason_code, r.defect_code, rr.description
       ORDER BY return_count DESC
     limit: 20
-    example: {sku: "PF-220"}
+    example: {sku: "K-1700"}
 
   - name: get_returns_rate_by_product
-    desc: Return rate by product. Shows which SKUs have highest return rates vs peers.
+    desc: "Return rate by product. Shows which SKUs have highest return rates vs peers."
     kind: sql
     args:
       category: {type: str, desc: "Filter by category (default all)"}
@@ -698,7 +889,7 @@ tools:
              p.name,
              p.category,
              count(DISTINCT r.return_id) AS return_count,
-             sum(r.handling_cost_gbp) AS total_handling_cost_gbp,
+             round(sum(r.handling_cost_gbp), 2) AS total_handling_cost_gbp,
              round(avg(r.handling_cost_gbp), 2) AS avg_cost_per_return_gbp
       FROM returns r
       JOIN master.products p ON p.sku = r.sku
@@ -710,36 +901,46 @@ tools:
     example: {}
 
   - name: get_returns_rate_by_size_and_fit
-    desc: Return rate by size for a style. Identifies sizing problems (too small, too large, wrong fit).
+    desc: "Return rate by size and fit for a style over 90 days, with units sold, size-related returns and share of returns. Identifies sizing and fit problems such as skinny cuts running tight."
     kind: sql
     args:
-      style_id: {required: true, desc: "Style to analyze"}
+      style_id: {required: true, desc: "Style to analyze, e.g. STY-T-4410"}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
     sql: |
-      SELECT r.style_id,
-             p.size,
-             count(*) AS return_count,
-             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct_of_style_returns
-      FROM returns r
-      JOIN master.products p ON p.sku = r.sku
-      WHERE r.style_id = $style_id
-        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
-      GROUP BY r.style_id, p.size
-      ORDER BY return_count DESC
+      WITH ret AS (
+        SELECT p.size, COALESCE(r.fit, 'n/a') AS fit, count(*) AS return_count,
+               count(*) FILTER (WHERE r.return_reason_code IN ('WRONG_SIZE', 'TOO_TIGHT_HIP')) AS size_related
+        FROM returns r JOIN master.products p ON p.sku = r.sku
+        WHERE r.style_id = $style_id AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY p.size, COALESCE(r.fit, 'n/a')),
+      sold AS (
+        SELECT p.size, sum(s.online_units) AS units_sold
+        FROM master.sales_weekly s JOIN master.products p ON p.sku = s.sku
+        WHERE p.style_id = $style_id AND s.week_start >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY p.size)
+      SELECT $style_id AS style_id, ret.size, ret.fit, ret.return_count,
+             sum(ret.return_count) OVER (PARTITION BY ret.size) AS size_return_count,
+             sold.units_sold AS size_units_sold_online,
+             round(100.0 * sum(ret.return_count) OVER (PARTITION BY ret.size) / NULLIF(sold.units_sold, 0), 1) AS size_return_rate_pct,
+             round(100.0 * ret.size_related / ret.return_count, 1) AS pct_size_related,
+             round(100.0 * ret.return_count / sum(ret.return_count) OVER (), 1) AS pct_of_style_returns
+      FROM ret LEFT JOIN sold ON sold.size = ret.size
+      ORDER BY ret.return_count DESC
     limit: 30
     example: {style_id: "STY-T-4410"}
 
   - name: get_returns_cost_by_channel
-    desc: Return handling cost and volume by sales channel. Use to assess profitability by channel.
+    desc: "Return handling cost and volume by sales channel. Use to assess profitability by channel."
     kind: sql
     args:
-      channel: {desc: "Filter by channel (web, app, click_collect, store) - default all"}
+      channel: {desc: "Filter by channel (web, app, click_collect, marketplace) - default all"}
     sql: |
       SELECT r.channel,
              count(*) AS return_count,
              round(sum(r.handling_cost_gbp), 2) AS total_handling_cost_gbp,
              round(avg(r.handling_cost_gbp), 2) AS avg_cost_per_return_gbp,
              round(sum(r.recovery_gbp), 2) AS total_recovery_gbp,
-             round(sum(r.handling_cost_gbp - COALESCE(r.recovery_gbp, 0)), 2) AS total_net_cost_gbp
+             round(sum(r.handling_cost_gbp + greatest(r.unit_cost_gbp - COALESCE(r.recovery_gbp, 0), 0)), 2) AS total_net_cost_gbp
       FROM returns r
       WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL 180 DAY
         AND ($channel IS NULL OR r.channel = $channel)
@@ -749,16 +950,13 @@ tools:
     example: {channel: web}
 
   - name: get_returns_handling_practices
-    desc: Returns handling practices and compliance by country. Shows regulatory requirements.
-    kind: sql
-    args:
-      country: {type: str, desc: "Country code (default all)"}
-    sql: |
-      SELECT p.country,
-             p.practice_description,
-             p.regulatory_reference
-      FROM returns_handling_practices p
-      WHERE ($country IS NULL OR p.country = $country)
-      ORDER BY p.country
+    desc: "Our returns handling practices by country with the regulation each relates to and a compliance review result. Use to spot practices that may conflict with the rules."
+    kind: select
+    from: returns_handling_practices
+    filters:
+      country: {desc: "Country code, e.g. DE (default all)"}
+      compliance_status: {desc: "compliant, review or conflict (default all)"}
+    columns: [practice_id, country, practice_description, regulatory_reference, compliance_status, issue_note]
+    order: country, practice_id
     limit: 50
-    example: {}
+    example: {country: DE}

@@ -8,6 +8,7 @@ live in seed/*.csv and in the small story blocks below. Everything else is backg
 kept small and realistic so the stories are the first thing a tool returns.
 """
 import calendar
+import random
 from datetime import date, timedelta
 
 FINANCE = ['EMP-00085', 'EMP-00086', 'EMP-00087', 'EMP-00088', 'EMP-00089']
@@ -218,7 +219,8 @@ def generate(g):
                 'notes': 'Awaiting sub-ledger cut-off confirmation.' if is_open else 'Reconciled.',
                 'balance_gbp': round(rng.uniform(2000, 38000), 2) if is_open else 0.0})
 
-    # ---------------------------------------------------------------- inventory by site (unchanged background)
+    # ---------------------------------------------------------------- inventory by site (old noise, only kept to preserve the random stream;
+    # the real table is rebuilt from erp_stock in build_inventory() below)
     plist = g.master('products')[:200]
     inventory_by_site = []
     for site_id in ['DC1', 'DC2', 'DC3', 'DC4', 'DC5', 'ST001', 'ST002', 'ST003']:
@@ -405,7 +407,8 @@ def generate(g):
                     'cost_gbp': round(u * cost_per, 2), 'units_handled': u, 'cost_per_unit_gbp': cost_per,
                     'recovered_value_gbp': r, 'description': f'{ch.replace("_", " ").title()} monthly handling and recovery posting'})
 
-    # ---------------------------------------------------------------- order charges (unchanged background)
+    # ---------------------------------------------------------------- order charges (old noise, kept to preserve the random stream;
+    # rebuilt from master orders in build_order_charges() below)
     order_charges = []
     for order in g.pick(g.master('orders'), k=100):
         v = float(order['value_gbp'])
@@ -461,6 +464,16 @@ def generate(g):
             'sku': l['sku'], 'quantity': qty, 'value_gbp': val, 'posted_date': g.days_ago(age), 'posted_in': 'ERP',
             'pending_in': 'WMS', 'note': f'ERP goods receipt for {po} posted from the ASN, WMS put-away not confirmed'})
 
+    # ---------------------------------------------------------------- job 2 stories (own random stream)
+    lr = random.Random(260707)
+    apply_erp_story(g, lr, products, erp_stock, goods_movements)
+    inventory_by_site = build_inventory(g, lr, products, erp_stock)
+    inventory_monthly = build_inventory_monthly(g, lr, products, inventory_by_site)
+    ledger_balances = build_ledger_balances(inventory_monthly)
+    sourcing_margins = build_sourcing_margins()
+    supplier_payments = build_supplier_payments(g, lr)
+    order_charges = build_order_charges(g, lr)
+
     return {
         'accounts': accounts,
         'journal_entries': journal_entries,
@@ -478,4 +491,8 @@ def generate(g):
         'order_charges': order_charges,
         'erp_stock': erp_stock,
         'goods_movements': goods_movements,
+        'inventory_monthly': inventory_monthly,
+        'ledger_balances': ledger_balances,
+        'sourcing_margins': sourcing_margins,
+        'supplier_payments': supplier_payments,
     }

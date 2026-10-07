@@ -354,9 +354,10 @@ def generate(g):
     ent_by_site = {"DC1": "LE-UK", "DC2": "LE-UK", "DC3": "LE-UK", "DC4": "LE-NL", "DC5": "LE-US"}
     cutoff_o = (g.as_of - _td(days=75)).isoformat()
     wms_costs, tms_costs, erp_orders = [], [], []
+    SEEDED_ORDERS = {"ORD-2026-0108564"}   # split-shipment order, seeded to match the TMS and WMS systems
     ship_n = 800000
     for o in orders:
-        if o["order_date"] < cutoff_o or o["status"] in ("cancelled", "placed") or _h("ord" + o["order_id"]) > 0.12:
+        if o["order_id"] in SEEDED_ORDERS or o["order_date"] < cutoff_o or o["status"] in ("cancelled", "placed") or _h("ord" + o["order_id"]) > 0.12:
             continue
         oid, units = o["order_id"], int(o["units"])
         lines = max(1, min(units, 1 + int(_h("ln" + oid) * min(units, 5))))
