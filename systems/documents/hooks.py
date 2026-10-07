@@ -194,22 +194,37 @@ def extract_quote_lines(ctx, quote_file):
     return out
 
 
-def extract_bids(ctx, bid_file):
+def _gbp(text):
+    m = re.search(r"£\s*([\d,]+(?:\.\d+)?)", text or "")
+    return float(m.group(1).replace(",", "")) if m else 0.0
+
+
+def extract_bids(ctx, bid_file, call_out_per_year=None, term_years=3):
+    """One row per bid: headline price, terms, hidden costs and the 3-year cost including them."""
     fn, text = _text(bid_file)
-    out, cur = [], None
-    for ln in text.splitlines():
-        m = re.match(r"\s*-\s*(.+?) bid:\s*£?([\d,\.]+) total,\s*(?:Net\s*)?(\d+)\s*(?:days)?\s*terms?", ln, re.I)
-        if m:
-            cur = {"supplier": m.group(1), "total_price_gbp": float(m.group(2).replace(",", "")), "payment_terms": f"Net {m.group(3)}",
-                   "service": "", "scope": ""}
-            out.append(cur)
-        elif cur and ln.strip().lower().startswith("service:"):
-            cur["service"] = ln.split(":", 1)[1].strip()
-        elif cur and ln.strip().lower().startswith("scope:"):
-            cur["scope"] = ln.split(":", 1)[1].strip()
-    if not out:
+    blocks = re.split(r"(?m)^Bid \d+:\s*", text)[1:]
+    if not blocks:
         return {"filename": fn, "content": text}
-    return sorted(out, key=lambda r: r["total_price_gbp"])
+    m = re.search(r"(\d+) call-outs a year", text)
+    calls = int(call_out_per_year) if call_out_per_year else (int(m.group(1)) if m else 0)
+    term = int(term_years)
+    out = []
+    for b in blocks:
+        lines = b.strip().splitlines()
+        f = {k.strip().lower(): v.strip() for k, v in (ln.split(":", 1) for ln in lines[1:] if ":" in ln)}
+        annual = _gbp(f.get("annual price"))
+        fee = _gbp(f.get("call-out fee"))
+        cons = _gbp(f.get("consumables"))
+        uplift = float((re.search(r"(\d+(?:\.\d+)?)%", f.get("price review", "")) or [0, 0])[1])
+        price3 = sum(annual * (1 + uplift / 100) ** y for y in range(term))
+        hidden = (fee * calls + cons) * term
+        out.append({"bidder": lines[0].strip(), "annual_price_gbp": annual, "payment_terms": f.get("payment terms", ""),
+                    "call_out_fee_gbp": fee, "consumables_per_year_gbp": cons, "minimum_hours": f.get("minimum hours", ""),
+                    "price_review_pct": uplift, "service_level": f.get("service level", ""), "references": f.get("references", ""),
+                    "headline_price_gbp": round(annual * term, 2), "hidden_costs_gbp": round(hidden, 2),
+                    "total_cost_gbp": round(price3 + hidden, 2),
+                    "formula": f"{term}-year cost = annual price with yearly uplift + (call-out fee x {calls} + consumables) x {term}"})
+    return sorted(out, key=lambda r: r["total_cost_gbp"])
 
 
 def get_pl_extract(ctx, pl_file):

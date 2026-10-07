@@ -16,6 +16,20 @@ tables:
       created_at: {type: timestamp, desc: "Upload or creation timestamp"}
       description: {type: str, desc: "Brief description or notes"}
 
+  contract_register:
+    key: contract_id
+    cols:
+      contract_id: {type: str, desc: "Contract reference, e.g. CTR-000003"}
+      party_id: {type: str, desc: "Supplier or carrier id of the counterparty, blank for services"}
+      party_name: {type: str, desc: "Counterparty name"}
+      contract_type: {type: enum, values: [supplier, carrier, service], desc: "Contract type"}
+      category: {type: str, desc: "Category or scope of the contract"}
+      owner_id: {type: str, desc: "Employee who owns the contract, e.g. EMP-00058"}
+      end_date: {type: date, desc: "Contract expiry date"}
+      renewal_notice_days: {type: int, desc: "Days of notice needed before expiry"}
+      auto_renewal: {type: bool, desc: "True if the contract renews automatically"}
+      annual_value_gbp: {type: float, desc: "Annual contract value in GBP"}
+
 tools:
   - name: read_document
     desc: Read an attached file (CSV, XLSX, PDF or text). CSV and spreadsheet files come back as rows with totals; filter, group and sort them to analyse large files.
@@ -78,12 +92,14 @@ tools:
     example: {quote_file: "quote_A.pdf"}
 
   - name: extract_bid_pricing_and_terms
-    desc: Extract each supplier's total price, payment terms, service and scope from a bid file or archive, cheapest first.
+    desc: Extract each bidder's price, payment terms, call-out fees, consumables, minimum hours, price review, service level and references from a bid archive, with the three-year cost including hidden costs, cheapest first.
     kind: py
     fn: extract_bids
     limit: 60
     args:
       bid_file: {type: str, required: true, desc: "Bid file or archive path, e.g. bids.zip"}
+      call_out_per_year: {type: int, desc: "Expected call-outs a year, if different from the tender assumption"}
+      term_years: {type: int, default: 3, desc: "Contract term in years used for the total cost"}
     example: {bid_file: "bids.zip"}
 
   - name: extract_label_text_from_images
@@ -264,62 +280,48 @@ tools:
     example: {category: "Bedding", winning_supplier_id: SUP-0039}
 
   - name: draft_sourcing_calendar
-    desc: Draft sourcing calendar from contract expiries showing key dates and tender timelines.
+    desc: Draft a sourcing calendar from the contract register for the next months, listing each expiry with notice deadline, tender kick-off date, owner and auto-renewal warning.
     kind: draft
     args:
-      calendar_period: {type: str, default: "next 12 months", desc: "Period covered, e.g. next 12 months"}
+      months_ahead: {type: int, default: 12, desc: "How many months ahead to cover, e.g. 12"}
+      exclude_contract_ids: {type: str, desc: "Comma-separated contract ids to leave out, e.g. CTR-000008,CTR-000042"}
+      tender_threshold_gbp: {type: float, default: 1000000, desc: "Annual value at or above which a contract needs a tender"}
+      tender_lead_days: {type: int, default: 150, desc: "Days before expiry to start the tender"}
     sql:
-      calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+      rows: |
+        SELECT c.contract_id, c.party_name, c.contract_type, c.category, c.owner_id, e.name AS owner_name,
+               c.end_date, c.renewal_notice_days, c.auto_renewal, c.annual_value_gbp,
+               c.end_date - CAST(c.renewal_notice_days AS INTEGER) AS notice_deadline,
+               c.end_date - CAST($tender_lead_days AS INTEGER) AS tender_kickoff,
+               c.annual_value_gbp >= $tender_threshold_gbp AS needs_tender,
+               c.end_date - CAST(c.renewal_notice_days AS INTEGER) < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) AS notice_passed,
+               c.end_date - CAST($tender_lead_days AS INTEGER) < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) AS kickoff_passed
+        FROM contract_register c LEFT JOIN master.employees e ON e.employee_id = c.owner_id
+        WHERE c.end_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) AND CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) + CAST($months_ahead AS INTEGER) * 30
+          AND ($exclude_contract_ids IS NULL OR NOT list_contains(string_split(replace(upper($exclude_contract_ids), ' ', ''), ','), c.contract_id))
+        ORDER BY c.end_date, c.contract_id
     template: |
       SOURCING CALENDAR
 
-      Period: {{ calendar_period }}
-      Prepared: {{ calendar[0].date if calendar else 'Current' }}
-      Purpose: Procurement planning and tender scheduling
-
-      Q4 2026 (Oct - Dec)
-      Week of 7 Oct | Contract Expiry Review | Facilities cleaning, warehousing
-      Week of 21 Oct | RFQ Issue | Cleaning services tender
-      Week of 4 Nov | Buyer Decision | Award recommendation meeting
-      Week of 18 Nov | Award Meeting | Final negotiation
-      Week of 2 Dec | Contract Signature | New facility agreement begins
-
-      Q1 2027 (Jan - Mar)
-      Week of 6 Jan | RFQ Issuance | Packaging, materials handling
-      Week of 24 Jan | Supplier Response Deadline
-      Week of 7 Feb | Evaluation & Selection | Category team review
-      Week of 21 Feb | Negotiation
-      Week of 7 Mar | Award & Execution
-
-      Q2 2027 (Apr - Jun)
-      Week of 4 Apr | RFQ Issuance | Logistics, transportation
-      Week of 2 May | Response Deadline
-      Week of 16 May | Selection & Negotiation
-      Week of 6 Jun | Award & Contract Signature
-
-      Q3 2027 (Jul - Sep)
-      Week of 5 Jul | RFQ Issuance | IT Services, professional services
-      Week of 2 Aug | Response Deadline
-      Week of 16 Aug | Evaluation & Selection
-      Week of 6 Sep | Negotiation & Award
-
-      CRITICAL DATES
-      - Auto-renewal notice dates: 60 days before expiry (escalate if missed)
-      - Performance review: 90 days before expiry
-      - Exit decision deadline: 120 days before expiry
-      - Tender kickoff: 120-150 days before expiry
-
-      OWNER ASSIGNMENTS
-      Facilities & Services | Head of Procurement
-      Packaging & Materials | Category Manager - Logistics
-      Transportation | Head of Logistics
-      IT Services | CIO / IT Procurement Lead
-
-      ALERTS & RISKS
-      ⚠️ Facilities: Auto-renewal with 6-month notice (action by Week 3 Oct)
-      ⚠️ Packaging: Supplier in performance improvement plan (review before renewal)
-      ⚠️ Transportation: Market capacity tight Q4 2026 (early action required)
-    example: {calendar_period: "next 12 months"}
+      Period: next {{ months_ahead }} months
+      Contracts expiring: {{ rows|length }}; needing a tender (annual value of {{ "£{:,}".format(tender_threshold_gbp|int) }} or more): {{ rows|selectattr('needs_tender')|list|length }}; auto-renewing: {{ rows|selectattr('auto_renewal')|list|length }}; auto-renewing with the notice deadline already passed: {{ rows|selectattr('auto_renewal')|selectattr('notice_passed')|list|length }}
+      Tender kick-off is {{ tender_lead_days }} days before expiry.
+      {% if exclude_contract_ids %}Left out: {{ exclude_contract_ids }}
+      {% endif %}
+      | Contract | Party | Expires | Notice deadline | Tender | Tender kick-off | Auto-renews | Owner |
+      |---|---|---|---|---|---|---|---|
+      {% for r in rows -%}
+      | {{ r.contract_id }} | {{ r.party_name }} | {{ r.end_date }} | {{ r.notice_deadline }} | {{ 'YES' if r.needs_tender else 'no' }} | {{ ((r.tender_kickoff|string) ~ (' (start now)' if r.kickoff_passed else '')) if r.needs_tender else '-' }} | {{ 'YES' if r.auto_renewal else 'no' }} | {{ r.owner_name or r.owner_id }} |
+      {% else -%}
+      | none | | | | | | | |
+      {% endfor %}
+      AUTO-RENEWAL WARNINGS (miss the notice deadline and the contract rolls over)
+      {% for r in rows if r.auto_renewal -%}
+      - {{ r.contract_id }} {{ r.party_name }}: give notice by {{ r.notice_deadline }}{{ ' - DEADLINE PASSED, the contract may already have rolled over' if r.notice_passed else '' }}
+      {% else -%}
+      - none
+      {% endfor %}
+    example: {months_ahead: 12}
 
   - name: draft_supplier_shortlist_comparison
     desc: Draft a shortlist comparison of approved factories in the given countries with the required certification and season capacity, ranked on category experience, audit rating and capacity.
@@ -372,136 +374,85 @@ tools:
     example: {category: "technical outerwear"}
 
   - name: draft_supplier_recovery_plan
-    desc: Draft supplier recovery plan with root causes, actions and monitoring for underperformance.
+    desc: Draft a supplier recovery plan from the supplier's master record, last six months of orders and deliveries, with root causes, phased actions, a decision gate and fallback suppliers.
     kind: draft
     args:
       supplier_id: {}
       issue_summary: {type: str, default: "Performance decline", desc: "Summary of the issue"}
+      decision_weeks: {type: int, default: 8, desc: "Weeks until the go/no-go decision gate, e.g. 8"}
+      target_otif_pct: {type: float, default: 95, desc: "OTIF the supplier must reach, in percent"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
-      portfolio: SELECT COUNT(*) as po_count, SUM(total_value) as total_spend FROM master.purchase_orders WHERE supplier_id = $supplier_id
-      calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+      orders: |
+        SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp
+        FROM master.purchase_orders
+        WHERE supplier_id = $supplier_id AND status NOT IN ('cancelled', 'draft')
+          AND order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      ships: |
+        SELECT count(*) AS shipments, count(*) FILTER (WHERE sh.ata > sh.eta) AS late,
+               coalesce(round(avg(datediff('day', sh.eta, sh.ata)) FILTER (WHERE sh.ata > sh.eta), 1), 0) AS avg_days_late
+        FROM master.shipments sh JOIN master.purchase_orders pur ON pur.po_id = sh.po_id
+        WHERE pur.supplier_id = $supplier_id AND sh.ata IS NOT NULL
+          AND sh.eta BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      lines: |
+        SELECT coalesce(sum(l.qty_ordered), 0) AS ordered, coalesce(sum(l.qty_received), 0) AS received
+        FROM master.po_lines l JOIN master.purchase_orders pur ON pur.po_id = l.po_id
+        WHERE pur.supplier_id = $supplier_id AND pur.status IN ('received', 'closed')
+          AND pur.order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      gate: SELECT CAST($as_of AS DATE) + CAST($decision_weeks AS INTEGER) * 7 AS gate_date
+      alts: |
+        SELECT s.supplier_id, s.name, s.country, s.otif_pct_12m, s.payment_terms_days, s.risk_rating
+        FROM master.suppliers s
+        WHERE s.status = 'active' AND s.supplier_id <> $supplier_id
+          AND s.category_focus = (SELECT category_focus FROM master.suppliers WHERE supplier_id = $supplier_id)
+        ORDER BY s.otif_pct_12m DESC LIMIT 3
     template: |
       SUPPLIER RECOVERY PLAN
 
-      Supplier: {{ supplier[0].name if supplier else 'Unknown' }} ({{ supplier_id }})
+      {% if supplier -%}
+      Supplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}, {{ supplier[0].category_focus }}
       Issue: {{ issue_summary }}
-      Annual Spend: £{{ (portfolio[0].total_spend if portfolio else 0)|round(0)|int }}
-      Prepared: {{ calendar[0].date if calendar else 'Current' }}
+      Annual spend: {{ "£{:,}".format(supplier[0].annual_spend_gbp|int) }}; risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}
 
       1. SITUATION ASSESSMENT
+      - OTIF over the last 12 months: {{ supplier[0].otif_pct_12m }}% against a target of {{ target_otif_pct|int }}% (gap {{ "%.1f"|format(target_otif_pct - supplier[0].otif_pct_12m) }} points)
+      - Last 6 months: {{ orders[0].pos }} purchase orders worth {{ "£{:,}".format(orders[0].value_gbp|int) }}
+      - Deliveries: {{ ships[0].late }} of {{ ships[0].shipments }} shipments arrived after their ETA{% if ships[0].late %}, on average {{ ships[0].avg_days_late }} days late{% endif %}
+      {% if lines[0].ordered -%}
+      - Quantities: {{ "{:,}".format(lines[0].received|int) }} of {{ "{:,}".format(lines[0].ordered|int) }} units received on completed orders ({{ "%.1f"|format((lines[0].ordered - lines[0].received) / lines[0].ordered * 100) }}% short)
+      {% endif %}
+      2. ROOT CAUSE ANALYSIS (to confirm with the supplier and our own order history)
+      {% if ships[0].shipments and ships[0].late / ships[0].shipments > 0.25 -%}
+      - Late shipping: {{ "%.0f"|format(ships[0].late / ships[0].shipments * 100) }}% of shipments miss the ETA, so the delivery problem is in production or dispatch rather than a few outliers
+      {% endif -%}
+      {% if lines[0].ordered and (lines[0].ordered - lines[0].received) / lines[0].ordered > 0.01 -%}
+      - Short deliveries: the supplier is not completing order quantities
+      {% endif -%}
+      - Our own late changes to quantities or dates: check the purchase order change history before assigning blame
+      - Capacity, quality control staffing and raw material supply: ask the supplier for evidence
 
-      Performance History:
-      - Q1 2026: OTIF 94%, Quality Acceptable
-      - Q2 2026: OTIF 89%, Quality Issues Noted
-      - Q3 2026: OTIF 82%, Quality Escalated (3 complaints)
+      3. RECOVERY PLAN
+      Phase 1: Stabilise (weeks 1-4). Weekly steering call with the supplier's operations lead and our buyer; quality audit visit in week 2; confirm dates on every open order.
+        Success measure: OTIF of at least {{ (target_otif_pct - 5)|int }}% on the next 3 orders.
+      Phase 2: Improve (weeks 5-{{ decision_weeks }}). Agreed corrective actions on late shipping and short deliveries; freeze changes to confirmed orders inside the lead time.
+        Success measure: OTIF of {{ target_otif_pct|int }}% sustained for 4 weeks.
+      Phase 3: Sustain (after week {{ decision_weeks }}). Monthly business reviews and a standing performance dashboard.
 
-      Key Issues Identified:
-      1. On-time delivery declined 12pp over 2 quarters
-      2. Quality incidents doubled (3 formal complaints vs 1-2 historical)
-      3. Responsiveness to escalations slow (>48 hours)
-      4. No improvement visible in recent communications
+      4. DECISION GATE: WEEK {{ decision_weeks }} ({{ gate[0].gate_date }})
+      We decide on that date whether to continue the plan or switch volume.
+      GO if OTIF is at least {{ target_otif_pct|int }}% sustained and shipments are on time.
+      NO-GO: begin moving volume to a fallback supplier.
 
-      Impact on Our Business:
-      - Delayed shipments affecting store replenishment
-      - Increased expedite costs: £45k
-      - Quality rework: £32k
-      - Customer service impact: 5 complaints traced back
-      - Risk to key holiday season launch
-
-      2. ROOT CAUSE ANALYSIS
-
-      Preliminary Findings:
-      - Production capacity stretched (new major customer added)
-      - Quality control staffing gap post-restructure
-      - Raw material sourcing challenges
-      - Management attention diverted
-
-      Supplier's Position:
-      - Acknowledge current challenges
-      - Committed to recovery but no concrete plan
-      - Financial condition: Stable but cash flow tight
-      - Leadership: New operations manager (X weeks in role)
-
-      3. RECOVERY PLAN DETAILS
-
-      Phase 1: Stabilization (Weeks 1-4)
-      Owner: Supplier COO + Our Buyer
-      - Weekly steering calls (Mondays 10am)
-      - Quality audit visit (Week 2)
-      - Emergency capacity planning review
-      - Temporary expedited routing for next 2 shipments
-      Success metrics:
-        ✓ OTIF: ≥90% on next 3 orders
-        ✓ Quality: Zero defects on sample audit
-        ✓ Communication: Respond within 24 hours
-
-      Phase 2: Improvement (Weeks 5-12)
-      Initiatives:
-      A. Quality Improvement
-         - Hire 2 additional QC inspectors
-         - Implement visual management system
-         - Daily quality stand-ups
-         Target: <0.5% defect rate (from 1.2% current)
-
-      B. Capacity Planning
-         - Schedule dedicated line 40% of time
-         - Prioritize our orders in production sequence
-         - Weekly capacity forecast vs demand
-         Target: 95%+ OTIF
-
-      C. Communication Protocol
-         - Daily shipment status email
-         - Weekly business review calls
-         - Escalation path clearly defined
-         Target: <24 hour response to any issue
-
-      Phase 3: Sustainment (Weeks 13+)
-      - Monthly business reviews
-      - Quarterly audit (vs weekly)
-      - Standard SLA resumption
-      - Performance dashboard shared
-
-      4. RESOURCE COMMITMENT
-
-      Our Side:
-      - Dedicated Buyer point of contact (50% time)
-      - Quality technical support (10% time)
-      - Supply chain planning input (10% time)
-
-      Supplier's Commitment:
-      - 2 FTE Quality improvement
-      - Operations Director sponsor
-      - Investment in QC equipment (£25k)
-      - Weekly transparency on metrics
-
-      5. DECISION GATE: WEEK 8
-      At week 8, we will assess:
-      ✓ OTIF trend: Is it ≥92% sustained?
-      ✓ Quality: Are defects <0.5%?
-      ✓ Responsiveness: Are calls met and escalations resolved <24h?
-      ✓ Attitude: Is supplier engaged and proactive?
-
-      Go/No-Go Decision:
-      GO: Continue plan, reduce monitoring cadence to bi-weekly
-      NO-GO: Initiate 60-day wind-down, activate secondary supplier
-
-      6. CONTINGENCY PLAN (if recovery fails)
-      - Activate dual sourcing arrangement with Supplier X
-      - 60-day transition plan
-      - Graduated volume reduction
-      - Final contract termination if not meeting exit criteria
-
-      RECOMMENDATION
-      This supplier is recoverable given:
-      - Strategic importance (12% of category spend)
-      - Good historical relationship
-      - Willingness to invest and improve
-      - Clear root causes addressable in timeframe
-
-      However, this is a time-bound recovery with clear decision points.
-      If Phase 2 milestones not met by Week 8, we must execute contingency plan.
-    example: {supplier_id: SUP-0001, issue_summary: "Delivery and quality decline over 2 quarters"}
+      5. FALLBACK SUPPLIERS (same category focus, best OTIF first)
+      {% for a in alts -%}
+      - {{ a.name }} ({{ a.supplier_id }}, {{ a.country }}): OTIF {{ a.otif_pct_12m }}%, {{ a.payment_terms_days }} days, risk {{ a.risk_rating }}
+      {% else -%}
+      - No other active supplier with the same category focus
+      {% endfor -%}
+      {% else -%}
+      Supplier {{ supplier_id }} not found.
+      {% endif %}
+    example: {supplier_id: SUP-0053, issue_summary: "Delivery and quality decline over 2 quarters"}
 
   - name: draft_sponsor_challenge_brief
     desc: Draft anticipated sponsor objections and responses for capex portfolio and programme decisions.
@@ -876,11 +827,16 @@ tools:
     example: {topic: "Capital Allocation £50m"}
 
   - name: draft_bid_recommendation
-    desc: Draft bid recommendation for a steering group comparing supplier proposals on price and terms.
+    desc: Draft a bid recommendation for a steering group from the evaluated three-year costs, showing the saving of the recommended bidder against the runner-up and the cheapest headline bid.
     kind: draft
     args:
-      category: {type: str, required: true, desc: "Category or contract type being evaluated"}
-      bid_summary: {type: str, default: "Evaluation complete", desc: "Summary of evaluation results"}
+      category: {type: str, required: true, desc: "Category or contract type being evaluated, e.g. Warehouse cleaning"}
+      recommended_bidder: {type: str, required: true, desc: "Name of the bidder recommended"}
+      recommended_total_gbp: {type: float, desc: "Three-year total cost of the recommended bid in GBP, hidden costs included"}
+      runner_up_bidder: {type: str, desc: "Name of the second-best bidder"}
+      runner_up_total_gbp: {type: float, desc: "Three-year total cost of the runner-up in GBP"}
+      cheapest_headline_bidder: {type: str, desc: "Bidder with the lowest headline price, if not the recommended one"}
+      bid_summary: {type: str, default: "Evaluation complete", desc: "Summary of the evaluation: price, service levels, references, risks"}
     sql:
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
@@ -890,161 +846,243 @@ tools:
       Date: {{ calendar[0].date if calendar else 'Current' }}
       Status: RECOMMENDATION TO STEERING GROUP
 
-      EXECUTIVE SUMMARY
-      Based on comprehensive evaluation of {{ category }} proposals, we recommend the following supplier and commercial terms.
-
-      EVALUATION SCOPE
-      - Number of bidders: 3
-      - Evaluation period: [dates]
-      - Evaluation criteria: Price, service levels, financial stability, references
-
-      EVALUATION RESULTS
-
-      Bid Summary:
-      | Bidder | Total Price | Lead Time | Quality | Rating |
-      |---|---|---|---|---|
-      | Bidder A | £X,XXX | Y weeks | Excellent | Strong |
-      | Bidder B | £X,XXX | Y weeks | Good | Acceptable |
-      | Bidder C | £X,XXX | Y weeks | Good | Weak |
-
+      RECOMMENDATION
+      Award the {{ category }} contract to {{ recommended_bidder }}.
+      {% if recommended_total_gbp is not none -%}
+      Three-year total cost including hidden costs: {{ "£{:,}".format(recommended_total_gbp|int) }}
+      {% endif -%}
+      {% if recommended_total_gbp is not none and runner_up_bidder and runner_up_total_gbp is not none -%}
+      Runner-up: {{ runner_up_bidder }} at {{ "£{:,}".format(runner_up_total_gbp|int) }}, which is {{ "£{:,}".format((runner_up_total_gbp - recommended_total_gbp)|int) }} ({{ "%.1f"|format((runner_up_total_gbp - recommended_total_gbp) / runner_up_total_gbp * 100) }}%) more over three years.
+      {% endif -%}
+      {% if cheapest_headline_bidder and cheapest_headline_bidder != recommended_bidder -%}
+      Note: {{ cheapest_headline_bidder }} has the lowest headline price but is not recommended because of hidden costs and service risk.
+      {% endif %}
+      EVALUATION SUMMARY
       {{ bid_summary }}
 
-      RECOMMENDATION
-
-      We recommend proceeding with Bidder A based on:
-      1. Best overall value for money
-      2. Proven service level performance from references
-      3. Strong financial position
-      4. Competitive pricing with quality alignment
-
-      COMMERCIAL TERMS SUMMARY
-      - Total contract value: £X,XXX
-      - Service level SLA: 95% on-time delivery
-      - Payment terms: Net 30 days
-      - Contract term: 3 years with 1+1 renewal options
-      - Penalty/incentive clauses: [As per bid]
-
-      RISKS & MITIGATION
-      - Vendor concentration: Review annual performance
-      - Market escalation: Price review clause included
-      - Service continuity: Performance bond required
-
-      NEXT STEPS
-      1. Steering group approval (meeting date)
-      2. Final negotiation of terms
-      3. Contract execution
-      4. Transition planning
+      RISKS AND MITIGATION
+      - Price review clause: cap the annual uplift in the contract
+      - Service continuity: monthly service-level audit with credits for misses
+      - References: confirm the references before signature
 
       STEERING GROUP DECISION REQUIRED
-      ☐ Approve Bidder A as primary supplier
-      ☐ Approve commercial terms as presented
-      ☐ Authorize contract negotiation and signature
-    example: {category: "Warehouse Cleaning", bid_summary: "Bidder A selected for best value"}
+      [ ] Approve {{ recommended_bidder }} as the {{ category }} supplier
+      [ ] Authorise contract negotiation and signature
+    example: {category: "Warehouse cleaning", recommended_bidder: "Gleam Industrial Ltd", recommended_total_gbp: 328294, runner_up_bidder: "Meridian Hygiene Group", runner_up_total_gbp: 361182, bid_summary: "Best three-year cost and references"}
 
   - name: draft_breach_notice
-    desc: Draft formal notice of breach or delay for contract enforcement.
+    desc: Draft a formal notice of breach for a late purchase order, stating the supplier, due date, days late, units and value outstanding, and the response and remedy deadlines.
     kind: draft
     args:
       po_id: {}
+      contract_id: {type: str, desc: "Supply contract reference, e.g. CTR-000045"}
+      response_days: {type: int, default: 5, desc: "Business days the supplier has to respond"}
+      cure_days: {type: int, default: 10, desc: "Days the supplier has to deliver a remedial plan"}
     sql:
       po: SELECT * FROM master.purchase_orders WHERE po_id = $po_id
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = (SELECT supplier_id FROM master.purchase_orders WHERE po_id = $po_id)
+      lines: |
+        SELECT coalesce(sum(qty_ordered), 0) AS ordered, coalesce(sum(qty_received), 0) AS received,
+               coalesce(sum((qty_ordered - qty_received) * unit_cost), 0) AS outstanding_gbp
+        FROM master.po_lines WHERE po_id = $po_id
+      ship: SELECT status, eta FROM master.shipments WHERE po_id = $po_id ORDER BY etd DESC LIMIT 1
+      dates: |
+        SELECT CAST($as_of AS DATE) AS today, datediff('day', (SELECT due_date FROM master.purchase_orders WHERE po_id = $po_id), CAST($as_of AS DATE)) AS days_late,
+               CAST($as_of AS DATE) + CAST($response_days AS INTEGER) AS respond_by, CAST($as_of AS DATE) + CAST($cure_days AS INTEGER) AS cure_by
     template: |
       FORMAL NOTICE OF BREACH
 
-      Date: Today
-      RE: Purchase Order {{ po[0].po_id if po else 'Unknown' }}
+      Date: {{ dates[0].today }}
+      RE: Purchase order {{ po[0].po_id if po else 'Unknown' }}{% if contract_id %} under supply contract {{ contract_id }}{% endif %}
 
-      To: {{ supplier[0].name if supplier else 'Unknown' }}
+      To: {{ supplier[0].name if supplier else 'Unknown' }}{% if supplier %} ({{ supplier[0].supplier_id }}){% endif %}
 
-      This notice is issued pursuant to the terms of our supply contract.
+      This notice is issued under the terms of our supply contract.
 
       BREACH DETAILS
-      PO Reference: {{ po[0].po_id if po else 'Unknown' }}
-      Expected Delivery: {{ po[0].due_date if po else 'TBD' }}
-
-      You have failed to meet the contractual obligations outlined above.
+      PO reference: {{ po[0].po_id if po else 'Unknown' }}
+      Contracted delivery date: {{ po[0].due_date if po else 'TBD' }}
+      {% if po and dates[0].days_late > 0 -%}
+      Days overdue: {{ dates[0].days_late }}
+      {% endif -%}
+      Order value: {{ "£{:,}".format(po[0].total_value|int) if po else '' }} for {{ "{:,}".format(po[0].total_units|int) if po else '' }} units
+      {% if lines and lines[0].ordered -%}
+      Units not received: {{ "{:,}".format((lines[0].ordered - lines[0].received)|int) }} of {{ "{:,}".format(lines[0].ordered|int) }}, worth {{ "£{:,}".format(lines[0].outstanding_gbp|int) }}
+      {% endif -%}
+      {% if ship -%}
+      Shipment status: {{ ship[0].status }}, estimated arrival {{ ship[0].eta }}
+      {% endif %}
+      You have failed to deliver this order by the contracted date.
 
       REQUIRED ACTIONS
-      1. Respond within 5 business days
-      2. Provide remedial plan within 10 business days
-      3. Implement corrective measures immediately
+      1. Respond in writing by {{ dates[0].respond_by }} ({{ response_days }} days)
+      2. Provide a remedial plan with a confirmed delivery date by {{ dates[0].cure_by }} ({{ cure_days }} days)
+      3. Deliver the outstanding units without further delay
 
-      Failure to comply may result in contract termination and legal action.
+      We reserve all rights and remedies under the contract, including damages for delay, cancellation of the undelivered units and termination if the breach is not remedied.
 
       Regards,
       Procurement Team
-    example: {po_id: "PO-2026-005912"}
+    example: {po_id: "PO-2026-004301"}
 
   - name: draft_business_review_pack
-    desc: Draft supplier business review pack with scorecard, trends and joint opportunities.
+    desc: Draft a supplier business review pack for the last quarter from the supplier's master record and orders, comparing scorecard results with SLA and proposing focus topics.
     kind: draft
     args:
       supplier_id: {}
+      quarter_otif_pct: {type: float, desc: "Quarter OTIF from the scorecard, in percent, e.g. 85.4"}
+      otif_sla_pct: {type: float, default: 95, desc: "OTIF service level in percent"}
+      quarter_defect_pct: {type: float, desc: "Quarter AQL defect rate from the scorecard, in percent, e.g. 2.8"}
+      defect_sla_pct: {type: float, default: 1.5, desc: "Maximum defect rate in percent"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+      orders: |
+        SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp, coalesce(sum(total_units), 0) AS units
+        FROM master.purchase_orders
+        WHERE supplier_id = $supplier_id AND status <> 'cancelled'
+          AND order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 91 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      ships: |
+        SELECT count(*) AS shipments, count(*) FILTER (WHERE sh.ata > sh.eta) AS late
+        FROM master.shipments sh JOIN master.purchase_orders pur ON pur.po_id = sh.po_id
+        WHERE pur.supplier_id = $supplier_id AND sh.ata IS NOT NULL
+          AND sh.eta BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 91 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      products: |
+        SELECT count(*) AS skus, count(DISTINCT category) AS categories, string_agg(DISTINCT category, ', ') AS category_list
+        FROM master.products WHERE supplier_id = $supplier_id
     template: |
       BUSINESS REVIEW PACK
 
-      Supplier: {{ supplier[0].name if supplier else 'Unknown' }}
-      Review Period: Last 12 months
+      {% if supplier -%}
+      Supplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}
+      Review period: last quarter
 
       1. PERFORMANCE SCORECARD
-      On-Time-In-Full (OTIF): {{ supplier[0].otif_pct_12m if supplier else 'N/A' }}%
-      Quality Score: 9/10
-      Responsiveness: 8/10
+      - OTIF over 12 months (master record): {{ supplier[0].otif_pct_12m }}%
+      {% if quarter_otif_pct is not none -%}
+      - OTIF this quarter: {{ quarter_otif_pct }}% against an SLA of {{ otif_sla_pct }}% ({{ "%.1f"|format(otif_sla_pct - quarter_otif_pct) }} points {{ 'below' if quarter_otif_pct < otif_sla_pct else 'above' }} SLA)
+      {% endif -%}
+      {% if quarter_defect_pct is not none -%}
+      - Defect rate this quarter: {{ quarter_defect_pct }}% against a limit of {{ defect_sla_pct }}% ({{ 'breached' if quarter_defect_pct > defect_sla_pct else 'within limit' }})
+      {% endif -%}
+      - Risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}, payment terms {{ supplier[0].payment_terms_days }} days
 
-      2. PERFORMANCE TRENDS
-      - OTIF improved 2% year-over-year
-      - Quality incidents decreased by 15%
+      2. ORDER PATTERN (last quarter)
+      - {{ orders[0].pos }} purchase orders, {{ "{:,}".format(orders[0].units|int) }} units, {{ "£{:,}".format(orders[0].value_gbp|int) }}
+      - {{ ships[0].late }} of {{ ships[0].shipments }} delivered shipments arrived after their ETA
+      - Range with us: {{ products[0].skus }} SKUs in {{ products[0].category_list }}
 
       3. JOINT OPPORTUNITIES
-      - Volume growth potential in new category
-      - Logistics optimization
-    example: {supplier_id: SUP-0001}
+      - Forecast sharing and fixed ordering windows to cut late order changes
+      - Consolidated shipments to cut freight cost per unit
+      - Quality at source: joint inspection plan for the highest-defect styles
+
+      4. SUGGESTED FOCUS TOPICS FOR THE MEETING
+      {% if quarter_otif_pct is not none and quarter_otif_pct < otif_sla_pct -%}
+      1. Delivery: recover OTIF from {{ quarter_otif_pct }}% to the {{ otif_sla_pct }}% SLA
+      {% else -%}
+      1. Delivery: hold OTIF at or above SLA
+      {% endif -%}
+      {% if quarter_defect_pct is not none and quarter_defect_pct > defect_sla_pct -%}
+      2. Quality: bring the defect rate from {{ quarter_defect_pct }}% back under {{ defect_sla_pct }}%
+      {% else -%}
+      2. Quality: keep the defect rate under {{ defect_sla_pct }}%
+      {% endif -%}
+      3. Ways of working: our order changes, payment performance and the joint opportunities above
+      {% else -%}
+      Supplier {{ supplier_id }} not found.
+      {% endif %}
+    example: {supplier_id: SUP-0012, quarter_otif_pct: 85.4, quarter_defect_pct: 2.8}
 
   - name: draft_commodity_brief
-    desc: Draft weekly commodity brief for buying team covering prices and trends.
+    desc: Draft the weekly commodity brief for the buying team from the supplied prices and news, working out the weekly and year-to-date moves and flagging moves above the alert threshold.
     kind: draft
     args:
       commodity: {type: str, required: true, desc: "Commodity name, e.g. cotton"}
+      unit: {type: str, default: "GBP per tonne", desc: "Price unit, e.g. GBP per tonne"}
+      price_now: {type: float, required: true, desc: "Price this week"}
+      price_last_week: {type: float, desc: "Price a week ago"}
+      price_year_start: {type: float, desc: "Price at the start of the year"}
+      key_news: {type: str, desc: "Key news and drivers this week"}
+      alert_threshold_pct: {type: float, default: 5, desc: "Weekly move in percent that triggers a faster response"}
     sql:
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
       WEEKLY COMMODITY BRIEF
 
       Commodity: {{ commodity|upper }}
+      Week of: {{ calendar[0].date if calendar else 'Current' }}
 
       PRICE SUMMARY
-      Week Change: +2.3%
-      YTD Change: -8.5%
-
-      KEY NEWS & DRIVERS
-      - Supply tightness in primary production regions
-      - Strong forward demand from apparel sector
+      Price now: {{ price_now }} {{ unit }}
+      {% if price_last_week -%}
+      {% set w = (price_now - price_last_week) / price_last_week * 100 -%}
+      Week change: {{ "%+.1f"|format(w) }}% (from {{ price_last_week }})
+      {% endif -%}
+      {% if price_year_start -%}
+      {% set y = (price_now - price_year_start) / price_year_start * 100 -%}
+      Year-to-date change: {{ "%+.1f"|format(y) }}% (from {{ price_year_start }})
+      {% endif %}
+      KEY NEWS AND DRIVERS
+      {{ key_news or 'No significant news supplied' }}
 
       RECOMMENDED ACTIONS
-      1. Review hedging strategies for next month's purchases
-      2. Confirm demand forecasts for production planning
-    example: {commodity: cotton}
+      {% if price_last_week and (w|abs) >= alert_threshold_pct -%}
+      1. ALERT: the weekly move of {{ "%+.1f"|format(w) }}% is above the {{ alert_threshold_pct }}% trigger. Escalate to the category lead and review open commitments today.
+      {% else -%}
+      1. Weekly move is inside the {{ alert_threshold_pct }}% alert threshold: no escalation needed.
+      {% endif -%}
+      {% if price_year_start and y > 10 -%}
+      2. Price is well above the start of the year: review hedging cover for the next quarter.
+      {% else -%}
+      2. Review hedging and forward cover against the next month's purchases.
+      {% endif -%}
+      3. Confirm demand forecasts with planning before the next purchase.
+
+      SUGGESTED ALERT TRIGGERS
+      - Weekly move of {{ alert_threshold_pct }}% or more: same-day escalation
+      - Move of {{ (alert_threshold_pct * 2)|round|int }}% or more over a month: refresh the buying plan
+    example: {commodity: cotton, price_now: 1520, price_last_week: 1480, price_year_start: 1390, key_news: "Weak harvest forecast in the main growing regions"}
 
   - name: draft_commodity_summary
-    desc: Draft commodity summary for category buyers on pricing and outlook.
+    desc: Draft a commodity summary for category buyers from the supplied price, 12-month average, outlook and drivers, working out price versus average and expected 6 and 12 month prices.
     kind: draft
     args:
-      commodity: {type: str, required: true, desc: "Commodity name, e.g. polyester"}
+      commodity: {type: str, required: true, desc: "Commodity name, e.g. polyester chips"}
+      unit: {type: str, default: "GBP per tonne", desc: "Price unit, e.g. GBP per tonne"}
+      current_price: {type: float, required: true, desc: "Current price in the given unit"}
+      avg_12m_price: {type: float, desc: "12-month average price in the same unit"}
+      outlook_6m_pct: {type: float, desc: "Analyst expected price change over 6 months, in percent, e.g. 3"}
+      outlook_12m_pct: {type: float, desc: "Analyst expected price change over 12 months, in percent"}
+      drivers: {type: str, desc: "Recent price drivers, e.g. weak harvest and strong demand"}
     sql:
       calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
     template: |
       COMMODITY SUMMARY: {{ commodity|upper }}
 
       CURRENT STATUS
-      Price Level: Above 12-month average (+12%)
-
+      Price: {{ current_price }} {{ unit }}
+      {% if avg_12m_price -%}
+      {% set d = (current_price - avg_12m_price) / avg_12m_price * 100 -%}
+      Versus 12-month average ({{ avg_12m_price }}): {{ "%+.1f"|format(d) }}% ({{ 'above' if d > 0 else 'below' }} average)
+      {% endif -%}
+      {% if drivers %}Recent drivers: {{ drivers }}
+      {% endif %}
       FORECAST
-      3-Month: Firm to rising, expect +2-5%
-      6-Month: Stable pricing expected
-    example: {commodity: polyester}
+      {% if outlook_6m_pct is not none -%}
+      6-month: {{ "%+.1f"|format(outlook_6m_pct) }}%, expected price about {{ "%.1f"|format(current_price * (1 + outlook_6m_pct / 100)) }} {{ unit }}
+      {% endif -%}
+      {% if outlook_12m_pct is not none -%}
+      12-month: {{ "%+.1f"|format(outlook_12m_pct) }}%, expected price about {{ "%.1f"|format(current_price * (1 + outlook_12m_pct / 100)) }} {{ unit }}
+      {% endif %}
+      FOR BUYERS
+      {% if outlook_6m_pct is not none and outlook_6m_pct > 0 -%}
+      Prices are expected to rise: consider covering part of the requirement before the increase.
+      {% elif outlook_6m_pct is not none and outlook_6m_pct < 0 -%}
+      Prices are expected to ease: avoid committing early beyond the base requirement.
+      {% else -%}
+      Prices are expected to be stable: buy to plan.
+      {% endif %}
+    example: {commodity: polyester chips, current_price: 780, avg_12m_price: 810, outlook_6m_pct: -2, outlook_12m_pct: 1}
 
   - name: draft_dispute_response
     desc: Draft a reply to a customer dispute with analysis and settlement position.
@@ -1127,33 +1165,70 @@ tools:
     example: {programme_name: "ERP Transformation Programme"}
 
   - name: draft_improvement_programme_plan
-    desc: Draft joint improvement programme plan with supplier to achieve specific targets.
+    desc: Draft a joint supplier improvement programme plan from the supplier's current lead times and open orders, with the target in days, milestones and what each side commits.
     kind: draft
     args:
       supplier_id: {}
-      improvement_goal: {type: str, default: "reduce lead time by 20%", desc: "Improvement target"}
+      improvement_goal: {type: str, default: "reduce lead time by 20%", desc: "Improvement target in words"}
+      target_reduction_pct: {type: float, default: 20, desc: "Lead time reduction wanted, in percent"}
+      programme_weeks: {type: int, default: 26, desc: "Length of the programme in weeks"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+      lead: |
+        SELECT count(*) AS skus, round(avg(lead_time_days), 0) AS avg_days, min(lead_time_days) AS min_days, max(lead_time_days) AS max_days
+        FROM master.products WHERE supplier_id = $supplier_id
+      cats: |
+        SELECT category, count(*) AS skus, round(avg(lead_time_days), 0) AS avg_days
+        FROM master.products WHERE supplier_id = $supplier_id GROUP BY category ORDER BY avg_days DESC, skus DESC LIMIT 3
+      po: |
+        SELECT count(*) AS pos, round(avg(datediff('day', order_date, due_date)), 0) AS order_to_due_days
+        FROM master.purchase_orders WHERE supplier_id = $supplier_id AND status <> 'cancelled'
+          AND order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 365 DAY AND date_trunc('week', CAST($as_of AS DATE))
+      openpo: |
+        SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp
+        FROM master.purchase_orders WHERE supplier_id = $supplier_id AND status IN ('open', 'confirmed', 'shipped')
     template: |
       JOINT IMPROVEMENT PROGRAMME PLAN
 
-      Supplier: {{ supplier[0].name if supplier else 'Unknown' }}
+      {% if supplier and lead[0].skus -%}
+      Supplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}
       Goal: {{ improvement_goal }}
+      {% set base = lead[0].avg_days|int -%}
+      {% set target = (base * (1 - target_reduction_pct / 100))|round|int -%}
 
-      1. CURRENT STATE ASSESSMENT
-      Baseline lead time: 45 days
+      1. CURRENT STATE
+      - Standard lead time across {{ lead[0].skus }} SKUs: {{ base }} days on average (range {{ lead[0].min_days }} to {{ lead[0].max_days }})
+      - Actual order-to-due time on our last 12 months of orders ({{ po[0].pos }} orders): {{ po[0].order_to_due_days|int }} days
+      - Target: {{ target }} days, a cut of {{ base - target }} days ({{ target_reduction_pct|int }}%)
+      - OTIF over 12 months: {{ supplier[0].otif_pct_12m }}%; payment terms {{ supplier[0].payment_terms_days }} days
+      - Pilot scope, longest lead times first:
+      {% for c in cats -%}
+        - {{ c.category }}: {{ c.skus }} SKUs, {{ c.avg_days|int }} days
+      {% endfor %}
+      2. WORKSTREAMS
+      A. Material and trim pre-positioning: hold agreed fabric and trim stock for forecast demand
+      B. Production scheduling: reserve line capacity and release orders in fixed weekly windows
+      C. Quality at source: inline inspection to remove rework and re-inspection time
+      D. Transport: booked shipping slots and consolidated loads
 
-      2. IMPROVEMENT INITIATIVES
-      Initiative A: Production Capacity
-      - Objective: Increase throughput 15%
-      - Timeline: 12 weeks
+      3. MILESTONES ({{ programme_weeks }}-week programme)
+      - Week 2: baseline lead time mapped step by step with the supplier, owners named
+      - Week {{ (programme_weeks * 0.25)|round|int }}: pilot range running at {{ base - ((base - target) * 0.25)|round|int }} days
+      - Week {{ (programme_weeks * 0.5)|round|int }}: {{ base - ((base - target) * 0.6)|round|int }} days, review of what has worked
+      - Week {{ programme_weeks }}: {{ target }} days across the range, roll out and hand over to business as usual
 
-      3. BENEFITS
-      Estimated savings:
-      - Lead time reduction: 20%
-      - Cost per unit: 3% reduction
-      - Quality improvement: 5% reduction in defects
-    example: {supplier_id: SUP-0001, improvement_goal: "reduce lead time by 20%"}
+      4. WHAT THE SUPPLIER NEEDS FROM US
+      - Rolling forecast: {{ openpo[0].pos }} open orders worth {{ "£{:,}".format(openpo[0].value_gbp|int) }} today, shared weekly
+      - Freeze on changes to confirmed orders inside the lead time
+      - Prompt payment on the agreed {{ supplier[0].payment_terms_days }} days, and technical support from our quality team
+
+      5. BENEFITS
+      - {{ base - target }} fewer days of stock in transit and on order per order cycle
+      - Lower safety stock and faster response to demand changes
+      {% else -%}
+      Supplier {{ supplier_id }} not found or has no SKUs.
+      {% endif %}
+    example: {supplier_id: SUP-0046, improvement_goal: "reduce lead time by 20%"}
 
   - name: draft_incident_summary
     desc: Draft an operations incident summary for a site covering what happened, impact, root cause and next steps, from the details supplied.
