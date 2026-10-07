@@ -5,6 +5,7 @@ factories always match master. Story SKUs are written by hand in seed/*.csv and 
 supplies all their rows.
 """
 import json
+import random
 
 # SKUs whose BOM / fabric spec / batches are fully hand-written in seed/ (the generator leaves them alone)
 STORY_SKUS = {
@@ -13,6 +14,8 @@ STORY_SKUS = {
     "SKU-100574",
 }
 STORY_STYLES = {"STY-4595", "STY-6132", "STY-4012", "STY-5094", "STY-4171", "STY-5905"}
+# styles whose size/colour siblings are also hand-written (BOM and tech pack in seed/)
+SEEDED_STYLES = {"STY-4595", "STY-6132", "STY-4012", "STY-5905"}
 
 # material id -> (name, fibre content, type, unit cost, unit, gsm, supplier)
 # (the library itself is seeded; costs here only drive generated BOM lines)
@@ -121,13 +124,13 @@ def generate(g):
     boms, primary_fabric = [], {}
     for p in products:
         sku, dept, cat = p["sku"], p["department"], p["category"]
-        if sku in STORY_SKUS or dept == "Beauty":
+        if sku in STORY_SKUS or p["style_id"] in SEEDED_STYLES or dept == "Beauty":
             continue
         lines = []
         if cat in APPAREL:
             fabrics, metres, trims = APPAREL[cat]
             scale = 0.6 if dept == "Kids" else 1.0
-            fab = _pick(r, fabrics)
+            fab = _pick(random.Random(p["style_id"]), fabrics)
             primary_fabric[sku] = fab
             n = 1
             lines.append(mk(sku, n, "fabric", fab, round(metres * scale * r.uniform(0.9, 1.15), 2), "m", p, "Main fabric"))
@@ -214,7 +217,7 @@ def generate(g):
             bid = f"BATCH-{bn:05d}"
             dye_house = r.choice(["DYES-A", "DYES-B", "DYES-C"]) if fabric else None
             bdate = g.days_ago(r.randint(5, 150))
-            failed = r.random() < 0.08
+            failed = fabric and r.random() < 0.08
             batches.append({
                 "batch_id": bid, "material_id": mat, "supplier_id": sup, "factory_id": fac_for(sup, factories[0]["factory_id"]),
                 "batch_date": bdate, "quantity_kg": r.randint(800, 5000),
@@ -299,10 +302,14 @@ def generate(g):
     def add(p, code, name, region, rules, status="compliant", test=False, note=""):
         regs.append({"sku": p["sku"], "category_id": f"REGCAT-{code}-{region}", "category_name": name, "region": region,
                      "regulations": json.dumps(rules), "compliance_status": status, "test_required": test,
-                     "last_audit_date": g.days_ago(r.randint(30, 400)), "notes": note})
+                     "last_audit_date": g.days_ago(r.randint(30, 400)),
+                     "notes": note or ("Annual test report renewal due" if status == "review" else "")})
 
-    def status():
-        return "review" if r.random() < 0.1 else "compliant"
+    planted = {"SKU-100847", "SKU-102779", "SKU-104039", "SKU-100868", "SKU-103136", "SKU-102590", "SKU-104123", "SKU-104795",
+               "SKU-105551", "SKU-101813", "SKU-103199", "SKU-103745", "PF-220", "SKU-102905"}
+
+    def status(p):
+        return "review" if p["sku"] not in planted and r.random() < 0.04 else "compliant"
 
     sleep_rules = {"UK": ["BS 5722", "Nightwear (Safety) Regulations 1985"], "EU": ["EN 14878"], "US": ["16 CFR 1615", "16 CFR 1616"]}
     food_rules = {"UK": ["Retained Regulation (EC) 1935/2004"], "EU": ["Regulation (EC) 1935/2004", "Regulation (EU) 10/2011"],
@@ -312,13 +319,13 @@ def generate(g):
         cat = p["category"]
         if cat == "Nightwear":
             for reg, rules in sleep_rules.items():
-                add(p, "KIDSSLP", "kids_sleepwear", reg, rules, status(), reg == "US")
+                add(p, "KIDSSLP", "kids_sleepwear", reg, rules, status(p), reg == "US")
         elif cat == "Drinkware":
             for reg in REGIONS:
-                add(p, "FOODCON", "food_contact_materials", reg, food_rules[reg], status(), reg in ("EU", "US"))
+                add(p, "FOODCON", "food_contact_materials", reg, food_rules[reg], status(p), reg in ("EU", "US"))
         if p["hazmat"] == "li_ion_battery":
             for reg, rules in batt_rules.items():
-                add(p, "BATT", "battery_products", reg, rules, status(), True)
+                add(p, "BATT", "battery_products", reg, rules, status(p), True)
         if cat in ("Bags", "Footwear"):
             for reg, rules in (("UK", ["UK REACH Annex XVII entry 47"]), ("EU", ["REACH Annex XVII entry 47 (chromium VI in leather, 3 mg/kg)"])):
                 add(p, "CRVI", "leather_chromium_vi", reg, rules, "compliant", False)
