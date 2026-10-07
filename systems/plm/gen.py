@@ -11,7 +11,7 @@ import random
 STORY_SKUS = {
     "SKU-100952", "SKU-102968", "SKU-102590", "SKU-100007", "SKU-100014", "SKU-100021", "SKU-100301",
     "SKU-101813", "SKU-103199", "SKU-103745", "K-1700", "PF-220", "SKU-100847", "SKU-102905",
-    "SKU-100574",
+    "SKU-100574", "SKU-106307",
 }
 # other products that use the same lithium cell as PF-220 (MAT-LI-BATTERY, supplier SUP-0013, factory FAC-0027)
 CELL_SKUS = {"SKU-100539", "SKU-100546", "SKU-103220", "SKU-104018"}

@@ -297,6 +297,10 @@ CARRIER_TERMS = {  # carrier_id -> overrides of the generated carrier clauses
         "termination": dict(for_convenience_notice_days=90, summary="Termination for convenience on 90 days' notice."),
         "claim_window": dict(damage_claim_days=7, shortage_claim_days=7, overcharge_claim_days=180,
                              summary="Damage and shortage claims within 7 days of delivery; invoice overcharges can be disputed within 180 days of the invoice date."),
+        # 02:20:Q5 Carrier B (the carrier whose damage claims doubled, carrier_portal CAR-002): low per-claim limit, polybag goods excluded
+        "liability": dict(limit_gbp=400, limit_basis="per claim", deductible_gbp=50, subject_to_deductible=True,
+                          excluded_package_types=["polybag"],
+                          summary="Liability limited to GBP 400 per claim with a GBP 50 deductible; soft goods carried in polybags are excluded."),
     },
     "CAR-003": {
         "service_level": dict(on_time_target_pct=90, measurement="delivery inside the booked window, per shipment", service_credit_pct_per_point=0,
@@ -305,14 +309,6 @@ CARRIER_TERMS = {  # carrier_id -> overrides of the generated carrier clauses
         "volume_commitment": dict(min_annual_commitment_pct=85, shortfall_charge_pct=60, basis="annual pallets on contracted lanes",
                                   summary="We commit to 85% of the agreed annual pallet volume; a shortfall is charged at 60% of the contract rate."),
         "termination": dict(for_convenience_notice_days=90, summary="Termination for convenience on 90 days' notice."),
-    },
-    # 02:20:Q5 Carrier B: low per-claim limit, polybag goods excluded
-    "CAR-004": {
-        "liability": dict(limit_gbp=400, limit_basis="per claim", deductible_gbp=50, subject_to_deductible=True,
-                          excluded_package_types=["polybag"],
-                          summary="Liability limited to GBP 400 per claim with a GBP 50 deductible; soft goods carried in polybags are excluded."),
-        "claim_window": dict(damage_claim_days=30, shortage_claim_days=14, overcharge_claim_days=90,
-                             summary="Damage claims within 30 days of delivery, shortages within 14 days, invoice overcharges within 90 days."),
     },
     # 02:12:Q2 Carrier A (forwarder, contract ends in January): reliability target but no roll penalty
     "CAR-010": {

@@ -19,7 +19,7 @@ COMPETITORS = [
 K1700 = "K-1700"            # 1.7L Glass Kettle, 77.99
 TOASTER = "SKU-101309"      # Small Appliances style STY-4789, 79.99
 COFFEE = "SKU-100532"       # Small Appliances style STY-4301, 99.99
-BOTTLE = "SKU-102590"       # Drinkware style STY-5905, 55.99 (our 750ml insulated bottle)
+BOTTLE = "SKU-106307"       # Drinkware style STY-9501, 15.99 (our new 750ml insulated bottle)
 JACKET = "SKU-100161"       # Menswear Outerwear style STY-4102, 66.99 (the jacket on 30% markdown)
 LUNCH = None            # no matched own SKU for lunch boxes
 ATH_TOP = "SKU-100070"      # Womenswear Tops style STY-4056 (athleisure), 63.99
@@ -63,15 +63,15 @@ add(5, "BL1", None, SA[0], "Blenders", SA[1], "Argos Smoothie Blender", "Argos B
 add(5, "S01", None, SA[0], "Soup makers", SA[1], "Argos 1.6L Soup Maker", "Argos Brand", "Heats and blends; 4 programmes", 49.99)
 add(4, "V01", None, SA[0], "Sous vide cookers", SA[1], "Currys Sous Vide Stick", "Currys Own", "App control; 1100W", 79.99)
 
-# ---- Insulated bottles (750ml): our SKU-102590 at 55.99 ----
+# ---- Insulated bottles (750ml): our new SKU-106307 at 15.99 ----
 IB = "Insulated bottles"
-add(1, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Premium Insulated Bottle 750ml", "HomeShop Premium", "Keeps cold 24 hours, hot 12; double-wall stainless steel", 49.99, chg=(7, 52.99))
-add(2, "BT1", BOTTLE, IB, "750ml bottles", "Home", "John Lewis Insulated Travel Bottle 750ml", "John Lewis", "Stainless steel double wall; leakproof lid", 64.95,
+add(1, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Premium Insulated Bottle 750ml", "HomeShop Premium", "Keeps cold 24 hours, hot 12; double-wall stainless steel", 12.99, chg=(7, 13.99))
+add(2, "BT1", BOTTLE, IB, "750ml bottles", "Home", "John Lewis Insulated Travel Bottle 750ml", "John Lewis", "Stainless steel double wall; leakproof lid", 17.95,
     promos=[(4, 3, "percentage", 10, "Back to School Special")])
-add(3, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Bouteille isotherme 750 ml", "Carrefour", "Durable design; vacuum insulated", 54.99, dq="estimated")
-add(5, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Argos Premium Insulated Bottle 750ml", "Argos Brand", "Sleek design keeps drinks hot or cold", 69.99,
+add(3, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Bouteille isotherme 750 ml", "Carrefour", "Durable design; vacuum insulated", 12.99, dq="estimated")
+add(5, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Argos Premium Insulated Bottle 750ml", "Argos Brand", "Sleek design keeps drinks hot or cold", 14.99,
     promos=[(2, 0, "clearance", 30, "Summer Clearance Event")])
-add(6, "BT1", BOTTLE, IB, "750ml bottles", "Home", "JD Insulated Steel Bottle 750ml", "JD Sports", "Gym-friendly sports cap; vacuum insulated", 45.00, dq="partial")
+add(6, "BT1", BOTTLE, IB, "750ml bottles", "Home", "JD Insulated Steel Bottle 750ml", "JD Sports", "Gym-friendly sports cap; vacuum insulated", 10.99, dq="partial")
 
 # ---- Men's jackets: our STY-4102 at 66.99, on 30% markdown since early September ----
 MJ = "Men's jackets"

@@ -19,7 +19,7 @@ DRIVERS_13 = {
     1: "Normal trading; autumn range receipts",
     3: "Autumn stock payments start to build",
     4: "Peak-season stock buy: weekly supplier payment runs step up",
-    5: "Peak-season supplier payment run (includes non-critical run) plus quarterly VAT payment of 3.1m",
+    5: "Peak-season supplier payment run plus quarterly VAT payment of 3.1m",
     6: "Store refit capex of 1.5m and Friday supplier payment run; sales receipts soft before Black Friday",
     7: "Black Friday trading lifts receipts",
     8: "Black Friday and early Christmas receipts",

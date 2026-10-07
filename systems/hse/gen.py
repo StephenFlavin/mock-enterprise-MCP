@@ -106,7 +106,7 @@ def generate(g):
                 "validation_type": "Safety checks", "status": "pass", "validated_by": r.choice(mgrs["DC2"]),
                 "firmware_version": a["software_version"], "notes": "Routine safety checks passed; gates and e-stops verified",
                 "updated_at": datetime.combine(d, datetime.min.time()) + timedelta(hours=15),
-                "site_id": None, "asset_name": None, "current_firmware": None,
+                "equipment_id": None, "site_id": None, "asset_name": None, "current_firmware": None,
             })
 
     return {"incidents": incidents, "corrective_actions": cas, "risk_assessments": [],

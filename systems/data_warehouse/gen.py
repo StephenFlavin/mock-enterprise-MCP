@@ -353,6 +353,21 @@ def generate(g):
             a = agg[r["sku"]]
             a[0] += r["units_sold"]; a[1] += r["sales_gbp"]; a[2] += r["cost_gbp"]; a[3] += r["markdown_gbp"]
     ranked = sorted(agg, key=lambda s: -agg[s][1])
+    # in-stock rate: where the IMS availability panel tracks the SKU use its rate, so both systems quote the same figure
+    ims_rate = {}
+    try:
+        import csv as _csv
+        from pathlib import Path as _Path
+        _f = _Path(__file__).resolve().parent.parent / "ims" / "data" / "availability_tracking.csv"
+        if _f.exists():
+            _tot = defaultdict(lambda: [0, 0])
+            with open(_f, newline="") as _fh:
+                for _row in _csv.DictReader(_fh):
+                    _tot[_row["sku"]][0] += 1
+                    _tot[_row["sku"]][1] += _row["available"].strip().lower() in ("true", "1")
+            ims_rate = {k: round(100.0 * v[1] / v[0], 1) for k, v in _tot.items() if v[0]}
+    except Exception:
+        ims_rate = {}
     for rank, sku in enumerate(ranked, 1):
         product = prod_by_sku[sku]
         u, s_, c_, mdv = agg[sku]
@@ -363,7 +378,7 @@ def generate(g):
             "units_sold": u, "sales_gbp": round(s_, 2), "margin_gbp": round(s_ - c_, 2),
             "margin_pct": round(100 * (s_ - c_) / s_, 1) if s_ else 0,
             "markdown_rate_pct": round(100 * mdv / (s_ + mdv), 1) if s_ else 0,
-            "in_stock_rate_pct": round(55 + 44 * _h("is" + sku), 1), "velocity_rank": rank,
+            "in_stock_rate_pct": ims_rate.get(sku, round(55 + 44 * _h("is" + sku), 1)), "velocity_rank": rank,
             "strategic_role": role, "recommend_action": "",
             "return_rate_pct": round(0.5 + 6 * _h("rr" + sku), 1)})
 

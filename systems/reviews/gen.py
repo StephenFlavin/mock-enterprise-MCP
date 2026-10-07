@@ -7,7 +7,7 @@ so planted stories stand out. Stories (all dated relative to as_of, weekly grain
   SKU-100637        best-selling jeans: waistband gapes at the back; comfort is what customers praise
   STY-4056          athleisure tops: product rated well, complaints are about size 14 availability
   SKU-100014 / PF-220 / SKU-100007   range-review outliers; packaging complaints (torn polybag, crushed carton)
-  SKU-102590        750ml insulated bottle: customers rave about insulation and leakproof lid
+  SKU-106307        new 750ml insulated bottle (STY-9501): early-access customers rave about insulation and leakproof lid
   Outerwear         25-34s want light, packable, pocketed, sustainable jackets (UK) / warm, sustainable (DE);
                     PT/TR outerwear suppliers have distinct customer ratings
   competitors       lunch boxes (leaking is the top complaint) and wellness (cold plunge, compression boots,
@@ -309,7 +309,7 @@ def generate(g):
     story("SKU-100021", "STY-4012", plan21, pooled(b_pos, None, [("quality", "Okay blouse, fabric a bit thin")], b_neg))
 
     r = random.Random("reviews-bottle")
-    # SKU-102590 750ml insulated bottle (style STY-5905): insulation and leakproof lid are what customers value
+    # SKU-106307 new 750ml insulated bottle (style STY-9501, Supplier A SUP-0004): insulation and leakproof lid are what customers value
     bt_pos = [(("insulation", "Keeps drinks ice cold for a full day, genuinely impressive"), 7),
               (("insulation", "Hot coffee still hot after 12 hours"), 5),
               (("lid", "Leakproof lid, I carry it in my bag with no spills"), 5),
@@ -320,7 +320,7 @@ def generate(g):
               (("lid", "Lid seal started to drip after a few months"), 2), (("quality", "Dented easily when dropped"), 2)]
     bt_mid = [("finish", "Keeps drinks cold but the finish scratches"), ("value", "Good bottle, a bit pricey")]
     plan = [(k, 5, 4.3) for k in range(1, 14)] + [(k, 3, 4.3) for k in range(14, 27)]
-    story("SKU-102590", "STY-5905", plan, lambda rt, k: (weighted(bt_pos) if rt >= 4 else weighted(bt_neg) if rt <= 2 else r.choice(bt_mid)),
+    story("SKU-106307", "STY-9501", plan, lambda rt, k: (weighted(bt_pos) if rt >= 4 else weighted(bt_neg) if rt <= 2 else r.choice(bt_mid)),
           pack=(set(range(1, 6)), [("packaging", "Bottle arrived dented, no outer box"), ("packaging", "Arrived scuffed, thin packaging")]))
 
     r = random.Random("reviews-suppliers")
@@ -431,11 +431,11 @@ def generate(g):
         ("CMPD-004-R01", "Currys", "Wellness & recovery", "Currys Infrared Sauna Blanket", 149.99, "discontinued", "Infrared heating; 3 heat settings", None, 2.7, 240),
         ("CMPD-005-R01", "Argos", "Wellness & recovery", "Argos Foam Roller 33cm", 12.99, "active", "High density EVA foam", None, 4.2, 1900),
         ("CMPD-005-R02", "Argos", "Wellness & recovery", "Argos Mini Massage Gun", 49.99, "active", "Pocket size; 3 speeds", None, 3.8, 870),
-        ("CMPD-001-BT1", "HomeShop Direct", "Insulated bottles", "Premium Insulated Bottle 750ml", 52.99, "active", "Keeps cold 24 hours, hot 12; double-wall stainless steel", "SKU-102590", 4.4, 980),
-        ("CMPD-002-BT1", "John Lewis", "Insulated bottles", "John Lewis Insulated Travel Bottle 750ml", 64.95, "active", "Stainless steel double wall; leakproof lid", "SKU-102590", 4.6, 1320),
-        ("CMPD-003-BT1", "Carrefour", "Insulated bottles", "Bouteille isotherme 750 ml", 54.99, "active", "Durable design; vacuum insulated", "SKU-102590", 4.0, 350),
-        ("CMPD-005-BT1", "Argos", "Insulated bottles", "Argos Premium Insulated Bottle 750ml", 48.99, "active", "Sleek design keeps drinks hot or cold", "SKU-102590", 4.2, 1510),
-        ("CMPD-006-BT1", "JD Sports", "Insulated bottles", "JD Insulated Steel Bottle 750ml", 45.0, "active", "Gym-friendly sports cap; vacuum insulated", "SKU-102590", 4.1, 690),
+        ("CMPD-001-BT1", "HomeShop Direct", "Insulated bottles", "Premium Insulated Bottle 750ml", 13.99, "active", "Keeps cold 24 hours, hot 12; double-wall stainless steel", "SKU-106307", 4.4, 980),
+        ("CMPD-002-BT1", "John Lewis", "Insulated bottles", "John Lewis Insulated Travel Bottle 750ml", 17.95, "active", "Stainless steel double wall; leakproof lid", "SKU-106307", 4.6, 1320),
+        ("CMPD-003-BT1", "Carrefour", "Insulated bottles", "Bouteille isotherme 750 ml", 12.99, "active", "Durable design; vacuum insulated", "SKU-106307", 4.0, 350),
+        ("CMPD-005-BT1", "Argos", "Insulated bottles", "Argos Premium Insulated Bottle 750ml", 10.49, "active", "Sleek design keeps drinks hot or cold", "SKU-106307", 4.2, 1510),
+        ("CMPD-006-BT1", "JD Sports", "Insulated bottles", "JD Insulated Steel Bottle 750ml", 10.99, "active", "Gym-friendly sports cap; vacuum insulated", "SKU-106307", 4.1, 690),
         ("CMPD-006-AT1", "JD Sports", "Athleisure", "JD Seamless Gym Top", 25.5, "active", "Seamless; moisture-wicking", "SKU-100070", 4.1, 910),
         ("CMPD-006-AT2", "JD Sports", "Athleisure", "JD High-Waist Leggings", 28.5, "active", "High waist; squat-proof", None, 4.2, 1450),
         ("CMPD-006-AT3", "JD Sports", "Athleisure", "JD Zip Hoodie", 45.0, "active", "Brushed fleece; zip pockets", None, 4.0, 760),
@@ -543,5 +543,27 @@ def generate(g):
         comp_rows.append({"competitor_product_id": pid, "competitor_name": cname, "category": cat, "product_name": pname,
                           "price_gbp": price, "avg_rating": mean, "review_count": cnt, "status": status, "features": feat,
                           "sku": sku, "collected_at": as_of - timedelta(days=r.randint(0, 3))})
+
+    # ---------------- 02:21:Q1: the returns system's top returned styles carry a dominant complaint theme ----------------
+    # (STY-T-4410 fit, STY-4171 quality and STY-K-1700 quality are planted above.) Added last so no earlier review changes.
+    r = random.Random("reviews-top-returns")
+    top_story = {
+        "STY-5520": ("sizing", 3.0, ["Runs very small, had to return", "Ordered my usual size and it was far too tight", "Sizing is nothing like the chart",
+                                     "Too small across the bust, sent it back"],
+                     [("design", "Lovely dress, lovely colour"), ("value", "Good value for the price")]),
+        "STY-4042": ("expectation", 3.1, ["Not as described, the colour is nothing like the photos", "Looks completely different to the product page",
+                                          "Thinner than the listing suggested, not as advertised", "Not what I expected from the description"],
+                     [("comfort", "Soft and warm"), ("value", "Good value jumper")]),
+    }
+    for style, (th, mean, negs, poss) in top_story.items():
+        prods = by_style[style]
+        sku = next((p["sku"] for p in prods if p["status"] == "active"), prods[0]["sku"])
+        for k in range(1, 13):
+            for rt in ratings_for(r, 2, mean, 1.5):
+                if rt <= 3:
+                    add(sku, style, rt, th, r.choice(negs), when(k), country="GB")
+                else:
+                    pt, px = r.choice(poss)
+                    add(sku, style, rt, pt, px, when(k), country="GB")
 
     return {"reviews": reviews, "competitor_products": comp_rows, "competitor_reviews": creviews}

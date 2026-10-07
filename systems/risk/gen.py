@@ -160,7 +160,7 @@ def generate(g):
          "guidance_range_gbp": "2026-Q3 revenue", "likelihood_pct": 10, "impact_gbp": 150000.0, "mitigation": "Range landed on time",
          "mitigable_this_quarter": True, "trigger_point": "Launch slips beyond week 36", "status": "resolved", "created_at": g.days_ago(140)},
         {"guidance_risk_id": "GRK-000002", "risk_description": "Card payment fee increase absorbed in budget",
-         "guidance_range_gbp": "2026-Q4 EBITDA 5.28-6.24m", "likelihood_pct": 20, "impact_gbp": 90000.0, "mitigation": "Fee negotiated down; within budget",
+         "guidance_range_gbp": "2026-Q4 EBITDA 38.5-44.4m", "likelihood_pct": 20, "impact_gbp": 90000.0, "mitigation": "Fee negotiated down; within budget",
          "mitigable_this_quarter": True, "trigger_point": "Fee increase above 5bps", "status": "mitigated", "created_at": g.days_ago(95)},
     ]
 

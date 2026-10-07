@@ -699,7 +699,7 @@ def generate(g):
                         'counted_by': counter, 'accuracy_issue': True, 'reversed_within_48h': True, 'reversed_at': when + timedelta(hours=rev_h + 0),
                         'cause_code': 'cycle_count_variance', 'lot_number': '', 'condition': 'good', 'updated_at': when})
     catch_all = [  # night-shift corrections on the mezzanine/bulk aisles coded 'other' with no reason (matches IMS adjustments)
-        (D(96), 22, 40, 'DC1-J-01-02', 'SKU-102338', -18), (D(90), 23, 15, 'DC1-J-01-03', 'SKU-101834', -60),
+        (D(96), 22, 40, 'DC1-J-01-02', 'SKU-102338', -18), (D(92), 23, 15, 'DC1-J-01-03', 'SKU-101834', -60),
         (D(74), 22, 5, 'DC1-J-01-01', 'SKU-105159', -45), (D(63), 23, 50, 'DC1-J-02-01', 'SKU-102338', -22),
         (D(52), 22, 30, 'DC1-J-01-02', 'SKU-105341', -16), (D(41), 23, 20, 'DC1-L-01-01', 'SKU-101834', -55),
         (D(33), 22, 10, 'DC1-J-02-02', 'SKU-105159', -40), (D(20), 23, 45, 'DC1-J-01-03', 'SKU-102338', -20),

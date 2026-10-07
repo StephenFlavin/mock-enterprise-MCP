@@ -135,7 +135,7 @@ def generate(g):
                      "total_amount_gbp": round(r.uniform(180000, 620000), 2), "status": "completed", "cancellation_reason": None,
                      "created_date": d - timedelta(days=3), "created_by": r.choice(employees), "updated_at": d})
     future = [("RUN-900001", friday, "regular", 31, 1640000.0),
-              ("RUN-900002", friday + timedelta(weeks=1), "ad_hoc", 12, 420000.0)]
+              ("RUN-900002", friday + timedelta(weeks=6), "ad_hoc", 12, 420000.0)]
     for k in range(2, 13):
         future.append((f"RUN-9001{k:02d}", friday + timedelta(weeks=k), "regular", r.randint(14, 30),
                        round(r.uniform(450000, 900000), 2)))

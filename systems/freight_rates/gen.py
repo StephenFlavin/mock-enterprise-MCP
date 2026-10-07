@@ -399,19 +399,19 @@ def generate(g):
             sea_units[car] = sea_units.get(car, 0) + boxes
             sea_cost[car] = sea_cost.get(car, 0) + boxes * rate
     spend_rows = []
-    for car, pct, eff, note in (("CAR-007", 6.0, 13, "General rate increase notice for next year"),
-                                ("CAR-005", 8.0, 13, "General rate increase plus Asia-Europe peak season pricing"),
-                                ("CAR-006", 10.0, 13, "General rate increase; carrier signalling firm push on renewal")):
+    for car, pct, eff, note in (("CAR-007", 3.5, 17, "General rate increase notice for next year (carrier_portal ALR-900045)"),
+                                ("CAR-005", 6.0, 13, "General rate increase on Asia-Europe (carrier_portal ALR-900043)"),
+                                ("CAR-006", 4.5, 13, "General rate increase across all trades (carrier_portal ALR-900044)")):
         boxes = round(sea_units[car])
         spend_rows.append((car, "sea", boxes, "40ft containers", round(sea_cost[car] / boxes, 2), pct, eff, note))
     spend_rows += [
-        ("CAR-001", "road", 120000, "pallets", 16.40, 4.0, 4, "General rate increase 4% from November (notice ALR-900004)"),
-        ("CAR-002", "road", 210000, "pallets", 17.20, 3.5, 13, "Annual review uplift on contract rate card"),
-        ("CAR-008", "air", 120000, "kg", 3.25, 3.2, 2, "Q4 rate review, average 3.2% (notice ALR-900007)"),
+        ("CAR-001", "road", 120000, "pallets", 16.40, 4.0, 13, "General rate increase 4% on all UK road lanes (notice ALR-900004)"),
+        ("CAR-002", "road", 210000, "pallets", 17.20, 5.5, 13, "General rate increase citing driver wages and fuel (notice ALR-900041)"),
+        ("CAR-008", "air", 120000, "kg", 3.25, 3.2, 17, "Annual rate review, average 3.2% (notice ALR-900007)"),
         ("CAR-018", "air", 30000, "kg", 3.67, 4.5, 13, "Express courier tariff increase"),
-        ("CAR-011", "parcel", 150000, "parcels", 9.55, 5.9, 13, "Annual tariff uplift"),
-        ("CAR-012", "parcel", 420000, "parcels", 6.95, 4.8, 13, "Annual tariff uplift"),
-        ("CAR-013", "parcel", 1100000, "parcels", 4.05, 4.2, 13, "Annual tariff uplift"),
+        ("CAR-011", "parcel", 150000, "parcels", 9.55, 5.9, 13, "Annual price review (notice ALR-900046)"),
+        ("CAR-012", "parcel", 420000, "parcels", 6.95, 6.5, 13, "Annual price review (notice ALR-900047)"),
+        ("CAR-013", "parcel", 1100000, "parcels", 4.05, 8.2, 13, "Annual price review (notice ALR-900048)"),
     ]
     carrier_spend = [{
         "carrier_id": c, "mode": m, "annual_volume": float(v), "volume_unit": u, "avg_rate_gbp": float(rt),

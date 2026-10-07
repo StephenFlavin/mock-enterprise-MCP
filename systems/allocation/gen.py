@@ -14,10 +14,10 @@ def generate(g):
     forecast_impacts = []
 
     stores = [s for s in g.master("sites") if s["type"] == "store"]
-    # Story SKUs are planted from seed/*.csv; keep generated noise away from them (style 5520, K-1700, Smart Home
+    # Story SKUs are planted from seed/*.csv; keep generated noise away from them (style 5520, the seasonal throw SKU-104963, Smart Home
     # lines used in the port-closure plan, and the slow movers used in the forecast-level comparison).
     story_skus = {p["sku"] for p in g.master("products")
-                  if p["style_id"] == "STY-5520" or p["sku"] == "K-1700" or p["category"] == "Smart Home"}
+                  if p["style_id"] == "STY-5520" or p["sku"] in ("K-1700", "SKU-104963") or p["category"] == "Smart Home"}
     story_skus |= set(SLOW_MOVERS)
     products = [p for p in g.master("products")[:140] if p["sku"] not in story_skus][:100]
     regions = sorted(set(s["region"] for s in stores if s["region"]))

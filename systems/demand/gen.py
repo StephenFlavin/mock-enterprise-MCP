@@ -636,6 +636,25 @@ def generate(g):
                     "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
                     "correction_reason": None, "updated_at": as_of})
 
+    # The seasonal bedding throw (SKU-104963, outside the top 300 sellers) comes straight from master sales. The planning
+    # system proposed an order for SKU-102961 (about 790 a week, matching the supply planning story); master has no sales
+    # for it yet, so its weekly history is a flat, spike-free run of the last 26 weeks. No random numbers are drawn.
+    for sku in ("SKU-104963",):
+        if sku in weekly and sku not in in_history:
+            for wk, units, rev in weekly[sku]:
+                demand_history.append({
+                    "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": sku, "category": prod[sku]["category"],
+                    "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
+                    "correction_reason": None, "updated_at": as_of})
+    if "SKU-102961" in prod and "SKU-102961" not in in_history:
+        for i in range(26):
+            wk = this_monday - timedelta(weeks=26 - i)
+            units = 790 + int(round(28 * math.sin(i * 1.9) + 12 * math.cos(i * 0.7)))
+            demand_history.append({
+                "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": "SKU-102961", "category": prod["SKU-102961"]["category"],
+                "period_date": wk, "units_sold": units, "revenue_gbp": round(units * float(prod["SKU-102961"]["retail_price_gbp"]) * 0.93, 2),
+                "demand_type": "actual", "correction_reason": None, "updated_at": as_of})
+
     winter_cats = {"Outerwear", "Knitwear", "Scarves", "Bedding", "Towels", "Lighting", "Fragrance"}
     summer_cats = {"Dresses", "Blouses", "Shirts", "T-Shirts", "Tops", "Trousers", "Footwear", "Bags", "Jewellery",
                    "Drinkware"}
@@ -741,9 +760,10 @@ def generate(g):
                     "period_start": period_end - timedelta(days=6), "period_end": period_end, "sku": sku,
                     "category": prod[sku]["category"], "forecast_level": level, "mape_pct": round(val, 1),
                     "bias_pct": bias, "rmse": 14 if level == "store_sku" else 22})
-    # New-product launches (live accuracy of the comparable-product method, CFG-000004).
-    launch_mape = {"SKU-102800": 51.0, "SKU-101057": 46.0, "SKU-103892": 42.0, "SKU-101456": 39.0, "SKU-105446": 36.0,
-                   "SKU-103206": 29.0, "SKU-101750": 25.0, "SKU-103094": 17.0}
+    # New-product launches (live accuracy of the comparable-product method, CFG-000004). Same launches as the S&OP
+    # launch-assumption review (sop get_launch_assumptions_vs_actuals), worst first.
+    launch_mape = {"SKU-100259": 50.0, "SKU-101645": 42.0, "SKU-101561": 42.0, "SKU-101057": 41.0, "SKU-101435": 40.0,
+                   "SKU-100700": 35.0, "SKU-100847": 30.0, "SKU-100973": 6.0, "SKU-101750": 3.0}
     for sku, mean in launch_mape.items():
         for i, off in enumerate((-4, -3, -2, -1)):
             period_end = as_of + timedelta(weeks=off)
@@ -752,6 +772,22 @@ def generate(g):
                 "period_start": period_end - timedelta(days=6), "period_end": period_end, "sku": sku,
                 "category": prod[sku]["category"], "forecast_level": "sku", "mape_pct": round(mean + zs[i] * 2, 1),
                 "bias_pct": round(mean * 0.7, 1), "rmse": 40})
+
+    # Seasonal bedding throw SKU-104963: forecast at the weekly rate of the inventory story (176 a week in the six
+    # northern stores plus 100 a week in the six southern stores), on the seasonal curve peaking in the week of 23
+    # November. Appended after the category forecasts so nothing else moves; no random numbers are drawn.
+    throw = "SKU-104963"
+    if throw in weekly:
+        throw_actual = {wk: u for (wk, u, _) in weekly[throw]}
+        for i, off in enumerate(range(-10, 0)):
+            wk = this_monday + timedelta(weeks=off)
+            if wk in throw_actual:
+                add_forecast(throw, wk, "base", throw_actual[wk] * (1.0 + 0.03 * math.sin(i * 1.3)), wk - timedelta(days=28))
+        for off in range(0, 16):
+            wk = this_monday + timedelta(weeks=off)
+            base = 276.0 * kettle_curve[off]
+            for ftype, mult in (("base", 1.0), ("upside", 1.2), ("downside", 0.8)):
+                add_forecast(throw, wk, ftype, base * mult, this_monday)
 
     # Backtests: holdout accuracy per configuration (new-product and slow-mover backtests look better than live).
     fashion = {"Dresses", "Blouses", "Tops", "Shirts", "T-Shirts", "Trousers", "Knitwear", "Outerwear", "Footwear",
@@ -843,7 +879,7 @@ def generate(g):
     for x in pipeline_products:
         x["execution_risk"] = exec_by_status[x["status"]]
         x["risk_score"] = round((pts[x["supply_risk"]] + pts[x["demand_risk"]] + pts[x["execution_risk"]]) / 3.0)
-        c = x["category"]
+        c = "Bags" if x["category"] == "Backpacks" else x["category"]
         # planned steady-state weekly units: the average SKU in the category over the last 26 weeks
         x["planned_weekly_units"] = int(round(cat_units.get(c, 0) / 26.0 / max(1, len(cat_skus.get(c, ())))))
 

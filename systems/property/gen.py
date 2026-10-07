@@ -1,4 +1,5 @@
 """Property & Footfall data: weekly energy, daily/hourly store footfall, hourly forecasts, competitor catchments."""
+import random
 from datetime import date, datetime, timedelta
 
 HOURS = list(range(9, 21))
@@ -8,6 +9,7 @@ FORMAT_F = {"high_street": 1.1, "shopping_centre": 1.05, "retail_park": 1.0, "ou
 
 # Annual kWh last year per DC (matches the esg system's scope 2 history).
 DC_KWH = {"DC1": 13.8e6, "DC2": 10.9e6, "DC3": 6.4e6, "DC4": 4.9e6, "DC5": 3.7e6}
+DC6_KWH = 4.5e6  # DC6 Corby 3PL overflow: 911 t Scope 2 in esg last year at about 0.2 t/MWh; own rng so the other data does not move
 KWH_YOY = 0.99  # real electricity use is only about 1% lower than the prior 12 months
 
 HOURLY_STORES = ["ST214", "ST001", "ST002", "ST003", "ST008", "ST010", "ST020", "ST050", "ST150", "ST159", "ST207", "ST208"]
@@ -68,6 +70,21 @@ def generate(g):
             kwh = base * site_f * season * yoy * (1 + r.gauss(0, 0.012))
             energy.append({
                 "consumption_id": f"ENG-{len(energy) + 1:06d}", "site_id": site_id,
+                "period_start": ws, "period_end": ws + timedelta(days=6),
+                "energy_kwh": round(kwh, 1), "energy_cost_gbp": round(kwh * 0.18, 2),
+                "measured_at": datetime.combine(ws + timedelta(days=7), datetime.min.time()),
+            })
+
+    if any(x["site_id"] == "DC6" for x in sites):  # Corby 3PL overflow DC (esg Scope 2: removed from the reporting boundary this year)
+        r6 = random.Random("property-dc6")
+        site_f = 1 + r6.uniform(-0.04, 0.04)
+        for wk in range(-108, 0):
+            ws = monday + timedelta(weeks=wk)
+            season = 1.0 + 0.18 * (1 if ws.month in (12, 1, 2) else 0) - 0.08 * (1 if ws.month in (6, 7, 8) else 0)
+            yoy = KWH_YOY if wk >= -52 else 1.0
+            kwh = DC6_KWH / 52.0 * site_f * season * yoy * (1 + r6.gauss(0, 0.012))
+            energy.append({
+                "consumption_id": f"ENG-{len(energy) + 1:06d}", "site_id": "DC6",
                 "period_start": ws, "period_end": ws + timedelta(days=6),
                 "energy_kwh": round(kwh, 1), "energy_cost_gbp": round(kwh * 0.18, 2),
                 "measured_at": datetime.combine(ws + timedelta(days=7), datetime.min.time()),

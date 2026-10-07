@@ -335,14 +335,14 @@ def generate(g):
                 tracking[key] = trow(p[0], p[1], wk, False, 0, None)
     availability = list(tracking.values())
 
-    # Availability story for product comparisons: three lines were short of stock about half of the time over the last
+    # Availability story for product comparisons (06:52:Q2): three lines were short of stock about half of the time over the last
     # twelve weeks. The weekly out-of-stock total is unchanged: each added gap is offset by one ambient gap that closes.
     import hashlib as _hl
 
     def _hh(*a):
         return int(_hl.md5("|".join(map(str, a)).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
 
-    POOR_AVAIL = {"SKU-105691", "SKU-104039", "SKU-103241"}
+    POOR_AVAIL = {"SKU-100651", "SKU-103297", "SKU-103283"}  # 06:52:Q2: a top-3 and two bottom-10 sellers (data_warehouse SS ranking)
     keep_out = POOR_AVAIL | {"SKU-101904", "K-1700", "PF-220"}
     for wk in weeks:
         flipped = 0
@@ -515,7 +515,7 @@ def generate(g):
             pos_rows.append(mkrow(sku, st, avail, dem, 0, 70))
 
     # (6) Aged lines (aged_lines.xlsx): the DC stock age must match the clearance list.
-    AGED = {"SKU-105558|DC5": 180, "SKU-101813|DC3": 120, "SKU-103584|DC4": 260, "SKU-104277|DC5": 315, "SKU-104165|DC4": 285,
+    AGED = {"SKU-105558|DC5": 180, "SKU-101813|DC3": 120, "SKU-103584|DC4": 260, "SKU-104277|DC3": 315, "SKU-104165|DC4": 285,
             "SKU-105026|DC5": 215, "SKU-104501|DC5": 160, "SKU-100924|DC2": 140, "SKU-102408|DC3": 175, "SKU-102009|DC2": 120,
             "SKU-104781|DC4": 200, "SKU-101008|DC1": 210, "SKU-104977|DC4": 235, "SKU-101827|DC5": 135, "SKU-102156|DC1": 270,
             "SKU-101687|DC1": 315, "SKU-102366|DC2": 130, "SKU-100847|DC1": 180, "SKU-100287|DC2": 310, "SKU-102317|DC5": 245,

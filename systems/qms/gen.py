@@ -253,6 +253,13 @@ def generate(g):
             for p in r.sample(pool, count):
                 hold(p["sku"], r.choice(["DC1", "DC3"]), r.randint(300, 1800), d, "released", inc_id, rel)
 
+    # ---- 02:21:Q1 (reconciled with returns): the fifth top returned style STY-4042 (knitwear, FAC-0149 / SUP-0079) has a clean QA record;
+    # its returns are about expectations, not quality. Own random stream so no later row changes.
+    import random as _random
+    _r_main, r = r, _random.Random("qms-sty-4042")
+    program("FAC-0149", ["SKU-100049", "SKU-100056", "SKU-100063"], 5, 1.4, 80, 10, 2)
+    r = _r_main
+
     # ---- Background: other factories only ----------------------------------------------------------------------------------
     pos = g.master("purchase_orders")
     pol = g.master("po_lines")

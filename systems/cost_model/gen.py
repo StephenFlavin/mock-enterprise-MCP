@@ -3,8 +3,8 @@ sorters and conveyors, and a few supplier quotes. Story rows (bottle, padded jac
 labour rates, safety controls, investment and make-vs-buy cases) come from seed/*.csv."""
 from datetime import timedelta
 
-STORY_SKUS = {"K-1700", "PF-220", "SKU-106307", "SKU-103157", "SKU-102863"}
-STORY_STYLES = {"STY-K-1700", "STY-PF-220", "STY-9501", "STY-7731"}
+STORY_SKUS = {"K-1700", "PF-220", "SKU-106307", "SKU-106328", "SKU-102863"}
+STORY_STYLES = {"STY-K-1700", "STY-PF-220", "STY-9501", "STY-9504"}
 STORY_ASSETS = {"AST-DC1-SRT"}
 REGIONS = {"CN": "China", "VN": "Vietnam", "BD": "Bangladesh", "TR": "Turkey", "PT": "Portugal", "IN": "India",
            "GB": "UK", "PK": "Pakistan", "MA": "Morocco"}

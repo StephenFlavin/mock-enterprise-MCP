@@ -385,8 +385,9 @@ def generate(g):
     handling_costs = []
     hid = 0
     # (channel, units this year, handling cost per unit, recovered value this year, units last year factor, cost/unit last yr factor)
-    channels = [('take_back', 270, 2.60, 758.0, 0.60, 1.10), ('resale', 456, 0.95, 592.0, 0.72, 1.12),
-                ('repair', 238, 1.85, 500.0, 0.55, 1.08), ('recycling', 330, 0.80, 290.0, 0.82, 1.05)]
+    # units and totals follow the returns pilots (4,100 collected, 1,950 reused, 800 repaired, 1,040 recycled; GBP 65,500 recovered for about GBP 35,900 handling)
+    channels = [('take_back', 4100, 3.00, 10000.0, 0.87, 1.10), ('resale', 1950, 4.00, 37000.0, 1.30, 1.12),
+                ('repair', 800, 14.00, 15000.0, 0.18, 1.08), ('recycling', 1040, 4.4231, 3500.0, 0.57, 1.05)]
     seas = [0.7, 0.8, 0.9, 1.0, 1.1, 1.3, 1.2, 1.0, 0.9, 0.9, 1.0, 1.2]
     for ch, units, cpu, rec, uf, cf in channels:
         for yr in (0, 1):
@@ -588,13 +589,37 @@ def build_inventory(g, lr, products, erp_stock):
         rows.append({'sku': e['sku'], 'site_id': site, 'as_of_date': e['as_of_date'], 'units_on_hand': e['quantity'],
                      'unit_cost_gbp': e['unit_cost_gbp'], 'total_value_gbp': val, 'provision_pct': pct, 'provision_gbp': prov,
                      'net_value_gbp': round(val - prov, 2), 'status': status})
+    # Internal audit finds Northampton (DC1) is the weak site (provision in a spreadsheet with manual overrides, TST-900109) and
+    # Leeds (DC3) passes its retest (TST-900105). Move the below-policy provisioning from DC3 to DC1 without changing the group total.
+    policy_pct = {'slow_moving': POLICY_SLOW, 'obsolete': POLICY_OBSOLETE}
+    restored = 0.0
+    for r in rows:
+        if r['site_id'] == 'DC3' and r['status'] in policy_pct and r['provision_pct'] < policy_pct[r['status']]:
+            new_prov = round(r['total_value_gbp'] * policy_pct[r['status']], 2)
+            restored += new_prov - r['provision_gbp']
+            r['provision_pct'], r['provision_gbp'] = policy_pct[r['status']], new_prov
+            r['net_value_gbp'] = round(r['total_value_gbp'] - new_prov, 2)
+    cands = sorted((r for r in rows if r['site_id'] == 'DC1' and r['status'] in policy_pct and r['provision_pct'] >= policy_pct[r['status']]),
+                   key=lambda r: (-r['total_value_gbp'], r['sku']))
+    left = restored
+    for r in cands:
+        if left <= 0.005:
+            break
+        low = 0.05 if r['status'] == 'slow_moving' else 0.25
+        cut = round(r['provision_gbp'] - r['total_value_gbp'] * low, 2)
+        if cut >= left:
+            cut = round(left, 2)
+        new_prov = round(r['provision_gbp'] - cut, 2)
+        r['provision_gbp'] = new_prov
+        r['provision_pct'] = round(new_prov / r['total_value_gbp'], 4) if r['total_value_gbp'] else 0.0
+        r['net_value_gbp'] = round(r['total_value_gbp'] - new_prov, 2)
+        left -= cut
     return rows
 
 
 SEPT = dict(volume=-1_120_000.0, mix=640_000.0, cost_update=2_410_000.0, fx=720_000.0, adjustments=750_000.0)
 DUPLICATE_REVAL = 450_000.0
 FIXED_COST_UPDATE = {('DC2', 'Outerwear'): 712_000.0}   # includes the duplicated standard cost revaluation
-FIXED_ADJUSTMENTS = {('DC5', 'Babywear'): 400_000.0}   # includes the duplicate goods receipt posting on SKU-102555 (2 x 149,975.28, ims)
 COST_W = {'Outerwear': 3.0, 'Small Appliances': 2.5, 'Smart Home': 2.0, 'Audio': 2.0, 'Knitwear': 2.0}
 FX_W = {'Small Appliances': 3.0, 'Smart Home': 3.0, 'Audio': 3.0, 'Lighting': 3.0, 'Outerwear': 1.5}
 SHRINK_CAT = {'Fragrance': 2.2, 'Small Appliances': 1.8, 'Smart Home': 1.6, 'Audio': 1.5, 'Jewellery': 1.9, 'Haircare': 1.3,
@@ -631,7 +656,7 @@ def build_inventory_monthly(g, lr, products, inv):
         'mix': _spread(SEPT['mix'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
         'cost_update': _spread(SEPT['cost_update'], {k: base[k] * COST_W.get(k[1], 1.0) for k in keys}, FIXED_COST_UPDATE),
         'fx': _spread(SEPT['fx'], {k: base[k] * FX_W.get(k[1], 0.4) for k in keys}),
-        'adjustments': _spread(SEPT['adjustments'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}, FIXED_ADJUSTMENTS),
+        'adjustments': _spread(SEPT['adjustments'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
     }
     rows = []
     for key in keys:
@@ -669,8 +694,8 @@ def build_inventory_monthly(g, lr, products, inv):
                 note = ('Cost updates include standard cost revaluation JE-900201 and a duplicate posting JE-900202 '
                         '(450000 each, same reference REVAL-2026-09-DC2)')
             if k == 0 and key == ('DC5', 'Babywear'):
-                note = ('Adjustments include a duplicated goods receipt on SKU-102555 at DC5 '
-                        '(INV-ADJ-900060 and INV-ADJ-900061, 149975.28 each, quantity posted twice)')
+                note = ('Ledger stock includes a duplicated goods receipt on SKU-102555 at DC5: quantity posted twice, 149975.28 '
+                        'overstated (ims adjustments INV-ADJ-900060 and INV-ADJ-900061)')
             rows.append({'site_id': site, 'category': cat, 'month_end': month_end(y, m), 'units_on_hand': U[k],
                          'gross_value_gbp': G[k], 'provision_gbp': prov, 'volume_gbp': c['volume'], 'mix_gbp': c['mix'],
                          'cost_update_gbp': c['cost_update'], 'fx_gbp': c['fx'], 'adjustments_gbp': c['adjustments'],
@@ -704,13 +729,16 @@ def build_sourcing_margins():
     quarters = [('FY26-Q3', date(2025, 10, 31)), ('FY26-Q4', date(2026, 1, 31)), ('FY27-Q1', date(2026, 4, 30)),
                 ('FY27-Q2', date(2026, 7, 31))]
     jitter = [-0.15, 0.10, 0.05, 0.0]
+    # Agrees with tax_duty's transfer pricing policy: policy mark-up LE-HK 12%, LE-PL 10%, LE-UK 8%, and annual cost bases of
+    # about 30m (HK), 20m (PL) and 45m (UK). HK and PL sit above their benchmark ranges (tax_duty carries the exposure).
+    policy = {'LE-HK': 12.0, 'LE-PL': 10.0, 'LE-UK': 8.0}
     spec = [  # sourcing entity, receiving entity, department, quarterly cost base, mark-up on cost (%)
-        ('LE-HK', 'LE-UK', 'Womenswear', 1_200_000, 3.9), ('LE-HK', 'LE-UK', 'Menswear', 900_000, 3.1),
-        ('LE-HK', 'LE-UK', 'Kids', 700_000, 2.8),
-        ('LE-UK', 'LE-IE', 'Home', 800_000, 6.6), ('LE-UK', 'LE-IE', 'Electricals', 700_000, 7.1),
-        ('LE-UK', 'LE-IE', 'Beauty', 400_000, 6.9),
-        ('LE-PL', 'LE-UK', 'Home', 300_000, 9.6), ('LE-PL', 'LE-UK', 'Kids', 200_000, 10.4),
-        ('LE-PL', 'LE-UK', 'Womenswear', 250_000, 9.8)]
+        ('LE-HK', 'LE-UK', 'Womenswear', 3_060_000, 12.2), ('LE-HK', 'LE-UK', 'Menswear', 2_290_000, 12.1),
+        ('LE-HK', 'LE-UK', 'Kids', 1_830_000, 11.8),
+        ('LE-UK', 'LE-IE', 'Home', 4_400_000, 7.8), ('LE-UK', 'LE-IE', 'Electricals', 3_700_000, 8.2),
+        ('LE-UK', 'LE-IE', 'Beauty', 2_670_000, 8.0),
+        ('LE-PL', 'LE-UK', 'Home', 1_910_000, 9.8), ('LE-PL', 'LE-UK', 'Kids', 1_340_000, 10.3),
+        ('LE-PL', 'LE-UK', 'Womenswear', 1_530_000, 10.0)]
     rows, n = [], 0
     for qi, (label, qend) in enumerate(quarters):
         for src, dst, dept, cost, mk in spec:
@@ -720,7 +748,7 @@ def build_sourcing_margins():
             fee = round(cost_q * (1 + mk_q / 100), 2)
             rows.append({'margin_id': f'SM-{n:04d}', 'sourcing_entity_id': src, 'receiving_entity_id': dst, 'period': label,
                          'period_end': qend, 'department': dept, 'cost_base_gbp': cost_q, 'fee_charged_gbp': fee,
-                         'markup_pct': round((fee / cost_q - 1) * 100, 2), 'policy_markup_pct': 7.0})
+                         'markup_pct': round((fee / cost_q - 1) * 100, 2), 'policy_markup_pct': policy[src]})
     return rows
 
 
@@ -753,6 +781,9 @@ def build_supplier_payments(g, lr):
                      'payment_terms_days': terms, 'days_to_pay': (paid - inv_date).days if is_paid else '',
                      'days_late': lag if is_paid else '', 'status': 'paid' if is_paid else 'open'})
     return rows
+
+
+STORY_SPLIT_ORDER = 'ORD-2026-0108564'
 
 
 def build_order_charges(g, lr):
@@ -793,4 +824,14 @@ def build_order_charges(g, lr):
                      'revenue_gbp': round(v, 2), 'freight_charge_gbp': round(freight, 2), 'handling_charge_gbp': round(handling, 2),
                      'discount_gbp': discount, 'total_charges_gbp': round(freight + handling, 2), 'je_id': '',
                      'shipment_count': ships})
+    # 09:81:Q4 story order (also in data_warehouse and tms): a same-day web order split into two parcels but charged one freight fee.
+    # Older than the 30-day window, so it is added after the loop and uses no random numbers.
+    if not any(r_['order_id'] == STORY_SPLIT_ORDER for r_ in rows):
+        for o in g.master('orders'):
+            if o['order_id'] == STORY_SPLIT_ORDER:
+                units, v = int(o['units']), float(o['value_gbp'])
+                freight, handling = 8.99, round(0.95 + 0.35 * units, 2)
+                rows.append({'order_id': o['order_id'], 'entity_id': entity[o['fulfil_site_id']], 'posting_date': o['order_date'],
+                             'revenue_gbp': round(v, 2), 'freight_charge_gbp': freight, 'handling_charge_gbp': handling,
+                             'discount_gbp': 0.0, 'total_charges_gbp': round(freight + handling, 2), 'je_id': '', 'shipment_count': 2})
     return rows
