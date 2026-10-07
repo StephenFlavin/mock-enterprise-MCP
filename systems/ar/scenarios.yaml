@@ -1,86 +1,90 @@
 # One entry per question row that uses this system's tools (see: python -m mockmcp brief ar).
 # story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+# Accounts are wholesale customers CUS-000009..CUS-000040; gen.py derives balances, history and provision from one invoice list.
 
 - question: "07:65:Q1"
   story: >
-    Customer CUS-900001 is a reliable wholesale customer with strong payment history (95-98% on-time).
-    Current balance £150k against £200k credit limit. Recent invoices were paid on time (62-day average).
-    Credit score 72, no active disputes. Credit recommendation is to maintain or increase the limit.
+    CUS-000026 (Hartley & Reed Ltd, wholesale) pays more slowly each month (about 27 days against 30-day terms a year
+    ago, 41 days now, never on time since the start of the year) and has three overdue invoices totalling 168000.
+    Score 58 (high risk), limit 250000, balance 219000. The recommendation is 150000. Atradius cover 150000 at 90% (135000 insured).
   checks:
     - tool: get_customer_account_summary
-      args: {customer_id: CUS-900001}
-      expect: ["CUS-900001", "72", "medium"]
+      args: {customer_id: CUS-000026}
+      expect: ["CUS-000026", "250000", "168000", "high"]
     - tool: get_customer_payment_history
-      args: {customer_id: CUS-900001}
-      expect: ["CUS-900001", "95"]
+      args: {customer_id: CUS-000026}
+      expect: ["days_beyond_terms", "41"]
     - tool: get_credit_insurance_cover
-      args: {customer_id: CUS-900001}
-      expect: ["policy_id"]
+      args: {customer_id: CUS-000026}
+      expect: ["Atradius", "135000"]
     - tool: calculate_credit_limit_recommendation
-      args: {customer_id: CUS-900001}
-      expect: ["CUS-900001", "Maintain"]
+      args: {customer_id: CUS-000026}
+      expect: ["150000", "reduction"]
+    - tool: update_customer_credit_limit
+      args: {customer_id: CUS-000026, credit_limit_gbp: 150000}
+      expect: ["250000", "150000"]
 
 - question: "07:65:Q2"
   story: >
-    Invoice INV-2026-900001 (£480k) is in dispute on hold: pricing discrepancy.
-    Need to examine invoice lines and determine fair settlement.
+    Invoice INV-2026-900040 (CUS-000028, order ORD-900040) bills 8000 units at 60 = 480000 and is disputed: the
+    second delivery of 3000 units was signed for 2640, so 360 units were damaged or missing.
   checks:
     - tool: get_sales_order_and_invoice
-      args: {invoice_id: INV-2026-900001}
-      expect: ["INV-2026-900001", "480000"]
-    - tool: list_overdue_invoices
-      args: {min_days_overdue: 1}
-      expect: ["INV-2026-900001", "480000", "overdue"]
+      args: {invoice_id: INV-2026-900040}
+      expect: ["INV-2026-900040", "480000", "4000", "360", "disputed"]
     - tool: update_invoice_dispute_status
-      args: {invoice_id: INV-2026-900001, dispute_status: on_hold, dispute_reason: "Pricing discrepancy"}
-      expect: ["Updated", "INV-2026-900001"]
+      args: {invoice_id: INV-2026-900040, dispute_status: on_hold, dispute_reason: "Delivery shortfall: 360 units short"}
+      expect: ["on_hold", "INV-2026-900040"]
 
 - question: "07:65:Q3"
   story: >
-    Portfolio has open receivables with bad debt provision calculated using ECL (2/5/15/35% by aging).
-    Forecast weekly collections over 8 weeks based on historical on-time percentages.
+    Open ledger of about 2.4m. Expected credit loss is about 97k against a booked provision of 33000, so the
+    provision needs to rise. CUS-000010 carries the largest expected loss (18030). The 480k disputed invoice is
+    excluded from the collections forecast.
   checks:
     - tool: get_open_receivables_ledger
+      args: {order_by: amount}
+      expect: ["INV-2026-900040", "balance_due_gbp"]
+    - tool: get_historical_collection_patterns
       args: {}
-      expect: ["open", "overdue"]
-    - tool: get_bad_debt_provision
-      args: {}
-      expect: ["amount_gbp", "by_"]
+      expect: ["CUS-000026", "days_beyond_terms"]
     - tool: calculate_collections_forecast
       args: {weeks_ahead: 8}
-      expect: ["expected_collection_gbp"]
-    - tool: calculate_expected_credit_loss
+      expect: ["expected_collection_gbp", "cumulative_expected_gbp"]
+    - tool: get_bad_debt_provision
       args: {}
-      expect: ["total_exposure_gbp"]
+      expect: ["33000", "by_0_30_days_gbp"]
+    - tool: calculate_expected_credit_loss
+      args: {group_by: customer}
+      expect: ["CUS-000010", "18030"]
 
 - question: "07:65:Q4"
   story: >
-    Multiple overdue invoices requiring collection action. Send collection reminders (dunning notices).
+    Ten customers have overdue balances that grew over the last 60 days: CUS-000010 218000, CUS-000026 168000,
+    CUS-000033 139000, CUS-000018 127000, CUS-000015 105000, CUS-000032 94000, CUS-000036 90000, CUS-000039 87000,
+    CUS-000030 81000 and CUS-000016 71000. CUS-000022 is a decoy: 210000 overdue 30 days ago, now 12000.
   checks:
     - tool: list_overdue_invoices
       args: {min_days_overdue: 1}
-      expect: ["overdue", "balance_due_gbp"]
+      expect: ["INV-2026-900102", "85000", "overdue"]
     - tool: get_overdue_trend_by_customer
-      args: {days: 90}
-      expect: ["customer_id", "overdue_gbp"]
+      args: {days: 60}
+      expect: ["CUS-000010", "218000", "worsening", "CUS-000022", "improving"]
+    - tool: get_customer_exposure_summary
+      args: {}
+      expect: ["CUS-000028", "limit_utilisation_pct"]
     - tool: send_payment_reminder
-      args: {customer_id: CUS-900001, invoice_id: INV-2026-900002, reminder_type: first_notice, message: "Payment required"}
-      expect: ["sent", "reminder_id"]
+      args: {customer_id: CUS-000010, invoice_id: INV-2026-900102, reminder_type: second_notice, message: "Your invoice is overdue. Please pay within 5 days."}
+      expect: ["Created", "CUS-000010"]
 
 - question: "07:65:Q5"
   story: >
-    Customer CUS-900003 is 75+ days overdue on multiple invoices (INV-2026-900004, INV-2026-900014).
-    Critical risk. Place on credit hold to prevent new orders.
+    CUS-000016 is 75 days overdue on a 61000 invoice plus a 10000 invoice (71000 overdue against a 60000 limit),
+    score 41 (critical), no hold yet.
   checks:
     - tool: get_customer_account_summary
-      args: {customer_id: CUS-900003}
-      expect: ["CUS-900003", "critical"]
-    - tool: get_overdue_trend_by_customer
-      args: {customer_id: CUS-900003, days: 90}
-      expect: ["CUS-900003", "overdue_gbp"]
+      args: {customer_id: CUS-000016}
+      expect: ["CUS-000016", "71000", "60000", "critical", "61000"]
     - tool: update_customer_credit_hold
-      args: {customer_id: CUS-900003, credit_held: true, credit_hold_reason: "75 days overdue"}
-      expect: ["Updated"]
-    - tool: list_overdue_invoices
-      args: {min_days_overdue: 60}
-      expect: ["INV-2026-900004", "overdue"]
+      args: {customer_id: CUS-000016, credit_held: true, credit_hold_reason: "75 days overdue"}
+      expect: ["Updated", "75 days overdue"]
