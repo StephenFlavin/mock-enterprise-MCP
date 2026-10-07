@@ -173,110 +173,165 @@
 
 - question: "03:29:Q5"
   story: >
-    Draft markdown event MDE-900005 (padded jacket SKU-100959, 35%) is cancelled instead of going live.
+    Aged stock focus: the top group is Personal Care line SKU-105054 (5,605 units at £214.99). A 30% markdown event is
+    queued for it, and draft markdown event MDE-900006 (second group, SKU-101253) is deleted because that group goes to
+    outlet. The earlier draft MDE-900005 (padded jacket SKU-100959) can be cancelled the same way.
   checks:
+    - tool: create_markdown_event
+      args: {sku: SKU-105054, markdown_depth_pct: 30, start_date: "+7d", end_date: "+35d", original_price_gbp: 214.99, stock_at_start: 5605}
+      expect: ["MDE-", "SKU-105054", "draft", "5605"]
+    - tool: delete_draft_markdown_event
+      args: {markdown_id: MDE-900006, review_reason: "Group going to outlet instead"}
+      expect: ["cancelled", "MDE-900006"]
     - tool: delete_draft_markdown_event
       args: {markdown_id: MDE-900005, review_reason: "Inventory adjusted, less stock than expected"}
       expect: ["cancelled"]
 
 - question: "03:30:Q1"
   story: >
-    System proposed 12,000-unit order for an 800/week item (SKU-100028). Promotion flag lookup for the item.
+    The item behind the 12,000-unit proposal (SKU-100028, a scarf launched about three weeks ago) is in no promotion,
+    has no live or planned markdown and no pending price change, so a promotion flag is not what caused the order
+    (the cause is the pack size, found in supply_planning). K-1700, by contrast, has a scheduled markdown.
   checks:
     - tool: get_promotion_flags_for_item
       args: {sku: "SKU-100028"}
-      expect: ["eligible", "promotion"]
+      expect: ["no promotion", "no markdown", "no price change pending"]
+    - tool: get_promotion_flags_for_item
+      args: {sku: "K-1700"}
+      expect: ["on markdown", "no promotion"]
 
 - question: "06:54:Q1"
   story: >
-    K-1700 kettle price history: held at £69.99 in July, up to £70.99 in August, then a 9.9% rise to £77.99 in
-    September (PC-900001).
+    K-1700 kettle price history: held at £69.99 in July (a hold, no change), up 1.4% to £70.99 in mid August (PC-900005),
+    then a 9.9% rise to £77.99 in mid September (PC-900001): 11.4% in total over the last ten weeks. The sales and
+    ratings slide started before the September rise, so price is a secondary driver next to the quality complaints.
   checks:
     - tool: get_price_change_history_for_sku
-      args: {sku: "K-1700"}
-      expect: ["PC-900001", "9.9", "77.99", "PC-900005"]
+      args: {sku: "K-1700", lookback_weeks: 10}
+      expect: ["PC-900001", "9.9", "77.99", "PC-900005", "1.4", "11.4"]
 
 - question: "06:54:Q6"
   story: >
-    Kitchenware category product prices with mid-market positioning.
+    Small Appliances target a mid-market position (band 0.7 to 1.4 of the category median £152.99). Lines above the
+    band with below-average quality (category average 4.0): STY-8598 (SKU-104732, SKU-104739, £334.99, index 2.19,
+    quality 3.3) and STY-9227 (SKU-105887, SKU-105894, £222.99, index 1.46, quality 3.6). STY-5627 and STY-8220 are also
+    above the band but score 4.5 and 4.6, so their price is justified; K-1700 (£77.99) sits below the band at quality 3.5.
   checks:
     - tool: get_own_product_prices_and_quality_scores
+      args: {category: Small Appliances, out_of_line_only: true}
+      expect: ["SKU-104732", "334.99", "2.19", "SKU-105887", "1.46", "above band"]
+    - tool: get_own_product_prices_and_quality_scores
       args: {category: Cookware}
-      expect: ["Cookware", "price", "quality"]
+      expect: ["Cookware", "price_index", "quality"]
 
 - question: "06:56:Q5"
   story: >
-    Dresses markdown rate over the last 90 days from background markdown events.
+    Outerwear markdown pressure is building: the last 90 days carry three 30% events (570 units cleared on the menswear
+    jackets, 22.8% sold), against two 15% events in the 90 days before (1,200 units cleared), so the markdown rate has
+    doubled from 15% to 30% of full-price value.
   checks:
+    - tool: get_markdown_rate_by_category
+      args: {category: Outerwear}
+      expect: ["last 90 days", "previous 90 days", "570", "15", "1200"]
     - tool: get_markdown_rate_by_category
       args: {category: Dresses}
       expect: ["Dresses", "depth", "markdown"]
 
 - question: "07:62:Q5"
   story: >
-    Tariff adds £4 to landed cost on £35 item. With -1.2 elasticity, recommend price increase
-    to £39.6 to offset the cost increase and maintain margin.
+    An 11% rise in unit cost (10% fall in sterling on dollar-bought goods): holding margin % needs 11% on price; holding
+    total margin after the volume lost at each category's elasticity needs the most in Small Appliances (31.4%), then
+    Audio (21.9%) and Storage (20.2%). Elasticities come from the category estimates (Small Appliances -1.25, 85 points).
   checks:
     - tool: calculate_price_increase_to_offset_cost
-      args: {current_price_gbp: 35.0, cost_increase_gbp: 4.0, elasticity_to_price: -1.2}
-      expect: ["39.6", "offset"]
+      args: {cost_increase_pct: 11}
+      expect: ["Small Appliances", "31.4", "Audio", "21.9", "Storage", "20.2"]
+    - tool: calculate_price_increase_to_offset_cost
+      args: {sku: "K-1700", cost_increase_pct: 11}
+      expect: ["Small Appliances", "price_rise_to_hold_total_margin_pct"]
     - tool: get_elasticity_confidence_intervals
       args: {}
       expect: ["Cookware", "-1.32", "0.2"]
     - tool: run_volume_and_margin_forecast_for_price_change
-      args: {sku: "K-1700", current_price_gbp: 77.99, new_price_gbp: 85.79, current_volume_units: 10000, cost_gbp: 24.67, elasticity_to_price: -1.2}
-      expect: ["price_change", "margin", "forecast"]
+      args: {sku: "K-1700", new_price_gbp: 85.79, current_volume_units: 10000}
+      expect: ["10", "forecast_weekly_units", "forecast_weekly_margin_gbp"]
 
 - question: "08:71:Q3"
   story: >
-    Promotion calendar for a store: promotions in the next 26 weeks.
+    Store ST214 (Glasgow Retail Park) over the next fortnight: the Autumn Knitwear Event (PROMO-900041, 20% off, running
+    through the 20th) and the Autumn Bedding Week (PROMO-900042, 25% off, 9th to 18th) overlap next week. Black Friday
+    (PROMO-900014) is later and the Weekend Home Event (PROMO-900001) has ended, so neither shows.
   checks:
     - tool: get_promotion_calendar_for_store
-      args: {site_id: "ST001", weeks_ahead: 26}
-      expect: ["promotion_id", "start_date"]
+      args: {site_id: ST214, weeks_ahead: 2}
+      expect: ["PROMO-900041", "Autumn Knitwear Event", "PROMO-900042", "Autumn Bedding Week", "25"]
+    - tool: get_promotion_calendar_for_store
+      args: {site_id: ST214}
+      expect: ["PROMO-900014", "Black Friday"]
     - tool: list_promotions_in_calendar
       args: {site_id: "ST001"}
       expect: ["promotion"]
 
 - question: "08:77:Q1"
   story: >
-    Overpriced lines: sales lost to a price gap, a draft price change for K-1700 from £70.99 to £77.99, and
-    per-product elasticities in Small Appliances.
+    Cookware (home and kitchen) overpriced lines: SKU-103612 (£132.99, elasticity -1.9) and SKU-100819 (£114.99,
+    elasticity -1.4). A 14% gap on the first costs about 4.5 units and £494 a week; a 12% gap on the second about 4.1
+    units and £388, so the first costs more. Cookware is mid-market (band 0.7 to 1.4). Draft price change PC-900041 for
+    SKU-103612 exists and is submitted; a new draft is raised for SKU-100819.
   checks:
-    - tool: calculate_sales_lost_to_price_gaps
-      args: {category: Cookware, price_gap_pct: 8.5, elasticity_to_price: -1.5}
-      expect: ["12.8", "volume"]
     - tool: get_price_elasticity_for_products
-      args: {category: "Small Appliances"}
-      expect: ["K-1700", "-1.25"]
+      args: {category: Cookware}
+      expect: ["SKU-103612", "-1.9", "SKU-100819", "-1.4"]
+    - tool: calculate_sales_lost_to_price_gaps
+      args: {category: Cookware, sku: SKU-103612, price_gap_pct: 14}
+      expect: ["26.6", "493.78"]
+    - tool: calculate_sales_lost_to_price_gaps
+      args: {category: Cookware, sku: SKU-100819, price_gap_pct: 12}
+      expect: ["16.8", "388.38"]
     - tool: get_price_positioning_rules_for_category
       args: {category: Cookware}
       expect: ["Cookware", "mid_market"]
     - tool: create_price_change_request
-      args: {sku: "K-1700", old_price_gbp: 70.99, new_price_gbp: 66.99, change_reason: "Competitor gap"}
-      expect: ["PC-", "draft", "K-1700"]
+      args: {sku: SKU-100819, old_price_gbp: 114.99, new_price_gbp: 102.99, change_reason: "Competitive pressure", proposed_date: "+14d"}
+      expect: ["PC-", "draft", "SKU-100819", "102.99"]
     - tool: submit_price_change_for_approval
-      args: {pc_id: PC-900004}
+      args: {pc_id: PC-900041}
       expect: ["submitted"]
 
 - question: "08:77:Q2"
   story: >
-    Price test on PF-220 and sample-size needs for a test.
+    Small Appliances: elasticity -1.25 (+/-0.18, 85 data points: medium confidence). A 5% rise cuts weekly volume 5.9%
+    and adds about £3,121 a week of margin across the range (£2,324 on the top two price tiers). A price test on SKU-104032
+    at 5% above control is set up.
   checks:
-    - tool: calculate_price_test_sample_size
-      args: {expected_uplift_pct: -15, baseline_daily_sales_units: 180, confidence_level_pct: 95}
-      expect: ["units_per_cell", "8_week"]
+    - tool: get_price_elasticity_for_category
+      args: {category: Small Appliances}
+      expect: ["-1.25", "0.18", "85"]
+    - tool: run_volume_and_margin_forecast_for_price_change
+      args: {category: Small Appliances, price_change_pct: 5}
+      expect: ["all tiers in scope", "-5.9", "3120.81"]
+    - tool: run_volume_and_margin_forecast_for_price_change
+      args: {category: Small Appliances, price_change_pct: 5, min_price_tier: 3}
+      expect: ["tier 3", "tier 4", "2324.21"]
+    - tool: get_elasticity_confidence_intervals
+      args: {}
+      expect: ["Small Appliances", "0.18"]
     - tool: create_price_test
-      args: {sku: "PF-220", test_price_gbp: 82.99, control_price_gbp: 77.99, test_store_count: 10, control_store_count: 10, start_date: "+7d", end_date: "+49d"}
-      expect: ["PT-", "planned"]
+      args: {sku: "SKU-104032", test_price_gbp: 243.59, control_price_gbp: 231.99, test_store_count: 10, control_store_count: 10, start_date: "+14d", end_date: "+56d"}
+      expect: ["PT-", "planned", "SKU-104032"]
     - tool: delete_draft_price_for_product
       args: {pc_id: PC-900004}
       expect: ["cancelled"]
 
 - question: "08:77:Q3"
   story: >
-    Discounting depth in a category from background markdown events; approved price change PC-900003 scheduled.
+    Home discounting is deeper: seven markdown events ended in the last 13 weeks at an average 29.3% depth (Bedding 30%,
+    Towels 27.5%, Storage 30%, Drinkware 30%), against five events at 18% before, up 11.3 points, which sits behind the
+    -0.2 point markdown component of the Home margin bridge.
   checks:
+    - tool: get_discounting_depth_for_category
+      args: {department: Home, lookback_weeks: 13}
+      expect: ["All Home categories", "29.3", "18", "11.3", "Bedding"]
     - tool: get_discounting_depth_for_category
       args: {category: Dresses, lookback_weeks: 26}
       expect: ["Dresses", "markdown_events_in_period"]
@@ -286,19 +341,46 @@
 
 - question: "08:77:Q4"
   story: >
-    Price change PC-900002 for PF-220 is scheduled; cancelling it changes its status.
+    Small Appliances tariff of 6%: passing it on (price +6%) cuts weekly volume 7% and margin about £4,530 a week;
+    absorbing it costs about £8,825 a week of margin (-2.8%). Approved change PC-900043 (SKU-104032, £245.99, tariff
+    pass-through) is scheduled and the clashing scheduled change PC-900044 on the same line is cancelled. PC-900002
+    (PF-220) stays a separate scheduled change that can also be cancelled.
   checks:
+    - tool: run_volume_and_margin_forecast_for_price_change
+      args: {category: Small Appliances, price_change_pct: 6, cost_increase_pct: 6}
+      expect: ["tier 4", "-7", "-4530.33"]
+    - tool: run_volume_and_margin_forecast_for_price_change
+      args: {category: Small Appliances, price_change_pct: 0, cost_increase_pct: 6}
+      expect: ["tier 1", "-8824.5"]
+    - tool: create_scheduled_price_change
+      args: {pc_id: PC-900043, proposed_date: "+12w"}
+      expect: ["scheduled", "PC-900043"]
+    - tool: cancel_scheduled_price_change
+      args: {pc_id: PC-900044, cancel_reason: "Clashes with the tariff pass-through price change"}
+      expect: ["cancelled"]
     - tool: cancel_scheduled_price_change
       args: {pc_id: PC-900002, cancel_reason: "Tariff impact lower than expected"}
       expect: ["cancelled"]
 
 - question: "08:77:Q6"
   story: >
-    New product launch. Volume and margin forecast at three price points.
+    New Storage product SKU-100595 (unit cost £8.11, £23.99): at 400 units a week and elasticity -1.2, margin rises with
+    price across the candidates (£6,163 a week at £21.99, £6,352 at £23.99, £6,497 at £25.99). A test to detect a 10%
+    change at 60 units a day per cell needs 1,649 units a cell, 28 days. Draft price change PC-900045 stays; it can be
+    deleted with the delete tool.
   checks:
     - tool: run_volume_and_margin_forecast_at_price_points
-      args: {sku: "SKU-100154", base_price_gbp: 35.0, base_volume_units: 1000, cost_gbp: 14.0, elasticity_to_price: -1.4}
-      expect: ["forecast_volume", "margin_gbp"]
+      args: {sku: SKU-100595, base_volume_units: 400, price_points: "19.99,21.99,23.99,25.99"}
+      expect: ["highest margin", "6496.75", "6163.33"]
+    - tool: calculate_price_test_sample_size
+      args: {expected_uplift_pct: -10, baseline_daily_sales_units: 60}
+      expect: ["1649", "28"]
+    - tool: create_price_test
+      args: {sku: SKU-100595, test_price_gbp: 21.99, control_price_gbp: 23.99, test_store_count: 8, control_store_count: 8, start_date: "+14d", end_date: "+42d"}
+      expect: ["PT-", "planned", "SKU-100595"]
+    - tool: delete_draft_price_for_product
+      args: {pc_id: PC-900045}
+      expect: ["cancelled"]
 
 - question: "08:78:Q1"
   story: >

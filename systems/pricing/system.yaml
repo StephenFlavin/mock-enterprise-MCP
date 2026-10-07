@@ -404,7 +404,7 @@ tools:
     example: {sku: "SKU-100959", markdown_depth_pct: 20, markdown_start_week: 3, stock_on_hand: 2000, weekly_baseline_units: 120}
 
   - name: calculate_price_increase_to_offset_cost
-    desc: Price increase needed to offset a unit-cost rise, by category (or one SKU). Shows the rise that holds margin per unit, and the rise that holds total margin after the volume lost at the category's elasticity. Omit category for every category, biggest rise first.
+    desc: "Price rise needed to offset a unit-cost rise, by category or SKU, the rise that holds margin per unit and the rise that holds total margin after lost volume."
     kind: sql
     args:
       category: {desc: "Category, e.g. Small Appliances. Omit to rank every category"}
@@ -448,7 +448,7 @@ tools:
     example: {category: Small Appliances, cost_increase_pct: 11}
 
   - name: calculate_price_test_sample_size
-    desc: Minimum units per cell and test duration to detect a given sales change between test and control stores at a confidence level and power, from the daily units each cell sells.
+    desc: Minimum units per cell and days needed to detect a given sales change between test and control stores, at a confidence level and power.
     kind: sql
     args:
       expected_uplift_pct: {type: float, required: true, desc: "Sales change to detect, % (sign ignored), e.g. -10"}
@@ -755,7 +755,7 @@ tools:
     example: {category: Cookware, promotion_depth_pct: 25}
 
   - name: get_discounting_depth_for_category
-    desc: Markdown depth and frequency for a category or department over the last N weeks against the N weeks before (events, average, deepest and shallowest depth, units cleared), with the change. Use to see whether discounting is deepening.
+    desc: Markdown depth and frequency for a category or department over the last N weeks against the N weeks before, with the change. Shows whether discounting is deepening.
     kind: sql
     args:
       category: {desc: "Category, e.g. Bedding. Omit to cover the department's categories"}
@@ -881,7 +881,7 @@ tools:
     example: {style_id: "STY-4102"}
 
   - name: get_markdown_rate_by_category
-    desc: Markdown rate (discount given as % of the full-price value of units sold on markdown) for a category over the last 90 days against the 90 days before, with events, average depth, units cleared and margin. Add department for part of a category.
+    desc: Markdown rate (discount given as % of full-price value of units sold on markdown) for a category over the last 90 days against the 90 days before.
     kind: sql
     args:
       category: {required: true}
@@ -989,7 +989,7 @@ tools:
     example: {category: Outerwear, department: Menswear}
 
   - name: get_own_product_prices_and_quality_scores
-    desc: Our current prices, costs, price index to the category median, quality score and target-band check for products in a category, flagging lines priced above their target band while quality is below the category average. Use for competitive and price-quality analysis.
+    desc: Our prices, costs, price index to category median, quality score and target-band check for a category, flagging lines priced above band for below-average quality.
     kind: sql
     args:
       category: {required: true, desc: "Category, e.g. Small Appliances or Cookware (kitchenware)"}
@@ -1054,7 +1054,7 @@ tools:
     example: {category: Cookware, promotion_depth_pct: 25}
 
   - name: get_price_change_history_for_sku
-    desc: Price changes (draft, approved, active, rolled back) for a SKU over the last N weeks, newest first, with old and new price, change %, reason, status, dates and the cumulative change since the start of the period.
+    desc: Price changes (draft, approved, active, rolled back) for a SKU over the last N weeks, newest first, with change %, reason, status and cumulative change.
     kind: sql
     args:
       sku: {required: true}
@@ -1136,7 +1136,7 @@ tools:
     example: {sku: "SKU-100168"}
 
   - name: get_price_elasticity_for_products
-    desc: Product-level price elasticity estimates for the SKUs of a category that have their own (latest first), with name, current price, confidence interval and sample size. Categories without product estimates use the category estimate.
+    desc: Product-level price elasticity estimates for the SKUs of a category that have their own, with name, current price, confidence interval and sample size.
     kind: sql
     args:
       category: {required: true}
@@ -1269,7 +1269,7 @@ tools:
     example: {category: Cookware, lookback_weeks: 52}
 
   - name: get_promotion_flags_for_item
-    desc: Whether a SKU is caught up in a promotion, a markdown or a pending price change, now or planned (and in the recent past), with the next one's name, depth and dates. Use to check what could be inflating demand for an item.
+    desc: Whether a SKU is in a promotion, on markdown or waiting for a price change, now, planned or just ended. Use to check what could be inflating demand.
     kind: sql
     args:
       sku: {required: true}
@@ -1294,7 +1294,11 @@ tools:
              (SELECT discount_depth_pct FROM nxt) AS next_promotion_depth_pct,
              (SELECT start_date FROM nxt) AS next_promotion_start,
              (SELECT end_date FROM nxt) AS next_promotion_end,
+             CASE WHEN (SELECT count(*) FROM markdown_events md WHERE md.sku = p.sku AND md.status IN ('active', 'scheduled')) > 0
+                  THEN 'on markdown (live or planned)' ELSE 'no markdown' END AS markdown_flag,
              (SELECT count(*) FROM markdown_events md WHERE md.sku = p.sku AND md.status IN ('active', 'scheduled')) AS markdown_events_live_or_planned,
+             CASE WHEN (SELECT count(*) FROM price_changes pc WHERE pc.sku = p.sku AND pc.status IN ('draft', 'submitted', 'approved', 'scheduled')) > 0
+                  THEN 'price change pending' ELSE 'no price change pending' END AS price_change_flag,
              (SELECT count(*) FROM price_changes pc WHERE pc.sku = p.sku AND pc.status IN ('draft', 'submitted', 'approved', 'scheduled')) AS price_changes_pending
       FROM p
     example: {sku: "K-1700"}
@@ -1420,7 +1424,7 @@ tools:
     example: {weeks_ahead: 6}
 
   - name: run_volume_and_margin_forecast_at_price_points
-    desc: Forecast weekly volume, revenue and margin for a SKU at each candidate price (or at -15% to +15% of the base price if none given) using its price elasticity. Marks the price with the highest margin.
+    desc: Forecast weekly volume, revenue and margin for a SKU at each candidate price using its elasticity, marking the highest-margin price. Defaults to -15% to +15% of base.
     kind: sql
     args:
       sku: {required: true}
@@ -1462,7 +1466,7 @@ tools:
     example: {sku: "K-1700", base_volume_units: 1000, price_points: "74.99,77.99,82.99"}
 
   - name: run_volume_and_margin_forecast_for_price_change
-    desc: Model weekly volume and margin impact of a price change (and optionally a cost rise) for one SKU, or for a whole category split by price tier (1 = lowest-priced quarter of the range, 4 = highest). Uses the stored elasticity and recent weekly sales.
+    desc: Model weekly volume and margin impact of a price change and optional cost rise, for one SKU or a category split by price tier (1 lowest-priced quarter, 4 highest).
     kind: sql
     args:
       category: {desc: "Category, e.g. Small Appliances. Gives one row per price tier plus a total"}
@@ -1471,9 +1475,7 @@ tools:
       new_price_gbp: {type: float, desc: "Proposed new price in GBP (one SKU)"}
       cost_increase_pct: {type: float, default: 0, desc: "Rise in unit cost %, e.g. 6 for a 6% tariff"}
       min_price_tier: {type: int, default: 1, desc: "Only price tiers at or above this (1-4). 3 = the top half of the range"}
-      current_price_gbp: {type: float, desc: "Override the current price (one SKU)"}
       current_volume_units: {type: int, desc: "Override current weekly units (one SKU). Defaults to the last 8 weeks' average"}
-      cost_gbp: {type: float, desc: "Override unit cost (one SKU)"}
       elasticity_to_price: {type: float, desc: "Override the stored elasticity (negative)"}
     sql: |
       WITH tiers AS (
@@ -1488,8 +1490,8 @@ tools:
         GROUP BY sku),
       sc AS (
         SELECT t.sku, t.category, t.price_tier,
-               COALESCE(CAST($current_price_gbp AS DOUBLE), t.price) AS price,
-               COALESCE(CAST($cost_gbp AS DOUBLE), t.cost) AS cost,
+               t.price AS price,
+               t.cost AS cost,
                COALESCE(CAST($current_volume_units AS DOUBLE), v.units, 0) AS units,
                COALESCE(CAST($elasticity_to_price AS DOUBLE),
                         (SELECT e.elasticity_to_price FROM elasticity_data e WHERE e.sku = t.sku ORDER BY e.measure_date DESC LIMIT 1),
