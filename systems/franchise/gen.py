@@ -33,7 +33,9 @@ def generate(g):
         num_orders = r.randint(3, 8)
         for o in range(num_orders):
             days_ago = r.randint(-14, 90)  # Mix of future and past orders
-            order_date = g.as_of + timedelta(days=days_ago)
+            order_date_val = g.as_of + timedelta(days=days_ago)
+            # Convert to datetime for time operations
+            order_date = datetime.combine(order_date_val, datetime.min.time())
             order_id = f"FRO-{len(orders) + 1:06d}"
 
             # Pick random SKUs
@@ -46,7 +48,8 @@ def generate(g):
                 is_core = sku in core_range_skus
                 qty = r.randint(20, 500)
                 total_units += qty
-                total_value += qty * prod["unit_cost_gbp"]
+                unit_cost = float(prod["unit_cost_gbp"]) if prod["unit_cost_gbp"] else 0.0
+                total_value += qty * unit_cost
 
                 received = 0 if days_ago > -7 else r.randint(0, qty)
                 hold_status = "none"
@@ -67,8 +70,8 @@ def generate(g):
             orders.append({
                 "order_id": order_id,
                 "partner_id": partner_id,
-                "order_date": order_date.date(),
-                "expected_arrival_date": expected_arrival.date(),
+                "order_date": order_date.date() if isinstance(order_date, datetime) else order_date,
+                "expected_arrival_date": expected_arrival.date() if isinstance(expected_arrival, datetime) else expected_arrival,
                 "status": status,
                 "hold_reason": None,
                 "total_units": total_units,
@@ -121,7 +124,7 @@ def generate(g):
 
             partner_perf.append({
                 "partner_id": partner_id,
-                "period_end": period_end.date(),
+                "period_end": period_end,
                 "sales_units": sales_units,
                 "sales_gbp": sales_gbp,
                 "margin_gbp": margin_gbp,

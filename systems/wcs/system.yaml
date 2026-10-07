@@ -1,0 +1,216 @@
+id: wcs
+name: Warehouse Control System (WCS)
+instructions: >
+  Automated robotic fleet management, equipment control and real-time fault monitoring for DC operations.
+  Tracks firmware versions, fault events, charging schedules and throughput. Robot ids are robot-001, robot-002 etc.
+  Fault ids are FLT-000123.
+
+tables:
+  amr_fleet:
+    key: robot_id
+    cols:
+      robot_id: {type: str, desc: "Robot id, e.g. robot-001"}
+      site_id: {type: str, desc: "DC where deployed, e.g. DC1"}
+      firmware_version: {type: str, desc: "AMR firmware version, e.g. 4.6 or 4.7"}
+      battery_state_pct: {type: int, desc: "Current battery charge 0-100"}
+      last_charge_completed_at: {type: timestamp, desc: "When battery last fully charged"}
+      status: {type: enum, values: [active, charging, idle, maintenance, offline], desc: "Robot status"}
+      location: {type: str, desc: "Current zone or aisle, e.g. zone-A or aisle-C"}
+      total_distance_km: {type: float, desc: "Cumulative distance travelled"}
+      last_fault_at: {type: timestamp, desc: "When last fault was logged"}
+      updated_at: {type: timestamp, desc: "Last status update"}
+
+  equipment_versions:
+    key: asset_id
+    cols:
+      asset_id: {type: str, desc: "Equipment asset"}
+      site_id: {type: str, desc: "DC site"}
+      asset_class: {type: str, desc: "Equipment class, e.g. shuttle, conveyor, sorter, motor, gearbox, sensor"}
+      controller_software_version: {type: str, desc: "Controller firmware version"}
+      device_firmware_version: {type: str, desc: "Device firmware version if different"}
+      installed_date: {type: date, desc: "When installed"}
+      last_updated_at: {type: timestamp, desc: "When software last updated"}
+      status: {type: enum, values: [active, degraded, maintenance, offline], desc: "Equipment status"}
+
+  fault_log:
+    key: fault_id
+    cols:
+      fault_id: {type: str, desc: "Fault log entry, e.g. FLT-000123"}
+      asset_id: {type: str, desc: "Asset that faulted (robot or equipment)"}
+      robot_id: {type: str, desc: "Robot id if applicable, e.g. robot-001"}
+      site_id: {type: str, desc: "DC site"}
+      fault_code: {type: str, desc: "Fault code, e.g. MOTOR-001 or BATT-LOW"}
+      fault_description: {type: str, desc: "Human-readable fault description"}
+      severity: {type: enum, values: [info, warning, critical], desc: "Fault severity"}
+      occurred_at: {type: timestamp, desc: "When fault occurred"}
+      resolved_at: {type: timestamp, desc: "When fault was resolved, if applicable"}
+      component_failed: {type: str, desc: "Part or component name if known"}
+      duration_minutes: {type: int, desc: "How long asset was unavailable"}
+      root_cause: {type: str, desc: "Root cause analysis if completed"}
+      controller_version_at_fault: {type: str, desc: "Software version when fault occurred"}
+      throughput_impact_units: {type: int, desc: "Estimated units of throughput lost"}
+      sensor_prediction_possible: {type: bool, desc: "Could this fault have been predicted from sensors"}
+      related_work_order: {type: str, desc: "Related CMMS work order if any"}
+
+  charging_schedule:
+    key: schedule_id
+    cols:
+      schedule_id: {type: str, desc: "Schedule entry, e.g. CHG-000123"}
+      site_id: {type: str, desc: "DC site"}
+      schedule_version: {type: int, desc: "Version number for tracking changes"}
+      time_slot: {type: str, desc: "Time slot, e.g. 06:00-08:00 or 20:00-22:00"}
+      start_time: {type: str, desc: "Start time HH:MM"}
+      end_time: {type: str, desc: "End time HH:MM"}
+      robots_in_slot: {type: int, desc: "Number of robots charging in this slot"}
+      battery_avg_start_pct: {type: int, desc: "Average starting battery level"}
+      battery_avg_end_pct: {type: int, desc: "Average ending battery level"}
+      active: {type: bool, desc: "Is this charging window currently active"}
+      effective_from: {type: date, desc: "When this schedule became effective"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  throughput_by_hour:
+    key: [site_id, zone, hour_ending]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      zone: {type: str, desc: "Warehouse zone, e.g. zone-A, zone-B, pick-area"}
+      hour_ending: {type: timestamp, desc: "End of hour period"}
+      throughput_units: {type: int, desc: "Number of units processed"}
+      robots_active: {type: int, desc: "Number of active robots"}
+      traffic_density_pct: {type: int, desc: "Traffic density 0-100%"}
+      congestion_events: {type: int, desc: "Number of traffic congestion events"}
+      avg_wait_time_seconds: {type: int, desc: "Average wait time in seconds"}
+      battery_health_avg_pct: {type: int, desc: "Average battery health %"}
+
+tools:
+  - name: get_amr_fleet_firmware_versions
+    desc: AMR firmware versions across the fleet by site. Shows which robots run which versions.
+    kind: select
+    from: amr_fleet
+    filters:
+      site_id: {}
+      firmware_version: {}
+      status: {}
+    columns: [robot_id, site_id, firmware_version, battery_state_pct, status, total_distance_km, last_fault_at]
+    order: robot_id
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_equipment_software_versions
+    desc: Controller and firmware versions per asset (shuttles, conveyors, sorters, motors). Use to assess upgrade readiness.
+    kind: select
+    from: equipment_versions
+    filters:
+      site_id: {}
+      asset_class: {}
+      status: {}
+    columns: [asset_id, asset_class, controller_software_version, device_firmware_version, installed_date, last_updated_at, status]
+    order: asset_id
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_fault_log_entries
+    desc: Equipment fault codes and events from the control system with root cause, duration and throughput impact. Newest first.
+    kind: sql
+    args:
+      site_id: {}
+      asset_id: {}
+      fault_code: {type: str, desc: "Fault code pattern, e.g. MOTOR or BATT"}
+      severity: {type: enum, values: [info, warning, critical], desc: "Filter by severity"}
+      date_from: {type: date, default: "-30d", desc: "Faults on or after"}
+    sql: |
+      SELECT f.fault_id, f.asset_id, f.robot_id, f.site_id, f.fault_code, f.fault_description,
+             f.severity, f.occurred_at, f.resolved_at, f.component_failed, f.duration_minutes,
+             f.root_cause, f.controller_version_at_fault, f.throughput_impact_units,
+             f.sensor_prediction_possible
+      FROM fault_log f
+      WHERE ($site_id IS NULL OR f.site_id = $site_id)
+        AND ($asset_id IS NULL OR f.asset_id = $asset_id)
+        AND ($fault_code IS NULL OR f.fault_code LIKE $fault_code || '%')
+        AND ($severity IS NULL OR f.severity = $severity)
+        AND f.occurred_at >= CAST($date_from AS DATE)
+      ORDER BY f.occurred_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_fleet_charging_schedule
+    desc: Charging schedules and current battery states. Shows windows and when robots charge to optimize throughput.
+    kind: sql
+    args:
+      site_id: {required: true}
+    sql: |
+      SELECT schedule_id, site_id, time_slot, start_time, end_time, robots_in_slot,
+             battery_avg_start_pct, battery_avg_end_pct, active, effective_from, updated_at,
+             'schedule for efficient charging without impacting peak throughput' AS note
+      FROM charging_schedule
+      WHERE site_id = $site_id AND active = true
+      ORDER BY start_time ASC
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_robot_throughput_by_hour
+    desc: Robot throughput by hour and zone. Use to detect time-of-day patterns and congestion.
+    kind: sql
+    args:
+      site_id: {required: true}
+      zone: {}
+      date_from: {type: date, default: "-7d", desc: "Data from this date forward"}
+    sql: |
+      SELECT site_id, zone, hour_ending, throughput_units, robots_active,
+             traffic_density_pct, congestion_events, avg_wait_time_seconds, battery_health_avg_pct
+      FROM throughput_by_hour
+      WHERE site_id = $site_id
+        AND ($zone IS NULL OR zone = $zone)
+        AND hour_ending >= CAST($date_from AS DATE)
+      ORDER BY hour_ending DESC, zone ASC
+    limit: 168
+    example: {site_id: DC1}
+
+  - name: get_robot_traffic_congestion
+    desc: Traffic density, blockage and wait events by area and time. Use to identify bottlenecks.
+    kind: sql
+    args:
+      site_id: {required: true}
+      zone: {}
+      date_from: {type: date, default: "-7d", desc: "Data from this date"}
+    sql: |
+      SELECT site_id, zone, hour_ending, traffic_density_pct, congestion_events, avg_wait_time_seconds,
+             throughput_units, robots_active
+      FROM throughput_by_hour
+      WHERE site_id = $site_id
+        AND ($zone IS NULL OR zone = $zone)
+        AND hour_ending >= CAST($date_from AS DATE)
+        AND (traffic_density_pct > 50 OR congestion_events > 0)
+      ORDER BY traffic_density_pct DESC, hour_ending DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_throughput_loss_for_stoppage
+    desc: Throughput lost per stoppage event with root cause, duration and recovery time.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Stoppages on or after"}
+    sql: |
+      SELECT fault_id, asset_id, robot_id, fault_code, fault_description,
+             occurred_at, duration_minutes, throughput_impact_units, root_cause,
+             controller_version_at_fault, severity,
+             ROUND(throughput_impact_units * 1.0, 0) AS estimated_loss_units,
+             'loss = throughput_impact_units * duration_minutes / 60' AS loss_formula
+      FROM fault_log
+      WHERE site_id = $site_id
+        AND throughput_impact_units > 0
+        AND occurred_at >= CAST($date_from AS DATE)
+      ORDER BY throughput_impact_units DESC, duration_minutes DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: update_fleet_charging_schedule
+    desc: Update charging windows for the AMR fleet (start and end times). Returns old and new schedule.
+    kind: update
+    table: charging_schedule
+    set: {start_time: "{start_time}", end_time: "{end_time}", updated_at: "$as_of", effective_from: "CAST($as_of AS DATE)"}
+    args:
+      schedule_id: {required: true}
+      start_time: {type: str, required: true, desc: "New start time HH:MM"}
+      end_time: {type: str, required: true, desc: "New end time HH:MM"}
+    example: {schedule_id: CHG-000002, start_time: "18:00", end_time: "20:00"}

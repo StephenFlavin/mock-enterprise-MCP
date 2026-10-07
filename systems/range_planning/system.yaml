@@ -1,0 +1,167 @@
+id: range_planning
+name: Range Planning & Assortment Tool
+instructions: >
+  Product range decisions: which to extend, refresh, reprice or delete based on performance and
+  strategic role. Identify category whitespace, flag SKUs for review, and test new trends.
+  Request ids look like RGR-000123, task ids like RVW-000123.
+
+tables:
+  product_strategic_roles:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      strategic_role: {type: enum, values: [core, growth, seasonal, experimental, clearance], desc: "Strategic role in the range"}
+
+  product_range_plan:
+    key: plan_id
+    cols:
+      plan_id: {type: str, desc: "Range plan entry, e.g. PRP-000123"}
+      sku: {type: str, desc: "SKU being actioned"}
+      action: {type: enum, values: [extend, refresh, reprice, delete], desc: "Planned range action"}
+      status: {type: enum, values: [draft, approved, in_progress, completed, cancelled], desc: "Action status"}
+      approved_by: {type: str, desc: "Employee who approved (if approved)"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  range_gaps:
+    key: gap_id
+    cols:
+      gap_id: {type: str, desc: "Range gap, e.g. RGP-000123"}
+      category: {type: str, desc: "Product category with whitespace, e.g. Small Kitchen Appliances"}
+      gap_description: {type: text, desc: "What's missing and why"}
+      opportunity_size_gbp: {type: float, desc: "Estimated annual revenue opportunity in GBP"}
+      competitor_count: {type: int, desc: "How many competitors address this gap"}
+      product_count_current: {type: int, desc: "How many SKUs we currently have in this category"}
+      created_at: {type: timestamp, desc: "When identified"}
+
+  range_gap_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Range gap request, e.g. RQR-000123"}
+      category: {type: str, desc: "Product category"}
+      reason: {type: text, desc: "Why this gap matters (e.g. high search interest, competitor presence)"}
+      status: {type: enum, values: [submitted, approved, rejected, investigated], desc: "Request status"}
+      created_by: {type: str, desc: "Employee who submitted (e.g. EMP-00123)"}
+      created_at: {type: timestamp, desc: "When submitted"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  sku_review_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Review task, e.g. RVW-000123"}
+      sku: {type: str, desc: "SKU to review"}
+      reason: {type: text, desc: "Why flagged for review (e.g. loss-making, poor sales)"}
+      owner: {type: str, desc: "Employee responsible for review (e.g. EMP-00123)"}
+      status: {type: enum, values: [open, in_progress, completed, cancelled], desc: "Task status"}
+      recommendation: {type: str, desc: "Recommended action (delete, refresh, reprice, etc)"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_product_strategic_role
+    desc: Return the strategic role (core, growth, seasonal, experimental, clearance) for a product.
+    kind: select
+    from: product_strategic_roles
+    filters:
+      sku: {required: true}
+    columns: [sku, strategic_role]
+    example: {sku: SKU-100234}
+
+  - name: list_range_gaps_by_category
+    desc: List whitespace opportunities by category with gap size and competitor count. Sort by opportunity size.
+    kind: select
+    from: range_gaps
+    filters:
+      category: {op: like, desc: "Category name or part of it, e.g. kitchen"}
+    columns: [gap_id, category, gap_description, opportunity_size_gbp, competitor_count, product_count_current]
+    order: opportunity_size_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: calculate_minimum_test_order_volume
+    desc: Calculate minimum viable test order volume for a category/trend based on lead time and market size.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Small Kitchen Appliances"}
+      lead_time_days: {type: int, required: true, desc: "Supplier lead time in days"}
+      test_duration_weeks: {type: int, default: 8, desc: "How many weeks to test (default 8)"}
+    sql: |
+      SELECT
+        $category AS category,
+        $lead_time_days AS lead_time_days,
+        $test_duration_weeks AS test_duration_weeks,
+        CAST(CASE
+          WHEN $lead_time_days <= 30 THEN 50
+          WHEN $lead_time_days <= 60 THEN 100
+          ELSE 200
+        END AS INT) * CAST($test_duration_weeks AS INT) / 8 AS minimum_test_units,
+        CASE
+          WHEN $lead_time_days <= 30 THEN 'Lead time <= 30 days: low risk, 50 units per week'
+          WHEN $lead_time_days <= 60 THEN 'Lead time 31-60 days: medium risk, 100 units per week'
+          ELSE 'Lead time > 60 days: high risk, 200 units per week'
+        END AS formula
+    limit: 1
+    example: {category: "Small Kitchen Appliances", lead_time_days: 45}
+
+  - name: calculate_range_action_impact
+    desc: Calculate impact of a range action (extend/refresh/reprice/delete) on sales velocity and margin.
+    kind: sql
+    args:
+      sku: {required: true, desc: "SKU to action"}
+      action: {type: enum, values: [extend, refresh, reprice, delete], required: true, desc: "Planned action"}
+      current_price_gbp: {type: float, required: true, desc: "Current retail price"}
+    sql: |
+      SELECT
+        $sku AS sku,
+        $action AS action,
+        $current_price_gbp AS current_price_gbp,
+        CASE
+          WHEN $action = 'extend' THEN CAST($current_price_gbp * 0.15 AS FLOAT)
+          WHEN $action = 'refresh' THEN CAST($current_price_gbp * 0.25 AS FLOAT)
+          WHEN $action = 'reprice' THEN CAST($current_price_gbp * 0.08 AS FLOAT)
+          WHEN $action = 'delete' THEN CAST(-$current_price_gbp * 0.05 AS FLOAT)
+          ELSE 0
+        END AS projected_margin_impact_gbp,
+        CASE
+          WHEN $action = 'extend' THEN '15% margin uplift from line extension'
+          WHEN $action = 'refresh' THEN '25% margin uplift from product refresh'
+          WHEN $action = 'reprice' THEN '8% margin uplift from strategic repricing'
+          WHEN $action = 'delete' THEN '-5% margin from freeing inventory'
+          ELSE 'No impact'
+        END AS formula
+    limit: 1
+    example: {sku: "SKU-100234", action: "refresh", current_price_gbp: 24.99}
+
+  - name: create_range_gap_request
+    desc: Submit a request to investigate a category gap. Returns the request id and status.
+    kind: insert
+    table: range_gap_requests
+    id_prefix: RQR-
+    defaults: {status: submitted}
+    args:
+      category: {required: true, desc: "Product category with whitespace"}
+      reason: {required: true, desc: "Why this gap matters (e.g. high search interest, customer need)"}
+      created_by: {required: true, desc: "Employee id of requester"}
+    example: {category: "Smart Home Heating", reason: "Search interest up 35% YoY, 3 competitors entering", created_by: "EMP-00123"}
+
+  - name: create_sku_review_task
+    desc: Flag a SKU for range review with a reason. Returns the new task id.
+    kind: insert
+    table: sku_review_tasks
+    id_prefix: RVW-
+    defaults: {status: open}
+    args:
+      sku: {required: true, desc: "SKU to flag for review"}
+      reason: {required: true, desc: "Reason for review (e.g. loss-making, poor sales, margin decline)"}
+      owner: {required: true, desc: "Employee id responsible for the review"}
+    example: {sku: "SKU-100456", reason: "Costs 15% more per unit to serve than revenue earned", owner: "EMP-00789"}
+
+  - name: update_product_range_status
+    desc: Update a product's range plan status (extend/refresh/reprice/delete) and approved status.
+    kind: update
+    table: product_range_plan
+    set: {status: "{status}", approved_by: "{approved_by}", updated_at: "$as_of"}
+    args:
+      status: {type: enum, values: [draft, approved, in_progress, completed, cancelled], required: true, desc: "New status"}
+      approved_by: {type: str, desc: "Employee id if approving"}
+    example: {plan_id: "PRP-900001", status: "approved", approved_by: "EMP-00111"}
