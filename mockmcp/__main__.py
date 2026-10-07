@@ -26,6 +26,11 @@ def main():
     r = sub.add_parser("run", help="call one tool: run <id> <tool> '{\"arg\": 1}'")
     r.add_argument("id"), r.add_argument("tool"), r.add_argument("args", nargs="?", default="{}")
     r.add_argument("--keep", action="store_true", help="keep writes (default: discard)")
+    b = sub.add_parser("bench", help="run a model on each server alone against bench/cases/<id>.yaml")
+    b.add_argument("ids", nargs="*", help="systems (default: every system with cases)")
+    b.add_argument("--validate", action="store_true", help="only check cases against the data (no model)")
+    b.add_argument("--model", default="haiku"), b.add_argument("--workers", type=int, default=6)
+    b.add_argument("--only", help="run cases whose id contains this")
     a = ap.parse_args()
 
     if a.cmd == "serve":
@@ -77,6 +82,17 @@ def main():
         text, err = Engine([a.id]).call(a.id, a.tool, json.loads(a.args))
         print(("ERROR: " if err else "") + text)
         sys.exit(1 if err else 0)
+    elif a.cmd == "bench":
+        from . import bench
+        ids = a.ids or sorted(f.stem for f in bench.CASES.glob("*.yaml"))
+        if a.validate:
+            bad = 0
+            for sid in ids:
+                probs = bench.validate(sid)
+                bad += bool(probs)
+                print(f"{'FAIL' if probs else 'ok  '} {sid} ({len(bench.load(sid))} cases)" + "".join(f"\n  - {x}" for x in probs))
+            sys.exit(1 if bad else 0)
+        bench.run(ids, a.model, a.workers, a.only)
 
 
 if __name__ == "__main__":
