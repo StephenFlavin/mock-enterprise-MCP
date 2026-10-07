@@ -119,16 +119,29 @@ tools:
     example: {category: "Cookware"}
 
   - name: list_spend_by_supplier_and_category
-    desc: Monthly spend by supplier and category, largest first. Filter by category, supplier or dates for variance and consolidation work.
-    kind: select
-    from: supplier_spend
-    filters:
+    desc: Monthly spend by supplier and category, largest first. Set summarise=true for one total row per supplier and category. Filter by category, supplier or dates.
+    kind: sql
+    args:
       category: {desc: "Category, e.g. Cookware, Facilities, Energy, Packaging"}
       supplier_id: {}
-      period_from: {col: period, op: ">=", type: date, default: "-365d", desc: "Earliest month, e.g. -365d or 2026-01"}
-      period_to: {col: period, op: "<=", type: date, desc: "Latest month"}
-    columns: [supplier_id, category, period, spend_gbp, units, invoice_count, avg_unit_cost_gbp, is_preferred]
-    order: spend_gbp DESC
+      period_from: {type: date, default: "-365d", desc: "Earliest month, e.g. -365d or 2026-01"}
+      period_to: {type: date, desc: "Latest month"}
+      summarise: {type: bool, default: false, desc: "true returns one total row per supplier and category instead of monthly rows"}
+    sql: |
+      WITH f AS (
+        SELECT * FROM supplier_spend
+        WHERE ($category IS NULL OR category = $category)
+          AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+          AND period >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR period <= CAST($period_to AS DATE)))
+      SELECT supplier_id, category, period, spend_gbp, units, invoice_count, avg_unit_cost_gbp, is_preferred
+      FROM f WHERE NOT $summarise
+      UNION ALL
+      SELECT supplier_id, category, max(period) AS period, round(sum(spend_gbp), 0) AS spend_gbp, sum(units) AS units,
+             sum(invoice_count) AS invoice_count, round(sum(spend_gbp) / nullif(sum(units), 0), 2) AS avg_unit_cost_gbp,
+             bool_or(is_preferred) AS is_preferred
+      FROM f WHERE $summarise GROUP BY supplier_id, category
+      ORDER BY spend_gbp DESC
     limit: 100
     example: {category: "Cookware"}
 
