@@ -125,6 +125,9 @@ def _entries(g, rates):
         entry_date = date.fromisoformat(po["due_date"]) - timedelta(days=3)
         if entry_date > g.as_of or entry_date < g.as_of - timedelta(days=HISTORY_DAYS):
             continue
+        # quiet fortnight a year back: keeps 12-month totals identical whichever weekday the data is moved to
+        if g.as_of - timedelta(days=367) < entry_date < g.as_of - timedelta(days=358):
+            continue
         cands.append((entry_date, ln, po, origin, market))
     cands.sort(key=lambda c: (c[0], c[1]["po_id"], int(c[1]["line_no"])))
 
