@@ -202,10 +202,6 @@ def generate(g):
             "updated_at": g.days_ago(rd.randint(10, 150)),
         })
     pp = {x["sku"]: x for x in planning_params}
-    # planted pack size errors (seed rows override these fields)
-    for sku, pack in (("SKU-102961", 12000), ("SKU-106251", 20000), ("SKU-102352", 12000), ("SKU-102338", 25000)):
-        pp[sku]["pack_size"] = pack
-        pp[sku]["lot_size"] = max(int(pmap[sku]["moq"]), 2000)
 
     # ---------- order proposals (quantity follows the planning formula) ----------
     def proposal_row(pid, sku, status, reason, created_days, dest, issue=None):

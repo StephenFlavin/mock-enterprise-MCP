@@ -1,29 +1,27 @@
 id: cost_allocation
 name: Cost Allocation Tool
 instructions: >
-  Activity-based cost allocation for distribution centres, channels (stores, online, wholesale),
-  and SKUs. Costs are allocated by pools and drivers to enable profitability analysis.
-  Scenario ids look like SCEN-000001.
+  Activity-based cost allocation, FY26 actuals in GBP: DC cost components and pools (DC1-DC5), cost to serve by channel
+  (store, online, wholesale), e-commerce cost per order, SKU cost to serve, logistics benchmarks.
+  Pool ids look like POOL-LAB-DC1, drivers DRV-000001, scenarios SCEN-000001.
 
 tables:
   cost_pools:
     key: pool_id
     cols:
       pool_id: {type: str, desc: "Cost pool, e.g. POOL-LAB-DC1"}
-      name: {type: str, desc: Cost pool name}
+      name: {type: str, desc: "Cost pool name, e.g. DC1 Labour"}
       cost_type: {type: enum, values: [labour, space, equipment, overhead, transport, packaging, returns], desc: Cost category}
-      site_id: {type: str, desc: "Site, e.g. DC1 (null = network-wide)"}
-      driver_name: {type: str, desc: "Current allocation driver, e.g. units_handled"}
-      current_amount_gbp: {type: float, desc: Total pool value in GBP}
+      site_id: {type: str, desc: "DC the pool belongs to, e.g. DC1 (blank = network-wide)"}
+      current_amount_gbp: {type: float, desc: Annual pool value in GBP}
       updated_at: {type: timestamp, desc: Last updated}
 
   allocation_drivers:
     key: driver_id
     cols:
       driver_id: {type: str, desc: "Driver, e.g. DRV-000001"}
-      driver_name: {type: str, desc: "Driver name, e.g. units_handled, order_count, weight"}
       pool_id: {type: str, desc: Cost pool being driven}
-      allocation_base: {type: enum, values: [units, orders, weight, pallet_spaces, locations_used, items_per_order], desc: Allocation base}
+      allocation_base: {type: enum, values: [units, orders, items, weight, pallet_spaces, locations_used, items_per_order], desc: "Allocation base the pool is spread by; for returns orders = returned orders, items = returned items"}
       rate_gbp_per_unit: {type: float, desc: Cost per driver unit in GBP}
       status: {type: enum, values: [active, archived], desc: Driver status}
       updated_at: {type: timestamp, desc: Last updated}
@@ -32,202 +30,366 @@ tables:
     key: scenario_id
     cols:
       scenario_id: {type: str, desc: "Scenario, e.g. SCEN-000001"}
-      scenario_name: {type: str, desc: Scenario description}
-      base_scenario_id: {type: str, desc: "Scenario this is based on (null = current actuals)"}
+      scenario_name: {type: str, desc: Scenario name}
+      base_scenario_id: {type: str, desc: "Scenario this is based on (blank = current actuals)"}
       assumptions: {type: text, desc: Key assumptions changed}
+      returns_change_pct: {type: float, desc: "Change to the returns pool in percent, e.g. -30 for free returns removed (blank = 0)"}
+      warehousing_change_pct: {type: float, desc: "Change to warehousing cost in percent (blank = 0)"}
+      transport_change_pct: {type: float, desc: "Change to outbound transport cost in percent (blank = 0)"}
+      packaging_change_pct: {type: float, desc: "Change to packaging cost in percent (blank = 0)"}
+      returns_driver: {type: enum, values: [orders, items, units], desc: "Allocation base for the returns pool in this scenario (blank = current driver)"}
       created_at: {type: timestamp, desc: Created}
-      created_by: {type: str, desc: Employee who created it}
+      created_by: {type: str, desc: "Employee who created it, e.g. EMP-00085"}
 
   cost_components_dc:
     key: [site_id, component_type]
     cols:
-      site_id: {type: str, desc: DC site}
+      site_id: {type: str, desc: "DC site, e.g. DC1"}
       component_type: {type: enum, values: [labour, space, equipment, overhead], desc: Cost component}
-      units_handled: {type: int, desc: Units through-put}
-      total_cost_gbp: {type: float, desc: Total component cost}
-      cost_per_unit_gbp: {type: float, desc: Cost per unit}
+      units_handled: {type: int, desc: Annual units through the DC}
+      total_cost_gbp: {type: float, desc: Annual component cost in GBP}
+      fixed_cost_pct: {type: float, desc: Share of the component that is fixed or contractual in the short term}
+      as_of_date: {type: date, desc: Data date}
+
+  channel_activity:
+    key: channel
+    cols:
+      channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
+      orders: {type: int, desc: "Orders (online customer orders; store and wholesale replenishment orders)"}
+      units: {type: int, desc: Units shipped}
+      returned_orders: {type: int, desc: Return events}
+      returned_items: {type: int, desc: Items returned}
+      sales_gbp: {type: float, desc: FY26 channel sales in GBP}
+      gross_margin_gbp: {type: float, desc: Gross margin before cost to serve}
       as_of_date: {type: date, desc: Data date}
 
   channel_costs:
     key: [channel, cost_type]
     cols:
       channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
-      cost_type: {type: enum, values: [warehousing, outbound_transport, returns, packaging], desc: Cost type}
-      cost_gbp: {type: float, desc: Total cost in GBP}
-      units: {type: int, desc: Cost driver volume}
-      sales_gbp: {type: float, desc: Channel sales}
-      cost_per_order_gbp: {type: float, desc: Cost per order}
-      cost_per_unit_gbp: {type: float, desc: Cost per unit}
-      pct_of_sales: {type: float, desc: Cost as % of sales}
+      cost_type: {type: enum, values: [warehousing, outbound_transport, packaging], desc: "Directly assigned cost type (returns is allocated from the returns pool)"}
+      cost_gbp: {type: float, desc: FY26 cost in GBP}
       as_of_date: {type: date, desc: Data date}
 
   ecom_costs:
     key: cost_period
     cols:
-      cost_period: {type: date, desc: Period end date}
-      orders_count: {type: int, desc: E-commerce orders}
-      total_cost_gbp: {type: float, desc: Total ABC cost}
+      cost_period: {type: date, desc: Period end date (13-week periods)}
+      orders_count: {type: int, desc: E-commerce orders in the period}
       labour_cost_gbp: {type: float, desc: Labour component}
       system_cost_gbp: {type: float, desc: System/IT component}
       transport_cost_gbp: {type: float, desc: Transport component}
       returns_cost_gbp: {type: float, desc: Returns component}
-      cost_per_order_gbp: {type: float, desc: Cost per order}
 
   sku_costs:
     key: sku
     cols:
       sku: {type: str, desc: SKU}
       annual_units_sold: {type: int, desc: Annual units}
-      annual_sales_gbp: {type: float, desc: Annual sales}
-      warehousing_cost_gbp: {type: float, desc: Annual warehousing}
-      transport_cost_gbp: {type: float, desc: Annual transport}
-      handling_cost_gbp: {type: float, desc: Annual handling}
-      total_cost_to_serve_gbp: {type: float, desc: Total annual cost to serve}
-      cost_per_unit_gbp: {type: float, desc: Cost per unit}
-      margin_per_unit_gbp: {type: float, desc: Sales value minus cost per unit}
+      warehousing_cost_gbp: {type: float, desc: Annual warehousing cost}
+      transport_cost_gbp: {type: float, desc: Annual transport cost}
+      handling_cost_gbp: {type: float, desc: Annual handling cost}
       as_of_date: {type: date, desc: Data date}
 
   logistics_benchmarks:
     key: benchmark_id
     cols:
       benchmark_id: {type: str, desc: "Benchmark entry, e.g. BENCH-000001"}
-      metric_name: {type: str, desc: "Metric, e.g. total_logistics_cost_pct_sales"}
-      our_value: {type: float, desc: Our value}
-      industry_median: {type: float, desc: Median benchmark}
-      best_in_class: {type: float, desc: Best in class benchmark}
-      our_quartile: {type: str, desc: "Our quartile (1=best, 4=worst)"}
-      variance_pct: {type: float, desc: Variance from median %}
+      cost_line: {type: enum, values: [warehousing, outbound_transport, returns, packaging, total], desc: Logistics cost line}
+      industry_median_pct: {type: float, desc: Industry median as % of sales}
+      best_in_class_pct: {type: float, desc: Best in class as % of sales}
+      source: {type: str, desc: Benchmark source}
+      comparability: {type: enum, values: [high, medium, low], desc: How comparable the benchmark definition is to ours}
+      definition_note: {type: text, desc: How the benchmark definition differs from ours}
       as_of_date: {type: date, desc: Data date}
 
 tools:
   - name: get_site_operating_costs
-    desc: Operating cost base for a site (labour, space, equipment, overhead). Use to understand DC cost structure.
+    desc: Annual operating cost base for one DC by component (labour, space, equipment, overhead) with share of total, units handled and cost per sq ft. Use for business cases.
     kind: sql
     args:
       site_id: {required: true}
     sql: |
-      SELECT site_id, component_type, units_handled, total_cost_gbp, cost_per_unit_gbp
-      FROM cost_components_dc
-      WHERE site_id = $site_id
-      ORDER BY component_type
+      WITH c AS (
+        SELECT site_id, component_type, units_handled, total_cost_gbp, fixed_cost_pct
+        FROM cost_components_dc WHERE site_id = $site_id),
+      t AS (SELECT sum(total_cost_gbp) AS tot, max(units_handled) AS units FROM c)
+      SELECT c.site_id, c.component_type, c.units_handled, c.total_cost_gbp,
+             round(c.total_cost_gbp / t.tot * 100, 1) AS pct_of_site_cost,
+             round(c.total_cost_gbp / c.units_handled, 4) AS cost_per_unit_gbp,
+             round(c.total_cost_gbp / s.sqft, 2) AS cost_per_sqft_gbp
+      FROM c CROSS JOIN t JOIN master.sites s ON s.site_id = c.site_id
+      UNION ALL
+      SELECT c.site_id, 'total', t.units, t.tot, 100.0, round(t.tot / t.units, 4), round(t.tot / s.sqft, 2)
+      FROM (SELECT DISTINCT site_id FROM c) c CROSS JOIN t JOIN master.sites s ON s.site_id = c.site_id
+      ORDER BY CASE component_type WHEN 'labour' THEN 1 WHEN 'space' THEN 2 WHEN 'equipment' THEN 3 WHEN 'overhead' THEN 4 ELSE 5 END
     limit: 10
     example: {site_id: DC1}
 
   - name: get_warehouse_cost_pools
-    desc: Warehouse cost pools and allocation drivers. Shows labour, space, equipment pools and how costs are driven.
+    desc: Cost pools (DC labour, space, equipment, overhead plus network transport, packaging, returns) with annual amount and current active allocation driver. Use to see how costs are spread.
     kind: sql
     args:
       site_id: {}
+      cost_type: {type: str, values: [labour, space, equipment, overhead, transport, packaging, returns], desc: "Only this cost type, e.g. returns"}
     sql: |
-      SELECT p.pool_id, p.name, p.cost_type, p.site_id, p.driver_name, p.current_amount_gbp,
-             d.allocation_base, d.rate_gbp_per_unit
+      SELECT p.pool_id, p.name, p.cost_type, p.site_id, p.current_amount_gbp,
+             d.driver_id, d.allocation_base, d.rate_gbp_per_unit, d.status
       FROM cost_pools p
-      LEFT JOIN allocation_drivers d ON p.driver_name = d.driver_name
+      LEFT JOIN allocation_drivers d ON d.pool_id = p.pool_id AND d.status = 'active'
       WHERE ($site_id IS NULL OR p.site_id = $site_id)
-      ORDER BY p.cost_type, p.pool_id
+        AND ($cost_type IS NULL OR p.cost_type = $cost_type)
+      ORDER BY p.site_id NULLS LAST, p.cost_type, p.pool_id
     limit: 50
     example: {site_id: DC1}
 
   - name: get_dc_cost_per_unit_by_component
-    desc: DC cost per unit split into labour, space, equipment and overhead. Use to analyse cost structure and identify improvement opportunities.
+    desc: One DC's cost per unit split into labour, space, equipment and overhead, against the network average, with variance and excess cost. Use to find where a DC is above network.
     kind: sql
     args:
       site_id: {required: true}
     sql: |
-      SELECT site_id, component_type, units_handled, total_cost_gbp, cost_per_unit_gbp
-      FROM cost_components_dc
-      WHERE site_id = $site_id
-      ORDER BY component_type
-    limit: 20
+      WITH net AS (
+        SELECT component_type, sum(total_cost_gbp) / sum(units_handled) AS net_cpu
+        FROM cost_components_dc GROUP BY component_type),
+      c AS (
+        SELECT site_id, component_type, units_handled, total_cost_gbp, fixed_cost_pct,
+               total_cost_gbp / units_handled AS cpu
+        FROM cost_components_dc WHERE site_id = $site_id),
+      parts AS (
+        SELECT c.site_id, c.component_type, c.units_handled, c.total_cost_gbp, c.cpu, n.net_cpu, c.fixed_cost_pct
+        FROM c JOIN net n USING (component_type)),
+      tot AS (
+        SELECT site_id, 'total' AS component_type, max(units_handled) AS units_handled, sum(total_cost_gbp) AS total_cost_gbp,
+               sum(cpu) AS cpu, sum(net_cpu) AS net_cpu,
+               round(sum(total_cost_gbp * fixed_cost_pct) / sum(total_cost_gbp), 0) AS fixed_cost_pct
+        FROM parts GROUP BY site_id)
+      SELECT site_id, component_type, units_handled, total_cost_gbp, round(cpu, 4) AS cost_per_unit_gbp,
+             round(net_cpu, 4) AS network_avg_cost_per_unit_gbp,
+             round((cpu / net_cpu - 1) * 100, 1) AS variance_vs_network_pct,
+             round((cpu - net_cpu) * units_handled) AS excess_cost_vs_network_gbp,
+             fixed_cost_pct
+      FROM (SELECT * FROM parts UNION ALL SELECT * FROM tot)
+      ORDER BY CASE component_type WHEN 'labour' THEN 1 WHEN 'space' THEN 2 WHEN 'equipment' THEN 3 WHEN 'overhead' THEN 4 ELSE 5 END
+    limit: 10
     example: {site_id: DC1}
 
   - name: get_cost_to_serve_by_channel
-    desc: Cost to serve by channel and cost type. Shows warehousing, transport, packaging, returns per channel as cost per order and per sale.
+    desc: FY26 cost to serve by channel and cost type (warehousing, outbound transport, returns, packaging) with cost per order, per unit, % of sales and a total row per channel with contribution after cost to serve. Returns cost follows the active returns driver.
     kind: sql
-    args: {}
+    args:
+      channel: {}
+      cost_type: {type: str, values: [warehousing, outbound_transport, returns, packaging, total], desc: "Only this cost type, e.g. returns, or total for channel totals"}
     sql: |
-      SELECT channel, cost_type, cost_gbp, units, sales_gbp, cost_per_order_gbp,
-             cost_per_unit_gbp, pct_of_sales
-      FROM channel_costs
-      ORDER BY channel, cost_type
-    limit: 50
+      WITH act AS (
+        SELECT *, sum(returned_orders) OVER () AS ro_t, sum(returned_items) OVER () AS ri_t, sum(units) OVER () AS u_t
+        FROM channel_activity),
+      ret AS (
+        SELECT p.current_amount_gbp AS amt, coalesce(d.allocation_base, 'orders') AS base
+        FROM cost_pools p LEFT JOIN allocation_drivers d ON d.pool_id = p.pool_id AND d.status = 'active'
+        WHERE p.pool_id = 'POOL-RET-NET'),
+      costs AS (
+        SELECT channel, cost_type, cost_gbp FROM channel_costs
+        UNION ALL
+        SELECT a.channel, 'returns', r.amt * CASE r.base WHEN 'items' THEN a.returned_items / a.ri_t
+                 WHEN 'units' THEN a.units / a.u_t ELSE a.returned_orders / a.ro_t END
+        FROM act a CROSS JOIN ret r),
+      lines AS (
+        SELECT c.channel, c.cost_type, c.cost_gbp, a.orders, a.units, a.sales_gbp, a.gross_margin_gbp
+        FROM costs c JOIN act a USING (channel)
+        UNION ALL
+        SELECT c.channel, 'total', sum(c.cost_gbp), max(a.orders), max(a.units), max(a.sales_gbp), max(a.gross_margin_gbp)
+        FROM costs c JOIN act a USING (channel) GROUP BY c.channel)
+      SELECT channel, cost_type, round(cost_gbp) AS cost_gbp, orders, units, sales_gbp,
+             round(cost_gbp / orders, 2) AS cost_per_order_gbp,
+             round(cost_gbp / units, 3) AS cost_per_unit_gbp,
+             round(cost_gbp / sales_gbp * 100, 2) AS pct_of_sales,
+             CASE WHEN cost_type = 'total' THEN gross_margin_gbp END AS gross_margin_gbp,
+             CASE WHEN cost_type = 'total' THEN round(gross_margin_gbp - cost_gbp) END AS contribution_after_cts_gbp,
+             CASE WHEN cost_type = 'total' THEN round((gross_margin_gbp - cost_gbp) / sales_gbp * 100, 1) END AS contribution_pct_of_sales
+      FROM lines
+      WHERE ($channel IS NULL OR channel = $channel) AND ($cost_type IS NULL OR cost_type = $cost_type)
+      ORDER BY channel, CASE cost_type WHEN 'warehousing' THEN 1 WHEN 'outbound_transport' THEN 2 WHEN 'returns' THEN 3
+                                        WHEN 'packaging' THEN 4 ELSE 5 END
+    limit: 30
     example: {}
 
   - name: get_ecom_cost_per_order
-    desc: Activity-based cost per e-commerce order by component (labour, system, transport, returns). Use to analyse order economics and profitability.
+    desc: Activity-based e-commerce cost per order by period, with labour, system, transport and returns per order and the change on the previous period. Use to explain a rise in cost per order.
     kind: sql
     args:
-      cost_period: {type: date, desc: "Period date"}
+      date_from: {type: date, default: "-365d", desc: Earliest period end to show}
+      date_to: {type: date, desc: Latest period end to show}
     sql: |
-      SELECT cost_period, orders_count, total_cost_gbp, labour_cost_gbp, system_cost_gbp,
-             transport_cost_gbp, returns_cost_gbp, cost_per_order_gbp
-      FROM ecom_costs
-      WHERE ($cost_period IS NULL OR cost_period = CAST($cost_period AS DATE))
+      WITH x AS (
+        SELECT cost_period, orders_count,
+               labour_cost_gbp + system_cost_gbp + transport_cost_gbp + returns_cost_gbp AS total_cost_gbp,
+               labour_cost_gbp / orders_count AS labour_po, system_cost_gbp / orders_count AS system_po,
+               transport_cost_gbp / orders_count AS transport_po, returns_cost_gbp / orders_count AS returns_po
+        FROM ecom_costs),
+      y AS (
+        SELECT *, labour_po + system_po + transport_po + returns_po AS cpo,
+               lag(labour_po + system_po + transport_po + returns_po) OVER w AS prev_cpo,
+               lag(labour_po) OVER w AS prev_labour, lag(system_po) OVER w AS prev_system,
+               lag(transport_po) OVER w AS prev_transport, lag(returns_po) OVER w AS prev_returns,
+               lag(orders_count) OVER w AS prev_orders
+        FROM x WINDOW w AS (ORDER BY cost_period))
+      SELECT cost_period, orders_count, round(total_cost_gbp) AS total_cost_gbp, round(cpo, 2) AS cost_per_order_gbp,
+             round(labour_po, 2) AS labour_per_order_gbp, round(system_po, 2) AS system_per_order_gbp,
+             round(transport_po, 2) AS transport_per_order_gbp, round(returns_po, 2) AS returns_per_order_gbp,
+             round(prev_cpo, 2) AS prev_cost_per_order_gbp, round(cpo - prev_cpo, 2) AS change_gbp,
+             round(labour_po - prev_labour, 2) AS labour_change_gbp, round(system_po - prev_system, 2) AS system_change_gbp,
+             round(transport_po - prev_transport, 2) AS transport_change_gbp, round(returns_po - prev_returns, 2) AS returns_change_gbp,
+             orders_count - prev_orders AS orders_change
+      FROM y
+      WHERE cost_period >= CAST($date_from AS DATE) AND ($date_to IS NULL OR cost_period <= CAST($date_to AS DATE))
       ORDER BY cost_period DESC
-    limit: 20
+    limit: 12
     example: {}
 
   - name: get_sku_cost_to_serve
-    desc: Cost to serve per SKU including warehousing, transport and handling. Returns margin vs cost. Flag SKUs where cost exceeds unit margin.
+    desc: Annual cost to serve per SKU (warehousing, transport, handling) against gross margin, giving net margin per unit, worst first. Filter to small SKUs or to loss-makers.
     kind: sql
     args:
       sku: {}
-      margin_threshold_gbp: {type: float, desc: "Only SKUs with margin below this, e.g. -2.0"}
+      size_class: {type: str, values: [small, medium, large], desc: "Pack size from master weight: small up to 0.5 kg, medium up to 1.5 kg, large above"}
+      margin_threshold_gbp: {type: float, desc: "Only SKUs whose net margin per unit is below this: 0 for loss-makers, -2 for losing more than 2 a unit"}
     sql: |
-      SELECT sku, annual_units_sold, annual_sales_gbp, warehousing_cost_gbp, transport_cost_gbp,
-             handling_cost_gbp, total_cost_to_serve_gbp, cost_per_unit_gbp, margin_per_unit_gbp
-      FROM sku_costs
+      WITH x AS (
+        SELECT s.sku, p.name, p.category, p.weight_kg,
+               CASE WHEN p.weight_kg <= 0.5 THEN 'small' WHEN p.weight_kg <= 1.5 THEN 'medium' ELSE 'large' END AS size_class,
+               s.annual_units_sold, p.retail_price_gbp, p.unit_cost_gbp,
+               s.warehousing_cost_gbp, s.transport_cost_gbp, s.handling_cost_gbp,
+               s.warehousing_cost_gbp + s.transport_cost_gbp + s.handling_cost_gbp AS cts
+        FROM sku_costs s JOIN master.products p USING (sku))
+      SELECT sku, name, category, size_class, annual_units_sold, retail_price_gbp,
+             round(annual_units_sold * retail_price_gbp) AS annual_sales_gbp,
+             warehousing_cost_gbp, transport_cost_gbp, handling_cost_gbp,
+             round(cts) AS total_cost_to_serve_gbp,
+             round(cts / annual_units_sold, 2) AS cost_to_serve_per_unit_gbp,
+             round(retail_price_gbp - unit_cost_gbp, 2) AS gross_margin_per_unit_gbp,
+             round(retail_price_gbp - unit_cost_gbp - cts / annual_units_sold, 2) AS net_margin_per_unit_gbp,
+             round(annual_units_sold * (retail_price_gbp - unit_cost_gbp) - cts) AS net_margin_annual_gbp
+      FROM x
       WHERE ($sku IS NULL OR sku = $sku)
-        AND ($margin_threshold_gbp IS NULL OR margin_per_unit_gbp < $margin_threshold_gbp)
-      ORDER BY margin_per_unit_gbp
+        AND ($size_class IS NULL OR size_class = $size_class)
+        AND ($margin_threshold_gbp IS NULL OR retail_price_gbp - unit_cost_gbp - cts / annual_units_sold < $margin_threshold_gbp)
+      ORDER BY net_margin_per_unit_gbp
     limit: 100
-    example: {}
+    example: {size_class: small, margin_threshold_gbp: 0}
 
   - name: get_logistics_cost_by_line
-    desc: Logistics cost lines as percentage of sales, with benchmark comparison. Shows where we are vs industry.
+    desc: Our FY26 logistics cost lines (warehousing, outbound transport, returns, packaging, total) as % of sales against industry median and best in class, furthest above benchmark first, with definition comparability.
     kind: sql
     args: {}
     sql: |
-      SELECT benchmark_id, metric_name, our_value, industry_median, best_in_class,
-             our_quartile, variance_pct
-      FROM logistics_benchmarks
-      ORDER BY metric_name
-    limit: 50
+      WITH act AS (
+        SELECT *, sum(returned_orders) OVER () AS ro_t, sum(returned_items) OVER () AS ri_t, sum(units) OVER () AS u_t
+        FROM channel_activity),
+      ret AS (
+        SELECT p.current_amount_gbp AS amt, coalesce(d.allocation_base, 'orders') AS base
+        FROM cost_pools p LEFT JOIN allocation_drivers d ON d.pool_id = p.pool_id AND d.status = 'active'
+        WHERE p.pool_id = 'POOL-RET-NET'),
+      sales AS (SELECT sum(sales_gbp) AS s FROM channel_activity),
+      lines AS (
+        SELECT cost_type AS cost_line, sum(cost_gbp) AS cost_gbp FROM channel_costs GROUP BY cost_type
+        UNION ALL SELECT 'returns', amt FROM ret),
+      allc AS (
+        SELECT cost_line, cost_gbp FROM lines
+        UNION ALL SELECT 'total', sum(cost_gbp) FROM lines),
+      m AS (
+        SELECT a.cost_line, a.cost_gbp, a.cost_gbp / sales.s * 100 AS our_pct
+        FROM allc a CROSS JOIN sales)
+      SELECT b.cost_line, round(m.cost_gbp) AS our_cost_gbp, round(m.our_pct, 2) AS our_pct_of_sales,
+             b.industry_median_pct, b.best_in_class_pct,
+             round((m.our_pct / b.industry_median_pct - 1) * 100, 1) AS variance_vs_median_pct,
+             round(m.our_pct - b.industry_median_pct, 2) AS gap_vs_median_pts,
+             CASE WHEN m.our_pct <= b.best_in_class_pct THEN 'at or better than best in class'
+                  WHEN m.our_pct <= b.industry_median_pct THEN 'better than median'
+                  ELSE 'worse than median' END AS position,
+             b.comparability, b.definition_note, b.source
+      FROM logistics_benchmarks b JOIN m USING (cost_line)
+      ORDER BY variance_vs_median_pct DESC
+    limit: 10
     example: {}
 
   - name: create_cost_allocation_scenario
-    desc: Saves a named allocation scenario with changed assumptions. Returns the scenario id.
+    desc: Saves a named allocation scenario with changed assumptions (pool changes in percent, optional returns driver). Returns the new scenario id; run calculate_cost_to_serve_scenario on it.
     kind: insert
     table: scenarios
     id_prefix: SCEN-
     args:
-      scenario_name: {required: true, desc: "Name of the scenario, e.g. free returns removed"}
-      base_scenario_id: {desc: "Copy from existing scenario (null = current actuals)"}
-      assumptions: {required: true, desc: "Key assumptions changed, e.g. returns pool reduced 30%"}
-      created_by: {required: true, desc: "Your employee id"}
-    example: {scenario_name: "Free returns removed", assumptions: "Returns allocation reduced by 30%", created_by: "EMP-01234"}
+      scenario_name: {required: true, desc: "Name of the scenario, e.g. Free returns removed"}
+      base_scenario_id: {desc: "Scenario this is based on, e.g. SCEN-000001 (blank = current actuals)"}
+      assumptions: {required: true, desc: "Key assumptions changed, in words"}
+      returns_change_pct: {desc: "Change to the returns pool in percent, e.g. -30"}
+      warehousing_change_pct: {desc: "Change to warehousing cost in percent"}
+      transport_change_pct: {desc: "Change to outbound transport cost in percent"}
+      packaging_change_pct: {desc: "Change to packaging cost in percent"}
+      returns_driver: {desc: "Allocation base for returns in this scenario: orders, items or units"}
+      created_by: {required: true}
+    example: {scenario_name: "Free returns removed 40", assumptions: "Returns pool reduced 40%", returns_change_pct: -40, created_by: "EMP-00085"}
 
   - name: update_cost_allocation_driver
-    desc: Changes the allocation driver for a cost pool (e.g. from units to weight). Does not recalculate; used before running a scenario.
+    desc: Changes a cost pool's allocation base and rate (e.g. returns from orders to items). Does not recalculate; the next cost-to-serve call uses the new driver.
     kind: update
     table: allocation_drivers
-    set: {status: archived}
+    set: {status: active}
     args:
-      driver_id: {required: true}
-      allocation_base: {required: true, type: str, desc: "New allocation base, e.g. weight"}
-      rate_gbp_per_unit: {required: true, type: float, desc: "New rate per unit"}
-    example: {driver_id: DRV-000001, allocation_base: "weight", rate_gbp_per_unit: 0.85}
+      allocation_base: {required: true}
+      rate_gbp_per_unit: {required: true, type: float, desc: "New cost per driver unit in GBP"}
+    example: {driver_id: DRV-000023, allocation_base: items, rate_gbp_per_unit: 7.68}
 
   - name: calculate_cost_to_serve_scenario
-    desc: Cost to serve under a changed policy or allocation. Re-runs calculation with scenario assumptions.
+    desc: Re-runs FY26 cost to serve per channel under a saved scenario's changes (pool changes, returns driver) and compares with current actuals, including contribution after cost to serve.
     kind: sql
     args:
       scenario_id: {required: true}
     sql: |
-      SELECT scenario_id, scenario_name, assumptions,
-             '(Scenario re-calculated with applied assumptions)' AS calculation_basis
-      FROM scenarios
-      WHERE scenario_id = $scenario_id
-      LIMIT 1
+      WITH sc AS (
+        SELECT scenario_id, scenario_name, assumptions, coalesce(returns_change_pct, 0) AS rc,
+               coalesce(warehousing_change_pct, 0) AS wc, coalesce(transport_change_pct, 0) AS tc,
+               coalesce(packaging_change_pct, 0) AS pc, returns_driver
+        FROM scenarios WHERE scenario_id = $scenario_id),
+      act AS (
+        SELECT *, sum(returned_orders) OVER () AS ro_t, sum(returned_items) OVER () AS ri_t, sum(units) OVER () AS u_t
+        FROM channel_activity),
+      ret AS (
+        SELECT p.current_amount_gbp AS amt, coalesce(d.allocation_base, 'orders') AS base
+        FROM cost_pools p LEFT JOIN allocation_drivers d ON d.pool_id = p.pool_id AND d.status = 'active'
+        WHERE p.pool_id = 'POOL-RET-NET'),
+      parts AS (
+        SELECT a.channel, a.orders, a.sales_gbp, a.gross_margin_gbp,
+               sum(CASE WHEN c.cost_type = 'warehousing' THEN c.cost_gbp END) AS wh,
+               sum(CASE WHEN c.cost_type = 'outbound_transport' THEN c.cost_gbp END) AS tr,
+               sum(CASE WHEN c.cost_type = 'packaging' THEN c.cost_gbp END) AS pk,
+               max(r.amt * CASE r.base WHEN 'items' THEN a.returned_items / a.ri_t WHEN 'units' THEN a.units / a.u_t
+                                       ELSE a.returned_orders / a.ro_t END) AS ret_base,
+               max(r.amt * CASE coalesce(s.returns_driver, r.base) WHEN 'items' THEN a.returned_items / a.ri_t
+                                       WHEN 'units' THEN a.units / a.u_t ELSE a.returned_orders / a.ro_t END
+                   * (1 + s.rc / 100.0)) AS ret_scen
+        FROM act a JOIN channel_costs c USING (channel) CROSS JOIN ret r CROSS JOIN sc s
+        GROUP BY a.channel, a.orders, a.sales_gbp, a.gross_margin_gbp),
+      res AS (
+        SELECT p.channel, p.orders, p.sales_gbp, p.gross_margin_gbp, p.ret_base, p.ret_scen,
+               p.wh + p.tr + p.pk + p.ret_base AS base_cts,
+               p.wh * (1 + s.wc / 100.0) + p.tr * (1 + s.tc / 100.0) + p.pk * (1 + s.pc / 100.0) + p.ret_scen AS scen_cts
+        FROM parts p CROSS JOIN sc s),
+      tot AS (
+        SELECT 'total' AS channel, sum(orders) AS orders, sum(sales_gbp) AS sales_gbp, sum(gross_margin_gbp) AS gross_margin_gbp,
+               sum(ret_base) AS ret_base, sum(ret_scen) AS ret_scen, sum(base_cts) AS base_cts, sum(scen_cts) AS scen_cts FROM res)
+      SELECT s.scenario_id, s.scenario_name, r.channel,
+             round(r.ret_base) AS returns_cost_current_gbp, round(r.ret_scen) AS returns_cost_scenario_gbp,
+             round(r.base_cts) AS cts_current_gbp, round(r.scen_cts) AS cts_scenario_gbp,
+             round(r.base_cts - r.scen_cts) AS saving_gbp,
+             round(r.base_cts / r.sales_gbp * 100, 2) AS cts_pct_of_sales_current,
+             round(r.scen_cts / r.sales_gbp * 100, 2) AS cts_pct_of_sales_scenario,
+             round(r.scen_cts / r.orders, 2) AS cts_per_order_scenario_gbp,
+             round(r.gross_margin_gbp - r.base_cts) AS contribution_current_gbp,
+             round(r.gross_margin_gbp - r.scen_cts) AS contribution_scenario_gbp,
+             s.assumptions,
+             'scenario cts = warehousing*(1+wh%) + transport*(1+tr%) + packaging*(1+pk%) + returns pool*(1+ret%) allocated by returns driver' AS formula
+      FROM (SELECT * FROM res UNION ALL SELECT * FROM tot) r CROSS JOIN sc s
+      ORDER BY CASE r.channel WHEN 'store' THEN 1 WHEN 'online' THEN 2 WHEN 'wholesale' THEN 3 ELSE 4 END
     limit: 5
-    example: {scenario_id: SCEN-000001}
+    example: {scenario_id: SCEN-000002}

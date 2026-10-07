@@ -47,6 +47,8 @@ def _periods(as_of):
 def generate(g):
     r = g.rng
     kpis, monthly, sc, tasks, ics = [], [], [], [], []
+    entities = [{k: e[k] for k in ("entity_id", "name", "country", "currency")} for e in g.master("legal_entities")]
+    entities.append({"entity_id": "LE-PL", "name": "Harbour & Vale Polska Sp. z o.o.", "country": "PL", "currency": "PLN"})
 
     for i, (y, m) in enumerate(_periods(g.as_of)):
         period = f"{y}-{m:02d}"
@@ -134,7 +136,7 @@ def generate(g):
         })
 
     return {
-        "close_tasks": tasks, "financial_kpis": kpis, "guidance_and_outlook": guidance,
+        "entities": entities, "close_tasks": tasks, "financial_kpis": kpis, "guidance_and_outlook": guidance,
         "inventory_supply_chain_kpis": sc, "monthly_performance": monthly, "intercompany_items": ics,
         "close_task_reminders": [],
     }
