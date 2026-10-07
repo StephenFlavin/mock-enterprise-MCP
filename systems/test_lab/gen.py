@@ -150,6 +150,10 @@ def generate(g):
 
     # Generate test requests
     test_requests = []
+    # Pre-generate valid IDs so we can reference them
+    sample_ids_for_requests = [f"SMU-{i+1:06d}" for i in range(30)]
+    lot_ids_for_requests = [f"LOT-{i+1:06d}" for i in range(40)]
+
     for i in range(40):
         test_req_id = f"TST-{i+1:06d}"
         test_type = r.choice(["fabric", "material", "sample", "lot", "pack"])
@@ -164,8 +168,8 @@ def generate(g):
             "test_request_id": test_req_id,
             "test_type": test_type,
             "sku": r.choice(skus) if test_type in ["pack", "product"] else None,
-            "sample_id": f"SMU-{i+1:06d}" if test_type == "sample" else None,
-            "lot_id": f"LOT-{i+1:06d}" if test_type == "lot" else None,
+            "sample_id": r.choice(sample_ids_for_requests) if test_type == "sample" else None,
+            "lot_id": r.choice(lot_ids_for_requests) if test_type == "lot" else None,
             "material_name": r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"])
                             if test_type == "material" else None,
             "test_methods": ",".join(test_methods_list),
@@ -185,12 +189,16 @@ def generate(g):
     failure_modes = ["colourfastness", "brittleness", "poor adhesion", "shrinkage", "pilling",
                      "seam failure", "zip failure", "water penetration", "abrasion damage", "tear"]
 
+    # Track valid IDs - we'll generate 30 samples, so only reference those
+    sample_ids_to_use = [f"SMU-{i+1:06d}" for i in range(30)]
+    lot_ids_to_use = [f"LOT-{i+1:06d}" for i in range(40)]
+
     for i in range(200):
         test_result_id = f"RES-{i+1:06d}"
         test_method = r.choice(test_methods)
         sku = r.choice(skus) if r.random() > 0.3 else None
-        sample_id = f"SMU-{r.randint(1, 40):06d}" if r.random() > 0.4 else None
-        lot_id = f"LOT-{r.randint(1, 40):06d}" if r.random() > 0.3 else None
+        sample_id = r.choice(sample_ids_to_use) if r.random() > 0.4 else None
+        lot_id = r.choice(lot_ids_to_use) if r.random() > 0.3 else None
         material_name = r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"]) \
                        if r.random() > 0.4 else None
 

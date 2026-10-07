@@ -265,7 +265,7 @@ def generate(g):
             dwell_history_append = {
                 'port_code': port_code,
                 'dwell_id': f"DWEL-{len(port_dwell_history) + 1:06d}",
-                'arrival_date': (g.as_of - timedelta(days=days_ago)).date(),
+                'arrival_date': g.as_of - timedelta(days=days_ago),
                 'dwell_hours': r.uniform(12, 144),
                 'vessel_count': r.randint(1, 8),
                 'congestion_status': r.choice(['low', 'medium', 'high'])
@@ -277,17 +277,20 @@ def generate(g):
         for pred_idx in range(r.randint(3, 6)):
             days_ago = r.randint(1, 30)
             pred_date = g.as_of - timedelta(days=days_ago)
-            actual_eta = ship.get('actual_arrival') or (g.as_of + timedelta(days=r.randint(1, 20)))
-            pred_eta = actual_eta + timedelta(hours=r.randint(-48, 72))
+            actual_arr = ship.get('actual_arrival')
+            if actual_arr is None:
+                actual_arr = datetime.combine(g.as_of + timedelta(days=r.randint(1, 20)), datetime.min.time())
+            actual_eta = actual_arr if isinstance(actual_arr, datetime) else datetime.combine(actual_arr, datetime.min.time())
+            pred_eta_dt = actual_eta + timedelta(hours=r.randint(-48, 72))
 
             eta_predictions.append({
                 'prediction_id': f"ETA-{len(eta_predictions) + 1:06d}",
                 'vessel_id': ship['vessel_id'],
                 'route': ship['route'],
-                'prediction_date': pred_date.date() if isinstance(pred_date, datetime) else pred_date,
-                'predicted_eta': pred_eta,
+                'prediction_date': pred_date,
+                'predicted_eta': pred_eta_dt,
                 'actual_eta': actual_eta,
-                'eta_accuracy_hours': float((actual_eta - pred_eta).total_seconds() / 3600)
+                'eta_accuracy_hours': float((actual_eta - pred_eta_dt).total_seconds() / 3600)
             })
 
     return {

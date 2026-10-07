@@ -19,8 +19,10 @@ def generate(g):
     # Generate incident tickets
     incident_tickets = []
     for i in range(50):
-        raised = g.date_between(g.days_ago(60), g.days_ago(0))
-        resolved = g.date_between(raised, g.days_ago(0)) if g.rng.random() > 0.3 else None
+        days_ago_raised = g.rng.randint(1, 60)
+        raised = g.days_ago(days_ago_raised)
+        days_ago_resolved = g.rng.randint(0, days_ago_raised - 1) if g.rng.random() > 0.3 else None
+        resolved = g.days_ago(days_ago_resolved) if days_ago_resolved is not None else None
         incident_tickets.append({
             "incident_id": f"INC-{900000 + i:06d}",
             "title": g.fake.sentence(nb_words=5),
@@ -37,11 +39,24 @@ def generate(g):
     # Generate change requests
     change_requests = []
     for i in range(40):
-        created = g.date_between(g.days_ago(90), g.days_ago(0))
-        planned = g.date_between(created, g.days_ago(-30))
-        submitted = g.date_between(created, planned) if g.rng.random() > 0.2 else None
-        approved = g.date_between(submitted, planned) if submitted and g.rng.random() > 0.3 else None
-        implemented = g.date_between(approved, planned) if approved and g.rng.random() > 0.4 else None
+        days_ago_created = g.rng.randint(1, 90)
+        created = g.days_ago(days_ago_created)
+        planned = g.days_ago(g.rng.randint(-30, days_ago_created - 1))
+
+        submitted = None
+        submitted_days = g.rng.randint(days_ago_created - 1, 0) if g.rng.random() > 0.2 else None
+        if submitted_days is not None:
+            submitted = g.days_ago(submitted_days)
+
+        approved = None
+        if submitted and g.rng.random() > 0.3:
+            approved = g.days_ago(g.rng.randint(min(submitted_days - 1, 0), 0)) if submitted_days > 0 else g.days_ago(0)
+
+        implemented = None
+        if approved and g.rng.random() > 0.4:
+            impl_days = g.rng.randint(0, max(0, submitted_days - 1)) if submitted_days and submitted_days > 0 else 0
+            implemented = g.days_ago(impl_days)
+
         status = "implemented" if implemented else ("approved" if approved else ("submitted" if submitted else "draft"))
         change_requests.append({
             "change_id": f"CHG-{900000 + i:06d}",
@@ -64,8 +79,10 @@ def generate(g):
     sites_list = g.master("sites")
     for i in range(30):
         site = g.pick(sites_list, k=1)[0]
-        raised = g.date_between(g.days_ago(30), g.days_ago(0))
-        resolved = g.date_between(raised, g.days_ago(0)) if g.rng.random() > 0.4 else None
+        days_ago_raised = g.rng.randint(1, 30)
+        raised = g.days_ago(days_ago_raised)
+        days_ago_resolved = g.rng.randint(0, days_ago_raised - 1) if g.rng.random() > 0.4 else None
+        resolved = g.days_ago(days_ago_resolved) if days_ago_resolved is not None else None
         fault_tickets.append({
             "fault_id": f"FLT-{900000 + i:06d}",
             "site_id": site["site_id"],
@@ -82,8 +99,10 @@ def generate(g):
     # Generate site errors
     site_errors = []
     for i in range(40):
-        first_seen = g.date_between(g.days_ago(30), g.days_ago(0))
-        last_seen = g.date_between(first_seen, g.days_ago(0))
+        first_days_ago = g.rng.randint(1, 30)
+        first_seen = g.days_ago(first_days_ago)
+        last_days_ago = g.rng.randint(0, first_days_ago - 1)
+        last_seen = g.days_ago(last_days_ago)
         site_errors.append({
             "error_id": f"ERR-{900000 + i:06d}",
             "site_id": g.rng.choice(sites),
@@ -101,9 +120,14 @@ def generate(g):
     # Generate security remediation tasks
     security_tasks = []
     for i in range(25):
-        created = g.date_between(g.days_ago(60), g.days_ago(0))
-        due = g.date_between(created, g.days_ago(-30))
-        completed = g.date_between(created, due) if g.rng.random() > 0.5 else None
+        created_days = g.rng.randint(1, 60)
+        created = g.days_ago(created_days)
+        due = g.days_ago(g.rng.randint(-30, max(-1, created_days - 7)))
+
+        completed = None
+        if g.rng.random() > 0.5:
+            completed = g.days_ago(g.rng.randint(0, max(0, created_days - 1)))
+
         security_tasks.append({
             "task_id": f"SEC-{900000 + i:06d}",
             "finding_id": f"VULN-{g.rng.randint(1, 200):03d}",

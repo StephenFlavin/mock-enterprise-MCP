@@ -293,14 +293,15 @@ def generate(g):
             supplier_payments.append(payment)
             payment_id += 1
 
-    # Generate goods receipt vs invoice variances
+    # Generate goods receipt vs invoice variances - use actual invoice IDs
     variance_id = 1
-    for po in pos[:15]:
-        if r.random() < 0.3:
+    supplier_invoices = [inv for inv in invoices if inv["invoice_type"] == "supplier"]
+    for i, po in enumerate(pos[:15]):
+        if r.random() < 0.3 and i < len(supplier_invoices):
             variance = {
                 "variance_id": f"VAR-{variance_id:06d}",
                 "po_id": po["po_id"],
-                "invoice_id": f"INV-{r.randint(1, 40):06d}",
+                "invoice_id": supplier_invoices[i]["invoice_id"],
                 "grn_quantity": r.randint(100, 1000),
                 "invoice_quantity": r.randint(100, 1000),
                 "quantity_variance": r.randint(-50, 50),

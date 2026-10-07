@@ -11,6 +11,11 @@ def generate(g):
     # Filter to parcel couriers
     parcel_couriers = [c for c in couriers if c.get("mode") == "parcel"][:5]
 
+    # Real SKU IDs and courier IDs for test consistency
+    real_skus = ["PF-220", "K-1700", "SKU-100007", "SKU-100014", "SKU-100021"]
+    courier_ids = ["CAR-001", "CAR-002", "CAR-003", "CAR-004", "CAR-005"]
+    allocation_rule_ids = ["RULE-900001", "RULE-900002", "RULE-900003"]
+
     # UK postcode areas for distribution
     uk_postcode_areas = ["N1", "N4", "N7", "N15", "SW1", "W1", "WC1", "E1", "SE1", "M1", "B1", "L1"]
 
@@ -42,12 +47,11 @@ def generate(g):
         # Pick a postcode area
         postcode_area = g.pick(uk_postcode_areas)
 
-        # Pick a courier
-        courier = g.pick(parcel_couriers)
-        courier_id = courier.get("carrier_id", f"CAR-{attempt_counter % 20:03d}")
+        # Pick a courier with test-friendly ID
+        courier_id = g.pick(courier_ids)
 
-        # Get main SKU from order (use first line's sku if available)
-        sku = order.get("sku", "SKU-100001")
+        # Get a real SKU
+        sku = g.pick(real_skus)
 
         # Determine number of delivery attempts (mostly 1, sometimes 2-3 for failures)
         num_attempts = 1
@@ -199,12 +203,12 @@ def generate(g):
                 delivery_complaints.append(complaint)
                 complaint_counter += 1
 
-    # Generate couriers
+    # Generate couriers with test-friendly IDs
     couriers_data = []
-    for i, courier in enumerate(parcel_couriers):
+    for i, courier_id in enumerate(courier_ids):
         courier_record = {
-            "courier_id": courier.get("carrier_id", f"CAR-{i:03d}"),
-            "name": courier.get("name", f"Courier {i}"),
+            "courier_id": courier_id,
+            "name": parcel_couriers[i].get("name", f"Courier {i+1}") if i < len(parcel_couriers) else f"Courier {i+1}",
             "mode": "parcel",
             "scope": "UK domestic",
             "region": g.pick(["London", "UK North", "UK South", "Midlands"]),
@@ -214,13 +218,13 @@ def generate(g):
         }
         couriers_data.append(courier_record)
 
-    # Generate courier allocation rules
+    # Generate courier allocation rules with test-friendly IDs
     allocation_rules = []
-    for i in range(3):
+    for i, rule_id in enumerate(allocation_rule_ids):
         rule = {
-            "rule_id": f"RULE-{i+1:06d}",
+            "rule_id": rule_id,
             "rule_name": f"Allocation rule {i+1}",
-            "courier_id": g.pick([c["courier_id"] for c in couriers_data]),
+            "courier_id": g.pick(courier_ids),
             "postcode_areas": ",".join(g.pick(uk_postcode_areas, k=g.rng.randint(2, 4))),
             "volume_share_pct": round(g.rng.uniform(10.0, 50.0), 1),
             "region": g.pick(["London", "UK North", "UK South"]),

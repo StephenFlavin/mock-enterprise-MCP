@@ -491,7 +491,7 @@ def generate(g):
                 if g.rng.random() < 0.3:
                     due_date = g.as_of - timedelta(days=r.randint(1, 30))
                 supplier_doc_requirements.append({
-                    "requirement_id": f"DREQ-{doc_req_id:06d}",
+                    "doc_requirement_id": f"DREQ-{doc_req_id:06d}",
                     "supplier_id": supplier["supplier_id"],
                     "jurisdiction": jurisdiction,
                     "document_type": doc_type,
