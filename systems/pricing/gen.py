@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 def generate(g):
     r = g.rng
-    categories = ["kitchenware", "apparel", "home", "small_appliances", "garden", "outdoor"]
+    categories = ["Cookware", "Outerwear", "Bedding", "Audio", "Jewellery", "Footwear"]
     skus = [prod["sku"] for prod in g.master("products")[:100]]
 
     promotions, markdown_events, price_changes, price_tests = [], [], [], []

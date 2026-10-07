@@ -237,7 +237,7 @@ def generate(g):
     for i in range(1, 3):
         mep_id = f"MEP-{i:06d}"
         result["market_entry_projects"].append({
-            "project_id": mep_id,
+            "market_project_id": mep_id,
             "title": g.fake.sentence(),
             "countries": g.pick(["PL;CZ", "DE;AT", "FR;BE", "ES;PT"]),
             "owner_id": pick_employee(),
@@ -425,7 +425,7 @@ def generate(g):
     for i in range(1, 6):
         ipt_id = f"IPT-{i:06d}"
         result["implementation_projects"].append({
-            "project_id": ipt_id,
+            "impl_project_id": ipt_id,
             "title": g.fake.sentence(),
             "system_name": g.pick(["ESG Platform", "Data Lake", "ML Model", "EDI Integration"]),
             "owner_id": pick_employee(),
