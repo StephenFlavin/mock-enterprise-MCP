@@ -51,7 +51,7 @@ def _traffic(g):
                     if d == g.days_ago(5):  # Wed 30 Sep: error starts 17:40
                         rate *= 0.88
                     elif d >= g.days_ago(4):  # Thu 1 Oct onward
-                        rate *= 0.72
+                        rate *= 0.70
                 rate *= r.uniform(0.97, 1.03)
                 orders = int(round(sessions * rate))
                 revenue = round(orders * AOV[dev] * r.uniform(0.97, 1.03), 2)

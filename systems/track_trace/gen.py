@@ -48,13 +48,13 @@ DISRUPTIONS = [
     # history, resolved: used to flag disrupted sailings in the transit history
     ("DIS-900020", 52, 8, "weather", "Asia - East China Sea", "high", "resolved", 4, 48, "CNSHA,CNNGB",
      "Typhoon closed Shanghai and Ningbo to vessel traffic for several days"),
-    ("DIS-900021", 84, 9, "congestion", "UK - Felixstowe", "high", "resolved", 5, 70, "GBFXT",
+    ("DIS-900021", 85, 9, "congestion", "UK - Felixstowe", "high", "resolved", 5, 77, "GBFXT",
      "Felixstowe terminal queue of 25 ships after a crane outage"),
     ("DIS-900022", 111, 7, "labor_action", "Germany - Hamburg", "medium", "resolved", 3, 108, "DEHAM,NLRTM",
      "Hamburg and Rotterdam dock strike, two days of stoppages"),
     ("DIS-900023", 36, 12, "weather", "Vietnam - Ho Chi Minh City", "medium", "resolved", 3, 33, "VNSGN",
      "Tropical storm closed Ho Chi Minh City port for 36 hours"),
-    ("DIS-900024", 154, 8, "vessel_delay", "Asia - Europe via Cape", "high", "resolved", 6, 124, "CNSHA,CNNGB,CNYTN,VNSGN",
+    ("DIS-900024", 138, 8, "vessel_delay", "Asia - Europe via Cape", "high", "resolved", 5, 131, "CNSHA,CNNGB,CNYTN,VNSGN",
      "Asia-Europe sailings diverted via the Cape of Good Hope for security reasons, about a week added"),
     ("DIS-900025", 168, 10, "customs_hold", "UK - Southampton", "medium", "resolved", 3, 165, "GBSOU",
      "Customs clearance backlog at Southampton after a system migration"),
@@ -83,7 +83,7 @@ PORT_STORY = {
 
 # (origin, dest, service, planned_days, mean_delay_start, mean_delay_end, sd)
 LANES = [
-    ("CNSHA", "GBFXT", "FAL9", 28, 1.2, 3.6, 1.8),
+    ("CNSHA", "GBFXT", "FAL9", 28, 0.6, 2.8, 1.4),
     ("CNYTN", "GBFXT", "FAL7", 30, 0.6, 1.8, 1.6),
     ("CNNGB", "GBSOU", "AE5", 31, 0.5, 0.9, 1.4),
     ("CNSHA", "NLRTM", "AE1", 33, 0.8, 1.6, 1.8),
@@ -92,7 +92,7 @@ LANES = [
     ("BDCGP", "GBFXT", "BX1", 34, 1.0, 2.6, 2.0),
 ]
 OCEAN = ["CAR-005", "CAR-006", "CAR-007"]
-CAR_EXTRA = {"CAR-006": 1.5}  # Pacific Star Shipping runs later than the others
+CAR_EXTRA = {"CAR-006": 1.2}  # Pacific Star Shipping runs later than the others
 CURRENT_BUFFER = {("CNSHA", "GBFXT", "FAL9"): 2.0}
 
 
