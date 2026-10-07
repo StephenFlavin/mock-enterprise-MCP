@@ -1,307 +1,313 @@
-"""Container visibility and ocean freight tracking data."""
-from datetime import datetime, timedelta
-import hashlib
+"""Container visibility data, grounded in master sea shipments.
+
+Every non-delivered master sea shipment becomes one or more 40ft containers (contents split from the
+PO lines). The 140 containers on the vessel anchored outside Rotterdam are real Asia-to-UK shipments.
+Port status, rail legs and option rates are hand-written in seed/*.csv; history (disruptions, transit
+times, dwell, ETA predictions) is generated here with planted patterns.
+"""
+import math
+from collections import defaultdict
+from datetime import datetime, time, timedelta
+
+STORY_VESSEL = "CONT-VESSEL-900001"
+STORY_CONTAINERS = 140
+FX = {"GBP": 1.0, "USD": 0.78, "EUR": 0.86}
+ASIA_ORIGINS = ("CNSHA", "CNYTN", "CNNGB", "VNSGN")
+STATUS_MAP = {"in_transit": "in_transit", "at_port": "at_port", "delayed": "delayed",
+              "customs_hold": "at_port", "booked": "booked"}
 
 
 def generate(g):
     r = g.rng
+    today = datetime.combine(g.as_of, time(9, 0))
 
-    # Key ports by region
-    ports = {
-        'SHA': {'name': 'Shanghai', 'region': 'Southeast Asia'},
-        'ROT': {'name': 'Rotterdam', 'region': 'Northern Europe'},
-        'HKG': {'name': 'Hong Kong', 'region': 'Southeast Asia'},
-        'SIN': {'name': 'Singapore', 'region': 'Southeast Asia'},
-        'DXB': {'name': 'Dubai', 'region': 'Middle East'},
-        'HCM': {'name': 'Ho Chi Minh City', 'region': 'Southeast Asia'},
-        'BKK': {'name': 'Bangkok', 'region': 'Southeast Asia'},
-        'VAL': {'name': 'Valencia', 'region': 'Southern Europe'},
-        'HAM': {'name': 'Hamburg', 'region': 'Northern Europe'},
-        'BNE': {'name': 'Brisbane', 'region': 'Oceania'},
-    }
+    def ago(days=0, hours=0):
+        return today - timedelta(days=days, hours=hours)
 
-    # Get sea POs from master
-    sea_pos = [po for po in g.master("purchase_orders")
-               if po["mode"] == "sea" and po["status"] in ("open", "confirmed", "shipped")]
+    # ---------------------------------------------------------------- containers from master
+    ships = sorted((s for s in g.master("shipments") if s["mode"] == "sea" and s["status"] != "delivered"),
+                   key=lambda s: s["shipment_id"])
+    pos = {p["po_id"]: p for p in g.master("purchase_orders")}
+    po_lines = defaultdict(list)
+    for ln in g.master("po_lines"):
+        po_lines[ln["po_id"]].append(ln)
 
-    # Map suppliers to origin ports
-    suppliers = g.master("suppliers")
-    supplier_by_id = {s["supplier_id"]: s for s in suppliers}
+    n_cont = {s["shipment_id"]: max(1, math.ceil(float(s["teu"]) * 4)) for s in ships}
 
-    def supplier_origin_port(supplier_id):
-        sup = supplier_by_id.get(supplier_id)
-        if not sup:
-            return 'SHA'
-        country = sup.get('country', 'CN')
-        country_ports = {
-            'CN': 'SHA', 'VN': 'HCM', 'IN': 'DXB', 'TR': 'DXB', 'IT': 'ROT',
-            'FR': 'HAM', 'DE': 'HAM', 'GB': 'ROT', 'MX': 'DXB'
-        }
-        return country_ports.get(country, 'SHA')
+    # the 140 containers on the anchored vessel: earliest-sailed Asia->UK shipments, not booked
+    story = {}
+    cand = sorted((s for s in ships if s["origin_port"] in ASIA_ORIGINS and s["dest_port"].startswith("GB")
+                   and s["status"] != "booked" and s["etd"] <= "2026-09-20"), key=lambda s: (s["etd"], s["shipment_id"]))
+    left = STORY_CONTAINERS
+    for s in cand:
+        if left <= 0:
+            break
+        k = min(n_cont[s["shipment_id"]], left)
+        n_cont[s["shipment_id"]] = k
+        story[s["shipment_id"]] = k
+        left -= k
 
-    vessels = []
-    container_shipments = []
-    container_contents = []
-    port_status = []
-    transit_history = []
-    disruptions = []
-    disruption_costs = []
-    rail_segments = []
-    port_dwell_history = []
-    eta_predictions = []
+    def transship_for(s):
+        if s["shipment_id"] in story:
+            return "NLRTM"
+        if s["dest_port"].startswith("GB") and s["origin_port"] in ("INNSA", "BDCGP"):
+            return "DEHAM"
+        return None
 
-    # Create port status (current)
-    for port_code, port_info in ports.items():
-        congestion = r.choice(['low', 'low', 'medium', 'high'])
-        status = 'open'
-        if congestion == 'high':
-            status = r.choice(['open', 'congested'])
-        port_status.append({
-            'port_code': port_code,
-            'port_name': port_info['name'],
-            'region': port_info['region'],
-            'status': status,
-            'current_wait_hours': r.uniform(6, 48) if congestion in ['medium', 'high'] else r.uniform(0, 12),
-            'congestion_level': congestion,
-            'vessels_waiting': r.randint(0, 15) if congestion == 'high' else r.randint(0, 5),
-            'avg_dwell_hours': r.uniform(24, 120) if congestion == 'high' else r.uniform(12, 48),
-            'status_updated_at': g.as_of + timedelta(hours=-r.randint(1, 12))
-        })
+    # vessels: story vessel + one per (origin, destination, transship) group of the rest
+    groups = defaultdict(list)
+    for s in ships:
+        if s["status"] == "booked":
+            continue
+        key = STORY_VESSEL if s["shipment_id"] in story else (s["origin_port"], s["dest_port"], transship_for(s))
+        groups[key].append(s)
 
-    # Create vessels and associated shipments
-    routes = [
-        ('SHA', 'ROT', 'China-Europe'),
-        ('SHA', 'HAM', 'China-Europe'),
-        ('HKG', 'ROT', 'China-Europe'),
-        ('HCM', 'ROT', 'Vietnam-Europe'),
-        ('SIN', 'ROT', 'Singapore-Europe'),
-        ('BKK', 'HAM', 'Thailand-Europe'),
-        ('DXB', 'ROT', 'Middle East-Europe'),
-    ]
+    containers, contents, vessels = [], [], []
+    vessel_names = ["Maersk Halden", "CMA CGM Vela", "Ever Gentle", "MSC Aurelia", "Cosco Pacific", "ONE Harmony",
+                    "Hapag Elbe", "Yang Ming Unity", "OOCL Tianjin", "Wan Hai 312", "Evergreen Triton",
+                    "ZIM Antwerp", "Hyundai Brave", "APL Singapura", "Seaspan Amazon", "Pacific Trader",
+                    "Nordic Star", "Tasman Bridge", "Delta Voyager", "Coral Sun", "Atlantic Gull", "Bengal Pearl"]
+    keys = [STORY_VESSEL] + sorted(k for k in groups if k != STORY_VESSEL)
 
-    # Filter POs by destination site and create shipments
-    po_idx = 0
-    for route_origin, route_dest, route_name in routes:
-        for vessel_num in range(2):
-            vessel_id = f"CONT-VESSEL-{len(vessels) + 1:03d}"
-            vessel_name = f"{route_name.split('-')[0]}-{vessel_num+1:02d}"
+    def expand(s, n):
+        po = pos[s["po_id"]]
+        fx = FX.get(po["currency"], 1.0)
+        lines = po_lines[s["po_id"]]
+        per = [[] for _ in range(n)]
+        if n >= len(lines):
+            for j, ln in enumerate(lines):
+                idx = [i for i in range(n) if i % len(lines) == j]
+                q = int(ln["qty_ordered"])
+                base = q // len(idx)
+                for t, i in enumerate(idx):
+                    per[i].append((ln["sku"], base + (q - base * len(idx) if t == 0 else 0), float(ln["unit_cost"]) * fx))
+        else:
+            for j, ln in enumerate(lines):
+                per[j % n].append((ln["sku"], int(ln["qty_ordered"]), float(ln["unit_cost"]) * fx))
+        return po, per
 
-            # Vessel currently in transit
-            days_into_route = r.randint(5, 20)
-            depart_time = g.as_of - timedelta(days=days_into_route)
-            eta_time = g.as_of + timedelta(days=r.randint(3, 10))
+    for vi, key in enumerate(keys):
+        members = groups.get(key, [])
+        if not members:
+            continue
+        story_v = key == STORY_VESSEL
+        vessel_id = STORY_VESSEL if story_v else f"CONT-VESSEL-{vi + 1:03d}"
+        v_containers = []
+        for s in members:
+            po, per = expand(s, n_cont[s["shipment_id"]])
+            transship = transship_for(s)
+            lane = ("Asia-UK" if s["dest_port"].startswith("GB") and s["origin_port"] != "MXZLO"
+                    else "Americas-UK" if s["dest_port"].startswith("GB")
+                    else "Asia-US" if s["dest_port"] == "USNYC" else "Asia-Europe")
+            status = "delayed" if story_v else STATUS_MAP[s["status"]]
+            for lines in per:
+                cid = f"CONT-{len(containers) + 1:06d}"
+                value = 0.0
+                for ln_no, (sku, qty, unit) in enumerate(lines, 1):
+                    total = round(qty * unit, 2)
+                    value += total
+                    contents.append({"container_id": cid, "line_number": ln_no, "sku": sku, "quantity": qty,
+                                     "unit_cost_gbp": round(unit, 2), "total_value_gbp": total})
+                arrived = None
+                if status == "at_port":
+                    arrived = ago(days=r.randint(0, 3), hours=r.randint(0, 12))
+                row = {"container_id": cid, "shipment_id": s["shipment_id"], "vessel_id": vessel_id,
+                       "origin_port": s["origin_port"], "destination_port": s["dest_port"],
+                       "next_port": transship or s["dest_port"], "route": lane, "transship_port": transship,
+                       "container_type": "40ft" if r.random() < 0.8 else "20ft", "status": status,
+                       "actual_arrival": arrived, "destination_site_id": po["dest_site_id"],
+                       "value_gbp": round(value, 2), "booking_date": po["order_date"],
+                       "updated_at": ago(hours=r.randint(1, 36))}
+                containers.append(row)
+                v_containers.append(row)
+        if story_v:
+            vessels.append({"vessel_id": vessel_id, "name": "Asia Express 01", "carrier_id": "CAR-007",
+                            "current_port": "NLRTM", "berth_status": "anchored",
+                            "current_position": "51.98N, 3.95E", "eta_port": "NLRTM",
+                            "eta_timestamp": ago(days=6, hours=1), "eta_berth_timestamp": None,
+                            "anchored_since": ago(days=6, hours=1), "delay_days": 6.0,
+                            "container_count": len(v_containers), "updated_at": ago(hours=2)})
+            continue
+        etas = [datetime.fromisoformat(m["eta"]) + timedelta(hours=14) for m in members]
+        eta = max(etas)
+        at_port = sum(1 for c in v_containers if c["status"] == "at_port") * 2 > len(v_containers)
+        dest = members[0]["dest_port"]
+        port = "NLRTM" if dest == "NLRTM" else transship_for(members[0]) or dest
+        overdue = eta < today
+        berth = "at_berth" if at_port else "underway"
+        vessels.append({"vessel_id": vessel_id, "name": vessel_names[vi % len(vessel_names)],
+                        "carrier_id": members[0]["carrier_id"] if members[0]["carrier_id"] in ("CAR-005", "CAR-006", "CAR-007") else ("CAR-005", "CAR-006", "CAR-007")[vi % 3],
+                        "current_port": port if at_port else "At Sea", "berth_status": berth,
+                        "current_position": (f"{r.uniform(20, 55):.2f}N, {r.uniform(-20, 110):.2f}E" if not at_port else ""),
+                        "eta_port": port, "eta_timestamp": eta, "eta_berth_timestamp": eta + timedelta(hours=r.randint(6, 20)),
+                        "anchored_since": None,
+                        "delay_days": float(max(0, math.ceil((today - eta).total_seconds() / 86400))) if overdue else 0.0,
+                        "container_count": len(v_containers), "updated_at": ago(hours=r.randint(1, 24))})
 
-            current_status = r.choice(['underway', 'anchored', 'underway'])
-            current_port = route_dest if current_status == 'anchored' else 'At Sea'
+    # booked shipments: containers exist but are not yet on a vessel
+    for s in ships:
+        if s["status"] != "booked":
+            continue
+        po, per = expand(s, n_cont[s["shipment_id"]])
+        lane = "Asia-UK" if s["dest_port"].startswith("GB") else "Asia-Europe"
+        for lines in per:
+            cid = f"CONT-{len(containers) + 1:06d}"
+            value = 0.0
+            for ln_no, (sku, qty, unit) in enumerate(lines, 1):
+                total = round(qty * unit, 2)
+                value += total
+                contents.append({"container_id": cid, "line_number": ln_no, "sku": sku, "quantity": qty,
+                                 "unit_cost_gbp": round(unit, 2), "total_value_gbp": total})
+            containers.append({"container_id": cid, "shipment_id": s["shipment_id"], "vessel_id": None,
+                               "origin_port": s["origin_port"], "destination_port": s["dest_port"],
+                               "next_port": s["dest_port"], "route": lane, "transship_port": transship_for(s),
+                               "container_type": "40ft", "status": "booked", "actual_arrival": None,
+                               "destination_site_id": po["dest_site_id"], "value_gbp": round(value, 2),
+                               "booking_date": po["order_date"], "updated_at": ago(days=1)})
 
-            vessels.append({
-                'vessel_id': vessel_id,
-                'name': vessel_name,
-                'current_port': current_port,
-                'berth_status': current_status,
-                'current_position': f"{r.uniform(40, 60):.2f}N, {r.uniform(-20, 30):.2f}E",
-                'eta_port': route_dest,
-                'eta_timestamp': eta_time,
-                'eta_berth_timestamp': eta_time + timedelta(hours=r.randint(6, 24)),
-                'container_count': 0,
-                'updated_at': g.as_of - timedelta(hours=r.randint(1, 48))
-            })
+    # ---------------------------------------------------------------- disruptions (history + current)
+    disruptions, costs = [], []
 
-            # Add containers to this vessel
-            containers_per_vessel = r.randint(30, 80)
-            for cont_idx in range(containers_per_vessel):
-                if po_idx >= len(sea_pos):
-                    break
-                po = sea_pos[po_idx]
-                po_idx += 1
+    def disr(did, kind, port, region, start_days_ago, dur, n, desc):
+        start = g.as_of - timedelta(days=start_days_ago)
+        disruptions.append({"disruption_id": did, "event_type": kind, "affected_port": port, "region": region,
+                            "start_date": start, "end_date": start + timedelta(days=dur), "duration_days": dur,
+                            "containers_affected": n, "description": desc})
 
-                origin_port = supplier_origin_port(po['supplier_id'])
-                container_id = f"CONT-{len(container_shipments) + 1:06d}"
-                shipment_id = f"SHP-{len(container_shipments) // 4 + 1:07d}"
+    def cost(did, kind, n, per):
+        costs.append({"cost_id": f"COST-{len(costs) + 1:06d}", "disruption_id": did, "cost_type": kind,
+                      "cost_gbp": round(n * per, 2), "containers_affected": n, "cost_per_container_gbp": per})
 
-                # Determine if container is already at destination or still in transit
-                days_since_ship = (g.as_of - datetime.fromisoformat(po['ship_date']).date()).days
-                est_transit = r.randint(20, 40)
+    # past events (weather first: lead-time impact is planted in transit_history below)
+    disr("DISR-000001", "weather", "CNYTN", "East Asia", 41, 4, 96, "Typhoon closed Yantian terminals; departures held")
+    disr("DISR-000002", "weather", "VNSGN", "Southeast Asia", 63, 6, 71, "Typhoon closed Ho Chi Minh City terminals")
+    disr("DISR-000003", "weather", "BDCGP", "South Asia", 110, 5, 58, "Cyclone halted Chittagong port operations")
+    disr("DISR-000004", "weather", "INNSA", "South Asia", 82, 7, 44, "Monsoon flooding cut road and rail access to Nhava Sheva")
+    disr("DISR-000005", "weather", "CNSHA", "East Asia", 150, 3, 84, "Typhoon suspended Shanghai Yangshan loading")
+    disr("DISR-000006", "weather", "NLRTM", "Northern Europe", 190, 2, 30, "Storm surge barrier closure at Rotterdam")
+    disr("DISR-000007", "strike", "DEHAM", "Northern Europe", 120, 3, 62, "Dockworker strike at Hamburg terminals")
+    disr("DISR-000008", "strike", "NLRTM", "Northern Europe", 230, 5, 110, "Lashing crews strike at Rotterdam")
+    disr("DISR-000009", "strike", "GBFXT", "UK", 300, 4, 75, "Felixstowe port workers strike")
+    disr("DISR-000010", "closure", "VNSGN", "Southeast Asia", 175, 7, 98, "Terminal closed after quay crane collapse")
+    disr("DISR-000011", "congestion", "NLRTM", "Northern Europe", 118, 12, 118, "Rotterdam berth congestion; vessels anchored up to five days")
+    disr("DISR-000012", "congestion", "GBFXT", "UK", 200, 9, 64, "Felixstowe yard congestion after peak arrivals")
+    disr("DISR-000013", "congestion", "DEHAM", "Northern Europe", 175, 8, 52, "Hamburg terminal congestion from Elbe low water")
+    disr("DISR-000014", "geopolitical", "INNSA", "South Asia", 260, 40, 160, "Red Sea security diversions lengthened India-Europe sailings")
+    disr("DISR-000015", "mechanical", "NLRTM", "Northern Europe", 95, 4, 40, "Quay crane failures reduced berth productivity")
+    # current and scheduled events (end_date on or after today)
+    disr("DISR-900001", "congestion", "NLRTM", "Northern Europe", 6, 20, 140,
+         "Berth shortage and yard saturation; vessels anchored up to six days with no berth slot")
+    disr("DISR-900002", "strike", "DEHAM", "Northern Europe", -3, 2, 36, "48-hour dockworker strike called by the union")
+    disr("DISR-900003", "weather", "CNYTN", "East Asia", -4, 3, 22, "Typhoon forecast to make landfall; terminal closure expected")
+    disr("DISR-900004", "geopolitical", "INNSA", "South Asia", 10, 40, 30, "Red Sea security advisory: carriers diverting round the Cape")
 
-                if days_since_ship < est_transit:
-                    status = r.choice(['in_transit', 'at_port', 'in_transit'])
-                    actual_arrival = None
-                else:
-                    status = r.choice(['delayed', 'delayed', 'in_transit'])
-                    actual_arrival = datetime.fromisoformat(po['ship_date']) + timedelta(days=est_transit)
+    # costs: DISR-000011 (Rotterdam congestion, the closest match to now) is the headline case
+    for did, kind, n, per in [
+        ("DISR-000011", "demurrage", 118, 540.0), ("DISR-000011", "detention", 118, 210.0),
+        ("DISR-000011", "air_freight", 16, 4200.0), ("DISR-000011", "transshipment", 22, 780.0),
+        ("DISR-000008", "demurrage", 110, 480.0), ("DISR-000008", "storage", 40, 260.0),
+        ("DISR-000012", "demurrage", 64, 420.0), ("DISR-000012", "detention", 64, 180.0),
+        ("DISR-000013", "demurrage", 52, 450.0), ("DISR-000013", "transshipment", 12, 820.0),
+        ("DISR-000007", "demurrage", 62, 400.0), ("DISR-000007", "detention", 62, 150.0),
+        ("DISR-000001", "demurrage", 96, 380.0), ("DISR-000001", "air_freight", 8, 3900.0),
+        ("DISR-000002", "demurrage", 71, 410.0), ("DISR-000002", "detention", 71, 190.0),
+        ("DISR-000010", "transshipment", 40, 860.0), ("DISR-000010", "demurrage", 98, 520.0),
+        ("DISR-000014", "air_freight", 24, 4600.0), ("DISR-000014", "demurrage", 160, 300.0),
+    ]:
+        cost(did, kind, n, per)
 
-                container_value = float(po['total_value']) * (0.9 + r.random() * 0.2)
+    # ---------------------------------------------------------------- transit history
+    origins = ["CNSHA", "CNYTN", "CNNGB", "VNSGN", "INNSA", "BDCGP"]
+    # via port: (planned days, baseline delay, destination gateway, mode chain)
+    via = {"NLRTM": (36, 1.4, "GBFXT", "sea+feeder"), "DEHAM": (37, 1.8, "GBFXT", "sea+feeder"),
+           "ESVLC": (41, 1.0, "DIRFT", "sea+rail"), "GRPIR": (37, 1.9, "DIRFT", "sea+rail")}
+    transit = []
 
-                container_shipments.append({
-                    'container_id': container_id,
-                    'shipment_id': shipment_id,
-                    'vessel_id': vessel_id,
-                    'origin_port': origin_port,
-                    'destination_port': route_dest,
-                    'next_port': route_dest,
-                    'route': route_name,
-                    'transship_port': None,
-                    'container_type': r.choice(['40ft', '40ft', '20ft']),
-                    'status': status,
-                    'actual_arrival': actual_arrival,
-                    'destination_site_id': po['dest_site_id'],
-                    'value_gbp': container_value,
-                    'booking_date': datetime.fromisoformat(po['order_date']).date(),
-                    'updated_at': g.as_of - timedelta(hours=r.randint(1, 72))
-                })
+    def add_transit(origin, vport, dep, delay, dwell):
+        planned, _b, gw, chain = via[vport]
+        actual = planned + delay
+        transit.append({"route_code": "Asia-UK", "transit_id": f"TRN-{len(transit) + 1:06d}", "origin_port": origin,
+                        "via_port": vport, "destination_port": gw, "mode_chain": chain,
+                        "planned_transit_days": planned, "actual_transit_days": round(actual, 1),
+                        "departure_date": dep, "arrival_date": dep + timedelta(days=round(actual)),
+                        "delay_days": round(delay, 1), "port_dwell_hours": round(dwell, 1),
+                        "containers_count": r.randint(12, 60)})
 
-                # Add container contents
-                products = g.master("products")
-                skus_in_po = [p for p in products if p['supplier_id'] == po['supplier_id']]
-                if not skus_in_po:
-                    skus_in_po = r.sample(products, 3)
+    for vport, (planned, base, gw, chain) in via.items():
+        for origin in origins:
+            for k in range(4):
+                arrived_ago = r.randint(8, 175)
+                late = arrived_ago < 56  # arrived in the last eight weeks: into the current congestion
+                delay = max(0.0, r.gauss(base, 0.9))
+                dwell = r.uniform(26, 50)
+                if vport == "NLRTM":
+                    delay += r.uniform(3.5, 6.5) if late else 0
+                    dwell += r.uniform(35, 60) if late else 0
+                if vport == "DEHAM" and late:
+                    delay += r.uniform(1.0, 2.0)
+                    dwell += r.uniform(8, 20)
+                dep = g.as_of - timedelta(days=arrived_ago + round(planned + delay))
+                add_transit(origin, vport, dep, delay, dwell)
+    # weather events lengthen lead times for transits leaving the affected port during the event
+    impact = {"DISR-000001": 6.5, "DISR-000002": 8.0, "DISR-000003": 7.0, "DISR-000004": 5.0,
+              "DISR-000005": 4.5, "DISR-000006": 3.0}
+    for d in disruptions:
+        if d["disruption_id"] in impact:
+            p = d["affected_port"]
+            for k in range(4):
+                dep = d["start_date"] + timedelta(days=r.randint(0, d["duration_days"]))
+                origin, vport = (p, r.choice(["NLRTM", "DEHAM"])) if p in origins else (r.choice(origins), "NLRTM")
+                add_transit(origin, vport, dep, impact[d["disruption_id"]] + r.uniform(-1, 1), r.uniform(40, 70))
 
-                lines = r.randint(1, 5)
-                for line_num in range(1, lines + 1):
-                    sku_obj = r.choice(skus_in_po)
-                    sku = sku_obj['sku']
-                    quantity = r.randint(50, 500)
-                    unit_cost = float(sku_obj.get('unit_cost_gbp', 20))
-                    total_value = quantity * unit_cost
+    # ---------------------------------------------------------------- port dwell history (weekly)
+    dwell_base = {"NLRTM": 38, "DEHAM": 30, "GBFXT": 36, "GBSOU": 28, "GBLGP": 30, "CNSHA": 34, "CNNGB": 32,
+                  "CNYTN": 30, "VNSGN": 30, "INNSA": 50, "BDCGP": 68, "MXZLO": 26, "USNYC": 30, "TRMER": 26,
+                  "PTLEI": 22, "ESVLC": 22, "GRPIR": 26}
+    dwell = []
+    weeks = g.weeks(26)
+    for port, base in dwell_base.items():
+        for i, wk in enumerate(weeks):
+            h = base * r.uniform(0.9, 1.1)
+            recent = i - 17  # last eight weeks
+            if port == "NLRTM" and recent > 0:
+                h += recent * 7.5
+            if port == "DEHAM" and recent > 2:
+                h += (recent - 2) * 4
+            if port == "GBFXT" and recent > 3:
+                h += (recent - 3) * 1.5
+            h = round(h, 1)
+            dwell.append({"port_code": port, "dwell_id": f"DWEL-{len(dwell) + 1:06d}", "arrival_date": wk,
+                          "dwell_hours": h, "vessel_count": max(1, round(h / 12 + r.uniform(-1, 2))),
+                          "congestion_status": "high" if h > 72 else "medium" if h > 48 else "low"})
 
-                    container_contents.append({
-                        'container_id': container_id,
-                        'line_number': line_num,
-                        'sku': sku,
-                        'quantity': quantity,
-                        'unit_cost_gbp': unit_cost,
-                        'total_value_gbp': total_value
-                    })
+    # ---------------------------------------------------------------- carrier ETA predictions
+    # signed error = actual minus predicted (positive = arrived later than the carrier said)
+    carriers = {"CAR-005": (4, 14, 38), "CAR-006": (38, 30, 30), "CAR-007": (14, 20, 34)}
+    preds = []
+    for cid, (bias, sd, voyages) in carriers.items():
+        for v in range(voyages):
+            arrive = ago(days=r.randint(3, 88))
+            port = r.choices(["GBFXT", "GBSOU", "GBLGP"], [5, 3, 2])[0]
+            for horizon in (14, 7, 3):
+                scale = {14: 1.3, 7: 1.0, 3: 0.6}[horizon]
+                err = r.gauss(bias * scale, sd * scale)
+                predicted = arrive - timedelta(hours=err)
+                preds.append({"prediction_id": f"ETA-{len(preds) + 1:06d}", "voyage_id": f"VOY-{cid[-3:]}{v + 1:03d}",
+                              "carrier_id": cid, "route": "Asia-UK", "port_code": port,
+                              "prediction_date": (arrive - timedelta(days=horizon)).date(),
+                              "predicted_eta": predicted.replace(microsecond=0), "actual_eta": arrive,
+                              "horizon_days": horizon, "eta_accuracy_hours": round(err, 1)})
+    for v in range(14):
+        arrive = ago(days=r.randint(3, 88))
+        cid = r.choice(list(carriers))
+        for horizon in (14, 7):
+            err = r.gauss(6, 12)
+            preds.append({"prediction_id": f"ETA-{len(preds) + 1:06d}", "voyage_id": f"VOY-{cid[-3:]}9{v + 1:02d}",
+                          "carrier_id": cid, "route": "Asia-Europe", "port_code": "NLRTM",
+                          "prediction_date": (arrive - timedelta(days=horizon)).date(),
+                          "predicted_eta": (arrive - timedelta(hours=err)).replace(microsecond=0), "actual_eta": arrive,
+                          "horizon_days": horizon, "eta_accuracy_hours": round(err, 1)})
 
-                vessels[-1]['container_count'] += 1
-
-    # Create transit history
-    for route_origin, route_dest, route_name in routes:
-        for historical_idx in range(r.randint(8, 15)):
-            days_ago = r.randint(30, 180)
-            depart_date = g.as_of - timedelta(days=days_ago)
-            planned_days = r.randint(20, 35)
-            actual_days = planned_days + r.randint(-5, 15)
-
-            transit_history.append({
-                'route_code': route_name,
-                'transit_id': f"TRN-{len(transit_history) + 1:06d}",
-                'origin_port': route_origin,
-                'destination_port': route_dest,
-                'planned_transit_days': planned_days,
-                'actual_transit_days': float(actual_days),
-                'departure_date': depart_date,
-                'arrival_date': depart_date + timedelta(days=actual_days),
-                'delay_days': float(max(0, actual_days - planned_days)),
-                'port_dwell_hours': r.uniform(24, 96),
-                'containers_count': r.randint(40, 120)
-            })
-
-    # Create disruptions
-    disruption_types = ['weather', 'strike', 'closure', 'congestion']
-    affected_regions = ['Southeast Asia', 'Northern Europe', 'Southern Europe', 'Middle East']
-
-    for disr_idx in range(r.randint(3, 6)):
-        days_ago = r.randint(10, 180)
-        duration = r.randint(2, 14)
-
-        disruptions.append({
-            'disruption_id': f"DISR-{len(disruptions) + 1:06d}",
-            'event_type': r.choice(disruption_types),
-            'affected_port': r.choice(list(ports.keys())),
-            'region': r.choice(affected_regions),
-            'start_date': g.as_of - timedelta(days=days_ago),
-            'end_date': g.as_of - timedelta(days=days_ago - duration),
-            'duration_days': duration,
-            'containers_affected': r.randint(20, 200),
-            'description': f"Weather event affecting operations"
-        })
-
-    # Create disruption costs
-    for disr in disruptions:
-        num_costs = r.randint(1, 3)
-        for cost_idx in range(num_costs):
-            cost_types = ['demurrage', 'detention', 'air_freight', 'transshipment']
-            containers_affected = r.randint(5, disr['containers_affected'])
-            cost_per_container = r.uniform(50, 500)
-
-            disruption_costs.append({
-                'cost_id': f"COST-{len(disruption_costs) + 1:06d}",
-                'disruption_id': disr['disruption_id'],
-                'cost_type': r.choice(cost_types),
-                'cost_gbp': containers_affected * cost_per_container,
-                'containers_affected': containers_affected,
-                'cost_per_container_gbp': cost_per_container
-            })
-
-    # Create rail segments
-    rail_routes = [
-        ('VAL', 'HAM', 'Valencia-Hamburg'),
-        ('VAL', 'ROT', 'Valencia-Rotterdam'),
-        ('DXB', 'ROT', 'Dubai-Rotterdam'),
-        ('SIN', 'HCM', 'Singapore-HCM'),
-    ]
-
-    for origin, dest, name in rail_routes:
-        on_time = r.randint(70, 95)
-        total_transits = r.randint(20, 50)
-
-        rail_segments.append({
-            'segment_id': f"RAIL-{len(rail_segments) + 1:06d}",
-            'origin_port': origin,
-            'destination_port': dest,
-            'region': 'Europe' if 'Europe' in name or origin in ['VAL', 'HAM', 'ROT'] else 'Southeast Asia',
-            'transit_count': total_transits,
-            'on_time_count': int(total_transits * on_time / 100),
-            'on_time_pct': float(on_time),
-            'avg_delay_hours': r.uniform(0, 24) if on_time < 90 else r.uniform(0, 12),
-            'reliability_score': float(on_time)
-        })
-
-    # Create port dwell history
-    for port_code in ports.keys():
-        for history_idx in range(r.randint(10, 20)):
-            days_ago = r.randint(1, 180)
-            dwell_history_append = {
-                'port_code': port_code,
-                'dwell_id': f"DWEL-{len(port_dwell_history) + 1:06d}",
-                'arrival_date': g.as_of - timedelta(days=days_ago),
-                'dwell_hours': r.uniform(12, 144),
-                'vessel_count': r.randint(1, 8),
-                'congestion_status': r.choice(['low', 'medium', 'high'])
-            }
-            port_dwell_history.append(dwell_history_append)
-
-    # Create ETA predictions
-    for ship in container_shipments[:min(50, len(container_shipments))]:
-        for pred_idx in range(r.randint(3, 6)):
-            days_ago = r.randint(1, 30)
-            pred_date = g.as_of - timedelta(days=days_ago)
-            actual_arr = ship.get('actual_arrival')
-            if actual_arr is None:
-                actual_arr = datetime.combine(g.as_of + timedelta(days=r.randint(1, 20)), datetime.min.time())
-            actual_eta = actual_arr if isinstance(actual_arr, datetime) else datetime.combine(actual_arr, datetime.min.time())
-            pred_eta_dt = actual_eta + timedelta(hours=r.randint(-48, 72))
-
-            eta_predictions.append({
-                'prediction_id': f"ETA-{len(eta_predictions) + 1:06d}",
-                'vessel_id': ship['vessel_id'],
-                'route': ship['route'],
-                'prediction_date': pred_date,
-                'predicted_eta': pred_eta_dt,
-                'actual_eta': actual_eta,
-                'eta_accuracy_hours': float((actual_eta - pred_eta_dt).total_seconds() / 3600)
-            })
-
-    return {
-        'vessels': vessels,
-        'container_shipments': container_shipments,
-        'container_contents': container_contents,
-        'port_status': port_status,
-        'transit_history': transit_history,
-        'disruptions': disruptions,
-        'disruption_costs': disruption_costs,
-        'rail_segments': rail_segments,
-        'port_dwell_history': port_dwell_history,
-        'eta_predictions': eta_predictions
-    }
+    return {"vessels": vessels, "container_shipments": containers, "container_contents": contents,
+            "transit_history": transit, "disruptions": disruptions, "disruption_costs": costs,
+            "port_dwell_history": dwell, "eta_predictions": preds}

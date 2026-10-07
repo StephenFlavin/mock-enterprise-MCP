@@ -12,6 +12,7 @@ tables:
       planning_param_id: {type: str, desc: "Planning parameter record, e.g. SPP-000123"}
       sku: {type: str, desc: "SKU, e.g. SKU-100234"}
       weekly_demand: {type: float, desc: "Planning demand in units per week (network)"}
+      network_stock_units: {type: int, desc: "Available stock across DCs and stores, in units"}
       lead_time_days: {type: int, desc: "Lead time assumed in planning, in days"}
       pack_size: {type: int, desc: "Pack size in units; orders are rounded up to a multiple"}
       lot_size: {type: int, desc: "Minimum order lot in units"}
@@ -554,12 +555,12 @@ tools:
     kind: sql
     args:
       material_type: {type: enum, values: [leather, fabric, zips, trims], default: fabric, desc: "Material to forecast"}
-      date_from: {type: date, desc: "First month to include (YYYY-MM-DD or e.g. +90d)"}
+      date_from: {type: date, default: "-31d", desc: "First month to include (YYYY-MM-DD or e.g. +90d)"}
       date_to: {type: date, desc: "Last month to include (YYYY-MM-DD or e.g. +400d)"}
     sql: |
       SELECT material_type, month_start, required_qty, unit, lead_time_weeks,
-             month_start - lead_time_weeks * 7 AS order_by_date,
-             strftime(month_start - lead_time_weeks * 7, '%B %Y') AS order_by_month,
+             CAST(month_start AS DATE) - CAST(lead_time_weeks * 7 AS INTEGER) AS order_by_date,
+             strftime(CAST(month_start AS DATE) - CAST(lead_time_weeks * 7 AS INTEGER), '%B %Y') AS order_by_month,
              round(100.0 * required_qty / sum(required_qty) OVER (), 1) AS share_of_period_pct,
              CASE WHEN required_qty = max(required_qty) OVER () THEN 'peak month' ELSE '' END AS peak,
              driver_categories
@@ -580,14 +581,15 @@ tools:
     sql: |
       WITH s AS (
         SELECT p.sku, p.name, p.category, p.retail_price_gbp, p.unit_cost_gbp, pp.weekly_demand,
-               coalesce((SELECT sum(d.available) FROM master.dc_stock d WHERE d.sku = p.sku), 0) AS stock_units
+               pp.network_stock_units AS stock_units
         FROM master.products p JOIN planning_parameters pp USING (sku)
         WHERE p.supplier_id = $supplier_id AND p.status <> 'discontinued' AND pp.weekly_demand > 0
       ), c AS (
         SELECT s.*, stock_units / weekly_demand AS cover_weeks,
                greatest(weekly_demand * $outage_weeks - stock_units, 0) AS lost_units FROM s
       )
-      SELECT 'TOTAL' AS sku, 'All SKUs of ' || $supplier_id AS name, '' AS category, CAST(sum(stock_units) AS BIGINT) AS dc_stock_units,
+      SELECT * EXCLUDE (sort_key) FROM (
+      SELECT 'TOTAL' AS sku, 'All SKUs of ' || $supplier_id AS name, '' AS category, CAST(sum(stock_units) AS BIGINT) AS stock_units,
              round(sum(weekly_demand), 1) AS weekly_demand, NULL::DOUBLE AS weeks_of_cover,
              count(*) FILTER (WHERE cover_weeks < $outage_weeks) || ' of ' || count(*) || ' SKUs run out' AS outcome,
              CAST(round(sum(lost_units)) AS BIGINT) AS units_lost,
@@ -601,7 +603,7 @@ tools:
              CAST(round(lost_units) AS BIGINT), CAST(round(lost_units * retail_price_gbp) AS BIGINT),
              CAST(round(lost_units * (retail_price_gbp - unit_cost_gbp)) AS BIGINT), 1
       FROM c
-      ORDER BY sort_key, weeks_of_cover
+      ) ORDER BY sort_key, weeks_of_cover
     limit: 25
     example: {supplier_id: "SUP-0068", outage_weeks: 6}
 
@@ -616,7 +618,7 @@ tools:
       w AS (SELECT unnest(CASE WHEN $scenario_weeks IS NULL THEN [3, 6, 12] ELSE [CAST($scenario_weeks AS INTEGER)] END) AS weeks),
       s AS (
         SELECT p.sku, p.category, p.retail_price_gbp, p.unit_cost_gbp, pp.weekly_demand,
-               coalesce((SELECT sum(d.available) FROM master.dc_stock d WHERE d.sku = p.sku), 0) AS stock_units
+               pp.network_stock_units AS stock_units
         FROM master.products p JOIN planning_parameters pp USING (sku), pr
         WHERE p.country_of_origin = pr.country AND p.status <> 'discontinued' AND pp.weekly_demand > 0
       ), c AS (
@@ -632,7 +634,7 @@ tools:
              CAST(round(sum(lost_units * (retail_price_gbp - unit_cost_gbp))) AS BIGINT) AS margin_at_risk_gbp,
              count(DISTINCT category) FILTER (WHERE cover_weeks < weeks) AS categories_hit,
              string_agg(sku || ' (' || CAST(round(cover_weeks, 1) AS VARCHAR) || ' wks)', ', ' ORDER BY cover_weeks) FILTER (WHERE rn <= 5) AS first_to_run_out,
-             'lost units = max(weekly demand * weeks - DC stock, 0) for SKUs made in the port country; revenue at retail price; margin = price - unit cost' AS formula
+             'lost units = max(weekly demand * weeks - network stock, 0) for SKUs made in the port country; revenue at retail price; margin = price - unit cost' AS formula
       FROM c GROUP BY weeks ORDER BY weeks
     limit: 3
     example: {port_code: VNSGN}
@@ -653,7 +655,7 @@ tools:
         WHERE sh.status <> 'delivered' AND sh.eta <= win.last_day
       ), cat AS (
         SELECT p.category, sum(pp.weekly_demand) AS weekly_demand,
-               sum(coalesce((SELECT sum(d.available) FROM master.dc_stock d WHERE d.sku = p.sku), 0)) AS stock_units
+               sum(pp.network_stock_units) AS stock_units
         FROM master.products p JOIN planning_parameters pp USING (sku) WHERE p.status <> 'discontinued' GROUP BY p.category
       ), blocked AS (
         SELECT category, sum(units) AS blocked_units, count(DISTINCT shipment_id) AS shipments_blocked
@@ -667,11 +669,11 @@ tools:
       )
       SELECT upper($port_code) AS port_code, $closure_weeks AS closure_weeks, c.category, b.shipments_blocked,
              b.blocked_units AS blocked_inbound_units, CAST(round(c.weekly_demand) AS INTEGER) AS weekly_demand,
-             CAST(c.stock_units AS INTEGER) AS dc_stock_units, round(c.stock_units / c.weekly_demand, 1) AS cover_weeks_now,
+             CAST(c.stock_units AS INTEGER) AS stock_units, round(c.stock_units / c.weekly_demand, 1) AS cover_weeks_now,
              round((c.stock_units + coalesce(a.inbound_units, 0) - b.blocked_units) / c.weekly_demand - $closure_weeks, 1) AS cover_weeks_after_closure,
              CAST(greatest(round($closure_weeks * c.weekly_demand - (c.stock_units + coalesce(a.inbound_units, 0) - b.blocked_units)), 0) AS BIGINT) AS projected_stockout_units,
              d.dcs_hit AS dcs_and_regions_hit,
-             'cover after = (DC stock + inbound due in the window - inbound via the port) / weekly demand - closure weeks' AS formula
+             'cover after = (stock + inbound due in the window - inbound via the port) / weekly demand - closure weeks' AS formula
       FROM cat c JOIN blocked b USING (category) LEFT JOIN alli a USING (category) LEFT JOIN bydc d USING (category)
       ORDER BY cover_weeks_after_closure
     limit: 30

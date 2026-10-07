@@ -48,6 +48,17 @@ DEMAND_OVERRIDE = {
     # order proposal story and similar-issue items
     "SKU-102961": 789.5, "SKU-106251": 1521.0, "SKU-102352": 1388.6, "SKU-102338": 2187.9,
 }
+# Network available units (DCs and stores) the inventory system shows for the same SKUs.
+STOCK_OVERRIDE = {
+    "SKU-104536": 13801, "SKU-101022": 142, "SKU-105390": 2112, "SKU-104522": 576, "SKU-101967": 9990,
+    "SKU-101960": 5913, "SKU-105397": 3269, "SKU-101974": 340, "SKU-100252": 2895, "SKU-100490": 8649,
+    "SKU-100245": 5512, "SKU-104529": 5337, "SKU-100182": 8290, "SKU-100497": 5117, "SKU-105383": 16713,
+    "SKU-100175": 10598, "SKU-100504": 5737, "SKU-100189": 4725, "SKU-101015": 3787, "SKU-100238": 8910,
+    "SKU-101029": 8816,
+    "SKU-101260": 4641, "SKU-102884": 7642, "SKU-105964": 1926, "SKU-100280": 6422, "SKU-103521": 9200,
+    "SKU-101722": 5048,
+    "SKU-102961": 5092, "SKU-106251": 10831, "SKU-102352": 10088, "SKU-102338": 12910,
+}
 # Long-tail make-to-order candidates: stay stocked until the planner switches them.
 LONG_TAIL_CANDIDATES = {"SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", "SKU-103038"}
 
@@ -193,6 +204,7 @@ def generate(g):
             "planning_param_id": f"SPP-{i + 1:06d}",
             "sku": sku,
             "weekly_demand": w,
+            "network_stock_units": STOCK_OVERRIDE.get(sku, dc_avail.get(sku, 0)),
             "lead_time_days": lead,
             "pack_size": pack,
             "lot_size": lot,
@@ -209,7 +221,7 @@ def generate(g):
         w, lead, period = prm["weekly_demand"], prm["lead_time_days"], 4
         gross = int(round(w * (lead / 7.0 + period)))
         ssu = int(round(gross * prm["safety_stock_pct"] / 100.0))
-        stock = dc_avail.get(sku, 0)
+        stock = prm["network_stock_units"]
         net = max(0, gross + ssu - stock)
         if net == 0:
             return None
