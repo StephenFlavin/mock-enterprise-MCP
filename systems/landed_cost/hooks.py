@@ -33,7 +33,8 @@ def _out(basis, routing, base, mode, fob, freight, duty, uplift, ins, hand, hold
 
 def calc_landed_cost_per_unit(ctx, po_id=None, sku=None, category=None, origin_country=None, units=None, tariff_uplift_pct=0.0):
     uplift = float(tariff_uplift_pct or 0.0)
-    date_from = date.fromisoformat(str(ctx.as_of)) - timedelta(days=180)
+    _asof = date.fromisoformat(str(ctx.as_of))
+    date_from = _asof - timedelta(days=_asof.weekday() + 182)  # week-aligned so the window is stable within a week
     rows = ctx.q(
         """SELECT l.po_id, l.sku, l.origin_country, l.mode, l.units, l.fob_unit_gbp, l.freight_unit_gbp, l.duty_unit_gbp,
                   l.insurance_unit_gbp, l.handling_unit_gbp, l.inventory_holding_unit_gbp, l.lead_time_days,
