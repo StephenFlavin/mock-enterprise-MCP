@@ -220,7 +220,7 @@ def generate(g):
     # current and scheduled events (end_date on or after today)
     disr("DISR-900001", "congestion", "NLRTM", "Northern Europe", 6, 20, 140,
          "Berth shortage and yard saturation; vessels anchored up to six days with no berth slot")
-    disr("DISR-900002", "strike", "DEHAM", "Northern Europe", -3, 2, 36, "48-hour dockworker strike called by the union")
+    disr("DISR-900002", "strike", "DEHAM", "Northern Europe", -4, 2, 36, "48-hour dockworker strike called by the union")
     disr("DISR-900003", "weather", "CNYTN", "East Asia", -4, 3, 22, "Typhoon forecast to make landfall; terminal closure expected")
     disr("DISR-900004", "geopolitical", "INNSA", "South Asia", 10, 40, 30, "Red Sea security advisory: carriers diverting round the Cape")
 
