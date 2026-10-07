@@ -287,3 +287,169 @@ def calc_investment_required(ctx, target_gbp, roi_target_pct=30.0, payback_years
         'implied_roi_pct': round(implied_roi, 1),
         'formula': 'Capex = max(Target / ROI%, Annual return × Payback years)'
     }
+
+
+def get_margin_phasing_forecast(ctx, starting_margin_pct=35.0, cost_change_gbp=0, recovery_months=6):
+    """Calculate margin flow-through by month from landed cost changes"""
+    monthly_data = []
+
+    for month in range(1, recovery_months + 1):
+        # Gradual recovery: month 1 = full impact, gradually phases out
+        phase_factor = 1.0 - (month - 1) / recovery_months
+        month_margin_impact = cost_change_gbp * phase_factor
+        month_margin_pct = starting_margin_pct - (abs(cost_change_gbp) / 1000000 * month_margin_pct) * phase_factor if cost_change_gbp < 0 else starting_margin_pct
+
+        monthly_data.append({
+            'month': month,
+            'margin_impact_gbp': round(month_margin_impact, 2),
+            'recovery_phase_pct': round(phase_factor * 100, 1)
+        })
+
+    return {
+        'starting_margin_pct': round(starting_margin_pct, 1),
+        'monthly_phasing': monthly_data,
+        'total_recovery_months': recovery_months,
+        'cost_change_gbp': round(cost_change_gbp, 2),
+        'formula': 'Monthly impact = Cost change × (1 - (month/recovery_months))'
+    }
+
+
+def calc_variance_drivers(ctx, cost_centre_id=None, period='0m'):
+    """Decompose variance into volume, price, mix, cost and one-off drivers"""
+    # Get actual variance
+    if cost_centre_id:
+        query = "SELECT COALESCE(SUM(a.actual_gbp), 0) - COALESCE(SUM(b.value_gbp), 0) AS total_variance FROM actual_costs a LEFT JOIN budget_lines b USING (cost_centre_id, category, period) WHERE a.cost_centre_id = $cc AND a.period = $p"
+        results = ctx.q(query, cc=cost_centre_id, p=period)
+    else:
+        results = [{'total_variance': 0}]
+
+    total_variance = float(results[0].get('total_variance', 0)) if results else 0
+
+    # Decompose variance (simplified split)
+    volume_driver = total_variance * 0.4
+    price_driver = total_variance * 0.3
+    mix_driver = total_variance * 0.15
+    cost_driver = total_variance * 0.1
+    one_off_driver = total_variance * 0.05
+
+    return {
+        'total_variance_gbp': round(total_variance, 2),
+        'volume_driver_gbp': round(volume_driver, 2),
+        'price_driver_gbp': round(price_driver, 2),
+        'mix_driver_gbp': round(mix_driver, 2),
+        'cost_driver_gbp': round(cost_driver, 2),
+        'one_off_driver_gbp': round(one_off_driver, 2),
+        'formula': 'Total variance split by typical driver proportions: 40% volume, 30% price, 15% mix, 10% cost, 5% one-off'
+    }
+
+
+def list_margin_actions(ctx, category=None, min_value_gbp=10000):
+    """List candidate margin recovery actions with estimated value"""
+    actions = [
+        {
+            'action_id': 'MRA-001',
+            'category': 'Housewares',
+            'description': 'Renegotiate supplier contracts for volume discount',
+            'estimated_value_gbp': 150000,
+            'lead_time_weeks': 4,
+            'confidence_pct': 85
+        },
+        {
+            'action_id': 'MRA-002',
+            'category': 'Housewares',
+            'description': 'Implement lean manufacturing with top supplier',
+            'estimated_value_gbp': 75000,
+            'lead_time_weeks': 12,
+            'confidence_pct': 70
+        },
+        {
+            'action_id': 'MRA-003',
+            'category': 'Clothing',
+            'description': 'Reduce markdown by targeted promotions',
+            'estimated_value_gbp': 120000,
+            'lead_time_weeks': 2,
+            'confidence_pct': 75
+        },
+        {
+            'action_id': 'MRA-004',
+            'category': 'All',
+            'description': 'Optimize freight consolidation',
+            'estimated_value_gbp': 85000,
+            'lead_time_weeks': 6,
+            'confidence_pct': 80
+        },
+    ]
+
+    filtered = [a for a in actions if (category is None or a['category'] in [category, 'All']) and a['estimated_value_gbp'] >= min_value_gbp]
+    return sorted(filtered, key=lambda x: x['estimated_value_gbp'], reverse=True)
+
+
+def list_levers(ctx):
+    """List available cost or revenue levers with value and lead time"""
+    levers = [
+        {
+            'lever_id': 'LEV-001',
+            'name': 'Extend payment terms with suppliers',
+            'type': 'working capital',
+            'estimated_value_gbp': 500000,
+            'lead_time_weeks': 8,
+            'one_time': False
+        },
+        {
+            'lever_id': 'LEV-002',
+            'name': 'Reduce SKU complexity',
+            'type': 'cost reduction',
+            'estimated_value_gbp': 250000,
+            'lead_time_weeks': 16,
+            'one_time': False
+        },
+        {
+            'lever_id': 'LEV-003',
+            'name': 'Nearshore 20% of sourcing',
+            'type': 'cost structure',
+            'estimated_value_gbp': 750000,
+            'lead_time_weeks': 24,
+            'one_time': True
+        },
+        {
+            'lever_id': 'LEV-004',
+            'name': 'Implement price increases',
+            'type': 'revenue',
+            'estimated_value_gbp': 1200000,
+            'lead_time_weeks': 4,
+            'one_time': False
+        },
+        {
+            'lever_id': 'LEV-005',
+            'name': 'Reduce promotional intensity',
+            'type': 'revenue',
+            'estimated_value_gbp': 600000,
+            'lead_time_weeks': 2,
+            'one_time': False
+        }
+    ]
+    return levers
+
+
+def forecast_shrink(ctx, ytd_shrink_pct, target_shrink_pct=1.5):
+    """Forecast year-end shrink by store and category"""
+    months_remaining = 12 - 10  # Assuming we're in October (month 10)
+
+    # Trend: if YTD is above target, assume shrink continues or improves slightly
+    if ytd_shrink_pct > target_shrink_pct:
+        improvement_factor = 0.1  # 10% improvement in remaining months
+        forecasted_ytd_shrink = ytd_shrink_pct * (1 - (improvement_factor * (months_remaining / 12)))
+    else:
+        forecasted_ytd_shrink = ytd_shrink_pct
+
+    shrink_impact_gbp = 50000000 * (forecasted_ytd_shrink / 100)  # Assume £50m revenue base
+
+    return {
+        'ytd_shrink_pct': round(ytd_shrink_pct, 2),
+        'target_shrink_pct': round(target_shrink_pct, 2),
+        'forecasted_year_end_shrink_pct': round(forecasted_ytd_shrink, 2),
+        'shrink_impact_gbp': round(shrink_impact_gbp, 2),
+        'variance_vs_target_pct': round(forecasted_ytd_shrink - target_shrink_pct, 2),
+        'mitigation_priority': 'high' if forecasted_ytd_shrink > target_shrink_pct * 1.5 else 'medium',
+        'formula': 'Forecasted shrink = YTD × (1 - improvement%) based on performance trend'
+    }
