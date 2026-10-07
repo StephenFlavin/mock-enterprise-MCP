@@ -17,12 +17,28 @@ def generate(g):
     dq_issues = []
     reports = []
 
-    # Generate store performance for last 4 periods (months)
+    # Generate store performance for last 4 months
     for months_back in range(4, 0, -1):
-        period_end = g.days_ago(months_back * 30 - 29)  # End of each month
+        # Calculate period end date (last day of the month)
+        today = g.as_of
+        current_year = today.year
+        current_month = today.month
+
+        # Go back months_back months
+        target_month = current_month - months_back
+        target_year = current_year
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+
+        # Get last day of that month
+        if target_month == 12:
+            period_end = datetime(target_year + 1, 1, 1) - timedelta(days=1)
+        else:
+            period_end = datetime(target_year, target_month + 1, 1) - timedelta(days=1)
+        period_end = period_end.date()
 
         for site in sites[:50]:  # Top 50 stores
-            region = site["region"]
             cluster = site["cluster"]
 
             # More sales for cluster A, less for D
@@ -46,30 +62,43 @@ def generate(g):
 
             store_perf.append({
                 "site_id": site["site_id"],
-                "period": period,
+                "period_end": period_end,
                 "sales_units": max(100, base_sales_units),
                 "sales_gbp": max(4500, sales_gbp),
                 "margin_pct": max(18, margin_pct),
                 "availability_pct": min(99, max(92, availability_pct)),
                 "shrink_pct": max(0.5, min(3, shrink_pct)),
                 "labour_cost_pct": max(7, min(14, labour_cost_pct)),
-                "updated_at": datetime.combine(period_date, datetime.min.time())
+                "updated_at": period_end
             })
 
             # Add target
             store_targets.append({
                 "site_id": site["site_id"],
-                "period": period,
+                "period_end": period_end,
                 "sales_units_target": int(store_perf[-1]["sales_units"] * r.uniform(0.95, 1.05)),
                 "sales_gbp_target": store_perf[-1]["sales_gbp"] * r.uniform(0.95, 1.05),
                 "margin_pct_target": store_perf[-1]["margin_pct"] * r.uniform(0.95, 1.0),
-                "updated_at": datetime.combine(period_date, datetime.min.time())
+                "updated_at": period_end
             })
 
-    # Generate product performance for last 4 periods
+    # Generate product performance for last 4 months
     for months_back in range(4, 0, -1):
-        period_date = g.days_ago(months_back * 30)
-        period = f"{period_date.year}-{period_date.month:02d}"
+        today = g.as_of
+        current_year = today.year
+        current_month = today.month
+
+        target_month = current_month - months_back
+        target_year = current_year
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+
+        if target_month == 12:
+            period_end = datetime(target_year + 1, 1, 1) - timedelta(days=1)
+        else:
+            period_end = datetime(target_year, target_month + 1, 1) - timedelta(days=1)
+        period_end = period_end.date()
 
         for prod in products[:40]:  # Top 40 products
             # ABC velocity
@@ -84,23 +113,23 @@ def generate(g):
 
             product_perf.append({
                 "sku": prod["sku"],
-                "period": period,
+                "period_end": period_end,
                 "sales_units": max(10, sales_units),
                 "sales_gbp": max(500, sales_gbp),
                 "margin_pct": max(15, margin_pct),
                 "returns_pct": max(0.5, min(5, returns_pct)),
                 "avg_rating": max(2, min(5, avg_rating)),
-                "updated_at": datetime.combine(period_date, datetime.min.time())
+                "updated_at": period_end
             })
 
             # Add target
             product_targets.append({
                 "sku": prod["sku"],
-                "period": period,
+                "period_end": period_end,
                 "sales_units_target": int(product_perf[-1]["sales_units"] * r.uniform(0.90, 1.10)),
                 "sales_gbp_target": product_perf[-1]["sales_gbp"] * r.uniform(0.90, 1.10),
                 "margin_pct_target": product_perf[-1]["margin_pct"] * r.uniform(0.95, 1.0),
-                "updated_at": datetime.combine(period_date, datetime.min.time())
+                "updated_at": period_end
             })
 
     # Data quality issues

@@ -24,7 +24,7 @@ def generate(g):
             num_allocs = r.choice([1, 2, 2, 3])
             for i in range(num_allocs):
                 days_ago = r.randint(10, 85)
-                alloc_date = (g.as_of - timedelta(days=days_ago)).date()
+                alloc_date = g.as_of - timedelta(days=days_ago)
                 qty = r.choice([50, 100, 150, 200, 250, 300, 500])
                 status = r.choices(["received", "partial", "in_transit", "allocated"], [0.6, 0.2, 0.1, 0.1])[0]
                 qty_received = int(qty * r.uniform(0, 1)) if status in ["received", "partial"] else 0
@@ -46,7 +46,7 @@ def generate(g):
     for product in products[:40]:
         sku = product["sku"]
         for region in regions:
-            summary_date = (g.as_of - timedelta(days=r.randint(0, 7))).date()
+            summary_date = g.as_of - timedelta(days=r.randint(0, 7))
             region_stores = [s for s in stores if s["region"] == region]
             weekly_sales = r.randint(50, 500)
             on_hand = r.randint(100, 2000)
@@ -75,7 +75,7 @@ def generate(g):
         for scenario in scenarios:
             # 1-2 analyses per product-scenario in last 7 days
             for _ in range(r.choice([1, 1, 2])):
-                analysis_date = (g.as_of - timedelta(days=r.randint(0, 6))).date()
+                analysis_date = g.as_of - timedelta(days=r.randint(0, 6))
                 r1, r2 = r.sample(region_list, 2)
                 units = r.randint(500, 5000)
                 transfer_cost = r.randint(100, 2000)
@@ -102,7 +102,7 @@ def generate(g):
     forecast_levels = ["store_sku", "cluster", "category"]
     for product in products[:35]:
         sku = product["sku"]
-        analysis_date = (g.as_of - timedelta(days=r.randint(0, 20))).date()
+        analysis_date = g.as_of - timedelta(days=r.randint(0, 20))
         for i, level in enumerate(forecast_levels):
             # Store-SKU most accurate, Category least accurate
             if level == "store_sku":

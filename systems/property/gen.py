@@ -1,6 +1,5 @@
 """Property & Footfall data: energy consumption, store footfall history and forecasts, catchment areas."""
-from datetime import datetime, time, timedelta
-import math
+from datetime import time, timedelta
 
 
 def generate(g):
@@ -42,8 +41,8 @@ def generate(g):
             energy.append({
                 "consumption_id": f"ENG-{len(energy) + 1:06d}",
                 "site_id": site_id,
-                "period_start": week_start.date(),
-                "period_end": week_end.date(),
+                "period_start": week_start,
+                "period_end": week_end,
                 "energy_kwh": round(kwh, 1),
                 "energy_cost_gbp": round(cost, 2),
                 "measured_at": week_end + timedelta(days=1)
@@ -84,11 +83,11 @@ def generate(g):
                 footfall.append({
                     "footfall_id": f"FF-{len(footfall) + 1:06d}",
                     "site_id": site_id,
-                    "date": date.date(),
+                    "date": date,
                     "hour": hour,
                     "footfall_count": footfall_count,
                     "sales_gbp": round(sales_gbp, 2),
-                    "recorded_at": datetime.combine(date.date(), time(hour, 0))
+                    "recorded_at": date  # Store as date, will be converted
                 })
 
         # Footfall forecast for next 7 days
@@ -119,7 +118,7 @@ def generate(g):
                 forecasts.append({
                     "forecast_id": f"FFC-{len(forecasts) + 1:06d}",
                     "site_id": site_id,
-                    "forecast_date": date.date(),
+                    "forecast_date": date,
                     "hour": hour,
                     "forecast_footfall_count": forecast,
                     "confidence_level": round(max(60, min(99, confidence)), 1),

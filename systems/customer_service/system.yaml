@@ -174,15 +174,27 @@ tools:
       rule_type: {type: str, desc: "Notification rule type to evaluate, e.g. 'missed_scan_alert'"}
       date_from: {type: date, desc: "Period to base estimate on", default: "-30d"}
     sql: |
+      WITH matching_contacts AS (
+        SELECT COUNT(*) AS contact_count, COUNT(DISTINCT order_id) AS order_count
+        FROM customer_service_contacts c
+        WHERE c.contact_date >= CAST($date_from AS DATE)
+          AND c.reason = 'wismo'
+          AND c.issue ILIKE '%' || REPLACE($rule_type, '_', ' ') || '%'
+      ),
+      all_wismo AS (
+        SELECT COUNT(*) AS total_wismo
+        FROM customer_service_contacts c
+        WHERE c.contact_date >= CAST($date_from AS DATE)
+          AND c.reason = 'wismo'
+      )
       SELECT
-        COUNT(DISTINCT c.order_id) AS contacts_with_issue,
-        CAST(ROUND(COUNT(*) * 0.35) AS INT) AS estimated_contacts_prevented,
-        ROUND(COUNT(*) * 0.35 / SUM(COUNT(*)) OVER () * 100, 1) AS pct_of_total_wismo,
+        COALESCE(mc.order_count, 0) AS contacts_with_issue,
+        CAST(COALESCE(ROUND(mc.contact_count * 0.35), 0) AS INT) AS estimated_contacts_prevented,
+        CASE WHEN COALESCE(aw.total_wismo, 0) > 0
+             THEN ROUND(COALESCE(mc.contact_count, 0) * 0.35 / aw.total_wismo * 100, 1)
+             ELSE 0.0 END AS pct_of_total_wismo,
         'Estimate based on 35% prevention rate for proactive alerts' AS formula
-      FROM customer_service_contacts c
-      WHERE c.contact_date >= CAST($date_from AS DATE)
-        AND c.reason = 'wismo'
-        AND c.issue ILIKE '%' || REPLACE($rule_type, '_', ' ') || '%'
+      FROM matching_contacts mc, all_wismo aw
     limit: 5
     example: {rule_type: "missed_scan_alert", date_from: "-30d"}
 
