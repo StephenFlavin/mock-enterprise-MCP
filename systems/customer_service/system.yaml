@@ -10,14 +10,14 @@ tables:
     key: contact_id
     cols:
       contact_id: {type: str, desc: "Customer service contact, e.g. CSC-000123"}
-      contact_date: {type: timestamp, desc: When the contact arrived}
+      contact_date: {type: timestamp, desc: "When the contact arrived"}
       order_id: {type: str, desc: "Related customer order, if any (ORD-…)"}
-      reason: {type: enum, values: [wismo, damage, complaint, return, other], desc: Contact type}
+      reason: {type: enum, values: [wismo, damage, complaint, return, other], desc: "Contact type"}
       issue: {type: str, desc: "Issue category, e.g. 'Missed scan' or 'Delayed delivery'"}
-      contact_type: {type: enum, values: [email, chat, phone], desc: Contact channel}
-      status: {type: enum, values: [open, resolved, escalated], desc: Contact status}
-      response_time_hours: {type: float, desc: Hours until first response}
-      resolved_at: {type: timestamp, desc: When resolved (if status=resolved)}
+      contact_type: {type: enum, values: [email, chat, phone], desc: "Contact channel"}
+      status: {type: enum, values: [open, resolved, escalated], desc: "Contact status"}
+      response_time_hours: {type: float, desc: "Hours until first response"}
+      resolved_at: {type: timestamp, desc: "When resolved (if status=resolved)"}
   damage_claims:
     key: claim_id
     cols:
@@ -29,7 +29,7 @@ tables:
       damage_type: {type: str, desc: "Type of damage, e.g. Broken glass, Dented packaging"}
       claim_amount_gbp: {type: float, desc: "Claim amount in GBP"}
       claim_date: {type: timestamp, desc: "When claim was lodged"}
-      status: {type: enum, values: [new, investigating, approved, rejected, paid], desc: Claim status}
+      status: {type: enum, values: [new, investigating, approved, rejected, paid], desc: "Claim status"}
   complaints:
     key: complaint_id
     cols:
@@ -40,15 +40,15 @@ tables:
       sku: {type: str, desc: "Product complained about, if any"}
       defect_type: {type: str, desc: "Type of defect, e.g. 'Zip strength', 'Colour mismatch'"}
       description: {type: str, desc: "Details of the complaint"}
-      severity: {type: enum, values: [low, medium, high, critical], desc: Complaint severity}
-      status: {type: enum, values: [new, investigating, resolved, escalated], desc: Complaint status}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Complaint severity"}
+      status: {type: enum, values: [new, investigating, resolved, escalated], desc: "Complaint status"}
   notification_rules:
     key: rule_id
     cols:
       rule_id: {type: str, desc: "Notification rule, e.g. NTF-000001"}
       rule_name: {type: str, desc: "Rule name, e.g. 'Missed scan alert'"}
       rule_type: {type: str, desc: "Type of alert this rule triggers"}
-      status: {type: enum, values: [active, inactive, paused], desc: Rule status}
+      status: {type: enum, values: [active, inactive, paused], desc: "Rule status"}
       enabled_at: {type: timestamp, desc: "When this rule was enabled"}
       estimated_contacts_prevented: {type: int, desc: "Est. contact reduction if active"}
       last_modified: {type: timestamp, desc: "Last change to the rule"}
@@ -60,24 +60,20 @@ tools:
     args:
       weeks_back: {type: int, desc: "Number of weeks to include", default: 12}
     sql: |
-      WITH weeks AS (
-        SELECT CAST(date_trunc('week', CAST($as_of AS DATE) - INTERVAL (n-1) DAY) AS DATE) AS week_start
-        FROM (SELECT * FROM generate_subscripts(ARRAY(SELECT 1 FROM generate_series(1, $weeks_back)), 1) AS n)
-      ),
-      contacts_by_week AS (
+      WITH contacts_by_week AS (
         SELECT CAST(date_trunc('week', c.contact_date) AS DATE) AS week_start, COUNT(*) AS contact_count
         FROM customer_service_contacts c
         WHERE c.reason = 'wismo'
-        GROUP BY week_start
+        GROUP BY CAST(date_trunc('week', c.contact_date) AS DATE)
       )
       SELECT
-        w.week_start,
-        COALESCE(cb.contact_count, 0) AS contacts,
-        ROUND(100.0 * (COALESCE(cb.contact_count, 0) - LAG(COALESCE(cb.contact_count, 0)) OVER (ORDER BY w.week_start)) /
-              NULLIF(LAG(COALESCE(cb.contact_count, 0)) OVER (ORDER BY w.week_start), 0), 1) AS pct_change
-      FROM weeks w
-      LEFT JOIN contacts_by_week cb ON w.week_start = cb.week_start
-      ORDER BY w.week_start DESC
+        week_start,
+        contact_count AS contacts,
+        ROUND(100.0 * (contact_count - LAG(contact_count) OVER (ORDER BY week_start)) /
+              NULLIF(LAG(contact_count) OVER (ORDER BY week_start), 0), 1) AS pct_change
+      FROM contacts_by_week
+      WHERE week_start >= CAST($as_of AS DATE) - INTERVAL (7 * 12) DAY
+      ORDER BY week_start DESC
     limit: 20
     example: {weeks_back: 12}
 
@@ -179,16 +175,14 @@ tools:
       date_from: {type: date, desc: "Period to base estimate on", default: "-30d"}
     sql: |
       SELECT
-        $rule_type AS rule_type,
         COUNT(DISTINCT c.order_id) AS contacts_with_issue,
-        ROUND(COUNT(*) * 0.35, 0) AS estimated_contacts_prevented,
+        CAST(ROUND(COUNT(*) * 0.35) AS INT) AS estimated_contacts_prevented,
         ROUND(COUNT(*) * 0.35 / SUM(COUNT(*)) OVER () * 100, 1) AS pct_of_total_wismo,
         'Estimate based on 35% prevention rate for proactive alerts' AS formula
       FROM customer_service_contacts c
       WHERE c.contact_date >= CAST($date_from AS DATE)
         AND c.reason = 'wismo'
         AND c.issue ILIKE '%' || REPLACE($rule_type, '_', ' ') || '%'
-      GROUP BY $rule_type
     limit: 5
     example: {rule_type: "missed_scan_alert", date_from: "-30d"}
 
