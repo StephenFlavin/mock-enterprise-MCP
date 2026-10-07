@@ -48,7 +48,7 @@ def _wchoice(r, pairs):
 def generate(g):
     r = g.rng
     emps = g.master("employees")
-    dc_sites = [s["site_id"] for s in g.master("sites") if s["type"] == "dc"]
+    dc_sites = [s["site_id"] for s in g.master("sites") if s["type"] == "dc" and s["site_id"] in HOME_AREAS]
     dc_emps = [e for e in emps if e["site_id"] in dc_sites]
     heads = [e for e in dc_emps if e["status"] in ("active", "agency")]
     by_id = {e["employee_id"]: e for e in emps}
@@ -96,6 +96,7 @@ def _absences(g, heads):
     days = [g.as_of - timedelta(days=d) for d in range(182, 0, -1)]
     days = [d for d in days if d.weekday() < 5]
     for e in heads:
+        r = g.rng_for("absence", e["employee_id"])
         site, shift = e["site_id"], e["shift"]
         if site == "DC2":
             p = DC2_P_UNPLANNED[shift]
@@ -264,6 +265,7 @@ def _skills(g, heads):
     }
     rows = []
     for e in heads:
+        r = g.rng_for("skills", e["employee_id"])
         for skill, pm in P.items():
             p = pm.get(e["role"], pm.get("*", 0.0))
             if r.random() < p:
@@ -280,6 +282,7 @@ def _commute(g, heads):
     r = g.rng
     rows = []
     for e in heads:
+        r = g.rng_for("commute", e["employee_id"])
         site = e["site_id"]
         areas = HOME_AREAS[site]
         if site == "DC2" and e["shift"] == "night" and r.random() < 0.9:
