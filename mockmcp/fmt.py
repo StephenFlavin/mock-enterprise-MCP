@@ -13,7 +13,8 @@ def cell(v, full=False) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, float):
-        return f"{round(v, 2):g}" if abs(v) < 1e15 else str(round(v))
+        s = f"{v:.2f}".rstrip("0").rstrip(".")  # never scientific notation: small models misread 5.25e+06
+        return "0" if s == "-0" else s
     if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d %H:%M") if (v.hour or v.minute) else v.date().isoformat()
     if isinstance(v, date):

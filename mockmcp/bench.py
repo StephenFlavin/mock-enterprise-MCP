@@ -40,8 +40,10 @@ SYSTEM = ("You are an assistant at {company}. Today is {today}. You can only use
           "Answer from tool results only; if the tools cannot answer part of the request, say so plainly.")
 
 
-def _norm(s: str) -> str:
-    s = re.sub(r"(?<=\d),(?=\d{3})", "", str(s)).replace("£", "").lower()
+def _norm(s: str, table: bool = False) -> str:
+    """table=True for tool output (CSV: every comma separates fields); prose drops thousands separators."""
+    s = str(s).replace(",", " ") if table else re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", str(s))
+    s = s.replace("£", "").lower()
     return re.sub(r"[_*]+", " ", s)
 
 
@@ -57,9 +59,22 @@ def _forms(fact) -> list[str]:
     return [f]
 
 
-def _has(fact, text: str) -> bool:
+def _has(fact, text: str, table: bool = False) -> bool:
     opts = [x for o in (fact if isinstance(fact, list) else [fact]) for x in _forms(o)]
-    return any(_norm(o) in _norm(text) for o in opts)
+    t = _norm(text, table)
+    nums = None
+    for o in opts:
+        o = _norm(o)
+        if not re.fullmatch(r"-?\d+(\.\d+)?", o):
+            if o in t:
+                return True
+        else:  # numbers match within the fact's own rounding or 0.5%
+            nums = nums if nums is not None else [float(n) for n in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", t)]
+            f, dp = float(o), len(o.split(".")[1]) if "." in o else 0
+            tol = max(0.5 * 10 ** -dp, abs(f) * 0.005)
+            if any(abs(abs(n) - abs(f)) <= tol for n in nums):
+                return True
+    return False
 
 
 def load(sid: str) -> list[dict]:
@@ -102,7 +117,7 @@ def validate(sid: str) -> list[str]:
                     if err:
                         p.append(f"{cid}: ref {r['tool']} errored: {text[:150]}")
                     out += "\n" + text
-                p += [f"{cid}: fact {f!r} not in ref output" for f in c["facts"] if not _has(f, out)]
+                p += [f"{cid}: fact {f!r} not in ref output" for f in c["facts"] if not _has(f, out, table=True)]
         finally:
             db.STATE = old
     return p
@@ -145,7 +160,7 @@ def grade(case: dict, calls, answer: str) -> dict:
         want = {k: str(v).strip().lower() for k, v in (r.get("args") or {}).items() if _idlike(v)}
         if r["tool"] in called and want and not any(all(a.get(k) == v for k, v in want.items()) for a in called[r["tool"]]):
             bad_args.append(f"{r['tool']} {want}")
-    seen = _norm(case["prompt"] + "\n" + "\n".join(o for *_, o in calls))
+    seen = _norm(case["prompt"]) + "\n" + _norm("\n".join(o for *_, o in calls), table=True)
     invented = sorted({i for i in ID_RX.findall(answer) if i.lower() not in seen})
     nums = [n for n in NUM_RX.findall(answer) if len(re.sub(r"\D", "", n)) >= 3]
     loose = [n for n in nums if _norm(n).lstrip("-") not in seen]
