@@ -451,6 +451,25 @@ tools:
     limit: 100
     example: {supplier_id: "SUP-0027"}
 
+  # Stage 3: release and submit tools
+  - name: release_purchase_order
+    desc: Releases an approved draft purchase order to the supplier.
+    kind: update
+    table: master.purchase_orders
+    set: {status: released}
+    args:
+      po_id: {required: true}
+    example: {po_id: "PO-2026-004001"}
+
+  - name: submit_purchase_order_for_approval
+    desc: Submits a draft purchase order into the approval workflow.
+    kind: update
+    table: master.purchase_orders
+    set: {status: submitted}
+    args:
+      po_id: {required: true}
+    example: {po_id: "PO-2026-004001"}
+
   # NOT STAGE 1 (Stage 2 & 3: remaining tools)
   - name: search_purchase_orders
     desc: Find purchase orders by supplier, SKU, status, destination DC or due date; returns PO ids.
@@ -885,83 +904,164 @@ tools:
     example: {supplier_id: "SUP-0068"}
 
   - name: get_supplier_price_changes
-    desc: Supplier price changes by SKU.
-    kind: select
-    from: po_price_history
-    filters: {supplier_id: {}}
-    order: order_date DESC
+    desc: Supplier price changes by SKU. Shows price variance across orders.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT ph.sku, ph.supplier_id, s.name AS supplier_name, ph.occurrence, ph.order_date,
+             round(ph.quoted_unit_cost_gbp, 2) AS quoted_unit_cost_gbp,
+             round(ph.actual_unit_cost_gbp, 2) AS actual_unit_cost_gbp,
+             round(ph.variance_pct, 1) AS variance_pct, ph.qty_ordered, ph.qty_received
+      FROM po_price_history ph
+      LEFT JOIN master.suppliers s ON s.supplier_id = ph.supplier_id
+      WHERE ph.supplier_id = $supplier_id
+      ORDER BY ph.order_date DESC
     limit: 100
     example: {supplier_id: "SUP-0068"}
 
   - name: get_supplier_supplied_items
-    desc: Items supplied by a supplier.
-    kind: select
-    from: master.products
-    filters: {supplier_id: {}}
-    order: sku
+    desc: Items supplied by a supplier. Shows all SKUs in supplier's portfolio.
+    kind: sql
+    args: {supplier_id: {required: true}}
+    sql: |
+      SELECT DISTINCT pr.sku, pr.style_id, pr.name, pr.category, pr.supplier_id,
+             pr.lead_time_days, pr.moq, pr.status
+      FROM master.products pr
+      WHERE pr.supplier_id = $supplier_id AND pr.status = 'active'
+      ORDER BY pr.sku
     limit: 100
     example: {supplier_id: "SUP-0068"}
 
   - name: get_volume_by_origin_region
-    desc: Purchase volume by origin region.
+    desc: Purchase volume by origin region. Shows total order quantity by country.
     kind: sql
     args: {}
     sql: |
-      SELECT country_of_origin, sum(lead_time_days) FROM master.products GROUP BY country_of_origin LIMIT 20
+      SELECT pr.country_of_origin, count(DISTINCT p.po_id) AS po_count,
+             sum(pl.qty_ordered) AS total_qty_ordered, round(sum(pl.qty_ordered * pl.unit_cost), 2) AS total_value_gbp
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      JOIN master.products pr ON pr.sku = pl.sku
+      WHERE p.status IN ('open', 'confirmed', 'shipped', 'received')
+      GROUP BY pr.country_of_origin
+      ORDER BY total_value_gbp DESC
+    limit: 50
     example: {}
 
   - name: list_off_contract_purchase_orders
-    desc: POs placed off contract.
-    kind: select
-    from: master.purchase_orders
-    filters: {status: {}}
+    desc: POs placed off contract. Shows orders from non-preferred suppliers or expedite overrides.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.factory_id, p.order_date,
+             p.due_date, p.status, p.total_units, round(p.total_value, 2) AS total_value_gbp
+      FROM master.purchase_orders p
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE p.status IN ('open', 'confirmed', 'shipped', 'received')
+        AND (s.status != 'preferred' OR s.status IS NULL)
+      ORDER BY p.order_date DESC
     limit: 50
     example: {}
 
   - name: list_open_orders_at_factory
-    desc: Open orders at a factory.
-    kind: select
-    from: master.purchase_orders
-    filters: {factory_id: {}}
+    desc: Open orders at a factory. Shows inbound POs by delivery date.
+    kind: sql
+    args: {factory_id: {required: true}}
+    sql: |
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.order_date, p.due_date,
+             p.status, p.total_units, round(p.total_value, 2) AS total_value_gbp,
+             count(DISTINCT pl.sku) AS sku_count
+      FROM master.purchase_orders p
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      LEFT JOIN master.po_lines pl USING (po_id)
+      WHERE p.factory_id = $factory_id AND p.status IN ('open', 'confirmed')
+      GROUP BY p.po_id, p.supplier_id, s.name, p.order_date, p.due_date, p.status, p.total_units, p.total_value
+      ORDER BY p.due_date ASC
     limit: 50
     example: {factory_id: "FAC-0001"}
 
   - name: list_open_orders_by_origin
-    desc: Open orders by origin country.
+    desc: Open orders by origin country. Shows all inbound orders grouped by source country.
     kind: sql
-    args: {country: {}}
+    args: {country_of_origin: {}}
     sql: |
-      SELECT po_id FROM master.purchase_orders WHERE status IN ('open', 'confirmed') LIMIT 50
-    example: {}
-
-  - name: list_open_orders_for_lines
-    desc: List open orders for lines.
-    kind: select
-    from: master.po_lines
-    filters: {}
+      SELECT DISTINCT p.po_id, p.supplier_id, s.name AS supplier_name, pr.country_of_origin,
+             p.order_date, p.due_date, p.status, sum(pl.qty_ordered) AS total_qty,
+             round(sum(pl.qty_ordered * pl.unit_cost), 2) AS order_value_gbp
+      FROM master.purchase_orders p
+      JOIN master.po_lines pl USING (po_id)
+      JOIN master.products pr ON pr.sku = pl.sku
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE p.status IN ('open', 'confirmed', 'shipped')
+        AND ($country_of_origin IS NULL OR pr.country_of_origin = $country_of_origin)
+      GROUP BY p.po_id, p.supplier_id, s.name, pr.country_of_origin, p.order_date, p.due_date, p.status
+      ORDER BY p.due_date ASC
     limit: 50
     example: {}
 
+  - name: list_open_orders_for_lines
+    desc: Open order lines with status and delivery dates. For line-level order tracking.
+    kind: sql
+    args: {style_id: {}}
+    sql: |
+      SELECT p.po_id, pl.line_no, pl.sku, pr.name AS product_name, pr.style_id,
+             pl.qty_ordered, pl.qty_received, round(pl.unit_cost, 2) AS unit_cost_gbp,
+             p.supplier_id, p.factory_id, p.order_date, p.due_date, p.status
+      FROM master.po_lines pl
+      JOIN master.purchase_orders p ON p.po_id = pl.po_id
+      LEFT JOIN master.products pr ON pr.sku = pl.sku
+      WHERE p.status IN ('open', 'confirmed', 'shipped')
+        AND ($style_id IS NULL OR pr.style_id = $style_id)
+      ORDER BY p.due_date ASC
+    limit: 100
+    example: {}
+
   - name: list_open_orders_using_component
-    desc: List open orders using component.
-    kind: select
-    from: master.po_lines
-    filters: {sku: {}}
+    desc: Open orders using a component/SKU. Shows all POs containing this item.
+    kind: sql
+    args: {sku: {required: true}}
+    sql: |
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.factory_id,
+             pl.line_no, pl.qty_ordered, pl.qty_received, round(pl.unit_cost, 2) AS unit_cost_gbp,
+             p.order_date, p.due_date, p.status
+      FROM master.po_lines pl
+      JOIN master.purchase_orders p ON p.po_id = pl.po_id
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE pl.sku = $sku AND p.status IN ('open', 'confirmed', 'shipped')
+      ORDER BY p.due_date ASC
     limit: 50
     example: {sku: "SKU-100238"}
 
   - name: list_open_purchase_orders_with_delay
-    desc: Open POs running late.
+    desc: Open POs running late. Shows delays from promised to confirmed ship dates.
     kind: sql
     args: {}
     sql: |
-      SELECT po_id, status FROM master.purchase_orders WHERE status IN ('open', 'confirmed') LIMIT 50
+      SELECT p.po_id, p.supplier_id, s.name AS supplier_name, p.order_date, p.ship_date,
+             p.due_date, CAST(COALESCE(sc.confirmed_delivery_date, p.due_date) AS DATE) AS confirmed_delivery,
+             DATEDIFF('day', CAST(p.due_date AS DATE), $as_of) AS days_overdue,
+             p.total_units, round(p.total_value, 2) AS order_value_gbp, p.status
+      FROM master.purchase_orders p
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      LEFT JOIN supplier_confirmations sc ON sc.po_id = p.po_id AND sc.status = 'received'
+      WHERE p.status IN ('open', 'confirmed', 'shipped')
+        AND CAST(p.due_date AS DATE) < CAST($as_of AS DATE)
+      ORDER BY p.due_date ASC
+    limit: 50
     example: {}
 
   - name: list_purchase_orders_blocked_by_onboarding
-    desc: POs blocked by onboarding.
+    desc: POs blocked by onboarding. Shows orders held up by supplier qualification.
     kind: sql
     args: {}
     sql: |
-      SELECT po_id FROM master.purchase_orders LIMIT 50
+      SELECT b.po_id, b.block_id, b.block_type, b.block_reason, p.supplier_id, s.name AS supplier_name,
+             p.order_date, p.due_date, b.blocked_at, b.status
+      FROM po_blocks b
+      JOIN master.purchase_orders p ON p.po_id = b.po_id
+      LEFT JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE b.status = 'active'
+        AND (b.block_reason ILIKE '%onboard%' OR b.block_type IN ('supplier', 'other'))
+      ORDER BY b.blocked_at DESC
+    limit: 50
     example: {}
