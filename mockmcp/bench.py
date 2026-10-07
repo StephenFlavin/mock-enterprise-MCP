@@ -22,17 +22,19 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
 
-from . import db
+from . import db, spec
 from .spec import ROOT, WORLD
 
 CASES = ROOT / "bench" / "cases"
 RESULTS = ROOT / "bench" / "results"
 ID_RX = re.compile(r"\b[A-Z][A-Z0-9]{1,5}(?:-[A-Z0-9]+)*-\d[\w-]*\b|\b[A-Z]{1,3}\d{2,}\b")
+DATE_IN_PROMPT = re.compile(r"\b20\d\d-\d\d-\d\d\b|\b\d{1,2}(st|nd|rd|th)? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b"
+                            r"|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(st|nd|rd|th)?\b")
 NUM_RX = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
 SYSTEM = ("You are an assistant at {company}. Today is {today}. You can only use the tools provided. "
           "Answer from tool results only; if the tools cannot answer part of the request, say so plainly.")
@@ -47,7 +49,9 @@ def _forms(fact) -> list[str]:
     """A fact and its equivalent spellings: an ISO date also matches '10 November', 'Nov 10', '10/11/2026'."""
     f = str(fact)
     if m := re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)", f):
-        d = date(*map(int, m.groups()))
+        # facts are written in data time; the data moves to today in whole weeks at runtime
+        d = date(*map(int, m.groups())) + timedelta(days=spec.SHIFT_DAYS)
+        f = d.isoformat()
         return [f, f"{d.day} {d:%B}", f"{d.day} {d:%b}", f"{d:%B} {d.day}", f"{d:%b} {d.day}", f"{d.day}/{d.month}/{d.year}",
                 f"{d.day:02d}/{d.month:02d}/{d.year}"]
     return [f]
@@ -85,6 +89,8 @@ def validate(sid: str) -> list[str]:
                 if not c.get("ref") or not c.get("facts") or not c.get("prompt"):
                     p.append(f"{cid}: needs prompt, ref and facts")
                     continue
+                if DATE_IN_PROMPT.search(c["prompt"]):
+                    p.append(f"{cid}: prompt has an absolute date; use relative periods (last 40 days, next week) since data moves with today")
                 if any(n in c["prompt"] for n in names):
                     p.append(f"{cid}: prompt names a tool; ask in the user's words")
                 out = ""

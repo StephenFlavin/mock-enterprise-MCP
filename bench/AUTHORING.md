@@ -20,6 +20,8 @@ Example: `bench/cases/cmms.yaml`.
   takes ids, not product names. Exception: systems that own a `search_*` tool (e.g. mdm `search_products`)
   get some cases that give a **name** so the lookup is tested.
 - Scope it so there is one right answer: a site, an id, a period ("last 40 days", "last month").
+- No absolute dates in prompts ("19 October", "2026-09-08"): the data moves to today in whole weeks at runtime.
+  Say "in about two weeks", "last month". Facts may contain ISO dates; the grader shifts them.
 - Write requests ("raise a requisition for…", "put the order on hold") are cases too.
 
 ## ref
