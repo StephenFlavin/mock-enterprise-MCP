@@ -377,7 +377,7 @@ def calc_route_cost_comparison(ctx, origin_site, dest_site, weekly_volume_units=
 def run_volume_forecast(ctx, growth_rate_pct=5.0, ecommerce_penetration_pct=40.0, target_year=2030, new_market_uplift_pct=0.0):
     """Forecast annual volume by region and channel for a target year."""
     base = ctx.q("SELECT region, channel, sum(units) AS u FROM volume_history "
-                 "WHERE period > CAST($as_of AS DATE) - INTERVAL 365 DAY GROUP BY region, channel")
+                 "WHERE period > CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 364 DAY GROUP BY region, channel")
     if not base:
         return {"error": "No volume history"}
     this_year = int(str(ctx.as_of)[:4])
