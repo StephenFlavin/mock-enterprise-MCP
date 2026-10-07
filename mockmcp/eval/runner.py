@@ -89,7 +89,17 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
 
 
 def main(a):
-    run = Path(a.run_dir)
+    root = Path(a.run_dir)
+    if not (root / "tasks.jsonl").exists():  # a budget grid: run every sub-run
+        subs = sorted(p.parent for p in root.glob("*/tasks.jsonl"))
+        if not subs:
+            raise SystemExit(f"{root}: no tasks.jsonl (build it with: python -m mockmcp eval recipe ...)")
+        for sub in subs:
+            print(f"== {sub.name}", flush=True)
+            a.run_dir = str(sub)
+            main(a)
+        return
+    run = root
     tasks = [json.loads(l) for l in (run / "tasks.jsonl").read_text().splitlines() if l.strip()]
     recipe = yaml.safe_load((run / "recipe.yaml").read_text()) if (run / "recipe.yaml").exists() else {}
     h = harnesses.get(a.harness or recipe.get("harness") or "claude-code")

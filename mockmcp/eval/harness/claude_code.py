@@ -105,6 +105,9 @@ class ClaudeCode(Harness):
 
     def run_task(self, task_dir: Path, task: dict, port: int, model: str, opts: dict) -> dict:
         opts = {**DEFAULTS, **(opts or {})}
+        opts.setdefault("timeout", opts.get("timeout_s", DEFAULTS["timeout"]))
+        if "timeout_s" in opts:
+            opts["timeout"] = opts["timeout_s"]
         sid, system = _session_id(task), json.loads((task_dir / "prompt.json").read_text())
         turns, answers, err = system["turns"], [], None
         env = {**os.environ, "ENABLE_TOOL_SEARCH": TOOL_SEARCH[opts["tool_search"]]}

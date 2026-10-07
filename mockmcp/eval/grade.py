@@ -73,11 +73,17 @@ def provisional(task: dict, checks: dict) -> dict:
     done = {w["tool"] for w in checks["writes"] if w["expected"]}
     for e in task.get("writes", {}).get("expected", []):
         if e["tool"] not in done:
-            cats += ["missed_step", "incomplete"], outs.append("partial"), notes.append(f"expected write {e['tool']} not done")
+            cats += ["missed_step", "incomplete"]
+            outs.append("partial"), notes.append(f"expected write {e['tool']} not done")
             break
-    if checks["ids_not_in_results"] or checks["numbers_not_in_results"]:
+    if checks["ids_not_in_results"]:  # numbers may be derived (sums, %), so only unseen ids count as fabrication here
         outs.append("hallucinated"), cats.append("trap_hallucinated" if trap else "fabricated_value")
-        notes.append(f"not in any tool result: {(checks['ids_not_in_results'] + checks['numbers_not_in_results'])[:6]}")
+        notes.append(f"ids not in any tool result: {checks['ids_not_in_results'][:6]}")
+    elif checks["numbers_not_in_results"] and checks["facts_missing"]:  # a wrong value where a fact was expected
+        outs.append("hallucinated"), cats.append("trap_hallucinated" if trap else "fabricated_value")
+        notes.append(f"numbers not in any tool result while facts are missing: {checks['numbers_not_in_results'][:6]}")
+    elif checks["numbers_not_in_results"]:
+        notes.append(f"numbers not in any tool result (may be derived; the judge decides): {checks['numbers_not_in_results'][:6]}")
     if not trap and checks["facts_missing"]:
         found = bool(checks["facts_found"])
         outs.append("partial" if found else "honest_fail")
@@ -188,7 +194,8 @@ def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | 
         return None
     old = read_json(d / "judge.json", {}) or {}
     ov = old.get("verdict")
-    if ov and not rerun and (judge is None or not ov.get("provisional")):
+    keep_judged = judge is None and ov and not ov.get("provisional")  # --no-judge never overwrites a real verdict
+    if ov and (keep_judged or not rerun and (judge is None or not ov.get("provisional"))):
         return result_for(d, task, finish(ov, task), run_dir)
     answers, trace = read_json(d / "answers.json", {}), read_jsonl(d / "trace.jsonl")
     system = (read_json(d / "prompt.json", {}) or {}).get("system", "")
