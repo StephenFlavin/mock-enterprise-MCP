@@ -1,0 +1,89 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief identity).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+- question: "09:85:Q1"
+  story: >
+    Ten open security alerts were raised in the past week: one critical data access alert (ALT-900002),
+    two high-severity alerts (ALT-900001, ALT-900005), and seven lower-severity alerts. Vulnerability scans found
+    7 findings including two critical ones (OpenSSH RCE on DC1 and DC3 externally exposed). Alert disposition history shows
+    failed_login_spike is 56% false positives, while data_exfiltration is only 15% false positives.
+  checks:
+    - tool: list_open_security_alerts
+      args: {}
+      expect: ["ALT-900001", "ALT-900002", "critical", "high"]
+
+    - tool: list_vulnerability_scan_findings
+      args: {}
+      expect: ["CVE-2024-1234", "9.8", "externally_exposed", "CVE-2024-5678", "8.7"]
+
+    - tool: get_alert_false_positive_history
+      args: {alert_type: "failed_login_spike"}
+      expect: ["false_positive_pct", "56"]
+
+    - tool: get_alert_false_positive_history
+      args: {alert_type: "data_exfiltration"}
+      expect: ["false_positive_pct", "15"]
+
+    - tool: update_security_alert_status
+      args: {alert_id: "ALT-900001", status: "false_positive", disposition_reason: "Routine batch process"}
+      expect: ["open → false_positive"]
+
+- question: "09:85:Q2"
+  story: >
+    Supplier user ACME (SUPP-00001, acme-supplier) logged in from Mumbai (192.0.2.89) at 03:12 UTC on 2026-10-04,
+    accessing both edi_portal (SES-900001) and vendor_portal (SES-900002). In vendor_portal session they viewed
+    bank_details and po_lines (marked suspicious). Alert ALT-900002 detected this as suspicious data access at 03:15.
+    A security incident is raised linking this alert.
+  checks:
+    - tool: search_auth_logs
+      args: {system_accessed: "edi_portal"}
+      expect: ["SUPP-00001", "192.0.2.89", "03:12", "edi_portal"]
+
+    - tool: search_auth_logs
+      args: {user_id: "SUPP-00001"}
+      expect: ["SUPP-00001", "vendor_portal", "192.0.2.89"]
+
+    - tool: get_user_session_history
+      args: {user_id: "SUPP-00001"}
+      expect: ["SES-900002", "bank_details", "suspicious"]
+
+    - tool: create_security_incident
+      args: {alert_ids: "ALT-900002", incident_type: "data_exfil", severity: "critical", description: "Supplier account accessed from unusual location", systems_affected: "edi_portal;vendor_portal"}
+      expect: ["INC-", "open"]
+
+    - tool: block_user_account
+      args: {user_id: "SUPP-00001", lock_reason: "Suspected compromise following suspicious access"}
+      expect: ["locked"]
+
+- question: "09:85:Q3"
+  story: >
+    Four third-party connections exist: ACME Supplies (CON-900001, high risk, no IP restrict, has privileged_access=false),
+    XYZ Logistics (CON-900002, medium risk, good controls), Global Tech Partners (CON-900003, critical risk, admin access, privileged_access=true),
+    and Customs Clearance (CON-900004, low risk). ACME has 2 MFA and TLS controls enabled but IP allowlist disabled (low effectiveness).
+    Global Tech has admin access to api_gateway with full data access. XYZ and Global Tech have highest risk.
+  checks:
+    - tool: list_controls_in_place_for_connection
+      args: {connection_id: "CON-900001"}
+      expect: ["mfa", "Duo MFA", "true", "ip_allowlist", "false"]
+
+    - tool: get_connection_access_privileges
+      args: {connection_id: "CON-900003"}
+      expect: ["admin", "CON-900003", "api_gateway", "data_sync"]
+
+    - tool: get_connection_access_privileges
+      args: {connection_id: "CON-900001"}
+      expect: ["edi_portal", "read_write"]
+
+- question: "09:85:Q5"
+  story: >
+    Warehouse systems have significant unpatched exposure: EDI Gateway (AST-DC1-EDI) has 2 critical unpatched CVEs
+    (OpenSSH RCE 9.8 CVSS and SQL Injection 8.7 CVSS), both externally exposed. Sorter System (AST-DC1-SRT) has privilege
+    escalation CVE unpatched (8.1 CVSS). Shuttle at DC3 has critical RCE exposed. Multiple DCs have unpatched critical systems.
+    These represent high business impact if compromised.
+  checks:
+    - tool: get_unpatched_exposure_by_system
+      args: {}
+      expect: ["AST-DC1-EDI", "2", "externally_exposed", "9.8", "critical"]
+
+    - tool: get_unpatched_exposure_by_system
+      args: {min_cvss: 7.0}
+      expect: ["AST-DC1-EDI", "AST-DC2-EDI", "AST-DC3-SHT", "CVE-2024-1234"]

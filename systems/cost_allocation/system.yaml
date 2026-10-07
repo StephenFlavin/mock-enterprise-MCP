@@ -1,0 +1,239 @@
+id: cost_allocation
+name: Cost Allocation Tool
+instructions: >
+  Activity-based cost allocation for distribution centres, channels (stores, online, wholesale),
+  and SKUs. Costs are allocated by pools and drivers to enable profitability analysis.
+  Scenario ids look like SCEN-000001.
+
+tables:
+  cost_pools:
+    key: pool_id
+    cols:
+      pool_id: {type: str, desc: "Cost pool, e.g. POOL-LAB-DC1"}
+      name: {type: str, desc: Cost pool name}
+      cost_type: {type: enum, values: [labour, space, equipment, overhead, transport, packaging, returns], desc: Cost category}
+      site_id: {type: str, desc: "Site, e.g. DC1 (null = network-wide)"}
+      driver_name: {type: str, desc: "Current allocation driver, e.g. units_handled"}
+      current_amount_gbp: {type: float, desc: Total pool value in GBP}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  allocation_drivers:
+    key: driver_id
+    cols:
+      driver_id: {type: str, desc: "Driver, e.g. DRV-000001"}
+      driver_name: {type: str, desc: "Driver name, e.g. units_handled, order_count, weight"}
+      pool_id: {type: str, desc: Cost pool being driven}
+      allocation_base: {type: enum, values: [units, orders, weight, pallet_spaces, locations_used, items_per_order], desc: Allocation base}
+      rate_gbp_per_unit: {type: float, desc: Cost per driver unit in GBP}
+      status: {type: enum, values: [active, archived], desc: Driver status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Scenario, e.g. SCEN-000001"}
+      scenario_name: {type: str, desc: Scenario description}
+      base_scenario_id: {type: str, desc: "Scenario this is based on (null = current actuals)"}
+      assumptions: {type: text, desc: Key assumptions changed}
+      created_at: {type: timestamp, desc: Created}
+      created_by: {type: str, desc: Employee who created it}
+
+  cost_components_dc:
+    key: [site_id, component_type]
+    cols:
+      site_id: {type: str, desc: DC site}
+      component_type: {type: enum, values: [labour, space, equipment, overhead], desc: Cost component}
+      units_handled: {type: int, desc: Units through-put}
+      total_cost_gbp: {type: float, desc: Total component cost}
+      cost_per_unit_gbp: {type: float, desc: Cost per unit}
+      as_of_date: {type: date, desc: Data date}
+
+  channel_costs:
+    key: [channel, cost_type]
+    cols:
+      channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
+      cost_type: {type: enum, values: [warehousing, outbound_transport, returns, packaging], desc: Cost type}
+      cost_gbp: {type: float, desc: Total cost in GBP}
+      units: {type: int, desc: Cost driver volume}
+      sales_gbp: {type: float, desc: Channel sales}
+      cost_per_order_gbp: {type: float, desc: Cost per order}
+      cost_per_unit_gbp: {type: float, desc: Cost per unit}
+      pct_of_sales: {type: float, desc: Cost as % of sales}
+      as_of_date: {type: date, desc: Data date}
+
+  ecom_costs:
+    key: cost_period
+    cols:
+      cost_period: {type: date, desc: Period end date}
+      orders_count: {type: int, desc: E-commerce orders}
+      total_cost_gbp: {type: float, desc: Total ABC cost}
+      labour_cost_gbp: {type: float, desc: Labour component}
+      system_cost_gbp: {type: float, desc: System/IT component}
+      transport_cost_gbp: {type: float, desc: Transport component}
+      returns_cost_gbp: {type: float, desc: Returns component}
+      cost_per_order_gbp: {type: float, desc: Cost per order}
+
+  sku_costs:
+    key: sku
+    cols:
+      sku: {type: str, desc: SKU}
+      annual_units_sold: {type: int, desc: Annual units}
+      annual_sales_gbp: {type: float, desc: Annual sales}
+      warehousing_cost_gbp: {type: float, desc: Annual warehousing}
+      transport_cost_gbp: {type: float, desc: Annual transport}
+      handling_cost_gbp: {type: float, desc: Annual handling}
+      total_cost_to_serve_gbp: {type: float, desc: Total annual cost to serve}
+      cost_per_unit_gbp: {type: float, desc: Cost per unit}
+      margin_per_unit_gbp: {type: float, desc: Sales value minus cost per unit}
+      as_of_date: {type: date, desc: Data date}
+
+  logistics_benchmarks:
+    key: benchmark_id
+    cols:
+      benchmark_id: {type: str, desc: "Benchmark entry, e.g. BENCH-000001"}
+      metric_name: {type: str, desc: "Metric, e.g. total_logistics_cost_pct_sales"}
+      our_value: {type: float, desc: Our value}
+      industry_median: {type: float, desc: Median benchmark}
+      best_in_class: {type: float, desc: Best in class benchmark}
+      our_quartile: {type: str, desc: "Our quartile (1=best, 4=worst)"}
+      variance_pct: {type: float, desc: Variance from median %}
+      as_of_date: {type: date, desc: Data date}
+
+tools:
+  - name: get_site_operating_costs
+    desc: Operating cost base for a site (labour, space, equipment, overhead). Use to understand DC cost structure.
+    kind: sql
+    args:
+      site_id: {required: true}
+      as_of_date: {type: date, default: "-0d"}
+    sql: |
+      SELECT site_id, component_type, units_handled, total_cost_gbp, cost_per_unit_gbp
+      FROM cost_components_dc
+      WHERE site_id = $site_id AND as_of_date = CAST($as_of_date AS DATE)
+      ORDER BY component_type
+    limit: 10
+    example: {site_id: DC1}
+
+  - name: get_warehouse_cost_pools
+    desc: Warehouse cost pools and allocation drivers. Shows labour, space, equipment pools and how costs are driven.
+    kind: sql
+    args:
+      site_id: {}
+    sql: |
+      SELECT p.pool_id, p.name, p.cost_type, p.site_id, p.driver_name, p.current_amount_gbp,
+             d.allocation_base, d.rate_gbp_per_unit
+      FROM cost_pools p
+      LEFT JOIN allocation_drivers d ON p.driver_name = d.driver_name
+      WHERE ($site_id IS NULL OR p.site_id = $site_id)
+      ORDER BY p.cost_type, p.pool_id
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_dc_cost_per_unit_by_component
+    desc: DC cost per unit split into labour, space, equipment and overhead. Use to analyse cost structure and identify improvement opportunities.
+    kind: sql
+    args:
+      site_id: {required: true}
+      as_of_date: {type: date, default: "-0d"}
+    sql: |
+      SELECT site_id, component_type, units_handled, total_cost_gbp, cost_per_unit_gbp
+      FROM cost_components_dc
+      WHERE site_id = $site_id AND as_of_date = CAST($as_of_date AS DATE)
+      ORDER BY component_type
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_cost_to_serve_by_channel
+    desc: Cost to serve by channel and cost type. Shows warehousing, transport, packaging, returns per channel as cost per order and per sale.
+    kind: sql
+    args:
+      as_of_date: {type: date, default: "-0d"}
+    sql: |
+      SELECT channel, cost_type, cost_gbp, units, sales_gbp, cost_per_order_gbp,
+             cost_per_unit_gbp, pct_of_sales
+      FROM channel_costs
+      WHERE as_of_date = CAST($as_of_date AS DATE)
+      ORDER BY channel, cost_type
+    limit: 50
+    example: {}
+
+  - name: get_ecom_cost_per_order
+    desc: Activity-based cost per e-commerce order by component (labour, system, transport, returns). Use to analyse order economics and profitability.
+    kind: sql
+    args:
+      cost_period: {type: date, default: "-0d"}
+    sql: |
+      SELECT cost_period, orders_count, total_cost_gbp, labour_cost_gbp, system_cost_gbp,
+             transport_cost_gbp, returns_cost_gbp, cost_per_order_gbp
+      FROM ecom_costs
+      WHERE cost_period = CAST($cost_period AS DATE)
+      ORDER BY cost_period DESC
+    limit: 20
+    example: {}
+
+  - name: get_sku_cost_to_serve
+    desc: Cost to serve per SKU including warehousing, transport and handling. Returns margin vs cost. Flag SKUs where cost exceeds unit margin.
+    kind: sql
+    args:
+      sku: {}
+      margin_threshold_gbp: {type: float, desc: "Only SKUs with margin below this, e.g. -2.0"}
+    sql: |
+      SELECT sku, annual_units_sold, annual_sales_gbp, warehousing_cost_gbp, transport_cost_gbp,
+             handling_cost_gbp, total_cost_to_serve_gbp, cost_per_unit_gbp, margin_per_unit_gbp
+      FROM sku_costs
+      WHERE ($sku IS NULL OR sku = $sku)
+        AND ($margin_threshold_gbp IS NULL OR margin_per_unit_gbp < $margin_threshold_gbp)
+      ORDER BY margin_per_unit_gbp
+    limit: 100
+    example: {}
+
+  - name: get_logistics_cost_by_line
+    desc: Logistics cost lines as percentage of sales, with benchmark comparison. Shows where we are vs industry.
+    kind: sql
+    args:
+      as_of_date: {type: date, default: "-0d"}
+    sql: |
+      SELECT benchmark_id, metric_name, our_value, industry_median, best_in_class,
+             our_quartile, variance_pct
+      FROM logistics_benchmarks
+      WHERE as_of_date = CAST($as_of_date AS DATE)
+      ORDER BY metric_name
+    limit: 50
+    example: {}
+
+  - name: create_cost_allocation_scenario
+    desc: Saves a named allocation scenario with changed assumptions. Returns the scenario id.
+    kind: insert
+    table: scenarios
+    id_prefix: SCEN-
+    args:
+      scenario_name: {required: true, desc: "Name of the scenario, e.g. free returns removed"}
+      base_scenario_id: {desc: "Copy from existing scenario (null = current actuals)"}
+      assumptions: {required: true, desc: "Key assumptions changed, e.g. returns pool reduced 30%"}
+      created_by: {required: true, desc: "Your employee id"}
+    example: {scenario_name: "Free returns removed", assumptions: "Returns allocation reduced by 30%", created_by: "EMP-01234"}
+
+  - name: update_cost_allocation_driver
+    desc: Changes the allocation driver for a cost pool (e.g. from units to weight). Does not recalculate; used before running a scenario.
+    kind: update
+    table: allocation_drivers
+    set: {status: archived}
+    args:
+      driver_name: {required: true, desc: "Driver being replaced"}
+      new_allocation_base: {required: true, type: str, desc: "New allocation base, e.g. weight"}
+      new_rate_gbp_per_unit: {required: true, type: float, desc: "New rate per unit"}
+    example: {driver_name: "units_handled", new_allocation_base: "weight", new_rate_gbp_per_unit: 0.85}
+
+  - name: calculate_cost_to_serve_scenario
+    desc: Cost to serve under a changed policy or allocation. Re-runs calculation with scenario assumptions.
+    kind: sql
+    args:
+      scenario_id: {required: true}
+    sql: |
+      SELECT scenario_id, scenario_name, assumptions,
+             '(Scenario re-calculated with applied assumptions)' AS calculation_basis
+      FROM scenarios
+      WHERE scenario_id = $scenario_id
+      LIMIT 1
+    limit: 5
+    example: {scenario_id: SCEN-000001}

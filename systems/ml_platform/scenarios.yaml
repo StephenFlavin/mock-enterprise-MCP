@@ -1,0 +1,85 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief ml_platform).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+
+- question: "09:82:Q1"
+  story: >
+    Data scientist is building a model to predict ocean transit time variability on main lanes.
+    They need to explore features in the feature store including ocean transit history,
+    carrier performance, and port congestion data to understand what signals are available.
+    The feature store shows which models currently use each feature (FEAT-ocean-transit-history
+    used by MOD-demand, FEAT-port-congestion used by MOD-supplier-delay).
+  checks:
+    - tool: list_feature_store_features
+      args: {}
+      expect: ["FEAT-ocean-transit-history", "Track&Trace", "FEAT-port-congestion"]
+
+- question: "09:82:Q2"
+  story: >
+    Demand model (MOD-demand) has been getting worse for about three months (since early July).
+    Accuracy dropped from 85% to 76% and drift score increased from 5 to 29 over that period.
+    The model was last retrained on 2026-09-10 with 250K rows and v2.1 dataset.
+    A new dataset v2.2 with 280K rows is available for retraining starting 2026-10-15.
+  checks:
+    - tool: get_model_accuracy_history
+      args: {model_id: MOD-demand, date_from: "-90d"}
+      expect: ["84.2", "76.1", "MOD-demand"]
+    - tool: get_feature_drift_report
+      args: {model_id: MOD-demand, days_back: 90}
+      expect: ["MOD-demand", "8.2", "28.9"]
+    - tool: get_model_training_dataset_summary
+      args: {model_id: MOD-demand}
+      expect: ["v2.1", "v2.2", "250000", "280000"]
+    - tool: submit_model_retraining_job
+      args: {model_id: MOD-demand, dataset_version: v2.2}
+      expect: ["RET-", "scheduled", "MOD-demand"]
+
+- question: "09:82:Q3"
+  story: >
+    Candidate model MOD-demand-v3 was backtested against current MOD-demand production model
+    over two months (Aug 5 - Oct 4). Candidate achieved 87.5% accuracy vs current 84.1%,
+    a 4.04% uplift worth approximately £125k in estimated benefit. Recommendation is to deploy.
+  checks:
+    - tool: get_model_backtest_results
+      args: {candidate_model_id: MOD-demand-v3, current_model_id: MOD-demand}
+      expect: ["MOD-demand-v3", "87.5", "84.1", "4.04", "125000", "deploy"]
+
+- question: "09:82:Q5"
+  story: >
+    Five production models are registered. MOD-demand is active and healthy (84.2% accuracy, 8.2 drift).
+    MOD-pricing is active (86.5% accuracy, 5.2 drift) with a noisy disabled alert on it (RULE-900004).
+    MOD-supplier-delay is active with drift alerts. MOD-churn is in review. MOD-inventory is active
+    and needs next retraining around 2026-11-15. Drift alerts are needed on any model without them.
+  checks:
+    - tool: list_registered_models
+      args: {status: active}
+      expect: ["MOD-demand", "MOD-pricing", "MOD-supplier-delay", "MOD-inventory", "active"]
+    - tool: get_model_health_summary
+      args: {model_id: MOD-demand}
+      expect: ["MOD-demand", "84.2", "8.2", "active"]
+    - tool: get_feature_drift_report
+      args: {model_id: MOD-pricing, days_back: 30}
+      expect: ["MOD-pricing", "5.2"]
+    - tool: list_model_retraining_schedule
+      args: {}
+      expect: ["MOD-demand", "MOD-pricing", "MOD-supplier-delay", "next_scheduled_retrain"]
+    - tool: create_model_alert_rule
+      args: {model_id: MOD-inventory, rule_type: drift, threshold: 8.0}
+      expect: ["RULE-", "MOD-inventory", "drift"]
+    - tool: delete_model_alert_rule
+      args: {alert_rule_id: RULE-900004}
+      expect: ["false", "disabled"]
+
+- question: "09:82:Q6"
+  story: >
+    Data scientist is planning a model to predict supplier PO delay risk. The feature store has
+    multiple relevant features: PO history (FEAT-po-history-features), ASN timeliness (FEAT-asn-timeliness),
+    supplier scorecards (FEAT-supplier-scorecards), payment history (FEAT-payment-history),
+    port congestion (FEAT-port-congestion), and carrier performance (FEAT-carrier-performance).
+    These are currently used by MOD-supplier-delay for its own predictions.
+  checks:
+    - tool: list_feature_store_features
+      args: {data_source: "PO"}
+      expect: ["FEAT-po-history-features", "PO", "MOD-supplier-delay"]
+    - tool: list_feature_store_features
+      args: {}
+      expect: ["FEAT-supplier-scorecards", "FEAT-payment-history", "FEAT-port-congestion", "FEAT-carrier-performance"]
