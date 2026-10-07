@@ -2,6 +2,7 @@
 sample of SKUs per department/category, margin bridges that reconcile to those margins, recovery rates,
 FOB history by origin and factory quotes. Story overrides are marked STORY."""
 import math
+import random
 from collections import defaultdict
 from datetime import timedelta
 
@@ -76,7 +77,9 @@ BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 7.10), 
                 ("packing", "Gift box", 0.85), ("inbound_freight", "Inbound freight", 2.35), ("tooling", "Tooling amortisation", 1.95),
                 ("overhead", "Overhead allocation", 1.97)]
 # STORY: SKU-103157 is on clearance, so it carries heavy markdown (plan markdown moves with it, so variance to plan is unchanged)
-STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0}
+STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0,
+                   "SKU-100077": 70.0, "SKU-100070": 66.6, "SKU-100063": 63.5, "SKU-100056": 61.7, "SKU-100049": 58.4}
+EXTRA_SMALL = {"SKU-100063": 1000, "SKU-100056": 1500, "SKU-100049": 2000}  # annual units of the added low-volume lines
 # STORY: target margins that make the pipeline and overshirt questions discoverable (no random draws, applied after the row is built)
 TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5}
 # fabric price per metre used to turn a cost-sheet fabric line into metres per garment
@@ -86,6 +89,11 @@ FABRIC_PRICE = {"COTTON": 6.9, "POLYESTER": 5.2, "WOOL": 12.3, "NYLON": 7.4}
 COTTON_STORY = [("SUP-0064", "SKU-100007", 6.20, 16.0), ("SUP-0001", "SKU-100070", 6.50, 13.0), ("SUP-0065", "SKU-100574", 6.40, 9.0),
                 ("SUP-0043", "SKU-101624", 6.60, 4.0), ("SUP-0036", "SKU-100637", 6.30, 3.0)]
 COTTON_INDEX_RISE = 4.0
+# STORY: standard cost updates effective last month: sku -> (% step, cause)
+STD_COST_STEP = {"SKU-100175": (11.0, "skincare formulation ingredient price rise"), "SKU-100112": (9.0, "aluminium housing price rise"),
+                 "SKU-100224": (10.0, "polyester fabric price rise"), "SKU-100084": (6.0, "supplier labour rate increase")}
+# STORY: SS26 Womenswear knitwear (last season's range): supplier price rise % over the six months, by SKU
+KNIT_RISE = {"SKU-104291": 12.0, "SKU-104298": 9.0, "SKU-104305": 5.0, "SKU-104879": 3.0, "SKU-104886": 2.0, "SKU-104893": -1.0}
 # STORY: PFAS-free waterproofing alternatives live in seed/material_costs.csv
 HOLD_PROFILE = {"Womenswear": (9.0, 5.0, 1.0, 7.0), "Menswear": (9.0, 5.0, 1.0, 6.0), "Kids": (9.0, 5.0, 1.0, 7.5),
                 "Accessories": (9.0, 4.0, 1.2, 5.0), "Home": (9.0, 7.0, 1.0, 4.0), "Electricals": (9.0, 4.0, 1.5, 6.5), "Beauty": (9.0, 4.0, 1.0, 5.5)}
@@ -273,6 +281,44 @@ def generate(g):
                         "analysed_at": start + timedelta(days=27), "department": dept, "period_start": start,
                         "shrink_gbp": round(rev * sh_pct / 100, 2)})
                     mid += 1
+
+    # STORY: low-volume clearance lines that earn a negative net margin per unit after deep markdown (flagged for range review).
+    # SKU-100077 and SKU-100070 are already in the sample (STORY_MD_OFFSET); the other three are added here with their own Random
+    # so the shared generator stream (and every other SKU's blocks) is unchanged.
+    xr = random.Random(7731)
+    for sku, annual in EXTRA_SMALL.items():
+        p = by_sku[sku]
+        k = (p["department"], p["category"])
+        dept, cat = k
+        vp = bridge[k]["vs_plan"]
+        T_gross = vp[0] + vp[1] + vp[2]
+        retail, cost = float(p["retail_price_gbp"]), float(p["unit_cost_gbp"])
+        base_gm = (1 - cost / retail) * 100
+        off = STORY_MD_OFFSET.get(sku, 0)
+        ss = store_share.get(sku, 0.7)
+        for j in range(NBLK):
+            f = (j - 3) / 13.0
+            sf = 1 + 0.25 * math.cos(2 * math.pi * (j % 13) / 13)
+            noise = xr.uniform(0.95, 1.05) if 4 <= j <= 12 else 1.0
+            start = as_of - timedelta(days=28 * (NBLK - j))
+            for ch, share in (("store", ss), ("online", 1 - ss)):
+                units = max(5, int(round(annual / 13.0 * share * sf * noise)))
+                rev = units * retail
+                gm_pct = base_gm + T_gross * f
+                md_pct = plan_md[k] + off + vp[3] * -1 * f
+                sh_pct = plan_sh[k] + vp[4] * -1 * f
+                plan_net = base_gm - plan_md[k] - off - plan_sh[k]
+                net_pct = gm_pct - md_pct - sh_pct
+                margins.append({
+                    "margin_id": f"MAR-{mid:06d}", "style_id": p["style_id"], "sku": sku, "category": cat,
+                    "period": f"P-{16 - j}", "channel": ch, "volume_units": units, "revenue_gbp": round(rev, 2),
+                    "cost_of_goods_gbp": round(rev * (1 - gm_pct / 100), 2), "gross_margin_gbp": round(rev * gm_pct / 100, 2),
+                    "gross_margin_pct": round(gm_pct, 2), "markdown_gbp": round(rev * md_pct / 100, 2),
+                    "net_margin_gbp": round(rev * net_pct / 100, 2), "net_margin_pct": round(net_pct, 2),
+                    "plan_margin_pct": round(plan_net, 3), "variance_pct": round(net_pct - plan_net, 2),
+                    "analysed_at": start + timedelta(days=27), "department": dept, "period_start": start,
+                    "shrink_gbp": round(rev * sh_pct / 100, 2)})
+                mid += 1
 
     # ---- cost variance drivers (reconcile to the margin blocks above)
     drivers, vid = [], 1
@@ -482,6 +528,31 @@ def generate(g):
                          "actual_cost_gbp": round(q * r.uniform(0.99, 1.02), 2), "index_price_gbp": market,
                          "market_price_index": market, "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": code})
 
+    # STORY: material standard cost updates effective last month (applied to that month and later); every other update is within +/-4%
+    periods = sorted({h["period"] for h in hist})
+    step_from = periods[-2]
+    for h in hist:
+        st = STD_COST_STEP.get(h["sku"])
+        if st and h["period"] >= step_from:
+            h["quoted_cost_gbp"] = round(h["quoted_cost_gbp"] * (1 + st[0] / 100), 2)
+            h["actual_cost_gbp"] = round(h["actual_cost_gbp"] * (1 + st[0] / 100), 2)
+            if h["period"] == step_from:
+                h["notes"] = f"Standard cost updated from {step_from}-01: {st[1]}"
+    # STORY: last season's (SS26) Womenswear knitwear range cost more than costed: SUP-0043 styles up 5-12% on yarn, SUP-0022 styles about flat.
+    # Own Random so the shared generator stream (and every other table) is unchanged.
+    sr = random.Random(5826)
+    for sku, rise in KNIT_RISE.items():
+        c = cost_by_sku[sku]
+        mk = paths.get("WOOL") or [100.0] * 6
+        for i in range(6):
+            sup_idx = round(100 + rise * min(1.0, (i + 1) / 3), 1)
+            q = c["total_cost_gbp"] * sup_idx / 100
+            period = (g.as_of - timedelta(days=30 * (5 - i))).strftime("%Y-%m")
+            pt = round((sup_idx - 100) / (mk[i] - 100) * 100, 1) if abs(mk[i] - 100) >= 0.5 else None
+            hist.append({"supplier_id": c["supplier_id"], "sku": sku, "period": period, "quoted_cost_gbp": round(q, 2),
+                         "actual_cost_gbp": round(q * sr.uniform(0.995, 1.005), 2), "index_price_gbp": mk[i],
+                         "market_price_index": mk[i], "supplier_price_index": sup_idx, "pass_through_pct": pt, "notes": "", "commodity": "WOOL"})
+
     # ---- cost bridges (last six months, by commodity)
     bridges = []
     mat_of = {"COTTON": "MAT-COTTON-10OZ", "WOOL": "MAT-WOOL-MERINO", "POLYESTER": "MAT-POLYESTER-100", "NYLON": "MAT-NYLON-SPANDEX"}
@@ -530,4 +601,5 @@ def generate(g):
         "supplier_cost_history": hist, "fob_price_history": fob, "origin_cost_quotes": quotes,
         "cost_bridges": bridges, "holding_cost_rates": holds, "repair_costs": repairs, "packaging_options": pack, "recycled_premiums": recs,
         "fix_options": [],  # STORY: seed/fix_options.csv
+        "material_price_breaks": [],  # STORY: seed/material_price_breaks.csv
     }

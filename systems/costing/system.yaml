@@ -145,6 +145,32 @@ tables:
       wash_durability_cycles:
         type: int
         desc: Wash cycles before performance drops
+      trial_setup_cost_gbp:
+        type: float
+        desc: One-off cost to set up a trial of this material (lab testing, line time), GBP
+      trial_lead_days:
+        type: int
+        desc: Days for the supplier to produce a trial quantity
+      trial_test_days:
+        type: int
+        desc: Days of testing after the trial is produced
+  material_price_breaks:
+    key:
+    - material_id
+    - min_volume_units
+    cols:
+      material_id:
+        type: str
+        desc: Material identifier, e.g. MAT-RPET-100
+      min_volume_units:
+        type: int
+        desc: Annual purchase volume (in the material's unit) from which this price applies
+      price_per_unit_gbp:
+        type: float
+        desc: Cost per unit at or above this volume
+      notes:
+        type: str
+        desc: Terms behind the break, e.g. committed volume or tooling
   margin_analyses:
     key: margin_id
     cols:
@@ -1310,12 +1336,15 @@ tools:
     price_increase_pct: 3
     cost_increase_pct: 5
 - name: calculate_margin_variance_by_driver
-  desc: Split margin variance by pricing, volume, cost and mix drivers for a category in a period.
+  desc: Split margin variance to plan by price, cost, mix, markdown and shrink drivers for a category, by department and period. Shows what drove a margin loss.
   kind: sql
   args:
     category:
       required: true
       desc: Product category
+    department:
+      type: str
+      desc: Department, e.g. Womenswear; leave empty for all departments
     period:
       type: str
       desc: Period, e.g. 2026-08 (default latest available)
@@ -1325,15 +1354,20 @@ tools:
       c.department,
       c.period_start,
       c.total_variance_pct AS total_margin_variance_pct,
+      c.price_driver_pct,
       c.cost_driver_pct,
       c.mix_driver_pct,
-      c.supplier_driver_pct,
       c.markdown_driver_pct,
+      c.shrink_driver_pct,
+      c.notes,
       'variance split by driver shows which factors drive margin change' AS formula
     FROM cost_variance_drivers c
-    WHERE c.category = $category AND c.basis = 'vs_plan' AND ($period IS NULL OR CAST(c.period_start AS VARCHAR) LIKE $period || '%')
+    WHERE c.category = $category AND c.basis = 'vs_plan'
+      AND ($department IS NULL OR lower(c.department) = lower($department))
+      AND (($period IS NULL AND c.period_start = (SELECT max(v.period_start) FROM cost_variance_drivers v WHERE v.category = $category AND v.basis = 'vs_plan'))
+           OR ($period IS NOT NULL AND CAST(c.period_start AS VARCHAR) LIKE $period || '%'))
     ORDER BY c.period_start DESC, c.department
-  limit: 1
+  limit: 12
   example:
     category: Dresses
 - name: calculate_markdown_breakeven
@@ -1372,32 +1406,69 @@ tools:
     sku: SKU-101897
     cost_increase_pct: 12
 - name: calculate_material_cost_at_volume
-  desc: Calculate material cost per unit at different purchase volumes, including bulk discounts.
+  desc: Cost per unit and total spend for a material (by material_id, using its volume price breaks) or a SKU's material cost at a purchase volume.
   kind: sql
   args:
+    material_id:
+      type: str
+      desc: Material identifier, e.g. MAT-RPET-100; use for raw-material scale-up
     sku:
-      required: true
-      desc: SKU
+      desc: SKU, to cost the material in a product instead of a raw material
     volume_units:
       type: int
-      desc: Purchase volume
+      desc: Purchase volume (annual, in the material's unit, or units of the SKU)
       default: 5000
   sql: |
+    WITH latest AS (
+      SELECT * FROM material_costs m WHERE m.material_id = $material_id ORDER BY m.recorded_at DESC, m.cost_per_unit_gbp LIMIT 1
+    ), brk AS (
+      SELECT b.* FROM material_price_breaks b
+      WHERE b.material_id = $material_id AND b.min_volume_units <= $volume_units
+      ORDER BY b.min_volume_units DESC LIMIT 1
+    ), mat AS (
+      SELECT
+        l.material_id AS item,
+        l.material_name AS item_name,
+        l.unit,
+        ROUND(l.cost_per_unit_gbp, 3) AS base_cost_gbp,
+        ROUND(COALESCE(b.price_per_unit_gbp, l.cost_per_unit_gbp), 3) AS cost_at_volume_gbp,
+        b.min_volume_units AS price_break_from_units,
+        COALESCE(b.notes, 'No volume break on file; spot price') AS terms
+      FROM latest l LEFT JOIN brk b ON TRUE
+      WHERE $material_id IS NOT NULL
+    ), prod AS (
+      SELECT
+        pc.sku AS item,
+        pc.category AS item_name,
+        'unit' AS unit,
+        pc.material_cost_gbp AS base_cost_gbp,
+        CASE
+          WHEN $volume_units >= 20000 THEN ROUND(pc.material_cost_gbp * 0.92, 2)
+          WHEN $volume_units >= 10000 THEN ROUND(pc.material_cost_gbp * 0.95, 2)
+          WHEN $volume_units >= 5000 THEN ROUND(pc.material_cost_gbp * 0.98, 2)
+          ELSE pc.material_cost_gbp
+        END AS cost_at_volume_gbp,
+        NULL AS price_break_from_units,
+        'Bulk discount tiers: 2% from 5,000, 5% from 10,000, 8% from 20,000 units' AS terms
+      FROM product_costings pc
+      WHERE pc.sku = $sku AND pc.status = 'active' AND $material_id IS NULL
+      LIMIT 1
+    )
     SELECT
-      $sku AS sku,
+      x.item,
+      x.item_name,
+      x.unit,
       $volume_units AS volume_units,
-      pc.material_cost_gbp AS base_material_cost_gbp,
-      CASE
-        WHEN $volume_units >= 20000 THEN ROUND(pc.material_cost_gbp * 0.92, 2)
-        WHEN $volume_units >= 10000 THEN ROUND(pc.material_cost_gbp * 0.95, 2)
-        WHEN $volume_units >= 5000 THEN ROUND(pc.material_cost_gbp * 0.98, 2)
-        ELSE pc.material_cost_gbp
-      END AS adjusted_material_cost_gbp,
-      ROUND(pc.material_cost_gbp - CASE WHEN $volume_units >= 20000 THEN pc.material_cost_gbp * 0.92 ELSE pc.material_cost_gbp END, 2) AS savings_gbp,
-      'cost reduction from bulk discount' AS formula
-    FROM product_costings pc
-    WHERE pc.sku = $sku AND pc.status = 'active'
-    LIMIT 1
+      x.base_cost_gbp,
+      x.cost_at_volume_gbp,
+      x.cost_at_volume_gbp AS adjusted_material_cost_gbp,
+      ROUND(x.base_cost_gbp - x.cost_at_volume_gbp, 3) AS savings_per_unit_gbp,
+      ROUND((x.base_cost_gbp - x.cost_at_volume_gbp) / x.base_cost_gbp * 100, 1) AS discount_pct,
+      ROUND(x.cost_at_volume_gbp * $volume_units, 2) AS total_cost_gbp,
+      x.price_break_from_units,
+      x.terms,
+      'cost at volume = price at the highest volume break or discount tier reached; total = cost at volume * volume' AS formula
+    FROM (SELECT * FROM mat UNION ALL SELECT * FROM prod) x
   limit: 1
   example:
     sku: K-1700
@@ -1655,28 +1726,39 @@ tools:
     tooling_cost_gbp: 15000
     lifetime_volume_units: 50000
 - name: calculate_trial_cost_and_duration
-  desc: Calculate trial cost and duration for new material evaluation at test volume. Returns cost per unit and time to complete.
+  desc: Cost and elapsed days of a trial of a material at a test volume, from its latest price, trial set-up cost, supplier production lead time and test time.
   kind: sql
   args:
     material_id:
       type: str
-      desc: Material identifier, e.g. MAT-COTTON-10OZ
+      required: true
+      desc: Material identifier, e.g. MAT-DWR-WAX
     test_volume_units:
       type: int
-      desc: Test volume units
+      desc: Test volume in the material's unit, e.g. metres
       default: 500
     days_to_produce:
       type: int
-      desc: Days to produce trial
-      default: 14
+      desc: Override for days to produce the trial; default is the supplier's trial lead time
   sql: |
+    WITH latest AS (
+      SELECT * FROM material_costs m WHERE m.material_id = $material_id ORDER BY m.recorded_at DESC, m.cost_per_unit_gbp LIMIT 1
+    )
     SELECT
-      $material_id AS material_id,
+      l.material_id,
+      l.material_name,
+      l.supplier_id,
+      l.unit,
       $test_volume_units AS test_volume_units,
-      $days_to_produce AS days_to_produce,
-      COALESCE((SELECT ROUND(cost_per_unit_gbp, 3) FROM material_costs WHERE material_id = $material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) AS cost_per_unit_gbp,
-      ROUND(COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) * $test_volume_units, 2) AS total_trial_cost_gbp,
-      'trial_cost = material_cost_per_unit * test_volume' AS formula
+      ROUND(l.cost_per_unit_gbp, 3) AS cost_per_unit_gbp,
+      ROUND(l.cost_per_unit_gbp * $test_volume_units, 2) AS material_cost_gbp,
+      COALESCE(l.trial_setup_cost_gbp, 0) AS setup_cost_gbp,
+      ROUND(l.cost_per_unit_gbp * $test_volume_units + COALESCE(l.trial_setup_cost_gbp, 0), 2) AS total_trial_cost_gbp,
+      COALESCE($days_to_produce, l.trial_lead_days, 14) AS days_to_produce,
+      COALESCE(l.trial_test_days, 0) AS test_days,
+      COALESCE($days_to_produce, l.trial_lead_days, 14) + COALESCE(l.trial_test_days, 0) AS total_duration_days,
+      'trial cost = unit cost * test volume + set-up cost; duration = production days + test days' AS formula
+    FROM latest l
   limit: 1
   example:
     material_id: MAT-COTTON-10OZ
@@ -1975,26 +2057,38 @@ tools:
     sku: K-1700
     channel: store
 - name: get_channel_revenue_and_margin
-  desc: Revenue and margin by channel and segment.
+  desc: Revenue, units, cost of goods and margin by sales channel (store, online) over a period, optionally split by department segment.
   kind: sql
   args:
     period_from:
       type: date
       default: -35d
       desc: Trading periods starting on or after this date; the default is the last 4-week period
+    period_to:
+      type: date
+      desc: Trading periods starting on or before this date; default is no limit
+    group_by:
+      type: str
+      default: channel
+      desc: 'channel, or channel_department to split each channel by department segment'
   sql: |
     SELECT
       m.channel,
+      CASE WHEN $group_by = 'channel_department' THEN m.department ELSE 'All departments' END AS segment,
       ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+      SUM(m.volume_units) AS total_units,
       ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp,
       ROUND(SUM(m.gross_margin_gbp), 2) AS total_margin_gbp,
       ROUND(SUM(m.gross_margin_gbp) / SUM(m.revenue_gbp) * 100, 1) AS margin_pct,
+      ROUND(SUM(m.revenue_gbp) / SUM(m.volume_units), 2) AS revenue_per_unit_gbp,
+      ROUND(SUM(m.gross_margin_gbp) / SUM(m.volume_units), 2) AS margin_per_unit_gbp,
       COUNT(DISTINCT m.sku) AS sku_count
     FROM margin_analyses m
     WHERE m.period_start >= CAST($period_from AS DATE)
-    GROUP BY m.channel
+      AND ($period_to IS NULL OR m.period_start <= CAST($period_to AS DATE))
+    GROUP BY m.channel, CASE WHEN $group_by = 'channel_department' THEN m.department ELSE 'All departments' END
     ORDER BY total_revenue_gbp DESC
-  limit: 10
+  limit: 20
   example: {}
 - name: get_cost_price_changes_for_category
   desc: Retrieves cost price changes for category.
@@ -2044,24 +2138,40 @@ tools:
   example:
     sku: K-1700
 - name: get_costed_vs_actual_cost_by_product
-  desc: Return costed vs actual cost by product.
+  desc: Costed versus actual unit cost per product with margin lost, worst first. Give a SKU for one product, or a category and season for a whole range.
   kind: sql
   args:
     sku:
-      required: true
+      desc: SKU; leave empty to list a range
+    category:
+      desc: Product category, e.g. Knitwear
+    season:
+      type: str
+      desc: Season code of the range, e.g. SS26
   sql: |
     SELECT
+      p.costing_id,
       p.sku,
       p.style_id,
+      p.category,
+      p.season,
       ROUND(p.total_cost_gbp, 2) AS costed_cost_gbp,
-      ROUND(COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp), 2) AS actual_cost_gbp,
-      ROUND(COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp) - p.total_cost_gbp, 2) AS variance_gbp,
-      ROUND((COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp) - p.total_cost_gbp) / p.total_cost_gbp * 100, 1) AS variance_pct
+      ROUND(COALESCE(h.actual_cost, p.total_cost_gbp), 2) AS actual_cost_gbp,
+      ROUND(COALESCE(h.actual_cost, p.total_cost_gbp) - p.total_cost_gbp, 2) AS variance_gbp,
+      ROUND((COALESCE(h.actual_cost, p.total_cost_gbp) - p.total_cost_gbp) / p.total_cost_gbp * 100, 1) AS variance_pct,
+      ROUND(p.retail_price_gbp, 2) AS retail_price_gbp,
+      ROUND(p.gross_margin_pct, 1) AS costed_margin_pct,
+      ROUND((p.retail_price_gbp - COALESCE(h.actual_cost, p.total_cost_gbp)) / p.retail_price_gbp * 100, 1) AS actual_margin_pct,
+      ROUND(p.gross_margin_pct - (p.retail_price_gbp - COALESCE(h.actual_cost, p.total_cost_gbp)) / p.retail_price_gbp * 100, 1) AS margin_lost_pts
     FROM product_costings p
-    WHERE p.sku = $sku AND p.status = 'active'
-    ORDER BY p.updated_at DESC
-    LIMIT 1
-  limit: 1
+    LEFT JOIN (SELECT sku, AVG(actual_cost_gbp) AS actual_cost FROM supplier_cost_history GROUP BY sku) h ON h.sku = p.sku
+    WHERE p.status = 'active'
+      AND ($sku IS NULL OR p.sku = $sku)
+      AND ($category IS NULL OR lower(p.category) = lower($category))
+      AND ($season IS NULL OR p.season = $season)
+      AND ($sku IS NOT NULL OR h.sku IS NOT NULL)
+    ORDER BY variance_pct DESC, p.sku
+  limit: 30
   example:
     sku: K-1700
 - name: get_costing_sheet_for_product
@@ -2102,15 +2212,18 @@ tools:
   example:
     sku: K-1700
 - name: get_expected_recovery_rates
-  desc: Expected recovery on aged or clearance stock.
+  desc: Expected recovery on aged or clearance stock by disposal route - recovery % of cost, handling, days to cash, risk and net GBP per unit. Use for provisions and disposal choices.
   kind: sql
   args:
     category:
-      required: true
+      desc: Product category, e.g. Knitwear; leave empty for all categories
     age_band:
       type: str
-      desc: Age band, e.g. 0-30d, 31-60d, 61-180d, 180d+
-      default: 0-30d
+      desc: Age band, e.g. 0-30d, 31-60d, 61-180d, 180d+; leave empty for all bands
+    best_route_only:
+      type: bool
+      default: false
+      desc: True to return only the highest net recovery route per category and age band
   sql: |
     SELECT
       r.category,
@@ -2120,12 +2233,17 @@ tools:
       ROUND(r.handling_cost_gbp, 2) AS handling_cost_gbp,
       r.time_to_realise_days,
       r.risk_rating,
-      r.volume_last_6m
+      r.volume_last_6m,
+      ROUND(r.avg_unit_cost_gbp, 2) AS avg_unit_cost_gbp,
+      ROUND(r.avg_unit_cost_gbp * r.recovery_rate_pct / 100 - r.handling_cost_gbp, 2) AS net_recovery_gbp_per_unit,
+      r.stock_type
     FROM recovery_rates r
     JOIN recovery_routes ro ON r.route_id = ro.route_id
-    WHERE lower(r.category) = lower($category) AND r.age_band = $age_band
-    ORDER BY r.recovery_rate_pct DESC
-  limit: 10
+    WHERE ($category IS NULL OR lower(r.category) = lower($category))
+      AND ($age_band IS NULL OR r.age_band = $age_band)
+    QUALIFY (NOT $best_route_only) OR row_number() OVER (PARTITION BY r.category, r.age_band ORDER BY r.avg_unit_cost_gbp * r.recovery_rate_pct / 100 - r.handling_cost_gbp DESC) = 1
+    ORDER BY r.category, r.band_min_days, r.recovery_rate_pct DESC
+  limit: 60
   example:
     category: Electronics accessories
     age_band: 0-30d
@@ -2206,28 +2324,49 @@ tools:
   example:
     origin_country: VN
 - name: get_gross_margin_bridge
-  desc: Gross margin movement bridged by driver.
+  desc: Gross margin movement in points bridged by driver (price, cost, FX, mix, supplier, markdown, shrink), vs plan or year on year. Group-wide when no category is given.
   kind: sql
   args:
     category:
-      required: true
+      desc: Product category; leave empty for the whole group (revenue-weighted)
+    department:
+      type: str
+      desc: Department, e.g. Womenswear
+    basis:
+      type: str
+      default: vs_plan
+      desc: vs_plan for variance to plan, or yoy for year on year
   sql: |
+    WITH w AS (
+      SELECT m.category, m.department, m.period_start, SUM(m.revenue_gbp) AS rev
+      FROM margin_analyses m GROUP BY ALL
+    ), d AS (
+      SELECT v.*, w.rev, CASE WHEN $category IS NULL THEN COALESCE($department, 'All departments') ELSE v.department END AS dept_label,
+             row_number() OVER (PARTITION BY v.period_start ORDER BY v.total_variance_pct * w.rev) AS rn
+      FROM cost_variance_drivers v JOIN w ON w.category = v.category AND w.department = v.department AND w.period_start = v.period_start
+      WHERE v.basis = $basis
+        AND ($category IS NULL OR v.category = $category)
+        AND ($department IS NULL OR lower(v.department) = lower($department))
+    )
     SELECT
-      v.category,
-      v.department,
-      v.period_start,
-      v.total_variance_pct,
-      v.cost_driver_pct,
-      v.fx_driver_pct,
-      v.mix_driver_pct,
-      v.supplier_driver_pct,
-      v.markdown_driver_pct,
-      v.other_driver_pct,
-      v.notes
-    FROM cost_variance_drivers v
-    WHERE v.category = $category AND v.basis = 'vs_plan'
-    ORDER BY v.period_start DESC, v.department
-    LIMIT 12
+      COALESCE($category, 'All categories') AS category,
+      d.dept_label AS department,
+      d.period_start,
+      ROUND(SUM(d.total_variance_pct * d.rev) / SUM(d.rev), 2) AS total_variance_pct,
+      ROUND(SUM(d.price_driver_pct * d.rev) / SUM(d.rev), 2) AS price_driver_pct,
+      ROUND(SUM(d.cost_driver_pct * d.rev) / SUM(d.rev), 2) AS cost_driver_pct,
+      ROUND(SUM(d.fx_driver_pct * d.rev) / SUM(d.rev), 2) AS fx_driver_pct,
+      ROUND(SUM(d.mix_driver_pct * d.rev) / SUM(d.rev), 2) AS mix_driver_pct,
+      ROUND(SUM(d.supplier_driver_pct * d.rev) / SUM(d.rev), 2) AS supplier_driver_pct,
+      ROUND(SUM(d.markdown_driver_pct * d.rev) / SUM(d.rev), 2) AS markdown_driver_pct,
+      ROUND(SUM(d.shrink_driver_pct * d.rev) / SUM(d.rev), 2) AS shrink_driver_pct,
+      ROUND(SUM(d.other_driver_pct * d.rev) / SUM(d.rev), 2) AS other_driver_pct,
+      CASE WHEN $category IS NULL
+           THEN 'Revenue-weighted over ' || COUNT(*) || ' category and department lines. Biggest drags: ' || string_agg(CASE WHEN d.rn <= 3 THEN d.category || ' ' || d.department || ' ' || d.total_variance_pct END, '; ' ORDER BY d.rn)
+           ELSE any_value(d.notes) END AS notes
+    FROM d
+    GROUP BY d.period_start, d.dept_label
+    ORDER BY d.period_start DESC, d.dept_label
   limit: 12
   example:
     category: Dresses
@@ -2459,20 +2598,30 @@ tools:
     gross_margin_gbp: 60.0
     gross_margin_pct: 68.7
 - name: update_costed_price_for_product
-  desc: Updates the costed price for a product for the next season.
+  desc: Updates the costed retail price, margin and margin % on a costing for next season. Use the costing id from the costing sheet; margin = price minus total cost.
   kind: update
   table: product_costings
   set:
-    retail_price_gbp: '{retail_price_gbp}'
     updated_at: $as_of
+    notes: "Costed price updated to {retail_price_gbp} for next season"
   args:
     retail_price_gbp:
       type: float
       required: true
       desc: New retail price in GBP
+    gross_margin_gbp:
+      type: float
+      required: true
+      desc: Gross margin per unit at the new price (price minus total cost)
+    gross_margin_pct:
+      type: float
+      required: true
+      desc: Gross margin as % of the new price
   example:
     costing_id: CST-SKU-100700-V1
     retail_price_gbp: 49.99
+    gross_margin_gbp: 30.0
+    gross_margin_pct: 60.0
 - name: get_style_unit_margin
   desc: Unit economics for a style - retail price, landed cost, gross margin per unit and %, planned volume and total planned margin.
   kind: sql
@@ -2658,7 +2807,7 @@ tools:
   example:
     sku: SKU-105341
 - name: get_sku_sales_and_margin
-  desc: Sales and margin per SKU, ranked by revenue or margin contribution.
+  desc: Units, revenue, gross and net margin per SKU over a period, ranked by revenue or margin. Pass a SKU for one product, or none for the ranking.
   kind: sql
   args:
     sku: {}
@@ -2666,6 +2815,10 @@ tools:
       type: str
       desc: Rank by revenue or margin
       default: revenue
+    period_from:
+      type: date
+      default: -364d
+      desc: Trading periods starting on or after this date; default is the last 52 weeks
   sql: |
     SELECT
       m.sku,
@@ -2675,15 +2828,16 @@ tools:
       ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cost_gbp,
       ROUND(SUM(m.gross_margin_gbp), 2) AS gross_margin_gbp,
       ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
-      ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS margin_pct
+      ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS margin_pct,
+      ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0), 2) AS net_margin_per_unit_gbp
     FROM margin_analyses m
-    WHERE ($sku IS NULL OR m.sku = $sku)
+    WHERE ($sku IS NULL OR m.sku = $sku) AND m.period_start >= CAST($period_from AS DATE)
     GROUP BY m.sku, m.category
-    ORDER BY SUM(m.revenue_gbp) DESC
+    ORDER BY CASE WHEN lower($rank_by) = 'margin' THEN SUM(m.net_margin_gbp) ELSE SUM(m.revenue_gbp) END DESC, m.sku
   limit: 100
   example: {}
 - name: list_top_skus_by_sales
-  desc: Top SKUs ranked by sales volume or revenue, with margin and velocity metrics.
+  desc: Top SKUs ranked by units, revenue or margin over a period, with margin per unit and velocity. Use for the top-N SKUs by sales.
   kind: sql
   args:
     limit_rows:
@@ -2692,8 +2846,12 @@ tools:
       default: 20
     rank_by:
       type: str
-      desc: Rank by units or revenue
+      desc: Rank by units, revenue or margin
       default: units
+    period_from:
+      type: date
+      default: -364d
+      desc: Trading periods starting on or after this date; default is the last 52 weeks
   sql: |
     SELECT
       m.sku,
@@ -2702,22 +2860,34 @@ tools:
       ROUND(SUM(m.revenue_gbp), 2) AS revenue_gbp,
       ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
       ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0), 2) AS margin_per_unit_gbp,
-      COUNT(DISTINCT m.period) AS periods_in_sale
+      COUNT(DISTINCT m.period) AS periods_in_sale,
+      ROUND(SUM(m.volume_units) / NULLIF(COUNT(DISTINCT m.period), 0) / 4.0, 1) AS units_per_week
     FROM margin_analyses m
+    WHERE m.period_start >= CAST($period_from AS DATE)
     GROUP BY m.sku, m.category
-    ORDER BY SUM(m.volume_units) DESC
+    ORDER BY CASE lower($rank_by) WHEN 'revenue' THEN SUM(m.revenue_gbp) WHEN 'margin' THEN SUM(m.net_margin_gbp) ELSE SUM(m.volume_units) END DESC, m.sku
     LIMIT $limit_rows
   limit: 100
   example:
     limit_rows: 20
 - name: list_loss_making_skus
-  desc: SKUs where cost to serve exceeds margin or where net margin is negative; priority for cost reduction or discontinuation.
+  desc: SKUs whose net margin after markdown and shrink is below a threshold, worst per unit first. Filter by loss per unit and by size (units sold) to find small loss-makers.
   kind: sql
   args:
     min_loss_gbp:
       type: float
-      desc: Show SKUs whose net margin over the data period is below this GBP amount
+      desc: Show SKUs whose total net margin over the period is below this GBP amount; 0 means loss-making only
       default: 0
+    min_loss_per_unit_gbp:
+      type: float
+      desc: Only SKUs losing more than this many GBP per unit sold
+    max_units_sold:
+      type: int
+      desc: Only SKUs that sold at most this many units over the period (small SKUs)
+    period_from:
+      type: date
+      default: -364d
+      desc: Trading periods starting on or after this date; default is the last 52 weeks
   sql: |
     SELECT
       m.sku,
@@ -2726,34 +2896,62 @@ tools:
       ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp,
       ROUND(SUM(m.net_margin_gbp), 2) AS net_margin_gbp,
       ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.revenue_gbp), 0) * 100, 1) AS net_margin_pct,
-      SUM(m.volume_units) AS units_sold
+      SUM(m.volume_units) AS units_sold,
+      ROUND(SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0), 2) AS net_margin_per_unit_gbp,
+      ROUND(-SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0), 2) AS loss_per_unit_gbp
     FROM margin_analyses m
+    WHERE m.period_start >= CAST($period_from AS DATE)
     GROUP BY m.sku, m.category
     HAVING SUM(m.net_margin_gbp) < $min_loss_gbp
-    ORDER BY SUM(m.net_margin_gbp) ASC
+       AND ($min_loss_per_unit_gbp IS NULL OR -SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0) > $min_loss_per_unit_gbp)
+       AND ($max_units_sold IS NULL OR SUM(m.volume_units) <= $max_units_sold)
+    ORDER BY SUM(m.net_margin_gbp) / NULLIF(SUM(m.volume_units), 0) ASC, m.sku
   limit: 100
   example:
     min_loss_gbp: 60000
 - name: get_standard_cost_updates
-  desc: Standard cost changes and effective dates by SKU and period, tracking cost evolution.
+  desc: Standard cost changes by SKU and month - previous and new standard cost, change in GBP and %, effective date, cause. Filter by period and minimum % to find material updates.
   kind: sql
   args:
     sku: {}
     period_from:
-      type: str
-      desc: Period start, e.g. 2026-01 (default 6 months back)
+      type: date
+      default: -180d
+      desc: First month to include (default 6 months back)
+    period_to:
+      type: date
+      desc: Last month to include; default is the latest
+    min_change_pct:
+      type: float
+      desc: Only updates of at least this many % up or down
   sql: |
+    WITH x AS (
+      SELECT sch.*, LAG(sch.quoted_cost_gbp) OVER (PARTITION BY sch.sku ORDER BY sch.period) AS prev_cost
+      FROM supplier_cost_history sch
+    )
     SELECT
-      sch.sku,
-      sch.period,
-      ROUND(sch.actual_cost_gbp, 2) AS actual_cost_gbp,
-      ROUND(sch.quoted_cost_gbp, 2) AS quoted_cost_gbp,
-      ROUND((sch.actual_cost_gbp - sch.quoted_cost_gbp) / NULLIF(sch.quoted_cost_gbp, 0) * 100, 1) AS variance_pct,
-      sch.pass_through_pct,
-      sch.notes
-    FROM supplier_cost_history sch
-    WHERE ($sku IS NULL OR sch.sku = $sku)
-    ORDER BY sch.period DESC
+      x.sku,
+      pc.category,
+      pc.season,
+      x.supplier_id,
+      x.period,
+      CAST(x.period || '-01' AS DATE) AS effective_date,
+      ROUND(x.prev_cost, 2) AS previous_standard_cost_gbp,
+      ROUND(x.quoted_cost_gbp, 2) AS new_standard_cost_gbp,
+      ROUND(x.quoted_cost_gbp - x.prev_cost, 2) AS change_gbp,
+      ROUND((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0) * 100, 1) AS change_pct,
+      ROUND(x.actual_cost_gbp, 2) AS actual_cost_gbp,
+      ROUND(x.quoted_cost_gbp, 2) AS quoted_cost_gbp,
+      ROUND((x.actual_cost_gbp - x.quoted_cost_gbp) / NULLIF(x.quoted_cost_gbp, 0) * 100, 1) AS variance_pct,
+      x.pass_through_pct,
+      x.notes
+    FROM x LEFT JOIN product_costings pc ON pc.sku = x.sku AND pc.status = 'active'
+    WHERE ($sku IS NULL OR x.sku = $sku)
+      AND x.prev_cost IS NOT NULL
+      AND CAST(x.period || '-01' AS DATE) >= date_trunc('month', CAST($period_from AS DATE))
+      AND ($period_to IS NULL OR CAST(x.period || '-01' AS DATE) <= CAST($period_to AS DATE))
+      AND ($min_change_pct IS NULL OR abs((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0) * 100) >= $min_change_pct)
+    ORDER BY x.period DESC, abs((x.quoted_cost_gbp - x.prev_cost) / NULLIF(x.prev_cost, 0)) DESC, x.sku
   limit: 50
   example:
     sku: K-1700
@@ -2907,31 +3105,49 @@ tools:
   example:
     margin_threshold_pct: 60
 - name: get_nearshore_cost_assumptions
-  desc: Unit cost, lead time and MOQ assumptions for nearshore sourcing (Portugal, Turkey, Morocco) versus far-east.
+  desc: Unit cost, lead time and typical MOQ by origin for a category or style, with nearshore (Portugal, Turkey, Morocco) cost premium versus far-east sourcing.
   kind: sql
   args:
+    category:
+      desc: Product category, e.g. Knitwear
     style_id:
-      required: true
-      desc: Style, e.g. STY-5520
+      desc: Style, e.g. STY-5520; leave empty to cover the whole category
   sql: |
+    WITH pc AS (
+      SELECT c.*,
+        CASE WHEN c.origin_country IN ('PT', 'TR', 'MA') THEN 'Nearshore'
+             WHEN c.origin_country IN ('IT', 'PL', 'GB', 'FR', 'DE') THEN 'Europe and UK'
+             ELSE 'Far-east and other' END AS sourcing_region
+      FROM product_costings c
+      WHERE c.status = 'active'
+        AND ($style_id IS NULL OR c.style_id = $style_id)
+        AND ($category IS NULL OR lower(c.category) = lower($category))
+    ), far AS (
+      SELECT AVG(total_cost_gbp) AS far_cost FROM pc WHERE sourcing_region = 'Far-east and other'
+    ), lt AS (
+      SELECT q.origin_country, AVG(q.lead_time_days) AS lead_days
+      FROM origin_cost_quotes q
+      WHERE q.quote_status = 'current' AND q.category IN (SELECT category FROM pc)
+      GROUP BY q.origin_country
+    )
     SELECT
-      $style_id AS style_id,
-      pc.origin_country,
-      ROUND(AVG(pc.total_cost_gbp), 2) AS avg_cost_gbp,
-      ROUND(AVG(pc.material_cost_gbp), 2) AS material_cost_gbp,
-      ROUND(AVG(pc.labour_cost_gbp), 2) AS labour_cost_gbp,
-      ROUND(AVG(pc.freight_cost_gbp), 2) AS freight_cost_gbp,
-      CASE
-        WHEN pc.origin_country IN ('PT', 'TR', 'MA') THEN 'Nearshore (4-6 week lead)'
-        ELSE 'Far-east (8-12 week lead)'
-      END AS sourcing_region,
-      AVG(pc.quantity_units) AS typical_moq,
-      'Nearshore offers speed advantage but cost premium' AS note
-    FROM product_costings pc
-    WHERE pc.style_id = $style_id AND pc.status = 'active'
-    GROUP BY pc.origin_country
-    ORDER BY pc.origin_country
-  limit: 10
+      COALESCE($style_id, $category, 'All categories') AS style_id,
+      p.origin_country,
+      p.sourcing_region,
+      COUNT(*) AS sku_count,
+      ROUND(AVG(p.total_cost_gbp), 2) AS avg_cost_gbp,
+      ROUND(AVG(p.material_cost_gbp), 2) AS material_cost_gbp,
+      ROUND(AVG(p.labour_cost_gbp), 2) AS labour_cost_gbp,
+      ROUND(AVG(p.freight_cost_gbp), 2) AS freight_cost_gbp,
+      ROUND((AVG(p.total_cost_gbp) / f.far_cost - 1) * 100, 1) AS cost_vs_far_east_pct,
+      ROUND(l.lead_days) AS lead_time_days,
+      ROUND(l.lead_days / 7.0, 1) AS lead_time_weeks,
+      ROUND(AVG(p.quantity_units)) AS typical_moq,
+      'Nearshore cuts lead time and forecast risk; cost difference is versus the far-east average for the same scope' AS note
+    FROM pc p CROSS JOIN far f LEFT JOIN lt l ON l.origin_country = p.origin_country
+    GROUP BY p.origin_country, p.sourcing_region, f.far_cost, l.lead_days
+    ORDER BY p.sourcing_region, p.origin_country
+  limit: 15
   example:
     style_id: STY-5520
 - name: get_packaging_unit_cost_by_material
