@@ -153,7 +153,7 @@ tools:
       WHERE p.sku = $sku
       ORDER BY a.is_mandatory DESC, a.name
     limit: 100
-    example: {sku: SKU-100234}
+    example: {sku: SKU-100007}
 
   - name: list_products_by_attribute_in_category
     desc: List products in a category that match specific attribute values (e.g. materials, sizes).
@@ -170,12 +170,12 @@ tools:
       LEFT JOIN attributes a ON a.attribute_id = pa.attribute_id
       WHERE p.category = $category
         AND p.status IN ('active', 'new')
-        AND ($attribute_filter IS NULL OR LOWER(pa.value) ILIKE LOWER('%' || SPLIT_STRING($attribute_filter, ':')[2] || '%'))
-        AND pa.is_complete
+        AND ($attribute_filter IS NULL OR LOWER(pa.value) ILIKE LOWER('%' || SUBSTR($attribute_filter, POSITION(':' IN $attribute_filter) + 1) || '%'))
+        AND (pa.is_complete OR $attribute_filter IS NULL)
       GROUP BY p.sku, p.name, p.category, p.colour, p.size, p.retail_price_gbp
       ORDER BY p.sku
     limit: 100
-    example: {category: "Outdoor Clothing", attribute_filter: "ATTR-002:wool"}
+    example: {category: "Womenswear"}
 
   - name: get_product_attributes_for_range
     desc: Get all attributes for products in a style range to assess market fit and what would need to change.
@@ -257,8 +257,8 @@ tools:
         WHERE category = COALESCE($to_category, $from_category) AND status IN ('active', 'proposed')
       ),
       coverage AS (
-        SELECT ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) /
-                    COUNT(*), 1) as current_completeness
+        SELECT COALESCE(ROUND(100.0 * COUNT(CASE WHEN pa.value IS NOT NULL THEN 1 END) /
+                    NULLIF(COUNT(*), 0), 1), 0) as current_completeness
         FROM master.products p
         LEFT JOIN product_attributes pa ON pa.sku = p.sku
         WHERE p.category = $from_category
@@ -269,9 +269,9 @@ tools:
         (SELECT count FROM current_attrs) as current_attribute_count,
         (SELECT count FROM target_attrs) as target_attribute_count,
         (SELECT current_completeness FROM coverage) as current_completeness_pct,
-        ROUND(((SELECT count FROM target_attrs) - (SELECT count FROM current_attrs))::float /
-              (SELECT count FROM current_attrs) * 100, 1) as net_attribute_change_pct,
-        ROUND(40 + ((SELECT count FROM target_attrs) / 5.0), 1) as estimated_effort_hours,
+        ROUND(COALESCE(((SELECT count FROM target_attrs) - (SELECT count FROM current_attrs))::float /
+              NULLIF((SELECT count FROM current_attrs), 0) * 100, 0), 1) as net_attribute_change_pct,
+        ROUND(40 + (COALESCE((SELECT count FROM target_attrs), 0) / 5.0), 1) as estimated_effort_hours,
         'Map attributes, validate data, retrain systems, test marketplace feeds' as migration_tasks
     limit: 1
     example: {from_category: Home}
@@ -305,7 +305,7 @@ tools:
     set: {value: "{value}", last_updated: "$as_of", is_complete: true, confidence: 95, source: internal}
     args:
       value: {required: true, desc: "New attribute value"}
-    example: {sku: SKU-100234, attribute_id: ATTR-001, value: "100% polyester"}
+    example: {sku: SKU-100007, attribute_id: ATTR-001, value: "100% polyester"}
 
   - name: create_pim_attribute_group
     desc: Create a new attribute group in the PIM taxonomy to organize attributes by theme.

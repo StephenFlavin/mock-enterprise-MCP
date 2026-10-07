@@ -240,7 +240,7 @@ def generate(g):
     asset_sample = g.pick(master_assets, k=min(20, len(master_assets)))
     for i, asset in enumerate(asset_sample):
         asset_cmdb.append({
-            "asset_entry_id": f"AST-{900000 + i:06d}",
+            "asset_entry_id": f"CMB-{900000 + i:06d}",
             "asset_id": asset["asset_id"],
             "asset_name": asset["name"],
             "asset_type": asset["asset_class"],

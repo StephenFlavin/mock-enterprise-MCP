@@ -195,7 +195,7 @@ def generate(g):
                     "week_start": week_start,
                     "task_name": f"{task_type} task",
                     "task_type": task_type,
-                    "assigned_to": r.choice(employees)["employee_id"] if employees else "EMP-00001",
+                    "employee_id": r.choice(employees)["employee_id"] if employees else "EMP-00001",
                     "scheduled_date": task_date,
                     "scheduled_start_time": f"{r.choice([6, 7, 14, 18]):02d}:00",
                     "scheduled_duration_hours": round(r.uniform(1, 4), 1),

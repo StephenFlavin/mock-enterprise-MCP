@@ -1,0 +1,302 @@
+id: factory_audit
+name: Factory Audit Platform
+instructions: >
+  Social and ethical audits of factories. Audit ids look like AUD-000001, findings like FND-000001,
+  corrective action plans like CAP-000001. Track audit reports, findings by severity, corrective actions and
+  their ageing. Use it to check factory compliance status, review findings trends, and manage corrective
+  action follow-up.
+
+tables:
+  audits:
+    key: audit_id
+    cols:
+      audit_id: {type: str, desc: "Audit record, e.g. AUD-000001"}
+      factory_id: {type: str, desc: "Factory being audited, e.g. FAC-0107"}
+      supplier_id: {type: str, desc: "Supplier owning the factory"}
+      audit_date: {type: date, desc: Date of audit}
+      auditor_id: {type: str, desc: "Employee who conducted audit"}
+      audit_type: {type: enum, values: [social, ethical, quality], desc: Type of audit}
+      overall_score: {type: enum, values: [A, B, C, D], desc: Overall audit grade}
+      status: {type: enum, values: [completed, scheduled, draft], desc: Audit status}
+      notes: {type: text, desc: Audit notes and observations}
+      created_at: {type: timestamp, desc: When audit record was created}
+
+  audit_findings:
+    key: finding_id
+    cols:
+      finding_id: {type: str, desc: "Audit finding, e.g. FND-000001"}
+      audit_id: {type: str, desc: Audit this finding belongs to}
+      factory_id: {type: str, desc: Factory being audited}
+      category: {type: str, desc: "Issue category, e.g. working hours, wage, fire safety"}
+      severity: {type: enum, values: [critical, major, minor], desc: Finding severity}
+      description: {type: text, desc: Description of the finding}
+      status: {type: enum, values: [open, in_progress, closed, reopened], desc: Finding status}
+      is_repeat: {type: bool, desc: Whether this is a repeat from previous audit}
+      found_date: {type: date, desc: Date finding was identified}
+      created_at: {type: timestamp, desc: When finding was logged}
+
+  corrective_actions:
+    key: corrective_action_id
+    cols:
+      corrective_action_id: {type: str, desc: "Corrective action plan, e.g. CAP-000001"}
+      finding_id: {type: str, desc: Finding this action addresses}
+      factory_id: {type: str, desc: Factory responsible for action}
+      supplier_id: {type: str, desc: Supplier owning the factory}
+      description: {type: text, desc: Description of corrective action required}
+      assigned_to: {type: str, desc: "Employee responsible, e.g. EMP-01234"}
+      due_date: {type: date, desc: Due date for completion}
+      status: {type: enum, values: [open, in_progress, overdue, closed], desc: Action status}
+      completed_date: {type: date, desc: When action was completed}
+      created_at: {type: timestamp, desc: When action plan was created}
+      updated_at: {type: timestamp, desc: Last update}
+
+  audit_requests:
+    key: audit_request_id
+    cols:
+      audit_request_id: {type: str, desc: "Audit request, e.g. AUR-000001"}
+      factory_id: {type: str, desc: Factory to audit}
+      supplier_id: {type: str, desc: Supplier}
+      requested_date: {type: date, desc: When audit was requested}
+      audit_type: {type: enum, values: [social, ethical, quality], desc: Audit type requested}
+      status: {type: enum, values: [pending, scheduled, completed, cancelled], desc: Request status}
+      requested_by: {type: str, desc: "Employee who requested, e.g. EMP-01234"}
+      created_at: {type: timestamp, desc: When request was created}
+
+tools:
+  - name: get_factory_audit_findings
+    desc: Audit findings for a factory by severity and status. Use to review compliance issues.
+    kind: sql
+    args:
+      factory_id: {required: true, desc: "Factory, e.g. FAC-0107"}
+      status: {type: enum, values: [open, in_progress, closed, reopened], desc: "Filter by status"}
+      severity: {type: enum, values: [critical, major, minor], desc: "Filter by severity"}
+    sql: |
+      SELECT af.finding_id, af.audit_id, af.category, af.severity, af.description, af.status,
+             af.is_repeat, af.found_date, a.overall_score
+      FROM audit_findings af
+      JOIN audits a ON af.audit_id = a.audit_id
+      WHERE af.factory_id = $factory_id
+        AND ($status IS NULL OR af.status = $status)
+        AND ($severity IS NULL OR af.severity = $severity)
+      ORDER BY af.severity DESC, af.found_date DESC
+    limit: 50
+    example: {factory_id: FAC-0107}
+
+  - name: get_supplier_audit_status
+    desc: Audit status and score for a supplier across all its factories. Use for sourcing decisions.
+    kind: sql
+    args:
+      supplier_id: {required: true, desc: "Supplier, e.g. SUP-0042"}
+    sql: |
+      SELECT DISTINCT s.supplier_id, s.name, COUNT(DISTINCT a.audit_id) AS audit_count,
+             MAX(a.audit_date) AS last_audit_date, MAX(a.overall_score) AS latest_score
+      FROM audits a
+      JOIN master.suppliers s ON a.supplier_id = s.supplier_id
+      WHERE a.supplier_id = $supplier_id
+      GROUP BY s.supplier_id, s.name
+    limit: 1
+    example: {supplier_id: SUP-0042}
+
+  - name: list_audit_reports_for_factory
+    desc: All audit reports for a factory, newest first. Shows audit history and trends.
+    kind: select
+    from: audits
+    filters:
+      factory_id: {}
+      status: {default: completed}
+      audit_date: {col: audit_date, op: ">=", default: "-730d"}
+    columns: [audit_id, audit_date, audit_type, overall_score, status, notes]
+    order: audit_date DESC
+    limit: 20
+    example: {factory_id: FAC-0107}
+
+  - name: list_overdue_critical_findings
+    desc: Critical findings past due date by factory. Use to prioritise escalation and follow-up.
+    kind: sql
+    args:
+      min_days_overdue: {type: int, default: 0, desc: "Only findings this many days overdue"}
+    sql: |
+      SELECT af.finding_id, af.factory_id, af.category, af.description, ca.corrective_action_id,
+             ca.due_date, CAST($as_of AS DATE) - CAST(ca.due_date AS DATE) AS days_overdue,
+             s.name AS supplier, ca.assigned_to
+      FROM audit_findings af
+      LEFT JOIN corrective_actions ca ON af.finding_id = ca.finding_id
+      JOIN master.factories f ON af.factory_id = f.factory_id
+      JOIN master.suppliers s ON f.supplier_id = s.supplier_id
+      WHERE af.severity = 'critical' AND af.status IN ('open', 'in_progress')
+        AND ca.due_date < CAST($as_of AS DATE)
+        AND (CAST($as_of AS DATE) - CAST(ca.due_date AS DATE)) >= $min_days_overdue
+      ORDER BY days_overdue DESC
+    limit: 30
+    example: {}
+
+  - name: search_factory_audit_results
+    desc: Search for factory audit results by text, factory or supplier. Returns audit summaries.
+    kind: select
+    from: audits
+    filters:
+      factory_id: {}
+      supplier_id: {}
+      audit_type: {}
+      overall_score: {}
+      notes: {op: like, desc: "Search audit notes for keywords"}
+    columns: [audit_id, factory_id, supplier_id, audit_date, audit_type, overall_score, status]
+    order: audit_date DESC
+    limit: 20
+    example: {factory_id: FAC-0107}
+
+  - name: get_factory_audit_scores
+    desc: Latest audit score for each factory. Use to identify quality risk by factory.
+    kind: sql
+    args:
+      top_n: {type: int, default: 20, desc: "Return top N worst-scoring factories"}
+    sql: |
+      SELECT f.factory_id, f.name, f.supplier_id, s.name AS supplier, MAX(a.audit_date) AS last_audit_date,
+             MAX(a.overall_score) AS latest_score
+      FROM audits a
+      JOIN master.factories f ON a.factory_id = f.factory_id
+      JOIN master.suppliers s ON f.supplier_id = s.supplier_id
+      WHERE a.status = 'completed'
+      GROUP BY f.factory_id, f.name, f.supplier_id, s.name
+      ORDER BY latest_score DESC, last_audit_date DESC
+      LIMIT $top_n
+    limit: 20
+    example: {}
+
+  - name: create_audit_request
+    desc: Request an audit of a supplier or factory. Returns the new audit request.
+    kind: insert
+    table: audit_requests
+    id_prefix: AUR-
+    defaults: {status: pending}
+    args:
+      factory_id: {required: true}
+      supplier_id: {required: true}
+      audit_type: {required: true, type: enum, values: [social, ethical, quality]}
+      requested_by: {required: true}
+    example: {factory_id: FAC-0107, supplier_id: SUP-0042, audit_type: social, requested_by: EMP-01234}
+
+  - name: create_corrective_action_plan
+    desc: Create a corrective action plan record against a factory. Returns the new CAP.
+    kind: insert
+    table: corrective_actions
+    id_prefix: CAP-
+    defaults: {status: open}
+    args:
+      finding_id: {required: true}
+      factory_id: {required: true}
+      supplier_id: {required: true}
+      description: {required: true}
+      assigned_to: {required: true}
+      due_date: {required: true, type: date}
+    example: {finding_id: FND-900001, factory_id: FAC-0107, supplier_id: SUP-0042, description: Implement overtime controls, assigned_to: EMP-01234, due_date: "+30d"}
+
+  - name: draft_corrective_action_plan
+    desc: Draft corrective action plan with timelines and owners. Use to prepare formal CAP document.
+    kind: sql
+    args:
+      factory_id: {required: true}
+    sql: |
+      SELECT af.finding_id, af.category, af.severity, af.description,
+             COUNT(*) OVER () AS total_open_findings,
+             CAST($as_of AS DATE) + INTERVAL '30 DAY' AS suggested_due_date_30,
+             CAST($as_of AS DATE) + INTERVAL '60 DAY' AS suggested_due_date_60
+      FROM audit_findings af
+      WHERE af.factory_id = $factory_id AND af.status IN ('open', 'in_progress')
+      ORDER BY af.severity DESC
+    limit: 50
+    example: {factory_id: FAC-0107}
+
+  - name: draft_next_audit_focus_plan
+    desc: Draft focus areas for the next audit. Use to plan follow-up audit scope.
+    kind: sql
+    args:
+      factory_id: {required: true}
+    sql: |
+      SELECT af.category, COUNT(*) AS finding_count, MAX(af.severity) AS worst_severity,
+             STRING_AGG(DISTINCT af.description, '; ') AS recent_issues
+      FROM audit_findings af
+      WHERE af.factory_id = $factory_id AND af.status IN ('open', 'in_progress', 'reopened')
+      GROUP BY af.category
+      ORDER BY finding_count DESC
+    limit: 20
+    example: {factory_id: FAC-0107}
+
+  - name: get_corrective_action_status
+    desc: Status and ageing of corrective actions. Shows which CAPs are overdue or delayed.
+    kind: sql
+    args:
+      factory_id: {}
+      status: {type: enum, values: [open, in_progress, overdue, closed]}
+    sql: |
+      SELECT ca.corrective_action_id, ca.finding_id, ca.description, ca.status,
+             ca.due_date, CAST($as_of AS DATE) - CAST(ca.due_date AS DATE) AS days_since_due,
+             af.severity, af.category
+      FROM corrective_actions ca
+      LEFT JOIN audit_findings af ON ca.finding_id = af.finding_id
+      WHERE ($factory_id IS NULL OR ca.factory_id = $factory_id)
+        AND ($status IS NULL OR ca.status = $status)
+      ORDER BY ca.due_date ASC, af.severity DESC
+    limit: 50
+    example: {factory_id: FAC-0107, status: overdue}
+
+  - name: compare_audit_findings_across_audits
+    desc: Repeat and reopened findings across successive audits. Shows systemic issues.
+    kind: sql
+    args:
+      factory_id: {required: true}
+      last_n_audits: {type: int, default: 3, desc: "Compare last N audits"}
+    sql: |
+      WITH recent_audits AS (
+        SELECT audit_id, audit_date FROM audits
+        WHERE factory_id = $factory_id AND status = 'completed'
+        ORDER BY audit_date DESC
+        LIMIT $last_n_audits
+      ),
+      findings_with_rank AS (
+        SELECT af.finding_id, af.audit_id, af.category, af.description, af.severity, af.is_repeat,
+               af.status, a.audit_date, ROW_NUMBER() OVER (PARTITION BY af.category ORDER BY a.audit_date DESC) AS rn
+        FROM audit_findings af
+        JOIN audits a ON af.audit_id = a.audit_id
+        WHERE af.factory_id = $factory_id AND af.audit_id IN (SELECT audit_id FROM recent_audits)
+      )
+      SELECT category, severity, is_repeat, COUNT(*) AS occurrence_count,
+             STRING_AGG(DISTINCT finding_id, ', ') AS finding_ids
+      FROM findings_with_rank
+      WHERE is_repeat OR status = 'reopened'
+      GROUP BY category, severity, is_repeat
+      ORDER BY severity DESC, occurrence_count DESC
+    limit: 20
+    example: {factory_id: FAC-0107}
+
+  - name: update_audit_finding_status
+    desc: Change the status or classification of an audit finding. Mark as closed, reopen, etc.
+    kind: update
+    table: audit_findings
+    args:
+      status: {type: enum, values: [open, in_progress, closed, reopened], desc: New status}
+      is_repeat: {type: bool, desc: "Mark as repeat issue from previous audit"}
+    example: {finding_id: FND-900001, status: reopened, is_repeat: true}
+
+  - name: send_corrective_action_reminder
+    desc: Send an overdue corrective action reminder to a factory. Stores reminder in outbox.
+    kind: insert
+    table: corrective_actions
+    id_prefix: CAP-
+    defaults: {status: open}
+    args:
+      finding_id: {required: true}
+      factory_id: {required: true}
+      supplier_id: {required: true}
+      description: {required: true, desc: "Reminder message"}
+      assigned_to: {required: true}
+      due_date: {required: true, type: date}
+    example: {finding_id: FND-900001, factory_id: FAC-0107, supplier_id: SUP-0042, description: "REMINDER: Critical finding overdue", assigned_to: EMP-01234, due_date: "+7d"}
+
+  - name: update_corrective_action_due_date
+    desc: Change the due date of a corrective action. Returns old and new dates.
+    kind: update
+    table: corrective_actions
+    args:
+      due_date: {required: true, type: date, desc: "New due date"}
+    example: {corrective_action_id: CAP-900001, due_date: "+45d"}

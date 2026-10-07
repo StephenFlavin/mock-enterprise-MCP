@@ -195,7 +195,7 @@ tools:
       FROM product_sales_fact p
       WHERE p.category = $category
         AND ($market IS NULL OR p.market = $market)
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL $period_days || ' days'
+        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
       GROUP BY p.sku, p.style_id, p.category
       ORDER BY sales_gbp DESC
     limit: 50
@@ -223,10 +223,10 @@ tools:
     desc: Total sales by category and market for a period. Returns units, revenue and margin.
     kind: sql
     args:
-      category: {}
-      market: {}
-      period_from: {type: date, default: "-90d"}
-      period_to: {type: date, default: "+0d"}
+      category: {desc: "Category to filter by, optional"}
+      market: {desc: "Market/country to filter by, optional"}
+      period_from: {type: date, default: "-90d", desc: "Start date"}
+      period_to: {type: date, default: "+0d", desc: "End date"}
     sql: |
       SELECT p.category, p.market, sum(p.units_sold) AS units_sold,
              sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
@@ -246,18 +246,18 @@ tools:
     kind: sql
     args:
       style_id: {required: true}
-      period_days: {type: int, default: 90}
+      period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
       SELECT p.style_id, p.size, sum(p.units_sold) AS units_sold,
              sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
              round(100.0 * sum(p.units_sold) / nullif(sum(sum(p.units_sold)) OVER (), 0), 1) AS pct_of_total
       FROM product_sales_fact p
       WHERE p.style_id = $style_id
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL $period_days DAY
+        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
       GROUP BY p.style_id, p.size
       ORDER BY units_sold DESC
     limit: 50
-    example: {style_id: "STY-5520"}
+    example: {style_id: "STY-T-4410"}
 
   - name: get_sales_mix_by_item
     desc: Sales mix showing each product's contribution to category total and YoY comparison.
@@ -285,7 +285,7 @@ tools:
     kind: sql
     args:
       sku: {required: true}
-      period_days: {type: int, default: 90}
+      period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
       WITH ranked AS (
         SELECT p.sku, sum(p.sales_gbp) AS sales_gbp,
@@ -293,20 +293,20 @@ tools:
                row_number() OVER (PARTITION BY p.category ORDER BY sum(p.sales_gbp) DESC) AS category_rank,
                p.category
         FROM product_sales_fact p
-        WHERE p.date >= CAST($as_of AS DATE) - INTERVAL $period_days DAY
+        WHERE p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
         GROUP BY p.sku, p.category
       )
       SELECT sku, category, sales_gbp, overall_rank, category_rank FROM ranked WHERE sku = $sku
     limit: 1
-    example: {sku: "SKU-100234"}
+    example: {sku: "K-1700"}
 
   - name: list_product_performance_for_range
     desc: Product performance metrics for a range review. Returns sales, margin, markdown and strategic role.
     kind: sql
     args:
-      category: {desc: "Filter by category"}
+      category: {desc: "Filter by category, optional"}
       period: {type: str, default: "-90d", desc: "Period for metrics"}
-      strategic_role: {desc: "Filter by role: core, growth, strategic, clearance"}
+      strategic_role: {desc: "Filter by role: core, growth, strategic, clearance, optional"}
     sql: |
       SELECT p.sku, p.style_id, p.category, sum(p.units_sold) AS units_sold,
              sum(p.sales_gbp) AS sales_gbp, sum(p.cost_gbp) AS cost_gbp,
@@ -339,25 +339,26 @@ tools:
     desc: Average markdown rate by lead-time band. Shows relationship between lead time and markdown.
     kind: sql
     args:
-      category: {desc: "Filter by category"}
+      category: {desc: "Filter by category, optional"}
     sql: |
-      SELECT CASE WHEN m.lead_time_days <= 30 THEN "0-30 days"
-                  WHEN m.lead_time_days <= 60 THEN "31-60 days"
-                  WHEN m.lead_time_days <= 90 THEN "61-90 days"
-                  ELSE ">90 days" END AS lead_time_band,
+      SELECT CASE WHEN m.lead_time_days <= 30 THEN '0-30 days'
+                  WHEN m.lead_time_days <= 60 THEN '31-60 days'
+                  WHEN m.lead_time_days <= 90 THEN '61-90 days'
+                  ELSE '>90 days' END AS lead_time_band,
              count(distinct m.sku) AS num_products,
              round(avg(m.markdown_rate_pct), 1) AS avg_markdown_rate_pct,
              round(avg(m.avg_markdown_depth_pct), 1) AS avg_markdown_depth_pct,
-             sum(m.units_sold) AS total_units
+             sum(m.units_sold) AS total_units,
+             min(m.lead_time_days) AS min_lead_time
       FROM product_markdown_rate m
-      JOIN master.products pr ON pr.sku = m.sku
+      LEFT JOIN master.products pr ON pr.sku = m.sku
       WHERE ($category IS NULL OR m.category = $category)
         AND m.period_type = 'monthly'
         AND m.period >= cast(date_trunc('month', CAST($as_of AS DATE)) - INTERVAL 12 MONTH as varchar)
       GROUP BY lead_time_band
       ORDER BY min(m.lead_time_days)
     limit: 20
-    example: {category: "Dresses"}
+    example: {category: "Trousers"}
 
   - name: get_new_product_launch_history
     desc: Past new-product launches with early-life demand, sell-through and forecast accuracy.
@@ -392,7 +393,7 @@ tools:
     args:
       style_id: {required: true}
       size: {required: true}
-      period_days: {type: int, default: 90}
+      period_days: {type: int, default: 90, desc: "Days back from today"}
     sql: |
       SELECT $style_id AS style_id, $size AS size,
              sum(p.units_sold) AS total_units_affected,
@@ -402,7 +403,7 @@ tools:
              'Grade change for ' || $style_id || ' size ' || $size || ' affects units sold' AS explanation
       FROM product_sales_fact p
       WHERE p.style_id = $style_id AND p.size = $size
-        AND p.date >= CAST($as_of AS DATE) - INTERVAL $period_days DAY
+        AND p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
     limit: 1
     example: {style_id: "STY-T-4410", size: "14"}
 
