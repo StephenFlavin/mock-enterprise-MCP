@@ -598,7 +598,7 @@ tools:
     example: {status: active}
 
   - name: list_products_by_material
-    desc: Products using a material, by material id or fibre (e.g. polyester) - SKU, style, category, fabric quantity per unit and material cost per unit. Filter by category.
+    desc: Products using a material (by id or fibre such as polyester) - SKU, style, category, material cost per unit and its share of unit cost, most exposed first.
     kind: sql
     args:
       material_id: {type: str, desc: "Material id, e.g. MAT-POL-100 (optional if fibre given)"}
@@ -606,19 +606,23 @@ tools:
       category: {type: str, desc: "Product category, e.g. Blouses (optional)"}
       status: {type: str, desc: "Product status: active, new, clearance, discontinued (optional)"}
     sql: |
-      SELECT b.sku, t.style_id, t.name, t.category, t.status, b.component_id AS material_id, m.fiber_content,
-             b.quantity, b.unit, b.unit_cost_gbp,
-             round(b.quantity * b.unit_cost_gbp, 2) AS material_cost_per_unit_gbp,
+      SELECT t.sku, t.style_id, t.name, t.category, t.status,
+             string_agg(DISTINCT b.component_id, ', ') AS material_ids,
+             round(sum(b.quantity * b.unit_cost_gbp), 2) AS material_cost_per_unit_gbp,
+             p.unit_cost_gbp AS product_unit_cost_gbp,
+             round(100.0 * sum(b.quantity * b.unit_cost_gbp) / p.unit_cost_gbp, 1) AS material_share_of_unit_cost_pct,
              count(*) OVER (PARTITION BY t.category) AS products_in_category
       FROM bill_of_materials b
       JOIN product_tech_pack t ON t.sku = b.sku
+      JOIN master.products p ON p.sku = b.sku
       JOIN material_library m ON m.material_id = b.component_id
       WHERE ($material_id IS NULL OR b.component_id = $material_id)
-        AND ($fibre IS NULL OR m.fiber_content ILIKE '%' || $fibre || '%')
+        AND ($fibre IS NULL OR (m.fiber_content ILIKE '%' || $fibre || '%' AND m.material_type IN ('fabric', 'trim', 'yarn')))
         AND ($category IS NULL OR t.category ILIKE $category)
         AND ($status IS NULL OR t.status = $status)
         AND ($material_id IS NOT NULL OR $fibre IS NOT NULL)
-      ORDER BY t.category, material_cost_per_unit_gbp DESC, b.sku
+      GROUP BY t.sku, t.style_id, t.name, t.category, t.status, p.unit_cost_gbp
+      ORDER BY material_share_of_unit_cost_pct DESC, t.sku
     limit: 100
     example: {material_id: "MAT-POL-100", category: Blouses}
 
@@ -686,7 +690,7 @@ tools:
     example: {component_id: "MAT-ZIPPER"}
 
   - name: list_products_using_material
-    desc: Products using a material or a specific supplier batch (e.g. leather batch) - SKU, style, category, status, batch test result. Give a batch id to find what else used the same lot.
+    desc: Products using a material or one supplier batch - SKU, style, category, status and batch test result. Pass a batch id to find what else used the same lot.
     kind: sql
     args:
       material_id: {type: str, desc: "Material id, e.g. MAT-LEATHER (optional)"}

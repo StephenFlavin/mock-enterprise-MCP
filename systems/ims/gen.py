@@ -275,6 +275,30 @@ def generate(g):
             story_rows.append(trow("K-1700", s, wk, False, 0, None))
     for wk in weeks[-8:-3]:
         story_rows.append(trow("K-1700", "ST214", wk, False, 0, None))
+    # Wholesale orders (customer CUS-000030): DC1 stock position in the weeks around each order. The first order (800 units
+    # of SKU-100469) met only 560 units on hand; later orders were covered.
+    def put(sku, site, wk, qty, dem, cause=None, lost=0, days=0):
+        story_rows.append({"sku": sku, "site_id": site, "tracking_date": wk, "available": qty > 0, "quantity_available": qty,
+                           "demand_units": dem, "lost_sales": lost, "forecast_available": True,
+                           "stockout_days": days, "stockout_cause": cause})
+    for back, q in ((8, 560), (7, 560), (6, 2400), (5, 2280), (4, 2150), (3, 2100), (2, 2000)):
+        put("SKU-100469", "DC1", weeks[1 - back], q, 150)
+    for back, q in ((8, 900), (7, 880), (5, 1900), (4, 1800), (3, 1700), (2, 1650)):
+        put("SKU-100476", "DC1", weeks[1 - back], q, 120)
+    for back, q in ((5, 1550), (4, 1500), (3, 1450), (2, 1400)):
+        put("SKU-100483", "DC1", weeks[1 - back], q, 100)
+    # Promotion PROMO-900001 (Bedding, 20% off): hero SKU-104949 had only half its stock confirmed and was out of stock in
+    # most panel stores during the event; hero SKU-104942 was fully confirmed and stayed in stock.
+    promo_stores = ["ST214", "ST215", "ST216", "ST150", "ST159", "ST165", "ST164", "ST181", "ST183", "ST109"]
+    promo_out = {-3: {"ST214", "ST215", "ST216", "ST150", "ST159", "ST165", "ST164"},
+                 -2: {"ST214", "ST215", "ST150", "ST159", "ST165", "ST181"}}
+    for back, outs in promo_out.items():
+        for st in promo_stores:
+            if st in outs:
+                put("SKU-104949", st, weeks[back + 1], 0, 48, "supplier_late", 34, 5)
+            else:
+                put("SKU-104949", st, weeks[back + 1], 60, 48)
+            put("SKU-104942", st, weeks[back + 1], 90, 60)
     for row in story_rows:
         tracking[(row["sku"], row["site_id"], row["tracking_date"])] = row
     for wi, wk in enumerate(weeks):

@@ -687,15 +687,23 @@ tools:
 
   # Read tools - select
   - name: list_cost_saving_initiatives
-    desc: Cost saving initiatives with owners and status. For prioritisation and tracking.
-    kind: select
-    from: cost_saving_initiatives
-    filters:
-      status: {default: active}
-    columns: [initiative_id, title, owner_id, status, estimated_saving_gbp, confidence_pct, target_date]
-    order: estimated_saving_gbp DESC
+    desc: Cost saving initiatives with owner, status, estimated saving and confidence-weighted saving, largest first. Archived and cancelled hidden unless asked for.
+    kind: sql
+    args:
+      status: {type: enum, values: [draft, active, in_progress, delivered, on_hold, archived, cancelled], desc: "Only this status; omit for all except archived and cancelled"}
+      category: {desc: "Savings category, e.g. procurement, labour, freight, shrink, markdown"}
+      owner_id: {col: employee_id}
+    sql: |
+      SELECT initiative_id, title, owner_id, status, category, estimated_saving_gbp, confidence_pct,
+             round(estimated_saving_gbp * confidence_pct / 100.0, 0) AS risk_adjusted_saving_gbp,
+             realized_saving_gbp, target_date
+      FROM cost_saving_initiatives
+      WHERE ($status IS NULL AND status NOT IN ('archived', 'cancelled') OR status = $status)
+        AND ($category IS NULL OR lower(category) = lower($category))
+        AND ($owner_id IS NULL OR owner_id = $owner_id)
+      ORDER BY estimated_saving_gbp DESC
     limit: 50
-    example: {status: active}
+    example: {}
 
   - name: list_raid_log_items
     desc: RAID items with status, owner and last action. For programme health tracking.
@@ -711,15 +719,25 @@ tools:
     example: {status: open}
 
   - name: list_project_milestones_for_site
-    desc: Rollout milestones and dates by site. For tracking phased implementations.
-    kind: select
-    from: project_milestones
-    filters:
-      status: {}
-    columns: [milestone_id, project_id, title, due_date, forecast_date, status]
-    order: due_date
+    desc: Rollout milestones for one site with project, owner, due and forecast dates and status, earliest first. For tracking site rollouts.
+    kind: sql
+    args:
+      site_id: {required: true}
+      project_name: {desc: "Words in the project name, e.g. electric reach truck"}
+      status: {type: enum, values: [on_track, at_risk, off_track, completed, cancelled], desc: "Only this status"}
+    sql: |
+      SELECT m.milestone_id, m.site_id, p.project_id, p.name AS project_name, m.title, m.owner_id,
+             m.due_date, m.forecast_date, m.status,
+             CASE WHEN m.forecast_date > m.due_date THEN date_diff('day', m.due_date, m.forecast_date) ELSE 0 END AS slip_days,
+             m.description
+      FROM project_milestones m
+      LEFT JOIN projects p ON p.project_id = m.project_id
+      WHERE m.site_id = $site_id
+        AND ($status IS NULL OR m.status = $status)
+        AND ($project_name IS NULL OR lower(p.name) LIKE '%' || lower($project_name) || '%')
+      ORDER BY m.due_date, m.milestone_id
     limit: 30
-    example: {}
+    example: {site_id: DC3}
 
   - name: list_steering_committee_decisions_required
     desc: Open decisions awaiting steering committee. For governance tracking.
@@ -752,17 +770,24 @@ tools:
 
   # Read tools - sql (get/calculate)
   - name: get_capex_proposal
-    desc: Capex proposal, costs and benefits case. For investment decision making.
+    desc: Capex proposals with cost, payback, IRR, NPV, assumptions and sensitivity. Find by id, site or title words. For investment decisions.
     kind: sql
     args:
-      proposal_id: {required: true}
+      proposal_id: {}
+      site_id: {}
+      title: {desc: "Words in the proposal title, e.g. automation"}
+      status: {type: enum, values: [draft, submitted, under_review, approved, rejected, withdrawn, phased, descoped], desc: "Only this status"}
     sql: |
-      SELECT proposal_id, title, sponsor_id, status, capex_gbp, payback_years, irr_pct, npv_gbp,
-             risk_rating, site_id, business_case, key_assumptions, sensitivity_10pct, submission_date, decision_date
+      SELECT proposal_id, title, sponsor_id, status, site_id, capex_gbp, payback_years, irr_pct, npv_gbp,
+             risk_rating, business_case, key_assumptions, sensitivity_10pct, submission_date, decision_date
       FROM capex_proposals
-      WHERE proposal_id = $proposal_id
-    limit: 1
-    example: {proposal_id: CAP-000001}
+      WHERE ($proposal_id IS NULL OR proposal_id = $proposal_id)
+        AND ($site_id IS NULL OR site_id = $site_id)
+        AND ($title IS NULL OR lower(title) LIKE '%' || lower($title) || '%')
+        AND ($status IS NULL OR status = $status)
+      ORDER BY capex_gbp DESC
+    limit: 10
+    example: {site_id: DC1, title: automation}
 
   - name: get_capex_project_business_cases
     desc: Business cases for capex projects. For portfolio review and ranking.
@@ -834,30 +859,48 @@ tools:
     example: {}
 
   - name: get_initiative_confidence_and_dependencies
-    desc: Confidence rating and dependencies per initiative. For risk and sequencing.
+    desc: Confidence per cost saving initiative with the initiatives and other teams it depends on, and their status. For risk and sequencing.
     kind: sql
     args:
       initiative_id: {}
+      status: {type: enum, values: [draft, active, in_progress, delivered, on_hold, archived, cancelled], desc: "Only this status; omit for all except archived and cancelled"}
     sql: |
-      SELECT initiative_id, title, status, confidence_pct, depends_on, estimated_saving_gbp
-      FROM cost_saving_initiatives
-      WHERE $initiative_id IS NULL OR initiative_id = $initiative_id
-      ORDER BY confidence_pct DESC, estimated_saving_gbp DESC
+      SELECT c.initiative_id, c.title, c.status, c.estimated_saving_gbp, c.confidence_pct,
+             CASE WHEN c.confidence_pct >= 70 THEN 'high' WHEN c.confidence_pct >= 50 THEN 'medium' ELSE 'low' END AS confidence_rating,
+             c.depends_on,
+             (SELECT string_agg(d.initiative_id || ' ' || d.title || ' (' || d.status || ')', '; ')
+                FROM cost_saving_initiatives d
+               WHERE list_contains(string_split(replace(c.depends_on, ' ', ''), ','), d.initiative_id)) AS depends_on_initiatives,
+             c.depends_on_team
+      FROM cost_saving_initiatives c
+      WHERE ($initiative_id IS NULL OR c.initiative_id = $initiative_id)
+        AND ($status IS NULL AND c.status NOT IN ('archived', 'cancelled') OR c.status = $status)
+      ORDER BY c.confidence_pct DESC, c.estimated_saving_gbp DESC
     limit: 50
     example: {}
 
   - name: get_implementation_cost_estimates
-    desc: Cost and timeline of reporting system projects. For investment planning.
+    desc: Cost, timeline, dependencies and regulation driver of reporting system projects, with totals. Filter by system or regulation. For investment planning.
     kind: sql
     args:
-      system_name: {}
+      system_name: {desc: "Words in the system name, e.g. ESG platform"}
+      regulation_id: {desc: "Regulation the project is for, e.g. REG-EU-CSRD"}
     sql: |
-      SELECT impl_project_id, title, system_name, cost_estimate_gbp, timeline_weeks, scope, deliverables
-      FROM implementation_projects
-      WHERE $system_name IS NULL OR system_name = $system_name
-      ORDER BY cost_estimate_gbp DESC
+      WITH RECURSIVE chain AS (
+        SELECT impl_project_id, timeline_weeks AS finish_week FROM implementation_projects WHERE start_after IS NULL
+        UNION ALL
+        SELECT i.impl_project_id, c.finish_week + i.timeline_weeks
+        FROM implementation_projects i JOIN chain c ON i.start_after = c.impl_project_id
+      )
+      SELECT p.impl_project_id, p.title, p.system_name, p.regulation_id, p.data_gap, p.cost_estimate_gbp, p.timeline_weeks,
+             p.start_after, c.finish_week AS finish_week_if_sequenced, p.scope, p.deliverables, p.risks, p.resource_plan,
+             sum(p.cost_estimate_gbp) OVER () AS total_cost_gbp, max(c.finish_week) OVER () AS overall_weeks
+      FROM implementation_projects p JOIN chain c USING (impl_project_id)
+      WHERE ($system_name IS NULL OR lower(p.system_name) LIKE '%' || lower($system_name) || '%')
+        AND ($regulation_id IS NULL OR p.regulation_id = $regulation_id)
+      ORDER BY p.cost_estimate_gbp DESC
     limit: 20
-    example: {}
+    example: {system_name: ESG platform}
 
   - name: get_migration_workstream_status
     desc: Migration progress by object and cycle. For programme tracking.
@@ -955,12 +998,27 @@ tools:
 
   # Read tools - draft/py
   - name: draft_pilot_pass_fail_criteria
-    desc: Draft pilot pass fail criteria. For defining test success metrics.
-    kind: py
-    fn: draft_pilot_pass_fail_criteria
+    desc: Draft pilot pass-fail criteria for a candidate material, with metric, threshold and test method. Uses candidate-specific criteria, else material-type defaults.
+    kind: draft
     args:
-      material_id: {required: true}
-    example: {material_id: MAT-00523}
+      material_id: {required: true, desc: "Candidate material id, e.g. CAND-901002"}
+      material_type: {desc: "Material type for default criteria, e.g. fabric, yarn"}
+    sql:
+      own: SELECT metric, comparator, threshold, unit, test_method, notes FROM pilot_criteria WHERE material_id = $material_id ORDER BY criterion_id
+      dflt: SELECT metric, comparator, threshold, unit, test_method, notes FROM pilot_criteria WHERE material_id IS NULL AND ($material_type IS NULL OR lower(material_type) = lower($material_type)) ORDER BY criterion_id
+    template: |
+      PILOT PASS / FAIL CRITERIA for {{ material_id }}
+      {% if own %}Criteria set for this candidate:
+      {% for c in own %}- {{ c.metric }}: {{ c.comparator }} {{ c.threshold }} {{ c.unit }} (method: {{ c.test_method }}){% if c.notes %}. {{ c.notes }}{% endif %}
+
+      {% endfor %}
+      {% else %}No candidate-specific criteria are on file; standard defaults{% if material_type %} for {{ material_type }}{% endif %}:
+      {% for c in dflt %}- {{ c.metric }}: {{ c.comparator }} {{ c.threshold }} {{ c.unit }} (method: {{ c.test_method }}){% if c.notes %}. {{ c.notes }}{% endif %}
+
+      {% endfor %}
+      {% endif %}
+      The candidate passes the pilot only if every criterion above is met; any single miss is a fail.
+    example: {material_id: CAND-901002, material_type: fabric}
 
   - name: run_programme_scenario
     desc: Re-plan the programme under a scope, date or resource change. For trade-off analysis.
@@ -973,10 +1031,15 @@ tools:
     example: {programme_name: "ERP", scenario_type: date_slip, parameter: "6"}
 
   - name: search_test_labs_and_pilot_partners
-    desc: Search for test labs and pilot partners. For finding capability.
-    kind: py
-    fn: search_test_labs_and_pilot_partners
-    args:
-      material_type: {required: true, desc: "Type of material to test"}
-      capability: {desc: "Required capability, e.g. tensile testing"}
-    example: {material_type: packaging, capability: "tensile strength testing"}
+    desc: Test labs and pilot partners by material type and capability, with location, accreditation, lead time and typical pilot cost. For choosing who runs a pilot.
+    kind: select
+    from: test_labs
+    filters:
+      material_type: {col: material_types, op: like, desc: "Material type, e.g. fabric, yarn, leather, packaging"}
+      capability: {col: capabilities, op: like, desc: "Required test or trial, e.g. tensile, abrasion, dyeability"}
+      lab_type: {}
+      status: {}
+    columns: [lab_id, name, lab_type, location, material_types, capabilities, accreditation, lead_time_weeks, pilot_cost_gbp, status]
+    order: lead_time_weeks, pilot_cost_gbp
+    limit: 10
+    example: {material_type: fabric, capability: tensile}

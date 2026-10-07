@@ -456,19 +456,24 @@ tools:
 
 
   - name: calculate_pipeline_risk_score
-    desc: Calculate risk score for pipeline products combining supply, demand and execution risk. Returns 0-100 score and key risk drivers.
+    desc: Risk score 0-100 for a pipeline product combining supply, demand and execution risk, with the key drivers such as lead time and status. Use to explain why a product is risky.
     kind: sql
     args:
-      pipeline_id: {required: true, desc: Pipeline product id}
+      pipeline_id: {required: true, desc: "Pipeline product id, e.g. PL-000008"}
     sql: |
       SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
-             ROUND((CASE p.supply_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END +
-                    CASE p.demand_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END) / 2, 0) AS risk_score,
-             p.supply_risk, p.demand_risk,
-             'risk_score = (supply_risk + demand_risk) / 2' AS formula
-      FROM pipeline_products p
+             ROUND((CASE p.supply_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END
+                  + CASE p.demand_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END
+                  + CASE p.execution_risk WHEN 'low' THEN 20 WHEN 'medium' THEN 50 ELSE 80 END) / 3.0, 0) AS risk_score,
+             p.supply_risk, p.demand_risk, p.execution_risk,
+             concat_ws('; ',
+               CASE WHEN p.supply_risk <> 'low' THEN 'supply: ' || m.lead_time_days || '-day lead time, supplier on-time-in-full ' || s.otif_pct_12m || '%' END,
+               CASE WHEN p.demand_risk <> 'low' THEN 'demand: ' || p.category || ' demand is volatile and the item has no sales history' END,
+               CASE WHEN p.execution_risk <> 'low' THEN 'execution: status is ' || p.status || ', launch ' || CAST(p.launch_date AS VARCHAR) END) AS key_risk_drivers,
+             'risk_score = (supply_risk + demand_risk + execution_risk) / 3, with low 20, medium 50, high 80' AS formula
+      FROM pipeline_products p JOIN master.products m ON m.sku = p.sku JOIN master.suppliers s ON s.supplier_id = m.supplier_id
       WHERE p.pipeline_id = $pipeline_id
-    example: {pipeline_id: "PL-900001"}
+    example: {pipeline_id: PL-000008}
 
   - name: calculate_rollback_vs_tune_impact
     desc: Compare rolling back a configuration's latest change with tuning it. Returns current and pre-change MAPE, expected MAPE and effort for each option, and a recommendation.
@@ -1286,20 +1291,28 @@ tools:
     example: {}
 
   - name: get_pipeline_products_for_season
-    desc: Return pipeline products launching in a season. Shows product mix, risk and forecast.
+    desc: Pipeline products launching in a season with launch date, risk levels and score, plus 12-week base units and revenue at list price, highest risk first. Use for season sales and risk.
     kind: sql
     args:
-      season: {required: true, desc: "Season code, e.g. AW26"}
-      status: {desc: "Status: draft, approved, in_production, launched"}
+      season: {required: true, desc: "Season code, e.g. SS27"}
+      status: {type: enum, values: [draft, approved, in_production, launched], desc: "Status: draft, approved, in_production, launched"}
     sql: |
-      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date,
-             p.category, p.supply_risk, p.demand_risk, p.risk_score, p.status,
-             COUNT(*) OVER () AS total_pipeline_items
-      FROM pipeline_products p
-      WHERE p.season = $season AND ($status IS NULL OR p.status = $status)
-      ORDER BY p.risk_score DESC
+      WITH ramp AS (
+        SELECT SUM(CASE k WHEN 1 THEN 0.5 WHEN 2 THEN 0.7 WHEN 3 THEN 0.85 ELSE 1.0 END) AS f FROM generate_series(1, 12) t(k)),
+      x AS (
+        SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date, p.category, p.supply_risk, p.demand_risk,
+               p.execution_risk, p.risk_score, p.status, p.planned_weekly_units,
+               ROUND(p.planned_weekly_units * r.f, 0) AS base_units_first_12_weeks,
+               ROUND(p.planned_weekly_units * r.f * CAST(m.retail_price_gbp AS DOUBLE), 0) AS base_revenue_first_12_weeks_gbp
+        FROM pipeline_products p JOIN master.products m ON m.sku = p.sku CROSS JOIN ramp r
+        WHERE p.season = $season AND ($status IS NULL OR p.status = $status))
+      SELECT x.*, COUNT(*) OVER () AS total_pipeline_items,
+             SUM(x.base_units_first_12_weeks) OVER () AS season_base_units,
+             SUM(x.base_revenue_first_12_weeks_gbp) OVER () AS season_base_revenue_gbp,
+             'Sales ramp 50%, 70%, 85% of planned weekly units in weeks 1-3, then 100%' AS formula
+      FROM x ORDER BY x.risk_score DESC, x.pipeline_id
     limit: 50
-    example: {season: "AW26"}
+    example: {season: SS27}
 
   - name: get_return_forecast_by_week
     desc: Weekly returns forecast in units with low and high range, value, cumulative total and driver. Use for returns centre capacity and staffing.
@@ -1421,20 +1434,32 @@ tools:
 
 
   - name: get_site_volume_forecast
-    desc: Throughput volume forecast for a DC or store. For capacity and resource planning.
+    desc: Outbound throughput forecast for one DC over a period by scenario (base, upside, downside), with average week, annual growth assumption and busiest base-case week. Use for capacity and automation cases.
     kind: sql
     args:
-      site_id: {required: true, desc: "Site: DC1-DC5 or store"}
-      period_start: {type: date, desc: "Period start", default: "$as_of"}
-      period_end: {type: date, desc: "Period end", default: "+12w"}
+      site_id: {required: true, desc: "Distribution centre, e.g. DC1"}
+      period_start: {type: date, desc: Period start, default: "$as_of"}
+      period_end: {type: date, desc: Period end, default: "+52w"}
     sql: |
-      SELECT CAST($period_start AS DATE) AS period_start, CAST($period_end AS DATE) AS period_end,
-             COALESCE(SUM(o.units), 0) AS units_forecast,
-             ROUND(COALESCE(SUM(o.value_gbp), 0), 0) AS value_gbp,
-             'Volume used for DC/store capacity planning' AS use_case
-      FROM daily_orders o
-      WHERE o.order_date >= CAST($period_start AS DATE) AND o.order_date <= CAST($period_end AS DATE)
-    example: {site_id: "DC1"}
+      WITH q AS (
+        SELECT v.scenario, SUM(v.units_forecast) AS units, COUNT(*) * 13 AS weeks, MAX(v.annual_growth_pct) AS growth
+        FROM long_range_volume v
+        WHERE v.site_id = $site_id
+          AND v.period_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND v.period_start < CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE)
+        GROUP BY v.scenario),
+      pk AS (
+        SELECT arg_max(f.week_start, f.outbound_units) AS peak_week, MAX(f.outbound_units) AS peak_units
+        FROM dc_flow_forecast f
+        WHERE f.site_id = $site_id AND f.week_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND f.week_start < CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE))
+      SELECT $site_id AS site_id, q.scenario, q.units AS outbound_units_forecast, ROUND(q.units * 1.0 / q.weeks, 0) AS avg_weekly_units,
+             q.growth AS annual_growth_assumption_pct,
+             ROUND((q.units * 1.0 / MAX(q.units) FILTER (WHERE q.scenario = 'base') OVER () - 1) * 100, 1) AS units_vs_base_pct,
+             CAST(pk.peak_week AS VARCHAR) AS busiest_week, pk.peak_units AS busiest_week_outbound_units
+      FROM q CROSS JOIN pk
+      ORDER BY CASE q.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END
+    example: {site_id: DC1}
 
   - name: get_volume_forecast
     desc: Long-range outbound volume forecast by scenario (base, upside, downside) and plan year, optionally for one DC. Use for multi-year capacity and investment cases.
@@ -1759,44 +1784,58 @@ tools:
     example: {config_id: CFG-000001, parameters: "alpha=0.2; seasonality=multiplicative; outlier_capping=on", notes: Rolled back outlier capping}
 
   - name: get_demand_forecast
-    desc: Demand forecast by category and period. Shows base case and upside/downside scenarios.
+    desc: Demand forecast units and revenue for base, upside and downside scenarios over a period, per category or in total, by month or as one total. Use for full-year revenue planning.
     kind: sql
     args:
-      category: {required: true, desc: Product category}
-      period_start: {type: date, desc: "Forecast period start", default: "$as_of"}
-      period_end: {type: date, desc: "Forecast period end", default: "+12w"}
+      category: {desc: "Product category, e.g. Dresses; blank for all categories combined"}
+      period_start: {type: date, desc: Forecast period start, default: "$as_of"}
+      period_end: {type: date, desc: Forecast period end, default: "+52w"}
+      grain: {type: enum, values: [total, month], desc: "total = one row per scenario; month = one row per scenario and month", default: total}
     sql: |
-      SELECT f.category, f.forecast_week,
-             f.forecast_type,
-             SUM(f.units_forecast) AS units_forecast,
-             ROUND(SUM(f.units_forecast) * 50, 0) AS value_gbp
-      FROM forecasts f
-      WHERE f.category = $category
-        AND f.forecast_week >= CAST($period_start AS DATE)
-        AND f.forecast_week <= CAST($period_end AS DATE)
-      GROUP BY f.category, f.forecast_week, f.forecast_type
-      ORDER BY f.forecast_week, f.forecast_type
-    limit: 52
-    example: {category: "Dresses"}
+      WITH price AS (
+        SELECT category, SUM(revenue_gbp) / NULLIF(SUM(units_sold), 0) AS price
+        FROM demand_history
+        WHERE period_date >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 26 WEEK
+        GROUP BY category),
+      f AS (
+        SELECT f.category, f.forecast_week, f.forecast_type, f.units_forecast, f.units_forecast * pr.price AS revenue
+        FROM category_forecasts f JOIN price pr ON pr.category = f.category
+        WHERE ($category IS NULL OR f.category = $category)
+          AND f.forecast_week >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND f.forecast_week <= CAST($period_end AS DATE)),
+      g AS (
+        SELECT f.forecast_type AS scenario,
+               CASE WHEN lower($grain) = 'month' THEN CAST(date_trunc('month', f.forecast_week) AS DATE) END AS month_start,
+               SUM(f.units_forecast) AS units_forecast, ROUND(SUM(f.revenue), 0) AS revenue_gbp,
+               COUNT(DISTINCT f.forecast_week) AS weeks
+        FROM f GROUP BY 1, 2)
+      SELECT g.scenario, g.month_start, g.units_forecast, g.revenue_gbp, g.weeks,
+             ROUND((g.units_forecast * 1.0 / NULLIF(MAX(g.units_forecast) FILTER (WHERE g.scenario = 'base') OVER (PARTITION BY g.month_start), 0) - 1) * 100, 1) AS units_vs_base_pct,
+             COALESCE($category, 'All categories') AS category,
+             'Revenue = units x average selling price per unit over the last 26 weeks' AS formula
+      FROM g ORDER BY g.month_start, CASE g.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END
+    limit: 60
+    example: {category: Dresses}
 
   - name: get_demand_forecast_for_pipeline_product
-    desc: Demand forecast for pipeline (new) products. Shows launch window and sales ramp.
+    desc: Demand forecast for one pipeline product from launch, with conservative, base and optimistic units and base revenue at list price. Shows the launch ramp over the weeks asked.
     kind: sql
     args:
-      pipeline_id: {required: true, desc: Pipeline product id}
-      weeks_ahead: {type: int, desc: "Weeks to forecast", default: 12}
+      pipeline_id: {required: true, desc: "Pipeline product id, e.g. PL-000008"}
+      weeks_ahead: {type: int, desc: Weeks from launch to forecast, default: 12}
     sql: |
-      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date, p.category,
-             ROUND(COALESCE(SUM(f.units_forecast) * 0.8, 0), 0) AS conservative_forecast,
-             ROUND(COALESCE(SUM(f.units_forecast), 0), 0) AS base_forecast,
-             ROUND(COALESCE(SUM(f.units_forecast) * 1.2, 0), 0) AS optimistic_forecast
-      FROM pipeline_products p
-      LEFT JOIN forecasts f ON p.category = f.category
-        AND f.forecast_week >= p.launch_date
-        AND f.forecast_week < p.launch_date + INTERVAL ($weeks_ahead * 7) DAY
+      WITH ramp AS (
+        SELECT SUM(CASE k WHEN 1 THEN 0.5 WHEN 2 THEN 0.7 WHEN 3 THEN 0.85 ELSE 1.0 END) AS f FROM generate_series(1, CAST($weeks_ahead AS INTEGER)) t(k))
+      SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date, p.category, p.planned_weekly_units,
+             CAST($weeks_ahead AS INTEGER) AS weeks_from_launch,
+             ROUND(p.planned_weekly_units * r.f * 0.8, 0) AS conservative_forecast,
+             ROUND(p.planned_weekly_units * r.f, 0) AS base_forecast,
+             ROUND(p.planned_weekly_units * r.f * 1.2, 0) AS optimistic_forecast,
+             ROUND(p.planned_weekly_units * r.f * CAST(m.retail_price_gbp AS DOUBLE), 0) AS base_revenue_gbp,
+             'Sales ramp 50%, 70%, 85% of planned weekly units in weeks 1-3, then 100%; range is -20% / +20%' AS formula
+      FROM pipeline_products p JOIN master.products m ON m.sku = p.sku CROSS JOIN ramp r
       WHERE p.pipeline_id = $pipeline_id
-      GROUP BY p.pipeline_id, p.sku, p.product_name, p.launch_date, p.category
-    example: {pipeline_id: "PL-900001"}
+    example: {pipeline_id: PL-000008}
 
   - name: get_demand_forecast_variability
     desc: Demand variability and forecast error for a supplier, category or fashion range over a window, with weekly demand, spread and downside weeks. Use to size commitments and demand risk.

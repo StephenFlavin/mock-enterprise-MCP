@@ -36,6 +36,8 @@ def generate(g):
         "test_cycles": [],
         "implementation_projects": [],
         "programmes": [],
+        "test_labs": [],
+        "pilot_criteria": [],
     }
 
     # Generate projects (10-15)
@@ -116,25 +118,8 @@ def generate(g):
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
-    # Generate cost saving initiatives (8-12)
-    for i in range(1, 10):
-        csi_id = f"CSI-{i:06d}"
-        result["cost_saving_initiatives"].append({
-            "initiative_id": csi_id,
-            "title": g.fake.sentence(),
-            "owner_id": pick_employee(),
-            "status": g.pick(["draft", "active", "in_progress", "on_hold"]),
-            "estimated_saving_gbp": round(g.rng.uniform(50000, 3000000), 0),
-            "realized_saving_gbp": round(g.rng.uniform(10000, 500000), 0),
-            "confidence_pct": g.rng.randint(30, 95),
-            "category": g.pick(["procurement", "labour", "freight", "shrink", "markdown"]),
-            "depends_on": None,
-            "start_date": g.as_of,
-            "target_date": (g.as_of + timedelta(days=g.rng.randint(30, 180))),
-            "description": g.fake.sentence(),
-            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 90)),
-            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
-        })
+    # Cost saving initiatives: all rows are hand-written in seed/cost_saving_initiatives.csv
+    # (a prioritisation story needs meaningful titles, confidences and dependencies, not noise).
 
     # Generate improvement initiatives (6-8)
     dc_sites = [s for s in sites if s["type"] == "dc"]
@@ -162,9 +147,14 @@ def generate(g):
     # Generate capex proposals (6-8)
     for i in range(1, 7):
         cap_id = f"CAP-{i:06d}"
+        cap_title, cap_site = [
+            ("Venlo DC racking extension", "DC4"), ("Store refit programme, northern region", None),
+            ("Leeds DC returns processing upgrade", "DC3"), ("Columbus DC dock door expansion", "DC5"),
+            ("E-commerce checkout and payments replatform", None), ("Daventry DC mezzanine pick floor", "DC2"),
+        ][i - 1]
         result["capex_proposals"].append({
             "proposal_id": cap_id,
-            "title": g.fake.sentence(),
+            "title": cap_title,
             "sponsor_id": pick_employee(),
             "status": g.pick(["draft", "submitted", "under_review", "approved"]),
             "capex_gbp": round(g.rng.uniform(500000, 15000000), 0),
@@ -172,10 +162,10 @@ def generate(g):
             "irr_pct": round(g.rng.uniform(8, 25), 1),
             "npv_gbp": round(g.rng.uniform(500000, 5000000), 0),
             "risk_rating": g.pick(["low", "medium", "high"]),
-            "site_id": g.pick(dc_sites)["site_id"] if g.rng.random() > 0.4 else None,
+            "site_id": cap_site,
             "business_case": g.fake.sentence(),
             "key_assumptions": g.fake.sentence(),
-            "sensitivity_10pct": f"NPV reduces to £{round(g.rng.uniform(200000, 2000000), 0)}k",
+            "sensitivity_10pct": f"NPV falls to £{round(g.rng.uniform(200000, 2000000), -3):,.0f} under a 10% revenue miss",
             "submission_date": (g.as_of - timedelta(days=g.rng.randint(0, 30))) if g.rng.random() > 0.5 else None,
             "decision_date": None,
             "description": g.fake.sentence(),
@@ -210,29 +200,7 @@ def generate(g):
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
-    # Generate pilot projects (3-5)
-    for i in range(1, 4):
-        pil_id = f"PIL-{i:06d}"
-        start_date = g.as_of - timedelta(days=g.rng.randint(0, 30))
-        end_date = g.as_of + timedelta(days=g.rng.randint(30, 120))
-        result["pilot_projects"].append({
-            "pilot_id": pil_id,
-            "title": g.fake.sentence(),
-            "material_id": f"MAT-{g.rng.randint(100, 500):05d}",
-            "owner_id": pick_employee(),
-            "status": g.pick(["planning", "approved", "in_progress"]),
-            "test_partner": g.fake.company(),
-            "budget_gbp": round(g.rng.uniform(20000, 100000), 0),
-            "actual_cost_gbp": round(g.rng.uniform(5000, 50000), 0),
-            "planned_start": start_date,
-            "planned_end": end_date,
-            "actual_end": None,
-            "pass_criteria": "Tensile strength >= 50MPa, Cost <= 15pence/unit, Recyclable",
-            "result": g.pick(["pass", "fail", "inconclusive", "pending"]),
-            "outcome": g.fake.sentence(),
-            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
-            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
-        })
+    # Pilot projects, test labs and pilot criteria: hand-written in seed/ (pilot_projects, test_labs, pilot_criteria).
 
     # Generate market entry projects (2-3)
     for i in range(1, 3):
@@ -262,7 +230,7 @@ def generate(g):
             "status": g.pick(["open", "in_progress", "completed"]),
             "priority": g.pick(["low", "medium", "high", "urgent"]),
             "due_date": (g.as_of + timedelta(days=g.rng.randint(7, 60))),
-            "source": g.pick(["04:36:Q1", "04:37:Q3", "04:40:Q5", "RAID-item"]),
+            "source": g.pick(["Steering committee", "RAID item", "Monthly review"]),
             "category": g.pick(["budget", "compliance", "performance", "risk"]),
             "description": g.fake.sentence(),
             "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
@@ -277,7 +245,9 @@ def generate(g):
             "title": f"Packaging design - {g.fake.word()}",
             "owner_id": pick_employee(),
             "status": g.pick(["draft", "assigned", "in_progress"]),
-            "agency": g.fake.company(),
+            "agency": g.pick(["Brightside Creative", "Harlow & Finch Design"]),
+            "countries": g.pick(["GB", "GB,IE", "DE,AT"]),
+            "product_category": g.pick(["homewares", "toys", "gifts"]),
             "due_date": (g.as_of + timedelta(days=g.rng.randint(30, 90))),
             "checklist": "Legal marks\nRecycling labels\nLanguage requirements\nWarnings\nNutrition format",
             "deliverables": "3 layout options",
@@ -422,24 +392,7 @@ def generate(g):
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 
-    # Generate implementation projects (5-8)
-    for i in range(1, 6):
-        ipt_id = f"IPT-{i:06d}"
-        result["implementation_projects"].append({
-            "impl_project_id": ipt_id,
-            "title": g.fake.sentence(),
-            "system_name": g.pick(["ESG Platform", "Data Lake", "ML Model", "EDI Integration"]),
-            "owner_id": pick_employee(),
-            "cost_estimate_gbp": round(g.rng.uniform(200000, 2000000), 0),
-            "timeline_weeks": g.rng.randint(8, 48),
-            "scope": g.fake.sentence(),
-            "deliverables": "System delivered, User training, Documentation",
-            "risks": "Vendor delays, Resource availability",
-            "resource_plan": "5 FTE required",
-            "description": g.fake.sentence(),
-            "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
-            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
-        })
+    # Implementation projects (reporting systems): hand-written in seed/implementation_projects.csv.
 
     # Generate programmes (3-4)
     programme_names = ["ERP", "Automation", "DC3", "Digital"]

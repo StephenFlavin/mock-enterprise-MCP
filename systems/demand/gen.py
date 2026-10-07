@@ -802,7 +802,9 @@ def generate(g):
 
     # Pipeline: execution risk follows the status; the risk score is the mean of supply, demand and execution risk
     # (low 20, medium 50, high 80). The SS27 range is rebuilt from master styles that really launch next: Rust Lighting
-    # (105-day lead time, draft) and White Outerwear S (late supplier, draft) are the risky ones.
+    # (105-day lead time, supplier at 78% on-time, draft) and Black Fragrance (supplier at 78% on-time, volatile demand)
+    # are the risky ones. Supply risk: high if lead time is 90+ days or supplier on-time-in-full is under 80%, medium if
+    # the lead time is 45+ days or on-time-in-full is under 90%.
     pts = {"low": 20, "medium": 50, "high": 80}
     exec_by_status = {"draft": "high", "approved": "medium", "in_production": "low", "launched": "low"}
     ss27 = [  # pipeline_id, sku, supply, demand, status
@@ -812,12 +814,12 @@ def generate(g):
         ("PL-000007", "SKU-102912", "low", "high", "approved"),
         ("PL-000008", "SKU-105005", "high", "high", "draft"),
         ("PL-000009", "SKU-105012", "high", "high", "draft"),
-        ("PL-000019", "SKU-105194", "low", "low", "in_production"),
-        ("PL-000020", "SKU-105201", "low", "low", "in_production"),
-        ("PL-000021", "SKU-105299", "low", "high", "in_production"),
-        ("PL-000028", "SKU-105306", "low", "high", "in_production"),
-        ("PL-000029", "SKU-105530", "medium", "high", "draft"),
-        ("PL-000030", "SKU-105537", "medium", "high", "draft"),
+        ("PL-000019", "SKU-105194", "medium", "low", "in_production"),
+        ("PL-000020", "SKU-105201", "medium", "low", "in_production"),
+        ("PL-000021", "SKU-105299", "high", "high", "approved"),
+        ("PL-000028", "SKU-105306", "high", "high", "approved"),
+        ("PL-000029", "SKU-105530", "low", "high", "draft"),
+        ("PL-000030", "SKU-105537", "low", "high", "draft"),
     ]
     pl_by_id = {x["pipeline_id"]: x for x in pipeline_products}
     for pid, sku, sup, dem, status in ss27:

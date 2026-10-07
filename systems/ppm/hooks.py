@@ -20,34 +20,6 @@ def get_programme_resource_plan(ctx, programme_name):
     }
 
 
-def draft_pilot_pass_fail_criteria(ctx, material_id):
-    """Draft pilot pass/fail criteria for a material."""
-    # Get pilot data
-    pilots = ctx.q("""
-        SELECT pilot_id, title, material_id, pass_criteria
-        FROM pilot_projects
-        WHERE material_id = $mat
-        LIMIT 1
-    """, mat=material_id)
-
-    if pilots:
-        return {
-            "material_id": material_id,
-            "pass_criteria": pilots[0]["pass_criteria"],
-            "recommendation": "Proceed with pilot if criteria above are met",
-        }
-
-    # Generate default criteria
-    return {
-        "material_id": material_id,
-        "pass_criteria": """Suggested pass/fail criteria:
-- Performance: Meet specified requirements within ±5%
-- Cost: Within budget constraints
-- Environmental: Compliance with sustainability targets
-- Quality: No critical defects
-- Availability: Sufficient supply for scale-up""",
-        "recommendation": "Pilot ready for planning phase",
-    }
 
 
 def run_programme_scenario(ctx, programme_name, scenario_type, parameter):
@@ -76,40 +48,4 @@ def run_programme_scenario(ctx, programme_name, scenario_type, parameter):
         "impact": impact,
         "milestones_affected": len(milestones),
         "recommendation": "Steering committee approval required for change",
-    }
-
-
-def search_test_labs_and_pilot_partners(ctx, material_type, capability=None):
-    """Search for test labs and pilot partners."""
-    # Return simulated results
-    labs = []
-
-    if material_type.lower() in ["packaging", "materials", "textiles"]:
-        labs.append({
-            "name": "Smithers Rapra",
-            "capability": "Testing laboratory for packaging, materials",
-            "location": "Shropshire, UK",
-            "expertise": "Mechanical testing, environmental compliance",
-        })
-        labs.append({
-            "name": "British Standards Institution (BSI)",
-            "capability": "Standards and testing",
-            "location": "Notified Body across UK",
-            "expertise": "Certification and compliance testing",
-        })
-        labs.append({
-            "name": "PATRA",
-            "capability": "Packaging technology research",
-            "location": "Warrington, UK",
-            "expertise": "Packaging materials and design testing",
-        })
-
-    if capability:
-        labs = [l for l in labs if capability.lower() in l["capability"].lower()]
-
-    return {
-        "material_type": material_type,
-        "capability_filter": capability,
-        "labs_found": labs,
-        "count": len(labs),
     }

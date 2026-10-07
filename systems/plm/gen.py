@@ -170,6 +170,12 @@ def generate(g):
                 lines.append(mk(sku, len(lines) + 1, "component", "MAT-BATTERY", 1, "pcs", p, "Li-ion cell, UN38.3 tested"))
             if cat in ("Small Appliances", "Personal Care"):
                 lines.append(mk(sku, len(lines) + 1, "component", "MAT-MOTOR", 1, "pcs", p))
+        # scale component prices so material cost is a believable share of the master unit cost
+        raw = sum(ln["quantity"] * ln["unit_cost_gbp"] for ln in lines)
+        if raw:
+            k = r.uniform(0.3, 0.5) * float(p["unit_cost_gbp"]) / raw
+            for ln in lines:
+                ln["unit_cost_gbp"] = round(ln["unit_cost_gbp"] * k, 3)
         for ln in lines:
             boms.append(ln)
 
