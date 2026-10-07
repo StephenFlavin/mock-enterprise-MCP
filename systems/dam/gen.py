@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 def generate(g):
     r = g.rng
     employees = g.master("employees")
-    design_team = [e for e in employees if "design" in e["department"].lower() or "merchant" in e["department"].lower()]
+    design_team = [e for e in employees if e["department"] in ("Merchandising", "Product")]
     if not design_team:
         design_team = employees[:10]  # fallback
 
@@ -43,6 +43,8 @@ def generate(g):
 
     for idx, season in enumerate(seasons):
         for cat_idx, category in enumerate(categories):
+            if season == "AW27" and category == "women":
+                continue  # the AW27 women's board is the seeded story (MB-900001)
             board_id = f"MB-{idx * len(categories) + cat_idx + 1:06d}"
             created = g.as_of - timedelta(days=r.randint(20, 90))
             boards.append({
