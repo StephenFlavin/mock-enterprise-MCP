@@ -56,21 +56,21 @@ add(5, "A01", None, SA[0], "Air fryers", SA[1], "Argos 4.5L Air Fryer", "Argos B
 add(1, "A01", None, SA[0], "Air fryers", SA[1], "HomeShop Dual Air Fryer 7L", "HomeShop Premium", "Two independent baskets", 89.99)
 add(2, "A01", None, SA[0], "Air fryers", SA[1], "John Lewis Air Fryer 5L", "John Lewis", "Window; dishwasher-safe basket", 99.00)
 add(3, "A01", None, SA[0], "Air fryers", SA[1], "Friteuse sans huile 4L", "Carrefour Brand", "Timer and auto-off", 54.99, dq="estimated")
-add(2, "B01", None, SA[0], "Blenders", SA[1], "John Lewis Jug Blender 1.5L", "John Lewis", "1000W motor; glass jug", 79.00)
-add(4, "B01", None, SA[0], "Blenders", SA[1], "Currys Blender 1.5L", "Currys Own", "Ice crushing", 39.99)
-add(5, "B01", None, SA[0], "Blenders", SA[1], "Argos Smoothie Blender", "Argos Brand", "Two travel cups", 29.99)
+add(2, "BL1", None, SA[0], "Blenders", SA[1], "John Lewis Jug Blender 1.5L", "John Lewis", "1000W motor; glass jug", 79.00)
+add(4, "BL1", None, SA[0], "Blenders", SA[1], "Currys Blender 1.5L", "Currys Own", "Ice crushing", 39.99)
+add(5, "BL1", None, SA[0], "Blenders", SA[1], "Argos Smoothie Blender", "Argos Brand", "Two travel cups", 29.99)
 add(5, "S01", None, SA[0], "Soup makers", SA[1], "Argos 1.6L Soup Maker", "Argos Brand", "Heats and blends; 4 programmes", 49.99)
 add(4, "V01", None, SA[0], "Sous vide cookers", SA[1], "Currys Sous Vide Stick", "Currys Own", "App control; 1100W", 79.99)
 
 # ---- Insulated bottles (750ml): our SKU-102590 at 55.99 ----
 IB = "Insulated bottles"
-add(1, "B01", BOTTLE, IB, "750ml bottles", "Home", "Premium Insulated Bottle 750ml", "HomeShop Premium", "Keeps cold 24 hours, hot 12; double-wall stainless steel", 49.99, chg=(7, 52.99))
-add(2, "B01", BOTTLE, IB, "750ml bottles", "Home", "John Lewis Insulated Travel Bottle 750ml", "John Lewis", "Stainless steel double wall; leakproof lid", 64.95,
+add(1, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Premium Insulated Bottle 750ml", "HomeShop Premium", "Keeps cold 24 hours, hot 12; double-wall stainless steel", 49.99, chg=(7, 52.99))
+add(2, "BT1", BOTTLE, IB, "750ml bottles", "Home", "John Lewis Insulated Travel Bottle 750ml", "John Lewis", "Stainless steel double wall; leakproof lid", 64.95,
     promos=[(4, 3, "percentage", 10, "Back to School Special")])
-add(3, "B01", BOTTLE, IB, "750ml bottles", "Home", "Bouteille isotherme 750 ml", "Carrefour", "Durable design; vacuum insulated", 54.99, dq="estimated")
-add(5, "B01", BOTTLE, IB, "750ml bottles", "Home", "Argos Premium Insulated Bottle 750ml", "Argos Brand", "Sleek design keeps drinks hot or cold", 69.99,
+add(3, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Bouteille isotherme 750 ml", "Carrefour", "Durable design; vacuum insulated", 54.99, dq="estimated")
+add(5, "BT1", BOTTLE, IB, "750ml bottles", "Home", "Argos Premium Insulated Bottle 750ml", "Argos Brand", "Sleek design keeps drinks hot or cold", 69.99,
     promos=[(2, 0, "clearance", 30, "Summer Clearance Event")])
-add(6, "B01", BOTTLE, IB, "750ml bottles", "Home", "JD Insulated Steel Bottle 750ml", "JD Sports", "Gym-friendly sports cap; vacuum insulated", 45.00, dq="partial")
+add(6, "BT1", BOTTLE, IB, "750ml bottles", "Home", "JD Insulated Steel Bottle 750ml", "JD Sports", "Gym-friendly sports cap; vacuum insulated", 45.00, dq="partial")
 
 # ---- Men's jackets: our STY-4102 at 66.99, on 30% markdown since early September ----
 MJ = "Men's jackets"
