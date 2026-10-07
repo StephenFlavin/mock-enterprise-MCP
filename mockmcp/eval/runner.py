@@ -37,13 +37,22 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_hub(task_dir: Path, servers: list[str], port: int, timeout: float = 120, hide: list[str] | None = None) -> subprocess.Popen:
+def injections(task: dict) -> dict[str, str]:
+    """injected traps: {"<server>.<tool>": text} the hub plants in that tool's results (trap.inject: {tool, text, asks})."""
+    inj = (task.get("trap") or {}).get("inject")
+    return {inj["tool"]: inj["text"]} if inj else {}
+
+
+def start_hub(task_dir: Path, servers: list[str], port: int, timeout: float = 120, hide: list[str] | None = None,
+              inject: dict[str, str] | None = None) -> subprocess.Popen:
     env = {k: v for k, v in os.environ.items() if k not in ("MOCKMCP_STATE", "MOCKMCP_RECORD")}
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     log = open(task_dir / "hub.log", "w")
     cmd = [sys.executable, "-m", "mockmcp", "serve", "--only", *servers, "--port", str(port), "--record", str(task_dir / "trace.jsonl")]
     if hide:  # missing_tool/hidden traps: the tool exists in the system but is not exposed for this task
         cmd += ["--hide-tools", ",".join(hide)]
+    for tool, text in (inject or {}).items():  # injected traps: planted instruction inside a tool result
+        cmd += ["--inject", f"{tool}={text}"]
     proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=log)
     end = time.time() + timeout
     while time.time() < end:
@@ -78,7 +87,8 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
     try:
         (td / "trace.jsonl").unlink(missing_ok=True)
         port = free_port()
-        hub = start_hub(td, task["servers"]["loaded"], port, hide=(task.get("trap") or {}).get("hidden_tools") or None)
+        hub = start_hub(td, task["servers"]["loaded"], port, hide=(task.get("trap") or {}).get("hidden_tools") or None,
+                        inject=injections(task))
         ans = h.run_task(td, task, port, model, opts)
     except Exception as e:  # harness/hub crash: record it, never lose the other tasks
         ans = {"turns": [], "error": f"{type(e).__name__}: {e}"[:500], "model": model}

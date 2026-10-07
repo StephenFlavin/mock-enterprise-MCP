@@ -1,6 +1,7 @@
 """Engine (load systems, call tools) and MCP wiring: one low-level Server per system, hosted by one hub."""
 import contextlib
 import logging
+import re
 import time
 
 import anyio
@@ -16,7 +17,8 @@ log = logging.getLogger("mockmcp")
 
 
 class Engine:
-    def __init__(self, ids: list[str] | None = None, record: str | None = None, hide: list[str] | None = None):
+    def __init__(self, ids: list[str] | None = None, record: str | None = None, hide: list[str] | None = None,
+                 inject: dict[str, str] | None = None):
         from .eval.record import Recorder
         self.rec = Recorder.make(record)  # eval: append every served call to a TraceCall JSONL
         self.db = DB()
@@ -31,6 +33,11 @@ class Engine:
         unknown = sorted(".".join(h) for h in self.hidden if h not in self.tools)
         if unknown:
             raise ValueError(f"--hide-tools: unknown tool(s) {unknown} (is the server loaded?)")
+        # eval (injected traps): text planted in one tool's result ({"<server>.<tool>": text}), inside a notes-like field
+        self.inject = {tuple(k.split(".", 1)): v for k, v in (inject or {}).items()}
+        unknown = sorted(".".join(k) for k in self.inject if k not in self.tools)
+        if unknown:
+            raise ValueError(f"--inject: unknown tool(s) {unknown} (is the server loaded?)")
 
     def add(self, sid: str):
         s = load_system(sid)
@@ -75,6 +82,8 @@ class Engine:
         try:
             vals, notes = A.prepare(self.db, s, self.master, tool, args, given or {})
             rows, total, more = RUNNERS[tool.kind](self, s, tool, args, vals)
+            if (sid, name) in self.inject:
+                rows, more = embed(rows, self.inject[(sid, name)], more)
             narrow = [n for n, a in args.items() if n != "limit" and vals.get(n) is None]
             return render(rows, total, notes + more, narrow[:4]), False
         except A.ArgError as e:
@@ -82,6 +91,27 @@ class Engine:
         except Exception as e:  # a bug in the tool definition or data; tests should catch these
             log.exception("tool %s.%s failed", sid, name)
             return f"Internal error in {name}: {type(e).__name__}: {str(e).splitlines()[0][:300]}", True
+
+
+NOTE_COLS = re.compile(r"note|comment|remark|message|description|detail|reason|text|summary", re.I)
+
+
+def embed(rows, text: str, notes: list) -> tuple:
+    """Plant `text` in a result the way real free text arrives: appended to the first row's notes-like column (a new
+    `notes` column when there is none); a text result gets it as a trailing line, an empty one as a note."""
+    if isinstance(rows, str):
+        return rows.rstrip() + "\n" + text, notes
+    if not rows:
+        return rows, list(notes) + [text]
+    rows = [dict(r) for r in rows]
+    col = next((c for c in rows[0] if NOTE_COLS.search(c) and len(str(rows[0][c] or "")) + len(text) < 290), None)  # CSV cells cut at 300
+    if col is None:
+        col = next(n for n in ("notes", "comment", "remarks", "free_text") if n not in rows[0])
+        for r in rows:
+            r[col] = ""
+    old = rows[0].get(col)
+    rows[0][col] = f"{old} {text}" if old not in (None, "") else text
+    return rows, notes
 
 
 def build_server(eng: Engine, sid: str) -> Server:

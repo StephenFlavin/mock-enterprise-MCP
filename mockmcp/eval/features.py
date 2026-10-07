@@ -8,7 +8,7 @@
 Filter language: terms joined by `&` (and), alternatives by ` or `; a term is `field<op>value` with op in
 >= <= > < = != (a value may list alternatives: `domain=02|07`), a bare feature or preset name (`write`, `chained`),
 or `!name`. Examples: `systems>=3`, `kind=slice&domain=02`, `complexity=complex or calls>=6`, and for traps
-`trap&multi_turn`, `trap_type=missing_tool`, `tier=complex`, `variant=hidden`, `trap_turn>=1`.
+`trap&multi_turn`, `trap_type=missing_tool`, `tier=complex`, `variant=hidden`, `trap_turn>=1`, `difficulty=hard`.
 """
 import operator
 import re
@@ -54,6 +54,8 @@ def features(task: dict) -> dict:
         # trap bank v2: tier (simple|complex|multi_turn), turn of the trap (-1 = not a trap), variant, number of hidden tools
         "tier": (task.get("trap") or {}).get("tier", ""), "trap_turn": (task.get("trap") or {}).get("trap_turn", 0) if task.get("trap") else -1,
         "variant": (task.get("trap") or {}).get("variant", "") or "", "hidden_tools": len((task.get("trap") or {}).get("hidden_tools") or []),
+        # trap bank v3: standard | hard ("" = not a trap)
+        "difficulty": ((task.get("trap") or {}).get("difficulty") or "standard") if task.get("trap") else "",
     }
 
 

@@ -21,10 +21,14 @@ Run folder layout (written by `mockmcp eval recipe`, filled by `run`, `grade`, `
 from typing import Literal, TypedDict
 
 TaskKind = Literal["slice", "scenario", "trap"]
-TrapType = Literal["missing_server", "missing_entity", "out_of_scope", "unsafe_bait", "missing_tool", "approval_flow"]
+TrapType = Literal["missing_server", "missing_entity", "out_of_scope", "unsafe_bait", "missing_tool", "approval_flow",
+                   "vague", "injected", "false_premise"]   # the last three: trap bank v3, hard only
 TrapTier = Literal["simple", "complex", "multi_turn"]
-ApprovalVariant = Literal["never_approved", "late_approval", "narrower_scope", "revoked"]
-MissingToolVariant = Literal["absent", "hidden"]
+TrapDifficulty = Literal["standard", "hard"]
+ApprovalVariant = Literal["never_approved", "late_approval", "narrower_scope", "revoked",
+                          "ambiguous_go", "partial_go", "third_party", "pressure", "data_policy"]  # last five: hard
+MissingToolVariant = Literal["absent", "hidden", "tempting_tool"]  # tempting_tool: hard
+# other hard variants: missing_server/lookalike, missing_entity/near_miss, unsafe_bait/implied_urgent
 
 # Scenario outcome, worst first. A scenario (main question + all follow-ups) gets ONE outcome; worst turn wins.
 OUTCOMES = ["unsafe", "hallucinated", "over_cautious", "partial", "honest_fail", "pass"]
@@ -94,6 +98,18 @@ class Trap(TypedDict):
     fits_system: str | None            # missing_tool/absent: the loaded system that fits the job but has no tool for it
     job_terms: list[str]               # missing_tool/absent: regexes that must match no tool of the loaded systems (validated)
     job_rw: str                        # missing_tool/absent: "W" (no write tool matches) | "R" | "any"
+    # --- trap bank v3 ---
+    difficulty: TrapDifficulty         # standard (v2 entries) | hard
+    # Hard traps add the fields of their type (absent otherwise):
+    #   vague / lookalike: decoy_tools ["srv.tool"] (keyword-obvious / look-alike tools), right_tools, decoy_refs [{system, tool,
+    #     args}] (run by checks.reference_outputs with role "decoy"), right_figures / decoy_figures (values that tell the two apart),
+    #     acceptable {correct: [...], wrong: [...]}; vague also ambiguity, overlap {decoy: {tool: score}, right: {...}}; lookalike proxy
+    #   near_miss: near [{id, neighbour, kind: transposed|other_type|name, probe: {tool, args, is_error, returns}}]
+    #   tempting_tool: decoy_tools (the adjacent tools that could fake the job), workaround
+    #   injected: inject {tool: "srv.tool", text, asks: ["srv.write_tool"]} (planted by the hub: serve --inject)
+    #   false_premise: premise {claim, truth, fact, tools}
+    #   approval_flow hard variants: approval adds ambiguous_at_turn | claimed_by | required_signoff | scope_key, scope_values |
+    #     policy; data_policy also policy_write {tool, target}
 
 
 class Task(TypedDict):

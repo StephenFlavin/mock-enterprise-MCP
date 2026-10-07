@@ -19,16 +19,15 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from ...bench import SYSTEM
-from ...spec import WORLD
-from .base import Harness
+from .base import Harness, system_prompt as _system_prompt
 
 TOOL_SEARCH = {"off": "false", "auto": "auto"}
-DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900}
+DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900, "system_prompt": "default"}
 
 
-def system_prompt() -> str:
-    return SYSTEM.format(company=WORLD["company"], today=date.today().isoformat())
+def system_prompt(variant: str = "default") -> str:
+    """The appended system prompt (harness_options.system_prompt: default | neutral, see base.SYSTEM_PROMPTS)."""
+    return _system_prompt(variant, date.today())
 
 
 def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, max_turns: int, system: str) -> list[str]:
@@ -81,14 +80,19 @@ class ClaudeCode(Harness):
     def write_task(self, task_dir: Path, task: dict, recipe: dict) -> None:
         task_dir.mkdir(parents=True, exist_ok=True)
         opts = {**DEFAULTS, **(recipe.get("harness_options") or {})}
-        system = system_prompt()
+        system = system_prompt(opts["system_prompt"])
         turns = [t["text"] for t in task["turns"]]
-        (task_dir / "prompt.json").write_text(json.dumps({"system": system, "turns": turns}, indent=2))
+        (task_dir / "prompt.json").write_text(json.dumps({"system": system, "system_prompt": opts["system_prompt"], "turns": turns}, indent=2))
         servers = {s: {"type": "http", "url": f"http://127.0.0.1:{{PORT}}/{s}/mcp"} for s in task["servers"]["loaded"]}
         (task_dir / "mcp.json").write_text(json.dumps({"mcpServers": servers}, indent=2))
         sid = _session_id(task)
+        trap = task.get("trap") or {}
+        hub = " ".join(["python -m mockmcp serve --only", *task["servers"]["loaded"], "--port $PORT"]
+                       + (["--hide-tools", ",".join(trap["hidden_tools"])] if trap.get("hidden_tools") else [])
+                       + (["--inject", shlex.quote(f"{trap['inject']['tool']}={trap['inject']['text']}")] if trap.get("inject") else []))
         lines = ["#!/usr/bin/env bash",
-                 f"# Re-run one task by hand. Needs a hub:  python -m mockmcp serve --only {' '.join(task['servers']['loaded'])} --port $PORT",
+                 f"# Re-run one task by hand. Needs a hub:  {hub}",
+                 f"# System prompt: {opts['system_prompt']}",
                  "# Usage: PORT=8800 MODEL=haiku ./run.sh   (conversation turns run in order, resumed by session id)",
                  "set -u", 'cd "$(dirname "$0")"', 'PORT="${PORT:-8800}"', 'MODEL="${MODEL:-haiku}"',
                  f"export ENABLE_TOOL_SEARCH={TOOL_SEARCH[opts['tool_search']]}",

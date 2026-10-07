@@ -102,21 +102,28 @@ def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict]
 
 
 def reference_outputs(task: dict, today: date | None = None) -> list[dict]:
-    """Run every ref call of every slice against fresh engines (ephemeral state) with the data framed as the model saw it."""
+    """Run every ref call of every slice against fresh engines (ephemeral state) with the data framed as the model saw it.
+    Each output carries a `role`: "reference" (a reachable slice), "unreachable" (a slice the loaded tools cannot produce:
+    missing server, hidden tool, swapped entity) or, for vague / lookalike traps, "decoy" (trap.decoy_refs: the plausible
+    but different measure a loaded tool returns)."""
     from ..server import Engine
     out = []
+    trap = task.get("trap") or {}
+    jobs = [(s["case_id"], s["system"], s["ref"], "reference" if s.get("reachable", True) else "unreachable")
+            for s in (task.get("reference") or {}).get("slices", [])]
+    jobs += [(f"decoy:{d['system']}.{d['tool']}", d["system"], [d], "decoy") for d in trap.get("decoy_refs") or []]
     with _LOCK:
         real, old_state = date.fromisoformat(spec.WORLD["as_of"]), db.STATE
         try:
             spec.set_today(today or date.today())
-            for s in (task.get("reference") or {}).get("slices", []):
+            for case_id, system, refs, role in jobs:
                 with tempfile.TemporaryDirectory() as tmp:
                     db.STATE = Path(tmp)
-                    eng = Engine([s["system"]])
-                    for r in s["ref"]:
-                        text, err = eng.call(s["system"], r["tool"], bench._shift_args(r.get("args") or {}))
-                        out.append({"case_id": s["case_id"], "tool": r["tool"], "args": bench._shift_args(r.get("args") or {}),
-                                    "output": text, "is_error": err})
+                    eng = Engine([system])
+                    for r in refs:
+                        text, err = eng.call(system, r["tool"], bench._shift_args(r.get("args") or {}))
+                        out.append({"case_id": case_id, "role": role, "system": system, "tool": r["tool"],
+                                    "args": bench._shift_args(r.get("args") or {}), "output": text, "is_error": err})
         finally:
             db.STATE = old_state
             spec.set_today(real)

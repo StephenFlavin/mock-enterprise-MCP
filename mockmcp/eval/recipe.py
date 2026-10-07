@@ -15,7 +15,6 @@ from pathlib import Path
 import yaml
 
 from .. import catalog
-from ..spec import WORLD
 from . import features as F
 from . import tasks as T
 
@@ -25,7 +24,7 @@ DEFAULTS = {
     "name": "run", "seed": 1, "kind": "scenario", "tasks": 12, "mix": {}, "filter": None, "followups": "all", "traps": 0,
     "trap_types": None, "strict": False, "presets": {},
     "tools": {"budget": None, "distractors": "adjacent", "position": "random", "toolset": "per_task"},
-    "harness": "claude-code", "harness_options": {"tool_search": "off", "max_turns": 25, "timeout_s": 600},
+    "harness": "claude-code", "harness_options": {"tool_search": "off", "max_turns": 25, "timeout_s": 600, "system_prompt": "default"},
 }
 DISTRACTORS = ("random", "adjacent", "persona", "none")
 POSITIONS = ("first", "middle", "last", "random")
@@ -43,6 +42,9 @@ def resolve(recipe) -> dict:
     ts = r["harness_options"].get("tool_search")
     if isinstance(ts, bool):  # YAML 1.1 reads an unquoted on/off as true/false
         r["harness_options"]["tool_search"] = "on" if ts else "off"
+    from .harness.base import SYSTEM_PROMPTS
+    if r["harness_options"].get("system_prompt") not in SYSTEM_PROMPTS:
+        raise ValueError(f"harness_options.system_prompt must be one of {sorted(SYSTEM_PROMPTS)}, got {r['harness_options'].get('system_prompt')!r}")
     t = r["tools"]
     if t["distractors"] not in DISTRACTORS or t["position"] not in POSITIONS or t["toolset"] not in ("per_task", "shared"):
         raise ValueError(f"tools: distractors {DISTRACTORS}, position {POSITIONS}, toolset per_task|shared; got {t}")
@@ -242,7 +244,7 @@ def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
     preds = {k: F.compile_filter(k, presets) for k in quotas}
     # scarcest stratum first so overlapping strata do not starve it
     # (a stratum that names trap features, e.g. `trap&multi_turn`, may also draw from the trap bank when kind is not trap)
-    cands = {k: pool + (traps if recipe["mix"] and re.search(r"trap|tier|variant", k) and recipe["kind"] != "trap" else []) for k in quotas}
+    cands = {k: pool + (traps if recipe["mix"] and re.search(r"trap|tier|variant|difficulty", k) and recipe["kind"] != "trap" else []) for k in quotas}
     for name in sorted(quotas, key=lambda k: (sum(preds[k](t["features"]) for t in cands[k]), k)):
         cand = [t for t in cands[name] if t["id"] not in taken and preds[name](t["features"])]
         pick = rng.sample(cand, min(quotas[name], len(cand)))
@@ -322,15 +324,20 @@ def _harness(name: str):
 
 def _write_task(d: Path, task: dict, recipe: dict, harness) -> None:
     d.mkdir(parents=True, exist_ok=True)
-    from ..bench import SYSTEM
+    from .harness.base import system_prompt
+    variant = recipe["harness_options"].get("system_prompt", "default")
     (d / "prompt.json").write_text(json.dumps({
-        "turns": [t["text"] for t in task["turns"]],
-        "system": SYSTEM.format(company=WORLD["company"], today=date.today().isoformat())}, indent=1, ensure_ascii=False))
+        "turns": [t["text"] for t in task["turns"]], "system": system_prompt(variant, date.today()), "system_prompt": variant},
+        indent=1, ensure_ascii=False))
     if harness:
         harness.write_task(d, task, recipe)
-        if hidden := (task.get("trap") or {}).get("hidden_tools"):  # filtering is server-side: tell whoever runs run.sh by hand
+        trap = task.get("trap") or {}
+        if trap.get("hidden_tools") or trap.get("inject"):  # hub-side trap settings: tell whoever runs run.sh by hand
             with open(d / "run.sh", "a") as fh:
-                fh.write(f"# NOTE: this task needs a hub started with  --hide-tools {','.join(hidden)}\n")
+                if trap.get("hidden_tools"):
+                    fh.write(f"# NOTE: this task needs a hub started with  --hide-tools {','.join(trap['hidden_tools'])}\n")
+                if trap.get("inject"):
+                    fh.write(f"# NOTE: this task needs a hub started with  --inject '{trap['inject']['tool']}=<trap.inject.text>' (see tasks.jsonl)\n")
     else:
         (d / "TODO.harness").write_text("mockmcp.eval.harness.get(name).write_task(task_dir, task, recipe) is not available "
                                         "yet: mcp.json and run.sh are written by the harness (loaded servers: "
@@ -372,6 +379,7 @@ def build(recipe_or_path, out_dir=None, dry_run: bool = False) -> dict:
 
 def _manifest(recipe, tasks, counts, warns, commit, lab, budget) -> dict:
     return {"name": recipe["name"], "seed": recipe["seed"], "git_commit": commit, "harness": recipe["harness"],
+            "system_prompt": recipe["harness_options"].get("system_prompt", "default"),
             "tasks": len(tasks), "kinds": dict(collections.Counter(t["kind"] for t in tasks)),
             "strata": counts, "warnings": warns, "budget": {"label": lab, "target": budget,
                                                              "tools": _spread([t["tool_budget"]["tools"] for t in tasks]),
@@ -423,7 +431,7 @@ def main(a):
 def show(plan: dict) -> None:
     r = plan["recipe"]
     print(f"recipe {r['name']}: seed {r['seed']}, {r['tasks']} tasks, kind {r['kind']}, followups {r['followups']}, "
-          f"harness {r['harness']}, tools {r['tools']}")
+          f"harness {r['harness']}, system prompt {r['harness_options'].get('system_prompt', 'default')}, tools {r['tools']}")
     print("\nstrata (requested / drawn / available in pool):")
     for k, c in plan["counts"].items():
         print(f"  {k:<28}{c['requested']:>4} /{c['drawn']:>4} /{c['available']:>5}")

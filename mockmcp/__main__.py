@@ -14,6 +14,8 @@ def main():
     s.add_argument("--only", nargs="*", help="system ids to host (default: all)")
     s.add_argument("--record", metavar="PATH", help="append every served tool call to PATH as JSONL (or env MOCKMCP_RECORD)")
     s.add_argument("--hide-tools", metavar="SRV.TOOL,...", help="eval: do not expose these tools (left out of tools/list, calls rejected)")
+    s.add_argument("--inject", metavar="SRV.TOOL=TEXT", action="append", default=[],
+                   help="eval: plant TEXT in every result of SRV.TOOL (in a notes-like field); repeatable")
     sub.add_parser("stdio", help="serve one system over stdio").add_argument("id")
     c = sub.add_parser("check", help="lint + run examples + scenarios")
     c.add_argument("ids", nargs="*")
@@ -46,7 +48,11 @@ def main():
         import uvicorn
         from .server import Engine, hub_app
         try:
-            eng = Engine(a.only, record=a.record, hide=[h for h in (a.hide_tools or "").split(",") if h.strip()])
+            bad = [x for x in a.inject if "=" not in x]
+            if bad:
+                raise ValueError(f"--inject needs SRV.TOOL=TEXT, got {bad}")
+            eng = Engine(a.only, record=a.record, hide=[h for h in (a.hide_tools or "").split(",") if h.strip()],
+                         inject=dict(x.split("=", 1) for x in a.inject))
         except ValueError as e:
             sys.exit(str(e))
         print(f"{len(eng.systems)} systems on http://{a.host}:{a.port}/<id>/mcp", file=sys.stderr)
