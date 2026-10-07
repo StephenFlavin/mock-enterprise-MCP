@@ -1,4 +1,5 @@
 """Transport management system data: shipments, carriers, lanes, routes, performance, incidents."""
+import random
 from datetime import date, datetime, timedelta, time
 
 
@@ -66,6 +67,14 @@ def generate(g):
                 "rate_per_trip_gbp": trip, "rate_per_pallet_gbp": round(trip / 26 * 1.15, 1),
                 "min_pieces": 5, "cutoff_hour": {"CAR-001": 17, "CAR-002": 16, "CAR-003": 15}[cid],
                 "cutoff_day_offset": 1, "pct_allocation": pct, "updated_at": g.as_of})
+
+    # E-commerce parcel collections from Daventry (DC2): carriers collect once a day, orders must be picked and packed before the cut-off.
+    PARCEL_CUT = [("DC2-GB", "CAR-013", 16, 40.0), ("DC2-GB", "CAR-012", 17, 35.0), ("DC2-GB", "CAR-011", 18, 25.0), ("DC2-IE", "CAR-012", 15, 100.0)]
+    for lane, cid, hour, pct in PARCEL_CUT:
+        carriers_lanes.append({
+            "carrier_id": cid, "lane": lane, "mode": "parcel", "status": "active", "weekly_capacity_trips": 6, "weekly_capacity_pallets": None,
+            "rate_per_trip_gbp": None, "rate_per_pallet_gbp": None, "min_pieces": 1, "cutoff_hour": hour, "cutoff_day_offset": 0,
+            "pct_allocation": pct, "updated_at": g.as_of})
 
     # Generate shipments
     for i in range(2400):
@@ -287,6 +296,17 @@ def generate(g):
         elif sh["status"] == "in_transit":
             sh["actual_arrival"] = sh["delay_minutes"] = None
 
+    # Planned transit follows distance: Leeds (DC3) reaches northern stores next day and Scotland in two; Northampton (DC1) is next day for
+    # England and two days for Scotland. The story lanes above keep their own timings. Lateness (actual minus planned) is preserved.
+    TRANSIT = {"DC3": {"UK North": 1, "Scotland": 2}, "DC1": {"Scotland": 2}}
+    for sh in shipments:
+        if (sh["mode"] == "road" and not sh.get("po_id") and sh["origin_site_id"] in TRANSIT and sh["lane"] not in STORY
+                and sh["dest_site_id"] in region and sh["planned_arrival"] is not None):
+            t = TRANSIT[sh["origin_site_id"]].get(region[sh["dest_site_id"]], 1)
+            if sh["actual_arrival"] is not None:
+                sh["actual_arrival"] = sh["actual_arrival"] + (sh["planned_departure"] + timedelta(days=t) - sh["planned_arrival"])
+            sh["planned_arrival"] = sh["planned_departure"] + timedelta(days=t)
+
     # Generate carrier incidents
     for i in range(150):
         carrier = r.choice(road_carriers)
@@ -402,6 +422,33 @@ def generate(g):
             a_["planned_date"] = d0 - timedelta(days=91)
         elif d0 < a_["planned_date"] <= d0 + timedelta(days=6):
             a_["planned_date"] = d0 + timedelta(days=7)
+
+    # Story (02:12:Q4): last quarter's Asia-Europe ocean bookings were rolled by three carriers and each had to be recovered by air.
+    # Pacific Star (CAR-006) rolled most often; Meridian (CAR-007) cost most. Uses its own random stream so other data is unchanged.
+    sr = random.Random(2124)
+    ASIA = {"CNSHA", "CNNGB", "CNYTN", "VNSGN", "INNSA", "BDCGP"}
+    lo, hi = d0 - timedelta(days=84), d0 - timedelta(days=1)
+    for a_ in air_freight:                                  # a roll recovery is only counted where the story puts it
+        if a_["reason_code"] == "carrier_rolled" and lo <= a_["planned_date"] <= hi:
+            a_["reason_code"], a_["rolled_shipment_id"] = "expedite_order", None
+            a_["reason_detail"], a_["avoidable"], a_["avoided_by"] = "Expedite order on " + a_["po_id"], False, None
+    story_air = ["AIR-000071", "AIR-000069", "AIR-000079", "AIR-000070", "AIR-000072", "AIR-000054"]
+    story_car = ["CAR-006", "CAR-007", "CAR-006", "CAR-005", "CAR-007", "CAR-006"]
+    ocean_by_car = {c: sorted([x_ for x_ in shipments if x_["mode"] == "ocean" and x_["carrier_id"] == c and x_["origin_site_id"] in ASIA
+                               and x_["dest_site_id"] in ("GBFXT", "GBSOU", "GBLGP")], key=lambda x_: x_["shipment_id"]) for c in set(story_car)}
+    used = set()
+    for aid, cid in zip(story_air, story_car):
+        a_ = next(x_ for x_ in air_freight if x_["air_shipment_id"] == aid)
+        assert lo <= a_["planned_date"] <= hi and a_["origin_site_id"] in ASIA and a_["reason_code"] != "supplier_late", aid
+        near = [
+            x_ for x_ in ocean_by_car[cid] if a_["planned_date"] - timedelta(days=75) <= x_["planned_departure"] <= a_["planned_date"] - timedelta(days=10)
+            and x_["shipment_id"] not in used]
+        pick = sr.choice(near)
+        used.add(pick["shipment_id"])
+        a_["reason_code"], a_["rolled_shipment_id"] = "carrier_rolled", pick["shipment_id"]
+        a_["reason_detail"] = f"Booking {pick['shipment_id']} rolled by {cid}; cargo flown in to recover"
+        a_["avoidable"] = aid in ("AIR-000071", "AIR-000069", "AIR-000072", "AIR-000054")
+        a_["avoided_by"] = "earlier booking" if a_["avoidable"] else None
 
     # Generate route_plans
     for i in range(200):
@@ -576,7 +623,49 @@ def generate(g):
             inv["amount_gbp"] = round(inv["amount_gbp"] - (210000 - gap), 2)
             break
 
+    # Inland legs (02:19:Q4): Asia-UK ocean cargo is trucked from the UK port to the PO's DC the day after it is released. These legs run to
+    # plan (about a quarter of a day late on average), so they are not what makes ocean ETAs poor. Added after invoices so story figures hold.
+    ir = random.Random(2194)
+    DC_CARRIER = {"DC1": "CAR-001", "DC2": "CAR-002", "DC3": "CAR-003"}
+    for sh in sorted([x_ for x_ in shipments if x_["mode"] == "ocean" and x_.get("po_id") and x_["status"] == "delivered"
+                      and x_["origin_site_id"] in ASIA and x_["dest_site_id"] in ("GBFXT", "GBSOU", "GBLGP")], key=lambda x_: x_["shipment_id"]):
+        ata = sh["actual_arrival"]
+        if not (d0 - timedelta(days=80) <= ata <= d0 - timedelta(days=8)):
+            continue
+        dc = pos[sh["po_id"]]["dest_site_id"]
+        if dc not in DC_CARRIER:
+            continue
+        var = 1 if ir.random() < 0.25 else 0
+        dep = ata + timedelta(days=1)
+        shipments.append({
+            "shipment_id": f"SHP-{len(shipments) + 1:06d}", "order_id": None, "po_id": sh["po_id"],
+            "origin_site_id": sh["dest_site_id"], "dest_site_id": dc, "carrier_id": DC_CARRIER[dc], "lane": f"{sh['dest_site_id']}-{dc}",
+            "mode": "road", "status": "delivered", "planned_departure": dep, "actual_departure": dep,
+            "planned_arrival": dep + timedelta(days=1), "actual_arrival": dep + timedelta(days=1 + var),
+            "lines_count": sh["lines_count"], "volume_cbm": sh["volume_cbm"], "weight_kg": sh["weight_kg"],
+            "pallets": sh["pallets"], "cases": sh["cases"], "units": sh["units"], "fill_rate_pct": float(ir.randint(78, 95)),
+            "freight_cost_gbp": float(ir.randint(380, 560)), "delay_minutes": var * 1440 or None, "is_split": False, "reason": None,
+            "created_at": g.as_of, "updated_at": g.as_of})
+
+    # lane_distances: approximate road distance of each road lane (km), used to spot long hauls.
+    BASE = {"DC1": {"UK Midlands": 60, "UK South": 150, "UK North": 260, "Scotland": 520},
+            "DC3": {"UK North": 70, "Scotland": 330, "UK Midlands": 200, "UK South": 330}}
+    FIX = {"DC1-ST214": 540, "DC1-ST215": 620, "DC1-ST207": 540, "DC1-ST150": 200, "DC1-ST151": 230, "DC1-ST148": 340}
+    PORT_KM = {"DEHAM": 720, "NLRTM": 480, "PTLEI": 1900, "TRMER": 3100, "GBFXT-DC1": 230, "GBSOU-DC2": 210, "GBLGP-DC3": 330}
+    dist = {}
+    for lane in all_lanes:
+        origin, dest = lane.split("-")
+        dist[lane] = FIX.get(lane) or BASE[origin].get(region[dest], 150) + (int(dest[2:]) * 7) % 41
+    for ln in sorted({x_["lane"] for x_ in shipments if x_["mode"] == "road" and x_.get("po_id")}):
+        o_, d_ = ln.split("-")
+        if ln in PORT_KM:
+            dist[ln] = PORT_KM[ln]
+        elif o_ in PORT_KM and d_.startswith("GB"):
+            dist[ln] = PORT_KM[o_]
+    lane_distances = [{"distance_lane": k, "distance_km": v} for k, v in sorted(dist.items())]
+
     return {
+        "lane_distances": lane_distances,
         "shipment_lines": shipment_lines, "lane_buffers": lane_buffers, "node_dwell": node_dwell, "freight_invoices": freight_invoices,
         "shipments": shipments,
         "carriers_lanes": carriers_lanes,

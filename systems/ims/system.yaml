@@ -1085,18 +1085,21 @@ tools:
     example: {sku: K-1700}
 
   - name: get_in_stock_rate_by_product_week
-    desc: In-stock rate by week for a SKU or category across tracked sites.
+    desc: In-stock rate for SKUs or a category across tracked sites, by week or one figure per SKU. Use to allow for availability when comparing products.
     kind: sql
     args:
       sku: {}
+      skus: {type: list, desc: "Several SKUs at once, e.g. SKU-100007,SKU-100014"}
       category: {}
       date_from: {type: date, default: "-90d", desc: "From this date"}
+      by: {type: str, values: [week, sku], default: week, desc: "week = one row per SKU and week; sku = one row per SKU over the whole period"}
     sql: |
-      SELECT a.sku, date_trunc('week', a.tracking_date) AS week_start, count(*) AS records,
+      SELECT a.sku, CASE WHEN $by = 'week' THEN date_trunc('week', a.tracking_date) END AS week_start, count(*) AS records,
              sum(CASE WHEN a.available THEN 1 ELSE 0 END) AS in_stock_records,
              round(100.0 * sum(CASE WHEN a.available THEN 1 ELSE 0 END) / count(*), 1) AS in_stock_rate_pct
       FROM availability_tracking a JOIN master.products p USING (sku)
-      WHERE ($sku IS NULL OR a.sku = $sku) AND ($category IS NULL OR p.category = $category) AND a.tracking_date >= CAST($date_from AS DATE)
+      WHERE ($sku IS NULL OR a.sku = $sku) AND ($skus IS NULL OR list_contains($skus, a.sku)) AND ($category IS NULL OR p.category = $category)
+        AND a.tracking_date >= CAST($date_from AS DATE)
       GROUP BY ALL ORDER BY a.sku, week_start DESC
     limit: 200
     example: {sku: K-1700}
@@ -1198,19 +1201,23 @@ tools:
     example: {dimension: category}
 
   - name: get_inventory_cover_by_item
-    desc: Weeks of cover by item and site, with reorder point and safety stock. Filter by supplier for supplier impact.
+    desc: Weeks of cover by item across all sites (or one site), with reorder point and safety stock, lowest cover first. Filter by supplier for supplier impact.
     kind: sql
     args:
       sku: {}
       site_id: {}
       supplier_id: {}
       category: {}
+      max_weeks_cover: {type: float, desc: "Only items whose cover is at or below this many weeks"}
     sql: |
-      SELECT i.sku, p.name, i.site_id, p.category, p.supplier_id, i.available AS available_units, i.weekly_demand,
-             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_of_cover, i.reorder_point, i.safety_stock
+      SELECT i.sku, p.name, p.category, p.supplier_id, count(*) AS positions, sum(i.available) AS available_units,
+             round(sum(i.weekly_demand), 1) AS weekly_demand, round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_of_cover,
+             sum(i.reorder_point) AS reorder_point, sum(i.safety_stock) AS safety_stock
       FROM inventory_positions i JOIN master.products p USING (sku)
       WHERE ($sku IS NULL OR i.sku = $sku) AND ($site_id IS NULL OR i.site_id = $site_id)
         AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id) AND ($category IS NULL OR p.category = $category)
+      GROUP BY i.sku, p.name, p.category, p.supplier_id
+      HAVING ($max_weeks_cover IS NULL OR sum(i.available) / NULLIF(sum(i.weekly_demand), 0) <= $max_weeks_cover)
       ORDER BY weeks_of_cover
     limit: 100
     example: {sku: K-1700}
@@ -1327,14 +1334,22 @@ tools:
     example: {region: EU Central}
 
   - name: get_stock_cover_by_sku
-    desc: Stock cover in weeks by SKU and site. Shows weeks of cover for each product.
+    desc: Network stock cover in weeks per SKU (DCs and stores together), lowest first. Filter by SKU, country of origin, supplier or category to see which run out first.
     kind: sql
     args:
-      sku: {required: true}
+      sku: {}
+      country_of_origin: {desc: "Country the product is made in, e.g. VN"}
+      supplier_id: {}
+      category: {}
     sql: |
-      SELECT i.sku, i.site_id, i.available AS available_units, i.weekly_demand,
-             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_of_cover
-      FROM inventory_positions i WHERE i.sku = $sku ORDER BY weeks_of_cover
+      SELECT i.sku, p.name, p.category, p.country_of_origin, p.supplier_id, sum(i.available) AS available_units,
+             sum(CASE WHEN i.site_id LIKE 'DC%' THEN i.available ELSE 0 END) AS dc_units,
+             round(sum(i.weekly_demand), 1) AS weekly_demand, round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_of_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR i.sku = $sku) AND ($country_of_origin IS NULL OR p.country_of_origin = upper($country_of_origin))
+        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id) AND ($category IS NULL OR p.category = $category)
+      GROUP BY i.sku, p.name, p.category, p.country_of_origin, p.supplier_id
+      ORDER BY weeks_of_cover
     limit: 100
     example: {sku: K-1700}
 
@@ -1409,21 +1424,27 @@ tools:
     example: {sku: K-1700, site_id: ST214}
 
   - name: get_size_run_breakage_for_product
-    desc: Size run breakage for a style or SKU. Shows sizes in stock per store and the share of stores with a broken run.
+    desc: Size run breakage for a style or SKU. Shows sizes in stock and missing per store, and the share of stores with a broken run.
     kind: sql
     args:
       style_id: {desc: "Style id, e.g. STY-4102"}
       sku: {}
     sql: |
       WITH st AS (SELECT style_id FROM master.products WHERE sku = $sku UNION SELECT $style_id WHERE $style_id IS NOT NULL),
-      n AS (SELECT count(*) AS sizes FROM master.products WHERE style_id IN (SELECT style_id FROM st))
-      SELECT i.site_id, count(DISTINCT CASE WHEN i.available > 0 THEN p.size END) AS sizes_in_stock, max(n.sizes) AS sizes_in_style,
-             string_agg(DISTINCT CASE WHEN i.available = 0 THEN p.size END, ' ') AS sizes_missing,
-             CASE WHEN count(DISTINCT CASE WHEN i.available > 0 THEN p.size END) < max(n.sizes) THEN 'broken' ELSE 'complete' END AS run_status,
-             sum(i.available) AS units
-      FROM inventory_positions i JOIN master.products p USING (sku), n
-      WHERE p.style_id IN (SELECT style_id FROM st)
-      GROUP BY i.site_id ORDER BY run_status, i.site_id
+      sz AS (SELECT DISTINCT size FROM master.products WHERE style_id IN (SELECT style_id FROM st)),
+      have AS (SELECT i.site_id, p.size, sum(i.available) AS units FROM inventory_positions i JOIN master.products p USING (sku)
+               JOIN master.sites s ON s.site_id = i.site_id
+               WHERE p.style_id IN (SELECT style_id FROM st) AND s.type = 'store' GROUP BY ALL),
+      grid AS (SELECT DISTINCT h.site_id, z.size FROM have h CROSS JOIN sz z),
+      per AS (SELECT g.site_id, count(*) FILTER (WHERE COALESCE(h.units, 0) > 0) AS sizes_in_stock, count(*) AS sizes_in_style,
+                     string_agg(CASE WHEN COALESCE(h.units, 0) = 0 THEN g.size END, ' ' ORDER BY g.size) AS sizes_missing,
+                     sum(COALESCE(h.units, 0)) AS units
+              FROM grid g LEFT JOIN have h ON h.site_id = g.site_id AND h.size = g.size GROUP BY g.site_id)
+      SELECT site_id, sizes_in_stock, sizes_in_style, sizes_missing, CASE WHEN sizes_in_stock < sizes_in_style THEN 'broken' ELSE 'complete' END AS run_status,
+             units, count(*) OVER () AS stores_with_style,
+             count(*) FILTER (WHERE sizes_in_stock < sizes_in_style) OVER () AS stores_broken,
+             round(100.0 * count(*) FILTER (WHERE sizes_in_stock < sizes_in_style) OVER () / count(*) OVER (), 1) AS pct_stores_broken
+      FROM per ORDER BY run_status, site_id
     limit: 100
     example: {style_id: STY-4102}
 
@@ -1446,7 +1467,7 @@ tools:
     example: {category: Bedding}
 
   - name: get_stock_by_location_for_batch
-    desc: Stock by site and location for a SKU, split by batch. Shows batch status across stores and DCs.
+    desc: Stock by site and location for a SKU, split by batch, with batch totals for DCs and stores. Shows batch status across stores and DCs.
     kind: sql
     args:
       sku: {required: true}
@@ -1454,7 +1475,8 @@ tools:
     sql: |
       SELECT b.batch_id, b.sku, b.site_id, CASE WHEN s.type = 'dc' THEN 'DC' ELSE 'Store' END AS location_type,
              b.location_id, b.on_hand, b.status, b.received_date,
-             sum(b.on_hand) OVER (PARTITION BY b.batch_id) AS batch_total_units
+             sum(b.on_hand) OVER (PARTITION BY b.batch_id) AS batch_total_units,
+             sum(b.on_hand) OVER (PARTITION BY b.batch_id, CASE WHEN s.type = 'dc' THEN 'DC' ELSE 'Store' END) AS batch_units_in_location_type
       FROM stock_batches b JOIN master.sites s ON s.site_id = b.site_id
       WHERE b.sku = $sku AND ($batch_id IS NULL OR b.batch_id = $batch_id)
       ORDER BY b.batch_id, location_type DESC, b.site_id
@@ -1609,11 +1631,12 @@ tools:
     desc: Long tail SKUs that sell a few units a week, with stock held and weeks of cover.
     kind: sql
     args:
-      max_units_per_week: {type: float, default: 60, desc: "Network weekly demand at or below this"}
+      max_units_per_week: {type: float, default: 20, desc: "Network weekly demand at or below this"}
       category: {}
     sql: |
       SELECT p.sku, p.name, p.category, sum(i.available) AS available_units, round(sum(i.weekly_demand), 1) AS weekly_demand,
-             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover, count(*) AS sites_holding
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover, count(*) AS sites_holding,
+             round(sum(i.on_hand * p.unit_cost_gbp)) AS stock_value_gbp
       FROM inventory_positions i JOIN master.products p USING (sku)
       WHERE $category IS NULL OR p.category = $category
       GROUP BY p.sku, p.name, p.category HAVING sum(i.weekly_demand) <= $max_units_per_week
@@ -1701,7 +1724,7 @@ tools:
     desc: Slow moving SKUs by network weekly demand, with stock held and weeks of cover.
     kind: sql
     args:
-      max_units_per_week: {type: float, default: 5, desc: "Network weekly demand at or below this"}
+      max_units_per_week: {type: float, default: 20, desc: "Network weekly demand at or below this"}
       category: {}
     sql: |
       SELECT p.sku, p.name, p.category, sum(i.available) AS available_units, round(sum(i.weekly_demand), 1) AS weekly_demand,

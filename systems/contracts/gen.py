@@ -71,6 +71,137 @@ SUP_STORY = {
     },
 }
 
+
+# --- contracts job 2 stories -----------------------------------------------------------------
+# 04:38:Q1 / 04:38:Q3: the draft supply agreement (v3) with probation knitwear supplier SUP-0072 (CTR-000072) caps liability at
+# the value of the order, carves out nothing for product safety, and deviates from our standard terms in other ways.
+SUP_STORY["SUP-0072"] = {
+    "liability": dict(limit_gbp=120000, limit_basis="value of the order giving rise to the claim", deductible_gbp=0, product_safety_uncapped=False,
+                      summary="Supplier liability is limited to the value of the order giving rise to the claim (typically about GBP 120,000); product-safety and IP claims are not carved out of the cap."),
+    "price_review": dict(frequency="quarterly", max_increase_pct=8, trigger="quarterly yarn and labour cost index", notice_days=30,
+                         summary="Quarterly price review; increases capped at 8% a quarter on 30 days' notice."),
+    "termination": dict(for_convenience_notice_days=30, for_cause_cure_days=45,
+                        summary="Either party may terminate for convenience on 30 days' notice; 45-day cure period for material breach."),
+    "force_majeure": dict(max_suspension_days=120, notice_hours=72,
+                          summary="Force majeure, including yarn and sub-contractor shortages, suspends obligations for up to 120 days."),
+    "ip_protection": dict(ownership="supplier", supplier_may_reuse=True, licence_back=False, assignment_of_improvements=False,
+                          summary="Patterns, fits and knit constructions made for us remain owned by the supplier, which may reuse them for other customers."),
+}
+# 04:38:Q7: contracts expiring in the next six months that need legal input (non-standard terms)
+SUP_STORY["SUP-0059"] = {
+    "liability": dict(limit_gbp=100000, limit_basis="per claim", deductible_gbp=0, product_safety_uncapped=False,
+                      summary="Liability capped at GBP 100,000 per claim; product-safety claims are inside the cap."),
+}
+SUP_STORY["SUP-0075"] = {
+    "price_review": dict(frequency="annual", max_increase_pct=9, trigger="annual review or any raw material index move", notice_days=30,
+                         summary="Annual price review; increases capped at 9% on 30 days' notice."),
+    "force_majeure": dict(max_suspension_days=150, notice_hours=72,
+                          summary="Force majeure suspends obligations for up to 150 days before either party may terminate."),
+}
+SUP_STORY["SUP-0067"] = {
+    "payment_terms": dict(days=15, basis="from invoice date", early_payment_discount_pct=0, summary="15 days from invoice date."),
+    "claim_window": dict(shortage_claim_days=7, damage_claim_days=7, quality_claim_days=60,
+                         summary="Shortage and damage claims within 7 days of goods receipt; quality claims within 60 days."),
+}
+# 04:38:Q4: three of the top-30 contracts by spend carry the clauses that bite if costs spike or the supplier fails
+SUP_STORY["SUP-0057"] = {
+    "price_review": dict(frequency="quarterly", max_increase_pct=12, trigger="quarterly fabric and labour cost index move over 3%", notice_days=30,
+                         summary="Quarterly price review; increases up to 12% a quarter on 30 days' notice."),
+    "force_majeure": dict(max_suspension_days=120, notice_hours=72,
+                          summary="Force majeure suspends obligations for up to 120 days; no allocation commitment during suspension."),
+    "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
+                        summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
+}
+SUP_STORY["SUP-0049"] = {
+    "price_review": dict(frequency="annual", max_increase_pct=10, trigger="annual review or material cost index move over 5%", notice_days=30,
+                         summary="Annual price review plus mid-year reopener; increases up to 10% on 30 days' notice."),
+    "force_majeure": dict(max_suspension_days=90, notice_hours=72,
+                          summary="Force majeure suspends obligations for up to 90 days."),
+    "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
+                        summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
+}
+SUP_STORY["SUP-0036"] = {
+    "price_review": dict(frequency="annual", max_increase_pct=8, trigger="annual review or material cost index move over 5%", notice_days=45,
+                         summary="Annual price review; increases up to 8% on 45 days' notice."),
+    "force_majeure": dict(max_suspension_days=90, notice_hours=72,
+                          summary="Force majeure suspends obligations for up to 90 days."),
+    "termination": dict(for_convenience_notice_days=180, for_cause_cure_days=30,
+                        summary="Termination for convenience needs 180 days' notice; 30-day cure period for material breach."),
+}
+SHORT_NOTICE = {"SUP-0035": 14}  # 04:38:Q4: the shortest renewal notice among the top-30 contracts (days)
+
+# 04:38:Q6 supplier SUP-0070 missed a critical delivery (PO-2026-004982, due early September): strong delay remedies
+SUP_STORY["SUP-0070"] = {
+    "penalty": dict(late_delivery_pct_per_week=2.5, grace_days=3, cap_pct=12, max_penalty_gbp=157800,
+                    summary="Late delivery penalty of 2.5% of the late PO value per week after a 3-day grace period, capped at 12%."),
+    "termination": dict(for_convenience_notice_days=90, for_cause_cure_days=14, po_cancellation_after_late_days=21, cover_cost_recovery=True,
+                        summary="We may cancel a late purchase order after 21 days and recover the extra cost of cover from the supplier; "
+                                "material breach has a 14-day cure period; termination for convenience on 90 days' notice."),
+    "force_majeure": dict(max_suspension_days=60, notice_hours=48,
+                          summary="Force majeure relief only if the supplier gives notice within 48 hours; suspension limited to 60 days."),
+}
+
+# 04:38:Q5: IP terms of the suppliers co-developing products with us (plm co-development projects)
+SUP_STORY["SUP-0042"] = {"ip_protection": dict(ownership="buyer", supplier_may_reuse=False, licence_back=False, assignment_of_improvements=True,
+                                              summary="All designs, processes and improvements developed for us are owned by us; the supplier may not reuse them for other customers.")}
+SUP_STORY["SUP-0012"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=False, licence_back=True, assignment_of_improvements=True,
+                                              summary="Jointly owned; the supplier may not use the developed designs for other customers and licenses us its background IP needed to make the product.")}
+SUP_STORY["SUP-0015"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=False, licence_back=True, assignment_of_improvements=True,
+                                              summary="Jointly owned knit constructions; the supplier may not use them for other customers and licenses us its background IP.")}
+SUP_STORY["SUP-0040"] = {"ip_protection": dict(ownership="supplier", supplier_may_reuse=True, licence_back=False, assignment_of_improvements=False,
+                                              summary="Supplier owns all IP in the thermal-regulating fabric, including improvements made with our input, and licenses it to us for the term only; it may reuse it for other customers.")}
+SUP_STORY["SUP-0020"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=True, licence_back=False, assignment_of_improvements=False,
+                                              summary="Jointly owned in name, but the supplier may use the jointly developed coating for other customers and we get no licence to its background IP after termination.")}
+
+# 04:39:Q3 / 04:39:Q4 fabric supplier SUP-0001 (cotton and polyester, sole source for Style 5520) and merino supplier SUP-0042;
+# 05:50:Q4 single points of failure SUP-0001 and SUP-0008 (lithium cells for PF-220)
+SUP_STORY["SUP-0001"] = {
+    "price_review": dict(frequency="monthly", max_increase_pct=None, trigger="monthly reset to the fabric index", notice_days=30,
+                         materials=[dict(material="cotton fabric", index="ICE cotton No.2 monthly average", mill_premium_pct=12, reset_lag_months=1),
+                                    dict(material="polyester fabric", index="PTA/MEG polyester staple index", mill_premium_pct=8, reset_lag_months=3)],
+                         freight_pass_through="actual freight at cost",
+                         summary="Fabric prices reset monthly to the commodity index plus a fixed mill premium (12% on cotton, 8% on polyester); uncapped. "
+                                 "Cotton moves reach us after a 1-month lag, polyester after 3 months; actual freight is passed through at cost."),
+    "force_majeure": dict(max_suspension_days=90, notice_hours=72,
+                          summary="Force majeure, including raw-material shortage and sub-contractor failure, suspends obligations for up to 90 days with no duty to allocate capacity to us."),
+    "termination": dict(for_convenience_notice_days=60, for_cause_cure_days=30, exit_support_days=0,
+                        summary="Either party may terminate for convenience on 60 days' notice; no exit or transition support and no step-in right."),
+}
+SUP_STORY["SUP-0008"] = {
+    "force_majeure": dict(max_suspension_days=120, notice_hours=72,
+                          summary="Force majeure, including upstream lithium cell allocation, suspends obligations for up to 120 days."),
+    "termination": dict(for_convenience_notice_days=30, for_cause_cure_days=30, exit_support_days=0,
+                        summary="Either party may terminate for convenience on 30 days' notice; no exit support."),
+}
+# extra clauses (clause_id, clause_type, title, content) added to a supplier's contract
+EXTRA_CLAUSES = {
+    "SUP-0001": [("other_1", "other", "Supply continuity", dict(
+        topic="supply continuity", last_time_buy_months=0, supplier_safety_stock_weeks=0, second_source_licence=False,
+        summary="No supply-continuity protection: no last-time-buy right, no safety stock held by the supplier and no licence to move Style 5520 tooling to a second source."))],
+}
+# 04:37:Q5 / 04:40:Q4: energy (SUP-0050, SUP-0071) and packaging (SUP-0077 corrugated, SUP-0073 film) service suppliers
+SUP_STORY["SUP-0050"] = {
+    "price_review": dict(frequency="quarterly", max_increase_pct=None, basis="index-linked: wholesale gas and power index, reset quarterly",
+                         fixed_price_option=dict(term_months=12, premium_pct=3.5, notice_days=75), notice_days=30,
+                         summary="Energy price is index-linked to the wholesale gas and power index, reset quarterly and uncapped. We may fix the price for 12 months at the forward curve plus a 3.5% premium by giving 75 days' notice."),
+}
+SUP_STORY["SUP-0071"] = {
+    "price_review": dict(frequency="annual", max_increase_pct=4.0, basis="fixed unit rates for 12 months from each April", notice_days=60,
+                         summary="Unit rates are fixed for 12 months from each April; annual reset capped at 4%. No index-linking and no floating option."),
+}
+SUP_STORY["SUP-0077"] = {
+    "price_review": dict(frequency="quarterly", max_increase_pct=4.5, basis="index-linked to the corrugated board price index", notice_days=30,
+                         reopener=dict(trigger_index_move_pct=8, window_months=6, notice_days=60),
+                         summary="Corrugated prices are index-linked and reset quarterly, capped at 4.5% a quarter; either party may reopen pricing on 60 days' notice if the board index moves more than 8% in six months."),
+}
+SUP_STORY["SUP-0073"] = {
+    "price_review": dict(frequency="quarterly", max_increase_pct=6.0, basis="index-linked to the packaging film price index", notice_days=30,
+                         summary="Film prices are index-linked and reset quarterly, capped at 6% a quarter. The agreement has lapsed and the supplier is trading on the last agreed prices."),
+}
+STORY_TITLES = {"SUP-0050": "Energy supply agreement", "SUP-0071": "Energy supply agreement",
+                "SUP-0077": "Corrugated packaging supply agreement", "SUP-0073": "Packaging film supply agreement"}
+STORY_CATEGORY = {"SUP-0050": "Energy", "SUP-0071": "Energy", "SUP-0077": "Packaging", "SUP-0073": "Packaging"}
+
 # 04:32:Q1 price-list terms for Supplier A (SUP-0004) and 04:32:Q7 (SUP-0074)
 PRICE_LIST_STORY = {
     "SUP-0004": dict(moq_units=5000, lead_time_days=75, price_validity_days=90, tooling_cost_gbp=24000, tooling_owner="buyer",

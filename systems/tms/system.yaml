@@ -212,6 +212,12 @@ tables:
       visits: {type: int, desc: "Containers or trailers handled"}
       avg_dwell_hours: {type: float, desc: "Average hours from arrival to release or departure"}
 
+  lane_distances:
+    key: distance_lane
+    cols:
+      distance_lane: {type: str, desc: "Road lane code, e.g. DC1-ST214"}
+      distance_km: {type: int, desc: "Approximate road distance in km"}
+
   freight_invoices:
     key: invoice_id
     cols:
@@ -355,16 +361,22 @@ tools:
     example: {lane: "DC1-ST214"}
 
   - name: get_carrier_cutoff_schedule
-    desc: "Carrier collection times and order cut-offs per lane."
-    kind: select
-    from: carriers_lanes
-    filters:
-      carrier_id: {desc: "Carrier id"}
-      lane: {desc: "Lane code"}
-    columns: [carrier_id, lane, cutoff_hour, cutoff_day_offset, mode]
-    order: lane
+    desc: "Carrier collection cut-off hour and days ahead to book, per lane and carrier. Parcel lanes from DC2 serve e-commerce; road lanes serve stores."
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane code or prefix, e.g. DC2-GB or DC2 for every lane from Daventry"}
+      mode: {type: enum, values: [road, parcel], desc: "Transport mode, blank for all"}
+    sql: |
+      SELECT cl.carrier_id, c.name AS carrier_name, cl.lane, cl.mode, cl.cutoff_hour,
+             printf('%02d:00', cl.cutoff_hour) AS collection_cutoff,
+             cl.cutoff_day_offset AS days_ahead_to_book, cl.weekly_capacity_trips AS collections_per_week, cl.pct_allocation, cl.status
+      FROM carriers_lanes cl LEFT JOIN master.carriers c ON c.carrier_id = cl.carrier_id
+      WHERE ($carrier_id IS NULL OR cl.carrier_id = $carrier_id) AND ($mode IS NULL OR cl.mode = $mode)
+        AND ($lane IS NULL OR cl.lane = $lane OR cl.lane LIKE $lane || '-%')
+      ORDER BY cl.lane, cl.cutoff_hour DESC, cl.carrier_id
     limit: 100
-    example: {}
+    example: {lane: "DC2"}
 
   - name: get_carrier_for_inbound_shipment
     desc: "Carrier, mode and delivery details for inbound shipments of a purchase order or supplier, with delays."
@@ -700,7 +712,7 @@ tools:
     example: {}
 
   - name: get_air_freight_cost_for_rolled_bookings
-    desc: Air freight cost of recovering rolled ocean bookings, by the ocean carrier that rolled them, with a total.
+    desc: Air freight cost of recovering rolled ocean bookings, by the ocean carrier that rolled them, with a total. Use for the cost of rolls.
     kind: sql
     args:
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
@@ -712,11 +724,13 @@ tools:
         WHERE af.reason_code = 'carrier_rolled' AND af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)),
       g AS (SELECT x.rolling_carrier_id, c.name AS carrier, COUNT(*) AS air_recovery_shipments, SUM(units) AS units_airfreighted,
                    ROUND(SUM(cost_gbp), 2) AS total_air_cost_gbp, ROUND(AVG(cost_gbp), 2) AS avg_cost_per_shipment_gbp
-            FROM x LEFT JOIN master.carriers c ON c.carrier_id = x.rolling_carrier_id GROUP BY 1, 2)
-      SELECT * FROM g
-      UNION ALL
-      SELECT 'TOTAL', NULL, SUM(air_recovery_shipments), SUM(units_airfreighted), SUM(total_air_cost_gbp), ROUND(SUM(total_air_cost_gbp) / SUM(air_recovery_shipments), 2) FROM g
-      ORDER BY total_air_cost_gbp DESC
+            FROM x LEFT JOIN master.carriers c ON c.carrier_id = x.rolling_carrier_id GROUP BY 1, 2),
+      u AS (
+        SELECT *, 0 AS sort_group FROM g
+        UNION ALL
+        SELECT 'TOTAL', NULL, SUM(air_recovery_shipments), SUM(units_airfreighted), SUM(total_air_cost_gbp), ROUND(SUM(total_air_cost_gbp) / SUM(air_recovery_shipments), 2), 1 FROM g)
+      SELECT rolling_carrier_id, carrier, air_recovery_shipments, units_airfreighted, total_air_cost_gbp, avg_cost_per_shipment_gbp
+      FROM u ORDER BY sort_group, air_recovery_shipments DESC, total_air_cost_gbp DESC
     limit: 20
     example: {period_start: "-90d"}
 
@@ -1069,10 +1083,10 @@ tools:
     example: {}
 
   - name: get_inland_leg_transit_variance
-    desc: Variance of road transit legs versus planned arrival by lane, in days, for a period.
+    desc: Variance of inland road legs from UK ports to DCs versus planned arrival, in days, by lane. Use to test whether the inland leg explains ETA error.
     kind: sql
     args:
-      lane: {desc: "Lane code, blank for all"}
+      lane: {desc: "Inland lane code, e.g. GBFXT-DC1; blank for all"}
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.lane, COUNT(*) AS shipments,
@@ -1080,26 +1094,34 @@ tools:
              ROUND(STDDEV(CAST(s.actual_arrival AS DATE) - CAST(s.planned_arrival AS DATE)), 2) AS stddev_days,
              COUNT(*) FILTER (WHERE CAST(s.actual_arrival AS DATE) <= CAST(s.planned_arrival AS DATE)) AS on_time_count
       FROM shipments s
-      WHERE s.mode = 'road' AND s.po_id IS NOT NULL AND s.actual_arrival IS NOT NULL AND ($lane IS NULL OR s.lane = $lane)
+      WHERE s.mode = 'road' AND s.po_id IS NOT NULL AND s.origin_site_id LIKE 'GB%' AND (s.dest_site_id LIKE 'DC%' OR s.dest_site_id LIKE 'GB%')
+        AND s.actual_arrival IS NOT NULL AND ($lane IS NULL OR s.lane = $lane)
         AND s.actual_arrival >= CAST($period_start AS DATE)
       GROUP BY s.lane ORDER BY avg_days_variance DESC
     limit: 50
     example: {}
 
   - name: get_long_haul_shipments
-    desc: "Long-haul shipments by lane: overseas legs or road legs above a distance, with cost per unit."
+    desc: "Long-haul shipments by lane: road legs above a distance in km, or ocean, air and rail legs, with cost per unit. Worst cost first."
     kind: sql
     args:
-      mode: {type: enum, values: [ocean, air, road, rail], default: ocean, desc: "Transport mode"}
+      mode: {type: enum, values: [ocean, air, road, rail], default: road, desc: "Transport mode"}
+      origin_site_id: {desc: "Origin site, e.g. DC1; blank for all"}
+      min_distance_km: {type: int, default: 400, desc: "Minimum road distance in km (road only)"}
       period_start: {type: date, default: "-90d", desc: "Departures from this date"}
     sql: |
-      SELECT s.lane, s.mode, COUNT(*) AS shipments, SUM(s.units) AS units, ROUND(SUM(s.weight_kg), 0) AS weight_kg,
-             ROUND(SUM(s.freight_cost_gbp), 0) AS freight_cost_gbp, ROUND(SUM(s.freight_cost_gbp) / SUM(s.units), 3) AS cost_per_unit_gbp
+      SELECT s.lane, s.mode, st.region AS destination_region, d.distance_km, COUNT(*) AS shipments, SUM(s.units) AS units,
+             ROUND(SUM(s.weight_kg), 0) AS weight_kg, ROUND(SUM(s.freight_cost_gbp), 0) AS freight_cost_gbp,
+             ROUND(SUM(s.freight_cost_gbp) / SUM(s.units), 3) AS cost_per_unit_gbp
       FROM shipments s
+      LEFT JOIN lane_distances d ON d.distance_lane = s.lane
+      LEFT JOIN master.sites st ON st.site_id = s.dest_site_id
       WHERE s.mode = $mode AND s.actual_departure >= CAST($period_start AS DATE)
-      GROUP BY s.lane, s.mode ORDER BY freight_cost_gbp DESC
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+        AND ($mode <> 'road' OR d.distance_km >= $min_distance_km)
+      GROUP BY s.lane, s.mode, st.region, d.distance_km ORDER BY freight_cost_gbp DESC
     limit: 50
-    example: {mode: "ocean"}
+    example: {origin_site_id: "DC1"}
 
   - name: get_on_time_delivery_by_account
     desc: On-time delivery and late deliveries by receiving account (store), worst first. TMS holds store deliveries only.

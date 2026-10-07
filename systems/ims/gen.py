@@ -400,6 +400,140 @@ def generate(g):
             out.append(row)
     pos_rows = out
 
+    # (5) Men's jacket style STY-4102 after a 30% markdown: stock left is mostly broken size runs in stores.
+    JACKET = [("SKU-100154", "S", 2.0), ("SKU-100161", "M", 3.0), ("SKU-100168", "L", 1.8)]
+    jk = {x[0] for x in JACKET}
+    pos_rows = [p for p in pos_rows if not (p["sku"] in jk and p["site_id"].startswith("ST"))]
+    for i, st in enumerate(sorted(store_ids, key=lambda x: h("jacket", x))[:45]):
+        if i < 12:
+            have = {"S", "M", "L"}          # complete run
+        elif i < 32:
+            have = {"L"}                    # only the large left
+        elif i < 40:
+            have = {"S", "L"}               # no medium
+        else:
+            have = {"S"}                    # only the small left
+        for sku, sz, dem in JACKET:
+            if sz in have:
+                avail = (9 + int(h(sku, st) * 6)) if sz == "L" else (3 + int(h(sku, st) * 3))
+            else:
+                avail = 0
+            pos_rows.append(mkrow(sku, st, avail, dem, 0, 70))
+
+    # (6) Aged lines (aged_lines.xlsx): the DC stock age must match the clearance list.
+    AGED = {"SKU-105558|DC5": 180, "SKU-101813|DC3": 120, "SKU-103584|DC4": 260, "SKU-104277|DC5": 315, "SKU-104165|DC4": 285,
+            "SKU-105026|DC5": 215, "SKU-104501|DC5": 160, "SKU-100924|DC2": 140, "SKU-102408|DC3": 175, "SKU-102009|DC2": 120,
+            "SKU-104781|DC4": 200, "SKU-101008|DC1": 210, "SKU-104977|DC4": 235, "SKU-101827|DC5": 135, "SKU-102156|DC1": 270,
+            "SKU-101687|DC1": 315, "SKU-102366|DC2": 130, "SKU-100847|DC1": 180, "SKU-100287|DC2": 310, "SKU-102317|DC5": 245,
+            "SKU-103339|DC4": 245, "SKU-103213|DC5": 160, "SKU-101365|DC4": 310, "SKU-103087|DC2": 310, "SKU-102807|DC4": 250,
+            "SKU-104088|DC3": 125, "SKU-104746|DC3": 240, "SKU-103311|DC4": 270, "SKU-105243|DC1": 315, "SKU-104795|DC1": 150,
+            "SKU-102394|DC5": 140, "SKU-101267|DC5": 305, "SKU-104214|DC2": 205, "SKU-101407|DC1": 200, "SKU-104921|DC5": 185,
+            "SKU-105369|DC2": 165, "SKU-101673|DC2": 305, "SKU-105089|DC1": 140, "SKU-101848|DC2": 320, "SKU-102828|DC4": 130}
+    for p in pos_rows:
+        a = AGED.get(p["sku"] + "|" + p["site_id"])
+        if a:
+            p["received_date"] = g.days_ago(a)
+
+    # (7) Demand rescaling for stories that are about cover (network cover = available / weekly demand).
+    def net_cover(sku):
+        av = sum(p["available"] for p in pos_rows if p["sku"] == sku)
+        dm = sum(p["weekly_demand"] for p in pos_rows if p["sku"] == sku)
+        return av / dm if dm else None
+
+    def scale_demand(sku, f):
+        for p in pos_rows:
+            if p["sku"] == sku:
+                p["weekly_demand"] = round(p["weekly_demand"] * f, 1)
+                p["safety_stock"] = int(p["safety_stock"] * f)
+                p["reorder_point"] = int(p["reorder_point"] * f)
+
+    # Packaging-type supplier SUP-0068 (beauty): a few lines would not last a six-week outage.
+    SUP68_COVER = {"SKU-104536": 2.4, "SKU-101022": 3.1, "SKU-105390": 3.8, "SKU-104522": 4.6, "SKU-101967": 5.2, "SKU-101960": 5.7}
+    # Vietnam-made lines (southern Vietnam port closure): the lowest-cover ones run out first.
+    VN_COVER = {"SKU-101260": 1.8, "SKU-102884": 2.3, "SKU-105964": 2.9, "SKU-100280": 3.4, "SKU-103521": 4.0, "SKU-101722": 4.6}
+    for sku, tgt in {**SUP68_COVER, **VN_COVER}.items():
+        c = net_cover(sku)
+        if c:
+            scale_demand(sku, c / tgt)
+
+    # Long-tail / slow-moving lines: chain sales of 20 units a week or less. DC issues equal the online units, so
+    # network demand equals what the chain really sells; the stock held (from master) is then many weeks of cover.
+    protected = set(SUP68_COVER) | set(VN_COVER) | {k.split("|")[0] for k in AGED} | {THROW} | set(tops) | jk | set(bay_skus)
+    protected |= {"SKU-103486", "SKU-103472", "K-1700", "PF-220", "SKU-101904", "SKU-103892", "SKU-103458", "SKU-104438", "SKU-104445"}
+    protected |= {x[0] for x in risk} | set(sa)
+    protected |= {"SKU-100007", "SKU-100014", "SKU-100021", "SKU-100056", "SKU-100084", "SKU-100301", "SKU-100441", "SKU-101085",
+                  "SKU-101813", "SKU-102100", "SKU-103234", "SKU-104018", "SKU-104032", "SKU-105460", "SKU-105887"}
+    for sku in sorted(chain_store):
+        if sku in protected or sku not in products or products[sku]["category"] in ("Bedding", "Towels"):
+            continue
+        if chain_store[sku] + chain_online[sku] > 20:
+            continue
+        dcs = [p for p in pos_rows if p["sku"] == sku and p["site_id"].startswith("DC")]
+        sts = [p for p in pos_rows if p["sku"] == sku and not p["site_id"].startswith("DC")]
+        if not dcs or not sts:
+            continue
+        sd = sum(p["weekly_demand"] for p in sts)
+        for p in sts:
+            p["weekly_demand"] = round(p["weekly_demand"] * chain_store[sku] / sd, 1) if sd and chain_store[sku] else p["weekly_demand"]
+        dstock = sum(max(p["available"], 1) for p in dcs)
+        for p in dcs:
+            new_d = max(round(max(chain_online[sku], 1.0) * max(p["available"], 1) / dstock, 1), 0.1)
+            f = new_d / max(p["weekly_demand"], 0.1)
+            p["weekly_demand"] = new_d
+            p["safety_stock"] = int(p["safety_stock"] * f)
+            p["reorder_point"] = int(p["reorder_point"] * f)
+
+    # Keep total store demand where it was before the stories above (several figures are built on that total):
+    # take the difference out of large ambient store lines, proportionally.
+    TARGET_STORE_DEMAND = 50382.0
+    ballast = [p for p in pos_rows if p["site_id"].startswith("ST") and p["sku"] not in protected
+               and p["weekly_demand"] >= 8 and products[p["sku"]]["category"] not in ("Bedding", "Towels")]
+    total_now = sum(p["weekly_demand"] for p in pos_rows if p["site_id"].startswith("ST"))
+    bsum = sum(p["weekly_demand"] for p in ballast)
+    fac = (bsum - (total_now - TARGET_STORE_DEMAND)) / bsum
+    for p in ballast:
+        p["weekly_demand"] = round(p["weekly_demand"] * fac, 1)
+    resid = TARGET_STORE_DEMAND - sum(p["weekly_demand"] for p in pos_rows if p["site_id"].startswith("ST"))
+    ballast.sort(key=lambda p: -p["weekly_demand"])
+    ballast[0]["weekly_demand"] = round(ballast[0]["weekly_demand"] + resid, 1)
+
+    # (8) Stock by batch for quality holds: failed lots of three products (stores and DCs).
+    def add_batch(sku, batch_id, status, age, site, qty, loc_hint=None):
+        cands = [p for p in pos_rows if p["sku"] == sku and p["site_id"] == site]
+        if not cands:
+            return
+        row = max(cands, key=lambda p: p["on_hand"])
+        qty = min(int(qty), row["on_hand"])
+        if qty > 0:
+            batches.append({"batch_id": batch_id, "sku": sku, "site_id": site, "location_id": row["location_id"] or "",
+                            "on_hand": qty, "received_date": g.days_ago(age), "status": status})
+
+    # blouse lots that failed colourfastness (unshipped stock still in DCs; the rest has already gone to stores)
+    add_batch("SKU-100007", "BATCH-POL-PINK-004", "released", 27, "DC4", 240)
+    add_batch("SKU-100007", "BATCH-POL-PINK-007", "released", 9, "DC2", 500)
+    add_batch("SKU-100014", "BATCH-POL-PINK-005", "released", 20, "DC4", 180)
+    # shoe SKU-100301: soles from BATCH-SHOE-002/003/004 separate; 001 is fine
+    shoe = [("BATCH-SHOE-002", 70, {"DC3": 400, "DC1": 300}), ("BATCH-SHOE-003", 55, {"DC3": 650, "DC4": 520}),
+            ("BATCH-SHOE-004", 40, {"DC4": 700, "DC5": 380}), ("BATCH-SHOE-001", 110, {"DC3": 600, "DC1": 500, "DC5": 450})]
+    for bid, age, dcq in shoe:
+        for site, q in dcq.items():
+            add_batch("SKU-100301", bid, "released" if bid == "BATCH-SHOE-001" else "released", age, site, q)
+    shoe_stores = sorted((p["site_id"] for p in pos_rows if p["sku"] == "SKU-100301" and p["site_id"].startswith("ST")),
+                         key=lambda x: h("shoe", x))
+    for i, st in enumerate(shoe_stores):
+        bid = ("BATCH-SHOE-003", "BATCH-SHOE-004", "BATCH-SHOE-002", "BATCH-SHOE-001")[i % 4]
+        add_batch("SKU-100301", bid, "released", 45, st, max(int(next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-100301" and p["site_id"] == st) * 0.6), 1))
+    # leather bag SKU-101813: BATCH-LEATHER-002 failed chromium VI, 001 passed
+    for site, q in {"DC3": 1800, "DC5": 950}.items():
+        add_batch("SKU-101813", "BATCH-LEATHER-002", "released", 120, site, q)
+    for site, q in {"DC2": 1200, "DC4": 900}.items():
+        add_batch("SKU-101813", "BATCH-LEATHER-001", "released", 150, site, q)
+    leather_stores = sorted((p["site_id"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"].startswith("ST")),
+                            key=lambda x: h("leather", x))
+    for i, st in enumerate(leather_stores):
+        bid = "BATCH-LEATHER-002" if i % 3 != 2 else "BATCH-LEATHER-001"
+        add_batch("SKU-101813", bid, "released", 100, st, max(int(next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-101813" and p["site_id"] == st) * 0.7), 1))
+
     # ================= stock plan (normal value, cover target, closing plan) =================
     from datetime import date
     season_end = date(g.as_of.year + 1 if g.as_of.month >= 8 else g.as_of.year, 1 if g.as_of.month >= 8 else 7, 31)
