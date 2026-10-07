@@ -434,25 +434,19 @@ tools:
     kind: sql
     args:
       site_id: {}
-      week_start: {type: date, desc: "Monday of week for forecast (default next 12 weeks)"}
       weeks_ahead: {type: int, default: 12, desc: "Number of weeks to forecast"}
     sql: |
-      SELECT site_id,
-             week_start,
-             round(1000.0 / standard_units_per_hour / 8.0) AS operatives_required,
-             'operatives = 1000 units / (standard_rate * 8 hours/day) / 5 days' AS formula
-      FROM (
-        SELECT ($site_id IS NULL OR ps.site_id = $site_id) AND ps.process_type = 'receiving'
-               AS selector,
-               ps.site_id,
-               CAST($as_of AS DATE) + INTERVAL (seq * 7) DAY AS week_start,
-               ps.standard_units_per_hour
-        FROM productivity_standards ps
-        CROSS JOIN (SELECT * FROM generate_subscripts(array[0,1,2,3,4,5,6,7,8,9,10,11], 1) AS seq)
-        WHERE ps.site_id IN (SELECT DISTINCT site_id FROM productivity_standards)
-          AND ps.process_type = 'receiving'
-      ) AS forecast
-      WHERE selector
+      SELECT ps.site_id,
+             CAST($as_of AS DATE) + INTERVAL (w * 7) DAY AS week_start,
+             round(1000.0 / ps.standard_units_per_hour / 8.0 / 5.0, 1) AS operatives_required,
+             'operatives = 1000 units / (standard_rate * 8 hours/day * 5 days)' AS formula
+      FROM productivity_standards ps
+      CROSS JOIN (SELECT 0 AS w UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
+                  UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11) w
+      WHERE ps.process_type = 'receiving'
+        AND ($site_id IS NULL OR ps.site_id = $site_id)
+        AND w.w < $weeks_ahead
       ORDER BY week_start, site_id
     limit: 50
     example: {site_id: DC1}

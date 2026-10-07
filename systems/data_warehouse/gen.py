@@ -31,7 +31,6 @@ def generate(g):
 
     # Generate product_sales_fact
     sales_fact = []
-    last_90_days = [g.as_of - g.rng.random_integers(0, 89) for _ in range(2000)]
     for day in g.weeks(-26):  # 26 weeks back
         for _ in range(g.rng.randint(20, 40)):  # 20-40 sales per week
             sku = g.pick(skus)
@@ -160,7 +159,7 @@ def generate(g):
     for i in range(50):
         sku = g.pick(skus)
         product = next((p for p in products if p["sku"] == sku), None)
-        launch_date = g.date_between(g.as_of - g.rng.random_integers(180, 365), g.as_of - g.rng.random_integers(30, 180))
+        launch_date = g.date_between(g.as_of.replace(year=g.as_of.year-1), g.as_of - __import__('datetime').timedelta(days=30))
         initial_alloc = g.rng.randint(100, 2000)
         week1 = int(initial_alloc * g.rng.uniform(0.3, 0.8))
         month1 = int(initial_alloc * g.rng.uniform(1.2, 2.5))

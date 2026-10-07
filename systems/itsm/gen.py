@@ -41,20 +41,25 @@ def generate(g):
     for i in range(40):
         days_ago_created = g.rng.randint(1, 90)
         created = g.days_ago(days_ago_created)
-        planned = g.days_ago(g.rng.randint(-30, days_ago_created - 1))
+        planned_days = g.rng.randint(0, max(120, days_ago_created + 30))
+        planned = g.days_ago(-planned_days) if planned_days <= 0 else g.days_ago(0)
 
         submitted = None
-        submitted_days = g.rng.randint(days_ago_created - 1, 0) if g.rng.random() > 0.2 else None
-        if submitted_days is not None:
+        submitted_days = None
+        if g.rng.random() > 0.2:
+            submitted_days = g.rng.randint(0, max(1, days_ago_created - 1))
             submitted = g.days_ago(submitted_days)
 
         approved = None
         if submitted and g.rng.random() > 0.3:
-            approved = g.days_ago(g.rng.randint(min(submitted_days - 1, 0), 0)) if submitted_days > 0 else g.days_ago(0)
+            approved_range = max(1, submitted_days - 1) if submitted_days else 1
+            approved_days = g.rng.randint(0, approved_range)
+            approved = g.days_ago(approved_days)
 
         implemented = None
         if approved and g.rng.random() > 0.4:
-            impl_days = g.rng.randint(0, max(0, submitted_days - 1)) if submitted_days and submitted_days > 0 else 0
+            impl_range = max(1, approved_days - 1) if approved else 1
+            impl_days = g.rng.randint(0, impl_range)
             implemented = g.days_ago(impl_days)
 
         status = "implemented" if implemented else ("approved" if approved else ("submitted" if submitted else "draft"))
@@ -288,14 +293,14 @@ def generate(g):
     # Generate vendor software
     vendor_software = []
     vendors_software = [
-        ("WMS System", "Blue Yonder", "9.2", "3"),
-        ("ERP System", "SAP", "4.7", "2"),
-        ("Database", "Oracle", "21c", "1"),
-        ("Message Queue", "Apache Kafka", "3.5", "0"),
-        ("API Gateway", "Kong", "3.1", "1"),
-        ("Cache", "Redis", "7.0", "0"),
+        ("WMS System", "Blue Yonder", "9.2", "9.3", "3"),
+        ("ERP System", "SAP", "4.7", "4.8", "2"),
+        ("Database", "Oracle", "21c", "23c", "1"),
+        ("Message Queue", "Apache Kafka", "3.5", "3.6", "0"),
+        ("API Gateway", "Kong", "3.1", "3.2", "1"),
+        ("Cache", "Redis", "7.0", "7.1", "0"),
     ]
-    for i, (sw_name, vendor, version, issues) in enumerate(vendors_software):
+    for i, (sw_name, vendor, version, latest_ver, issues) in enumerate(vendors_software):
         support_end = g.days_ago(g.rng.randint(-365, 0))
         vendor_software.append({
             "software_id": f"VSW-{900000 + i:06d}",
@@ -305,7 +310,7 @@ def generate(g):
             "system_or_location": g.rng.choice(["DC1", "DC2", "DC3", "HQ", "All"]),
             "installation_date": g.days_ago(g.rng.randint(365, 1095)),
             "support_end_date": support_end,
-            "latest_available_version": f"{int(version.split('.')[0])}.{int(version.split('.')[1]) + 1}",
+            "latest_available_version": latest_ver,
             "security_issues": int(issues),
             "criticality": "critical" if int(issues) > 2 else g.rng.choice(["high", "medium", "low"]),
         })
