@@ -215,7 +215,7 @@ def generate(g):
         # Size chart for each product
         sizes = ["XS", "S", "M", "L", "XL", "XXL"]
         size_chart = {
-            sku: prod["sku"],
+            "sku": prod["sku"],
             "spec_type": "size_chart",
             "spec_name": f"Size chart for {prod['sku']}",
             "spec_version": 1,

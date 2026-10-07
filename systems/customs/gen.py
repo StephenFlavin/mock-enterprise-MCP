@@ -1,6 +1,6 @@
 def generate(g):
     """Generate customs and trade compliance data."""
-    import random
+    from datetime import timedelta
 
     # Master data
     suppliers = g.master("suppliers")
@@ -32,15 +32,15 @@ def generate(g):
 
         # Random dates
         ship_date = g.days_ago(g.rng.randint(10, 180))
-        expected_arrival = ship_date + g.days_ago(0)  # Add lead time
+        expected_arrival = ship_date + timedelta(days=g.rng.randint(14, 40))
 
         # Some arrive, some are pending/held
         if g.rng.random() > 0.15:
-            actual_arrival = expected_arrival + (g.rng.randint(-5, 15))
-            clearance_status = g.pick(["cleared", "released"], [0.9, 0.1])
+            actual_arrival = expected_arrival + timedelta(days=g.rng.randint(-5, 15))
+            clearance_status = g.rng.choices(["cleared", "released"], [0.9, 0.1])[0]
         else:
             actual_arrival = None
-            clearance_status = g.pick(["pending", "held"], [0.6, 0.4])
+            clearance_status = g.rng.choices(["pending", "held"], [0.6, 0.4])[0]
 
         lead_time_days = (actual_arrival - ship_date).days if actual_arrival else None
 
@@ -74,7 +74,7 @@ def generate(g):
             dec_status = "cleared"
             cleared_at = shp_rec["actual_arrival"]
         elif shp_rec["clearance_status"] == "held":
-            dec_status = g.pick(["queried", "pending"], [0.7, 0.3])
+            dec_status = g.rng.choices(["queried", "pending"], [0.7, 0.3])[0]
             cleared_at = None
         else:
             dec_status = "pending"
@@ -111,7 +111,7 @@ def generate(g):
                 "query_date": dec["declared_at"],
                 "query_type": query_type,
                 "description": f"Query on {query_type} for HS {dec['hs_code']}",
-                "response_date": dec["declared_at"] + g.days_ago(0),
+                "response_date": dec["declared_at"] + timedelta(days=1),
                 "response_text": f"Clarification requested on {query_type}",
                 "resolved_at": None,
             })
@@ -258,7 +258,7 @@ def generate(g):
         hs_applied = g.pick(list(hs_codes_data.keys()))
         hs_alt = g.pick([k for k in hs_codes_data.keys() if k != hs_applied])
 
-        status = g.pick(["draft", "submitted", "approved"], [0.3, 0.4, 0.3])
+        status = g.rng.choices(["draft", "submitted", "approved"], [0.3, 0.4, 0.3])[0]
 
         binding_rulings.append({
             "ruling_id": ruling_id,
@@ -280,7 +280,7 @@ def generate(g):
     auths_data = []
     for i in range(5):
         auth_id = f"AUTH-{i+1:06d}"
-        status = g.pick(["draft", "submitted", "approved"], [0.2, 0.3, 0.5])
+        status = g.rng.choices(["draft", "submitted", "approved"], [0.2, 0.3, 0.5])[0]
 
         auths_data.append({
             "auth_id": auth_id,
@@ -300,7 +300,7 @@ def generate(g):
     drawback_claims = []
     for i, dec in enumerate(declarations_data[:15]):
         claim_id = f"DBC-{i+1:06d}"
-        status = g.pick(["draft", "submitted", "approved"], [0.3, 0.4, 0.3])
+        status = g.rng.choices(["draft", "submitted", "approved"], [0.3, 0.4, 0.3])[0]
 
         drawback_claims.append({
             "claim_id": claim_id,
@@ -323,9 +323,9 @@ def generate(g):
             "position_id": position_id,
             "sku": sku["sku"],
             "hs_code": g.pick(list(hs_codes_data.keys())),
-            "status": g.pick(["active", "review", "weakest"], [0.7, 0.2, 0.1]),
+            "status": g.rng.choices(["active", "review", "weakest"], [0.7, 0.2, 0.1])[0],
             "valuation_method": g.pick(["transaction_value", "identical_goods", "similar_goods", "deductive", "computed", "fallback"]),
-            "risk_rating": g.pick(["low", "medium", "high"], [0.6, 0.3, 0.1]),
+            "risk_rating": g.rng.choices(["low", "medium", "high"], [0.6, 0.3, 0.1])[0],
             "created_date": g.days_ago(g.rng.randint(90, 365)),
             "last_reviewed_date": g.days_ago(g.rng.randint(0, 30)),
             "notes": "Position under review",
@@ -410,8 +410,8 @@ def generate(g):
     for hs_code in hs_codes_data.keys():
         for origin in origin_countries[:5]:
             for i in range(12):
-                month = g.days_ago(30 * (12 - i))
-                month_str = month.strftime("%Y-%m")
+                month_date = g.days_ago(30 * (12 - i))
+                month_str = month_date.strftime("%Y-%m")
 
                 volume = g.rng.randint(100, 2000)
                 value = volume * g.rng.uniform(5, 100)

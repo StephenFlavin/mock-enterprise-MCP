@@ -35,6 +35,7 @@ def generate(g):
         "migration_workstreams": [],
         "test_cycles": [],
         "implementation_projects": [],
+        "programmes": [],
     }
 
     # Generate projects (10-15)
@@ -437,6 +438,18 @@ def generate(g):
             "resource_plan": "5 FTE required",
             "description": g.fake.sentence(),
             "created_at": g.as_of - timedelta(days=g.rng.randint(30, 60)),
+            "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
+        })
+
+    # Generate programmes (3-4)
+    programme_names = ["ERP", "Automation", "DC3", "Digital"]
+    for prog_name in programme_names:
+        result["programmes"].append({
+            "programme_name": prog_name,
+            "rag_status": g.pick(["red", "amber", "green"]),
+            "owner_id": pick_employee(),
+            "description": g.fake.sentence(),
+            "created_at": g.as_of - timedelta(days=g.rng.randint(60, 120)),
             "updated_at": g.as_of - timedelta(days=g.rng.randint(0, 14)),
         })
 

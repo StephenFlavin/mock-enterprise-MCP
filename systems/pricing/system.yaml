@@ -741,3 +741,320 @@ tools:
       ORDER BY measure_date DESC
       LIMIT 1
     example: {category: Cookware}
+
+  - name: get_price_elasticity_for_product
+    desc: Get price elasticity of demand for a specific product SKU. Use to model volume impact of price changes for one product.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT ed.sku,
+             round(ed.elasticity_to_price, 2) AS elasticity_to_price,
+             round(ed.elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             ed.data_points,
+             ed.measure_date,
+             'Product-level elasticity estimate' AS level
+      FROM elasticity_data ed
+      WHERE ed.sku = $sku
+      ORDER BY ed.measure_date DESC
+      LIMIT 1
+    example: {sku: "K-1700"}
+
+  - name: get_price_elasticity_for_products
+    desc: Get price elasticity for multiple products. Returns elasticity estimates with confidence intervals for each SKU.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT ed.sku, ed.category,
+             round(ed.elasticity_to_price, 2) AS elasticity_to_price,
+             round(ed.elasticity_confidence_interval, 3) AS confidence_interval_95pct,
+             ed.data_points,
+             ed.measure_date
+      FROM elasticity_data ed
+      WHERE ed.category = $category AND ed.sku IS NOT NULL
+      ORDER BY ed.measure_date DESC, ed.sku
+      LIMIT 50
+    example: {category: Cookware}
+
+  - name: get_price_positioning_for_product
+    desc: Get pricing position rules for the category a product belongs to. Use for understanding pricing constraints.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT p.sku, p.category, pp.target_position,
+             round(pp.min_price_pct_of_high, 1) AS min_price_pct_of_high,
+             round(pp.max_price_pct_of_high, 1) AS max_price_pct_of_high,
+             round(pp.markdown_policy_min_depth_pct, 1) AS min_markdown_allowed_pct,
+             round(pp.markdown_policy_max_depth_pct, 1) AS max_markdown_allowed_pct
+      FROM master.products p
+      LEFT JOIN price_positioning pp ON pp.category = p.category
+      WHERE p.sku = $sku
+    example: {sku: "K-1700"}
+
+  - name: get_price_positioning_rules_for_category
+    desc: Get pricing positioning and markdown policy rules for a category. Use for understanding strategic pricing constraints.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT category, target_position,
+             round(min_price_pct_of_high, 1) AS min_price_pct_of_high,
+             round(max_price_pct_of_high, 1) AS max_price_pct_of_high,
+             round(markdown_policy_min_depth_pct, 1) AS min_markdown_allowed_pct,
+             round(markdown_policy_max_depth_pct, 1) AS max_markdown_allowed_pct,
+             updated_at
+      FROM price_positioning
+      WHERE category = $category
+    example: {category: Cookware}
+
+  - name: get_promotion_calendar_for_category
+    desc: Get all scheduled promotions for a category in the next 26 weeks. Use to see promotional calendar and avoid conflicts.
+    kind: sql
+    args:
+      category: {required: true}
+      weeks_ahead: {type: int, default: 26, desc: "How many weeks ahead to show"}
+    sql: |
+      SELECT DISTINCT promo.promotion_id, promo.category, promo.promotion_type,
+             round(promo.discount_depth_pct, 1) AS discount_depth_pct,
+             promo.start_date, promo.end_date, promo.status,
+             round(promo.planned_uplift_pct, 1) AS planned_uplift_pct
+      FROM promotions promo
+      WHERE promo.category = $category
+        AND promo.start_date < CAST($as_of AS DATE) + INTERVAL (CAST($weeks_ahead * 7 AS INT)) DAY
+        AND promo.status IN ('scheduled', 'active', 'completed')
+      ORDER BY promo.start_date
+      LIMIT 50
+    example: {category: Cookware, weeks_ahead: 26}
+
+  - name: get_promotion_calendar_for_store
+    desc: Get promotions scheduled for a specific store in next 26 weeks. Use for store operations planning.
+    kind: sql
+    args:
+      site_id: {required: true}
+      weeks_ahead: {type: int, default: 26, desc: "How many weeks ahead to show"}
+    sql: |
+      SELECT DISTINCT pc.promotion_id, pc.site_id, pc.category, pc.promotion_type,
+             pc.start_date, pc.end_date
+      FROM promotion_calendar pc
+      WHERE pc.site_id = $site_id
+        AND pc.start_date < CAST($as_of AS DATE) + INTERVAL (CAST($weeks_ahead * 7 AS INT)) DAY
+      ORDER BY pc.start_date
+      LIMIT 50
+    example: {site_id: "ST001", weeks_ahead: 26}
+
+  - name: get_promotion_depth_and_timing_history
+    desc: Retrieve historical promotion depth and timing patterns for a category. Use to understand promotional strategy evolution.
+    kind: sql
+    args:
+      category: {required: true}
+      lookback_weeks: {type: int, default: 52, desc: "Weeks of history"}
+    sql: |
+      SELECT promotion_id, category, promotion_type,
+             round(discount_depth_pct, 1) AS discount_depth_pct,
+             start_date, end_date,
+             CAST((end_date - start_date) AS INT) AS duration_days,
+             round(CAST((end_date - start_date) AS INT) / 7.0, 1) AS duration_weeks,
+             status
+      FROM promotions
+      WHERE category = $category
+        AND end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+      ORDER BY start_date DESC
+      LIMIT 50
+    example: {category: Cookware, lookback_weeks: 52}
+
+  - name: get_promotion_flags_for_item
+    desc: Get promotion flags and constraints affecting a SKU (e.g. excluded from promotions, supplier-funded restrictions).
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT $sku AS sku,
+             'Item may participate in promotions' AS flag,
+             'No supplier co-funding restrictions' AS constraint,
+             'Eligible for category and cross-category promotions' AS eligibility,
+             'Check category positioning before assigning to promotions' AS note
+      FROM (SELECT 1) t
+    example: {sku: "K-1700"}
+
+  - name: get_promotion_history_for_category
+    desc: Get promotion history (actual uplift, margin, performance) for a category over past 12 months.
+    kind: sql
+    args:
+      category: {required: true}
+      lookback_weeks: {type: int, default: 52, desc: "Weeks of history"}
+    sql: |
+      SELECT p.promotion_id, p.category, p.promotion_type,
+             round(p.discount_depth_pct, 1) AS discount_depth_pct,
+             p.start_date, p.end_date,
+             round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
+             round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
+             p.status
+      FROM promotions p
+      WHERE p.category = $category
+        AND p.end_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_weeks * 7 AS INT)) DAY
+        AND p.status IN ('completed', 'cancelled')
+      ORDER BY p.end_date DESC
+      LIMIT 50
+    example: {category: Cookware, lookback_weeks: 52}
+
+  - name: get_promotion_margin_and_traffic_return
+    desc: Analyse margin and traffic return for a promotion. Returns margin contribution and uplift achieved vs planned.
+    kind: sql
+    args:
+      promotion_id: {required: true}
+    sql: |
+      SELECT p.promotion_id, p.category,
+             round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
+             round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
+             round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
+             round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
+             CASE WHEN p.planned_margin_gbp > 0
+               THEN round((p.actual_margin_gbp / p.planned_margin_gbp - 1) * 100, 1)
+               ELSE NULL END AS margin_vs_plan_pct,
+             p.status
+      FROM promotions p
+      WHERE p.promotion_id = $promotion_id
+    example: {promotion_id: "PROMO-900001"}
+
+  - name: get_promotion_results_vs_plan
+    desc: Compare planned vs actual results for a promotion. Returns uplift, margin and ROI performance.
+    kind: sql
+    args:
+      promotion_id: {required: true}
+    sql: |
+      SELECT p.promotion_id, p.category,
+             round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
+             round(p.actual_uplift_pct, 1) AS actual_uplift_pct,
+             round(p.actual_uplift_pct - p.planned_uplift_pct, 1) AS uplift_variance_pct,
+             round(p.planned_margin_gbp, 2) AS planned_margin_gbp,
+             round(p.actual_margin_gbp, 2) AS actual_margin_gbp,
+             round(p.actual_margin_gbp - p.planned_margin_gbp, 2) AS margin_variance_gbp,
+             p.status,
+             p.start_date, p.end_date
+      FROM promotions p
+      WHERE p.promotion_id = $promotion_id
+    example: {promotion_id: "PROMO-900002"}
+
+  - name: get_promotion_uplift_estimate
+    desc: Estimate likely sales uplift for a planned promotion based on historical category patterns and discount depth.
+    kind: sql
+    args:
+      category: {required: true}
+      discount_pct: {type: float, required: true, desc: "Discount percentage"}
+    sql: |
+      SELECT $category AS category,
+             round($discount_pct, 1) AS discount_pct,
+             round($discount_pct * 0.8, 1) AS estimated_uplift_pct,
+             'Uplift estimate = discount depth * 0.8 (assumes elasticity ~-0.8)' AS basis,
+             'Actual may vary by 20-30% based on category, timing, and competitive actions' AS caveat
+    example: {category: Cookware, discount_pct: 25}
+
+  - name: list_promotions_in_calendar
+    desc: List all promotions in the calendar for a date range. Use for seeing full promotional schedule.
+    kind: select
+    from: promotion_calendar
+    filters:
+      site_id: {}
+      start_date: {col: start_date, op: ">=", default: "-7d"}
+      end_date: {col: end_date, op: "<=", default: "+90d"}
+    columns: [promotion_id, site_id, category, promotion_type, start_date, end_date]
+    order: start_date
+    limit: 100
+    example: {site_id: "ST001"}
+
+  - name: list_promotions_next_six_weeks
+    desc: List promotions starting in the next 6 weeks. Use for upcoming promotional planning.
+    kind: sql
+    args:
+      weeks_ahead: {type: int, default: 6, desc: "How many weeks ahead"}
+    sql: |
+      SELECT DISTINCT p.promotion_id, p.category, p.promotion_type,
+             round(p.discount_depth_pct, 1) AS discount_depth_pct,
+             p.start_date, p.end_date,
+             round(p.planned_uplift_pct, 1) AS planned_uplift_pct,
+             p.status
+      FROM promotions p
+      WHERE p.start_date >= CAST($as_of AS DATE)
+        AND p.start_date < CAST($as_of AS DATE) + INTERVAL (CAST($weeks_ahead * 7 AS INT)) DAY
+        AND p.status IN ('scheduled', 'active')
+      ORDER BY p.start_date
+      LIMIT 50
+    example: {weeks_ahead: 6}
+
+  - name: run_volume_and_margin_forecast_at_price_points
+    desc: Forecast volume and margin outcomes at different price points for a SKU using elasticity.
+    kind: sql
+    args:
+      sku: {required: true}
+      base_price_gbp: {type: float, required: true, desc: "Base price in GBP"}
+      base_volume_units: {type: int, required: true, desc: "Base volume units"}
+      cost_gbp: {type: float, required: true, desc: "Unit cost in GBP"}
+      elasticity_to_price: {type: float, default: -1.5, desc: "Price elasticity"}
+    sql: |
+      SELECT $sku AS sku,
+             round($base_price_gbp * 0.85, 2) AS price_gbp_minus_15pct,
+             round($base_volume_units * POWER(0.85, $elasticity_to_price), 0) AS forecast_volume,
+             round(($base_price_gbp * 0.85 - $cost_gbp) * $base_volume_units * POWER(0.85, $elasticity_to_price), 2) AS margin_gbp
+      UNION ALL
+      SELECT $sku,
+             round($base_price_gbp, 2),
+             round($base_volume_units, 0),
+             round(($base_price_gbp - $cost_gbp) * $base_volume_units, 2)
+      UNION ALL
+      SELECT $sku,
+             round($base_price_gbp * 1.15, 2),
+             round($base_volume_units * POWER(1.15, $elasticity_to_price), 0),
+             round(($base_price_gbp * 1.15 - $cost_gbp) * $base_volume_units * POWER(1.15, $elasticity_to_price), 2)
+      ORDER BY price_gbp_minus_15pct
+    example: {sku: "K-1700", base_price_gbp: 35.0, base_volume_units: 10000, cost_gbp: 15.0, elasticity_to_price: -1.5}
+
+  - name: run_volume_and_margin_forecast_for_price_change
+    desc: Model volume and margin impact of a proposed price change. Use for price change decision support.
+    kind: sql
+    args:
+      sku: {required: true}
+      current_price_gbp: {type: float, required: true, desc: "Current price in GBP"}
+      new_price_gbp: {type: float, required: true, desc: "Proposed new price in GBP"}
+      current_volume_units: {type: int, required: true, desc: "Current volume units"}
+      cost_gbp: {type: float, required: true, desc: "Unit cost in GBP"}
+      elasticity_to_price: {type: float, default: -1.2, desc: "Price elasticity"}
+    sql: |
+      SELECT $sku AS sku,
+             round($current_price_gbp, 2) AS current_price_gbp,
+             round($new_price_gbp, 2) AS new_price_gbp,
+             round(($new_price_gbp / $current_price_gbp - 1) * 100, 1) AS price_change_pct,
+             round($current_volume_units * POWER(($new_price_gbp / $current_price_gbp), $elasticity_to_price), 0) AS forecast_volume_units,
+             round(($current_price_gbp - $cost_gbp) * $current_volume_units, 2) AS current_margin_gbp,
+             round(($new_price_gbp - $cost_gbp) * $current_volume_units * POWER(($new_price_gbp / $current_price_gbp), $elasticity_to_price), 2) AS forecast_margin_gbp,
+             'Volume forecast based on elasticity assumption' AS basis
+    example: {sku: "K-1700", current_price_gbp: 35.0, new_price_gbp: 38.5, current_volume_units: 10000, cost_gbp: 15.0, elasticity_to_price: -1.2}
+
+  - name: submit_price_change_for_approval
+    desc: Submit a draft price change into the approval workflow. Moves from draft to submitted status.
+    kind: update
+    table: price_changes
+    set: {status: submitted, updated_at: "$as_of"}
+    args: {}
+    example: {pc_id: PC-900001}
+
+  - name: update_markdown_price_for_product
+    desc: Update the live markdown depth and price on a product. Use to adjust markdown in-flight.
+    kind: update
+    table: markdown_events
+    set: {status: active, updated_at: "$as_of"}
+    args:
+      markdown_depth_pct: {type: float, required: true, desc: "New markdown depth %"}
+      markdown_price_gbp: {type: float, required: true, desc: "New markdown price in GBP"}
+    example: {markdown_id: MDE-900001, markdown_depth_pct: 40, markdown_price_gbp: 39.0}
+
+  - name: update_promotion_start_date
+    desc: Move the start and end dates of a scheduled promotion. Use to adjust promotional timing.
+    kind: update
+    table: promotions
+    set: {updated_at: "$as_of"}
+    args:
+      start_date: {type: date, required: true}
+      end_date: {type: date, required: true}
+    example: {promotion_id: PROMO-900001, start_date: "+7d", end_date: "+35d"}

@@ -95,7 +95,7 @@ def run_update(eng, system, tool, args, vals):
     sid, t = eng.db.table(system.id, tool.table)
     tname = tool.table.split(".")[-1]
     keyvals = {k: vals[tool.key_arg] for k in t.keys} if tool.key_arg else {k: vals[k] for k in t.keys}
-    cond = " AND ".join(f"CAST({_q(k)} AS VARCHAR) = CAST(${k} AS VARCHAR)" for k in keyvals)
+    cond = " AND ".join(f"CAST({_q(k)} AS VARCHAR) IS NOT DISTINCT FROM CAST(${k} AS VARCHAR)" for k in keyvals)
     cur = eng.db.rows(system.id, f'SELECT * FROM "{sid}"."{tname}" WHERE {cond}', keyvals)
     if not cur:
         raise ArgError(f"No {tname} with {', '.join(f'{k}={v}' for k, v in keyvals.items())}.")
