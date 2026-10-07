@@ -156,7 +156,7 @@ def generate(g):
             "proposal_id": cap_id,
             "title": cap_title,
             "sponsor_id": pick_employee(),
-            "status": g.pick(["draft", "submitted", "under_review", "approved"]),
+            "status": ["submitted", "under_review", "submitted", "approved", "draft", "submitted"][i - 1],
             "capex_gbp": round(g.rng.uniform(500000, 15000000), 0),
             "payback_years": round(g.rng.uniform(1.5, 5.5), 1),
             "irr_pct": round(g.rng.uniform(8, 25), 1),
