@@ -21,7 +21,7 @@ def generate(g):
         dataset = r.choice(datasets)
         severity = r.choices(severities, [30, 35, 25, 10])[0]
         status = r.choices(issue_statuses, [30, 25, 20, 15, 10])[0]
-        raised_at = g.date_between(-90, -1)
+        raised_at = g.date_between(-1, -90)
         resolved_at = None
         if status in ["resolved", "closed"]:
             resolved_at = raised_at + timedelta(days=r.randint(1, 30))
@@ -48,7 +48,7 @@ def generate(g):
         dataset = r.choice(datasets)
         check_type = r.choice(check_types)
         result = r.choices(check_results, [70, 20, 10])[0]
-        checked_at = g.date_between(-14, 0)
+        checked_at = g.date_between(0, -14)
 
         # Metric value depends on check type
         if check_type == "completeness":
@@ -79,7 +79,7 @@ def generate(g):
     for i in range(15):
         dataset = r.choice(datasets)
         change_type = r.choice(change_types)
-        changed_at = g.date_between(-60, 0)
+        changed_at = g.date_between(0, -60)
 
         changes.append({
             "change_id": f"PCH-{i + 1:06d}",
@@ -109,7 +109,7 @@ def generate(g):
 
         remediated_at = None
         if status in ["remediation", "complete"]:
-            remediated_at = g.date_between(-30, 0)
+            remediated_at = g.date_between(0, -30)
 
         migrations.append({
             "migration_id": f"MIG-{i + 1:06d}",

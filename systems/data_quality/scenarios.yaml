@@ -1,0 +1,62 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief data_quality).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+- question: "09:81:Q1"
+  story: >
+    OTIF_daily data quality checks show the drop is real: completeness fell to 92% (below threshold),
+    ASN feed timeliness degraded to 8 hours late, and consistency checks found the OTIF definition
+    changed on 2026-09-05 (DQI-900001). The checks show incomplete supplier data (DQI-900002)
+    and confirm it is a real data quality problem, not a reporting issue.
+  checks:
+    - tool: run_data_quality_checks
+      args: {dataset: OTIF_daily}
+      expect: ["CHK-900001", "warning", "92", "ASN data arriving"]
+    - tool: run_data_quality_checks
+      args: {dataset: OTIF_daily, check_type: timeliness}
+      expect: ["fail", "8", "ASN data arriving"]
+
+- question: "09:81:Q6"
+  story: >
+    Seven open data quality issues affect reporting. Top three by severity are DQI-900001 (OTIF definition change,
+    high), DQI-900002 (ASN supplier data gaps, high), and DQI-900003 (demand model feature drift, critical).
+    DQI-900003 has reopened three times over three months. The analyst creates tickets for the top three
+    (DQI-900010, DQI-900011, DQI-900012) and assigns them to available owners (EMP-0001, EMP-0002, EMP-0003).
+  checks:
+    - tool: list_data_quality_issues
+      args: {status: open}
+      expect: ["DQI-900001", "DQI-900003", "critical", "high"]
+    - tool: get_issue_recurrence_history
+      args: {issue_id: DQI-900003}
+      expect: ["demand_forecast", "critical", "reopen_count"]
+    - tool: create_data_quality_ticket
+      args: {dataset: OTIF_daily, severity: high, description: "OTIF definition mismatch affecting reporting", owner: EMP-0001}
+      expect: ["open"]
+    - tool: reassign_data_quality_issue
+      args: {issue_id: DQI-900001, owner: EMP-0001}
+      expect: ["EMP-0001"]
+
+- question: "09:82:Q2"
+  story: >
+    The demand model has been getting worse for three months. A schema change on 2026-07-10
+    (PCH-900001) removed the category field from demand features, causing feature drift.
+    This is the root cause, not a data pipeline problem or customer behaviour shift.
+  checks:
+    - tool: list_pipeline_and_schema_changes
+      args: {dataset: demand_forecast, date_from: "-90d"}
+      expect: ["PCH-900001", "schema", "2026-07-10", "Removed category field"]
+    - tool: list_pipeline_and_schema_changes
+      args: {change_type: schema}
+      expect: ["category field"]
+
+- question: "09:90:Q2"
+  story: >
+    Data migration is three weeks behind due to low quality scores on source data for two objects.
+    MIG-900001 (purchase_orders) is blocked with 78.3% overall score due to missing PO status mapping.
+    MIG-900005 (suppliers) is blocked with 75.7% score due to incomplete supplier consolidation mapping.
+    Both need remediation before cutover is possible.
+  checks:
+    - tool: get_data_quality_scores_for_migration_objects
+      args: {status: blocked}
+      expect: ["MIG-900001", "purchase_orders", "78.3", "blocked"]
+    - tool: get_data_quality_scores_for_migration_objects
+      args: {object_type: suppliers}
+      expect: ["MIG-900005", "75.7", "consolidation"]
