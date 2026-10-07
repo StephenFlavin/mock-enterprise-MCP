@@ -9,7 +9,7 @@ def generate(g):
 
     # Products, styles and lots that carry planted stories (see seed/): background noise must never touch them
     story_skus = {"SKU-100007", "SKU-100014", "SKU-100021", "SKU-100091", "SKU-100651", "SKU-100658", "SKU-101813",
-                  "SKU-103164", "SKU-106363", "SKU-103745", "SKU-103808", "SKU-104123", "SKU-104795", "SKU-104809",
+                  "SKU-103164", "SKU-106363", "SKU-103745", "SKU-103808", "SKU-104123", "SKU-104795", "SKU-106356",
                   "SKU-105551", "SKU-102590", "SKU-100532", "K-1700", "PF-220"}
     story_styles = {"STY-4012", "STY-9509", "STY-7731", "STY-8110", "STY-4420", "STY-4066"}
     products = g.master("products")

@@ -1,7 +1,7 @@
 """Compliance database: background noise only. Story rows live in seed/*.csv."""
 from datetime import timedelta
 
-STORY_SKUS = {"SKU-102590", "SKU-104123", "SKU-104795", "SKU-105551", "SKU-104809", "PF-220", "SKU-100847", "SKU-102779",
+STORY_SKUS = {"SKU-102590", "SKU-104123", "SKU-104795", "SKU-105551", "SKU-106356", "PF-220", "SKU-100847", "SKU-102779",
               "SKU-104039", "SKU-100868", "SKU-103136", "SKU-101813", "SKU-103199", "SKU-103745", "SKU-102905", "K-1700",
               "SKU-100875", "SKU-100882", "SKU-101456", "SKU-101463", "SKU-100385", "SKU-100259", "SKU-100154", "SKU-100427",
               "SKU-100700"}

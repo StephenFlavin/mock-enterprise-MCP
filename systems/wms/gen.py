@@ -21,9 +21,11 @@ UPP = {'Small Appliances': 160, 'Smart Home': 300, 'Audio': 320, 'Personal Care'
        'Cookware': 200, 'Drinkware': 400, 'Bedding': 120, 'Towels': 300, 'Footwear': 360, 'Bags': 300, 'Jewellery': 2000,
        'Scarves': 1500, 'Fragrance': 900, 'Haircare': 900, 'Bodycare': 900, 'Skincare': 1100}
 UPP_DEFAULT = 1100
-# weekly growth in occupied pallet positions by category at DC1 (autumn build-up for Christmas)
-GROWTH_DC1 = {'Small Appliances': 5.0, 'Smart Home': 3.0, 'Cookware': 1.6, 'Audio': 1.3, 'Outerwear': 1.2, 'Bedding': 1.0,
-              'Lighting': 0.8, 'Personal Care': 0.6, 'Drinkware': 0.5, 'Towels': 0.5, 'Fragrance': 0.4}
+# weekly growth in occupied pallet positions by category at DC1 (autumn build-up for Christmas). About 27 a week in total, so the building
+# (1158 positions, 114 free) is full in about four weeks: the same story as supply_planning, which projects DC1 over capacity from the
+# week of 2 November, driven by Smart Home, Cookware and Small Appliances.
+GROWTH_DC1 = {'Smart Home': 7.0, 'Small Appliances': 6.5, 'Cookware': 3.0, 'Audio': 2.0, 'Outerwear': 1.8, 'Bedding': 1.5,
+              'Lighting': 1.3, 'Personal Care': 1.2, 'Drinkware': 0.9, 'Towels': 0.9, 'Fragrance': 0.8}
 
 # accuracy-issue rate by DC1 zone for 13-week blocks, most recent first
 ISSUE_RATE_DC1 = {'pick': [4.8, 4.4, 4.8, 4.5], 'reserve': [4.6, 4.9, 4.4, 4.8], 'bulk': [3.0, 3.4, 3.9, 4.3],
