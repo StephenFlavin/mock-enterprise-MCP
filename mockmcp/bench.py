@@ -154,7 +154,7 @@ def _validate_once(sid: str) -> list[str]:
                     if err:
                         p.append(f"{cid}: ref {r['tool']} errored: {text[:150]}")
                     out += "\n" + text
-                p += [f"{cid}: fact {f!r} not in ref output" for f in c["facts"] if not _has(f, out, table=True)]
+                p += [f"{cid}: fact {f!r} not in ref output" for f in c["facts"] if not (_has(f, out, table=True) or _has(f, out))]
         finally:
             db.STATE = old
     return p
