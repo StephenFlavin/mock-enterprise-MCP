@@ -1,5 +1,5 @@
 """Transport management system data: shipments, carriers, lanes, routes, performance, incidents."""
-from datetime import datetime, timedelta, time
+from datetime import date, datetime, timedelta, time
 
 
 def generate(g):
@@ -14,7 +14,7 @@ def generate(g):
     # Extract DCs and stores
     dcs = [s for s in sites if s["type"] == "dc"]
     stores = [s for s in sites if s["type"] == "store"]
-    road_carriers = [c for c in carriers if c["mode"] == "road"]
+    road_carriers = [c for c in carriers if c["carrier_id"] in ("CAR-001", "CAR-002", "CAR-003")]
     parcel_carriers = [c for c in carriers if c["mode"] == "parcel"]
     ocean_carriers = [c for c in carriers if c["mode"] == "ocean"]
     air_carriers = [c for c in carriers if c["mode"] == "air"]
@@ -25,6 +25,9 @@ def generate(g):
         for store in stores[:50]:
             lanes.append(f"{dc['site_id']}-{store['site_id']}")
     
+    STORY = {"DC1-ST214", "DC1-ST215", "DC1-ST001", "DC1-ST050", "DC1-ST100", "DC1-ST150"}
+    all_lanes = lanes
+    lanes = [l for l in all_lanes if l not in STORY]   # story lanes are fully planted from seed/story code
     shipments = []
     carriers_lanes = []
     carrier_performance = []
@@ -211,7 +214,7 @@ def generate(g):
     
     # Generate carrier_performance
     for lane in lanes[:100]:
-        for carrier in r.sample(road_carriers, min(2, len(road_carriers))):
+        for carrier in r.sample([c for c in road_carriers if c["carrier_id"] in ("CAR-001","CAR-002","CAR-003")], min(2, len(road_carriers))):
             for week_offset in range(-12, 2):
                 week_start = g.as_of + timedelta(weeks=week_offset)
                 week_start = week_start - timedelta(days=week_start.weekday())
@@ -235,6 +238,36 @@ def generate(g):
                     "updated_at": g.fake.date_time_this_year()
                 })
     
+    # Story: Midshires (CAR-002) service slips on Glasgow/Dundee lanes in the last 2 weeks; Northline stays strong.
+    prof = {"CAR-001": (94, 88), "CAR-002": (90, 88), "CAR-003": (86, 84)}
+    for lane in ("DC1-ST214", "DC1-ST215"):
+        for cid, (ot, fr) in prof.items():
+            for wk in range(-12, 0):
+                ws = g.as_of + timedelta(weeks=wk)
+                n = r.randint(14, 20)
+                o, f = float(ot + r.randint(-2, 2)), float(fr + r.randint(-3, 3))
+                if cid == "CAR-002" and wk >= -2:
+                    o, f = float(60 + r.randint(-4, 4)), float(66 + r.randint(-3, 3))
+                carrier_performance.append({
+                    "carrier_id": cid, "lane": lane, "period_start": ws, "period_end": ws + timedelta(days=6),
+                    "shipments_count": n, "on_time_count": round(n * o / 100), "on_time_pct": round(100 * round(n * o / 100) / n, 1),
+                    "avg_delay_minutes": 140.0 if cid == "CAR-002" and wk >= -2 else 25.0,
+                    "fill_rate_avg_pct": f, "total_cost_gbp": float(n * 270), "cost_per_shipment_gbp": 270.0,
+                    "updated_at": g.as_of})
+                late_n = n - round(n * o / 100)
+                for k in range(n):
+                    dep = ws + timedelta(days=k % 6)
+                    late = k < late_n
+                    dly = (r.randint(90, 240) if cid != "CAR-002" or wk < -2 else r.randint(180, 420)) if late else 0
+                    shipments.append({
+                        "shipment_id": f"SHP-{len(shipments) + 1:06d}", "origin_site_id": "DC1", "dest_site_id": lane.split("-")[1],
+                        "carrier_id": cid, "lane": lane, "mode": "road", "status": "delivered",
+                        "planned_departure": dep, "actual_departure": dep, "planned_arrival": dep + timedelta(days=1),
+                        "actual_arrival": dep + timedelta(days=1), "lines_count": r.randint(5, 15),
+                        "volume_cbm": 15.0, "weight_kg": 2500.0, "pallets": max(1, round(f / 100 * 26)), "cases": 60, "units": 600,
+                        "fill_rate_pct": f, "freight_cost_gbp": 270.0, "delay_minutes": dly or None, "is_split": False,
+                        "created_at": g.as_of, "updated_at": g.as_of})
+
     # Generate carrier incidents
     for i in range(150):
         carrier = r.choice(road_carriers)
@@ -258,32 +291,90 @@ def generate(g):
             "updated_at": g.fake.date_time_this_year()
         })
     
-    # Generate air_freight (exclude carrier_rolled reason_code to match seed data)
-    for i in range(80):
-        origin = r.choice(dcs)["site_id"]
-        dest = r.choice(stores)["site_id"]
-        created_date = g.date_between(90, 1)
-        planned_date = created_date + timedelta(days=1)
-        actual_date = planned_date + timedelta(days=r.randint(0, 2))
+    # Inbound shipments mirror master.shipments (same PO, carrier, ports, dates); air ones also feed air_freight.
+    pos = {p["po_id"]: p for p in g.master("purchase_orders")}
+    lines = {}
+    for l in g.master("po_lines"):
+        lines.setdefault(l["po_id"], []).append(l)
+    wt = {p["sku"]: float(p["weight_kg"] or 1) for p in g.master("products")}
+    sup_of = {p["po_id"]: p["supplier_id"] for p in pos.values()}
+    MODE = {"sea": "ocean", "air": "air", "road": "road", "rail": "rail"}
+    RATE_KG = {"INNSA": 4.6, "VNSGN": 6.1, "BDCGP": 5.2, "CNSHA": 5.4, "CNNGB": 5.4, "CNYTN": 5.5, "TRMER": 2.9}
+    d0 = g.as_of
+    air_rows = []
+    for m in g.master("shipments"):
+        eta = date.fromisoformat(m["eta"])
+        if m["po_id"] not in pos:
+            continue
+        is_air = m["mode"] == "air"
+        if eta < d0 - timedelta(days=(365 if is_air else 130)):
+            continue
+        ls = lines.get(m["po_id"], [])
+        units = sum(int(l["qty_ordered"]) for l in ls) or int(pos[m["po_id"]]["total_units"])
+        kg = round(sum(int(l["qty_ordered"]) * wt.get(l["sku"], 1.0) for l in ls) * 1.1, 0) or units * 1.0
+        if m["mode"] == "sea":
+            cost = max(400.0, round(float(m["teu"] or 0.5) * 2400 * (1.0 if eta < d0 - timedelta(days=90) else 1.18), 2))
+        elif is_air:
+            cost = max(1200.0, round(kg * RATE_KG.get(m["origin_port"], 4.5) * r.uniform(0.9, 1.1), 2))
+        elif m["mode"] == "rail":
+            cost = 2700.0
+        else:
+            cost = float(r.randint(900, 1500))
+        ata = date.fromisoformat(m["ata"]) if m["ata"] else None
+        delivered = m["status"] == "delivered" and ata is not None
+        sid = f"SHP-{len(shipments) + 1:06d}"
+        shipments.append({
+            "shipment_id": sid, "order_id": None, "po_id": m["po_id"],
+            "origin_site_id": m["origin_port"], "dest_site_id": m["dest_port"], "carrier_id": m["carrier_id"],
+            "lane": f"{m['origin_port']}-{m['dest_port']}", "mode": MODE[m["mode"]],
+            "status": "delivered" if delivered else ("booked" if m["status"] == "booked" else "in_transit"),
+            "planned_departure": date.fromisoformat(m["etd"]),
+            "actual_departure": date.fromisoformat(m["atd"]) if m["atd"] else None,
+            "planned_arrival": eta, "actual_arrival": ata if delivered else None,
+            "lines_count": len(ls), "volume_cbm": float(round(units * 0.02, 1)), "weight_kg": float(kg),
+            "pallets": max(1, int(kg // 400)), "cases": units // 12, "units": units,
+            "fill_rate_pct": float(r.randint(60, 96)), "freight_cost_gbp": cost,
+            "delay_minutes": max(0, (ata - eta).days) * 1440 if delivered else None,
+            "is_split": False, "reason": None, "created_at": g.as_of, "updated_at": g.as_of})
+        if is_air:
+            air_rows.append((sid, m, units, kg, cost, ata))
 
+    # air_freight: one row per air shipment, reasons and suppliers from the PO. Last 13 weeks total is scaled to about 420k.
+    quarter = [x for x in air_rows if x[1]["eta"] >= str(d0 - timedelta(days=91))]
+    qtot = sum(x[4] for x in quarter) or 1.0
+    scale = 420000.0 / qtot
+    sup_count = {}
+    for x in quarter:
+        sup_count[sup_of[x[1]["po_id"]]] = sup_count.get(sup_of[x[1]["po_id"]], 0) + 1
+    top3 = sorted(sup_count, key=lambda k: -sup_count[k])[:3]
+    sea_rolled = [s_ for s_ in shipments if s_["mode"] == "ocean" and s_["carrier_id"] in ("CAR-005", "CAR-006", "CAR-007")
+                  and s_["planned_departure"] >= d0 - timedelta(days=130)]
+    shp_by_id = {s_["shipment_id"]: s_ for s_ in shipments}
+    for i, (sid, m, units, kg, cost, ata) in enumerate(air_rows):
+        in_q = m["eta"] >= str(d0 - timedelta(days=91))
+        sup = sup_of[m["po_id"]]
+        if in_q:
+            cost = round(cost * scale, 2)
+            shp_by_id[sid]["freight_cost_gbp"] = cost
+        rc = r.choices(["supplier_late", "stockout_recovery", "peak_overflow", "demand_forecast_lift", "expedite_order", "customer_request", "other"],
+                       [30, 15, 10, 12, 13, 5, 5])[0]
+        rolled = None
+        if in_q and sup in top3 and r.random() < 0.8:
+            rc = "supplier_late"
+        elif rc == "other" and r.random() < 0.7 and sea_rolled:
+            rc = "carrier_rolled"
+        if rc == "carrier_rolled":
+            rolled = r.choice(sea_rolled)["shipment_id"]
+        avoid = rc in ("supplier_late", "demand_forecast_lift") or (rc in ("stockout_recovery", "carrier_rolled") and r.random() < 0.5)
         air_freight.append({
-            "air_shipment_id": f"AIR-{i + 1:06d}",
-            "shipment_id": r.choice(shipments)["shipment_id"] if r.random() < 0.5 else None,
-            "carrier_id": r.choice(air_carriers)["carrier_id"] if air_carriers else None,
-            "origin_site_id": origin,
-            "dest_site_id": dest,
-            "reason_code": r.choice(["stockout_recovery", "peak_overflow", "supplier_late", "demand_forecast_lift", "expedite_order"]),
-            "reason_detail": g.fake.sentence(),
-            "planned_date": planned_date,
-            "actual_date": actual_date,
-            "units": r.randint(50, 500),
-            "weight_kg": float(r.randint(100, 2000)),
-            "cost_gbp": float(r.randint(1500, 8000)),
-            "avoidable": r.choice([True, False, False]),
-            "avoided_by": r.choice(["earlier booking", "better forecast", "split consolidation"]) if r.random() < 0.6 else None,
-            "created_at": datetime.combine(created_date, time(hour=r.randint(6, 18)))
-        })
-    
+            "air_shipment_id": f"AIR-{i + 1:06d}", "shipment_id": sid, "po_id": m["po_id"], "supplier_id": sup,
+            "carrier_id": m["carrier_id"], "origin_site_id": m["origin_port"], "dest_site_id": pos[m["po_id"]]["dest_site_id"],
+            "reason_code": rc, "reason_detail": rc.replace("_", " ").capitalize() + " on " + m["po_id"],
+            "rolled_shipment_id": rolled, "planned_date": date.fromisoformat(m["eta"]), "actual_date": ata,
+            "units": units, "weight_kg": float(kg), "cost_gbp": cost, "avoidable": avoid,
+            "avoided_by": ({"supplier_late": "earlier supplier follow-up", "demand_forecast_lift": "better forecast",
+                            "stockout_recovery": "earlier booking", "carrier_rolled": "earlier booking"}[rc] if avoid else None)})
+
     # Generate route_plans
     for i in range(200):
         route_date = g.date_between(30, -14)

@@ -15,10 +15,11 @@ tables:
       on_hand: {type: int, desc: "Units physically on hand"}
       allocated: {type: int, desc: "Units allocated to orders or channels"}
       available: {type: int, desc: "On hand minus allocated"}
-      reserved_for_channel: {type: int, desc: "Units reserved for specific channel"}
       hold_qty: {type: int, desc: "Units on quality/investigation hold"}
       reorder_point: {type: int, desc: "Reorder point for replenishment"}
       safety_stock: {type: int, desc: "Safety stock quantity"}
+      weekly_demand: {type: float, desc: "Average units sold or issued per week (basis of every cover figure)"}
+      received_date: {type: date, desc: "Date the current stock was received; stock age counts from here"}
       updated_at: {type: timestamp, desc: "Last inventory movement"}
 
   inventory_adjustments:
@@ -34,9 +35,11 @@ tables:
       status: {type: enum, values: [pending, posted, reversed], desc: "Adjustment status"}
       user_id: {type: str, desc: "Employee who created it"}
       reason_notes: {type: str, desc: "Free text explanation"}
-      value_impact_gbp: {type: float, desc: "Financial impact at standard cost"}
+      value_impact_gbp: {type: float, desc: "Financial impact at standard cost (negative = loss)"}
       created_at: {type: timestamp, desc: "When adjustment was created"}
       posted_at: {type: timestamp, desc: "When adjustment was posted to stock"}
+      reversed_at: {type: timestamp, desc: "When the adjustment was reversed, if it was"}
+      reversal_reason: {type: str, desc: "Why it was reversed"}
       updated_at: {type: timestamp, desc: "Last update"}
 
   cycle_count_tasks:
@@ -126,11 +129,13 @@ tables:
     cols:
       sku: {type: str, desc: "SKU"}
       site_id: {type: str, desc: "Store or DC"}
-      tracking_date: {type: date, desc: "Date of tracking"}
-      available: {type: bool, desc: "Was stock available"}
+      tracking_date: {type: date, desc: "Week start (Monday) or stockout start date"}
+      available: {type: bool, desc: "False when the sku was out of stock at this site"}
       quantity_available: {type: int, desc: "Units available"}
       demand_units: {type: int, desc: "Demand (sales) that day"}
       lost_sales: {type: int, desc: "Units lost to stockout"}
+      stockout_days: {type: int, desc: "Days out of stock in this record (0 when available)"}
+      stockout_cause: {type: str, desc: "Root cause of the stockout, e.g. supplier_late"}
       forecast_available: {type: bool, desc: "System forecast showed available"}
 
   lost_products:
@@ -139,12 +144,45 @@ tables:
       loss_id: {type: str, desc: "Loss record, e.g. LOSS-000123"}
       sku: {type: str, desc: "SKU lost"}
       site_id: {type: str, desc: "Site where loss occurred"}
-      loss_type: {type: enum, values: [damage, expiry, shrink, theft, unknown, markdown], desc: "Type of loss"}
+      loss_type: {type: enum, values: [damage, expiry, shrink, theft, unknown, markdown, rework, self_checkout], desc: "Type of loss"}
       quantity: {type: int, desc: "Units lost"}
       value_gbp: {type: float, desc: "Value at standard cost"}
       identified_date: {type: date, desc: "When loss was discovered"}
       batch_or_serial: {type: str, desc: "Batch/serial if tracked"}
       notes: {type: str, desc: "Additional details"}
+
+  stock_batches:
+    key: [batch_id, sku, site_id]
+    cols:
+      batch_id: {type: str, desc: "Production batch, e.g. BATCH-PF220-2509-A"}
+      sku: {type: str, desc: "SKU"}
+      site_id: {type: str, desc: "Site holding the batch"}
+      location_id: {type: str, desc: "DC bin, blank for stores"}
+      on_hand: {type: int, desc: "Units of this batch on hand"}
+      received_date: {type: date, desc: "Receipt date"}
+      status: {type: enum, values: [released, quarantine, recalled], desc: "Batch status"}
+
+  stock_plan:
+    key: [site_id, category]
+    cols:
+      site_id: {type: str, desc: "Site"}
+      category: {type: str, desc: "Product category"}
+      plan_value_gbp: {type: float, desc: "Planned (normal) stock value at cost"}
+      plan_cover_weeks: {type: float, desc: "Target weeks of cover"}
+      plan_closing_units: {type: int, desc: "Planned closing stock units at season end"}
+      period_end: {type: date, desc: "Season end the closing plan refers to"}
+
+  promotion_stock:
+    key: [promotion_id, sku]
+    cols:
+      promotion_id: {type: str, desc: "Promotion, e.g. PROMO-900001"}
+      sku: {type: str, desc: "Promoted SKU"}
+      hero_item: {type: bool, desc: "Is a hero line of the promotion"}
+      promo_start: {type: date, desc: "Promotion start"}
+      promo_end: {type: date, desc: "Promotion end"}
+      required_units: {type: int, desc: "Units needed to support the plan"}
+      confirmed_units: {type: int, desc: "Units with confirmed stock or supply"}
+      status: {type: enum, values: [confirmed, partial, unconfirmed], desc: "Stock confirmation status"}
 
 tools:
   # Stage 1 tools (23 total)
