@@ -112,55 +112,13 @@ def generate(g):
             components.append({"component_id": cid, "component_name": name,
                                "price_date": g.as_of - timedelta(days=7 * w), "price_gbp": round(px, 2), "unit_desc": unit})
 
-    supply_outlook, packaging_idx, recycled_prem = [], [], []
-
-    # 7. Generate supply outlook
-    materials = ["COTTON", "NYLON", "POLYESTER", "LEATHER", "RECYCLED_POLY", "SS304"]
-    for material in materials:
-        supply_outlook.append({
-            "outlook_id": f"SUP-{len(supply_outlook) + 1:06d}",
-            "material_id": material,
-            "outlook_date": g.as_of,
-            "supply_level": r.choice(["abundant", "adequate", "tight", "critical"]),
-            "reasoning": r.choice([
-                "Strong supply from multiple sources; no constraints expected",
-                "Normal seasonal patterns; adequate stock expected",
-                "Supply tight due to production capacity limits",
-                "Critical shortage expected; recommend early buying"
-            ])
-        })
-
-    # 8. Generate packaging indices
-    for i in range(100):
-        date = g.as_of - timedelta(days=i*3.65)
-        corrugated_base = 145.5
-        film_base = 98.2
-
-        packaging_idx.append({
-            "index_date": date,
-            "corrugated_index": round(corrugated_base * (1 + r.gauss(0, 0.04)), 1),
-            "film_index": round(film_base * (1 + r.gauss(0, 0.03)), 1)
-        })
-
-
-    # 10. Generate recycled material premiums
-    recycled_pairs = [("RECYCLED_POLY", "POLYESTER"), ("RECYCLED_COTTON", "COTTON"), ("RECYCLED_NYLON", "NYLON")]
-    for recycled, virgin in recycled_pairs:
-        for i in range(12):
-            date = g.as_of - timedelta(days=i*30)
-            recycled_prem.append({
-                "material_id": recycled,
-                "virgin_material_id": virgin,
-                "premium_date": date,
-                "premium_pct": round(r.uniform(8, 25), 1),
-                "reasoning": r.choice([
-                    "Supply constraint for recycled material",
-                    "Quality premium for certified recycled",
-                    "Market premium for sustainability",
-                    "Collection and processing costs"
-                ])
-            })
-
+    # 6. packaging price indices: weekly, derived from the PKG_CORR / PKG_FILM price paths so index and price tell one story
+    #    (corrugated index 145.5 and film index 98.9 now, both up about 15% in 52 weeks)
+    packaging_idx = []
+    for w in range(79, -1, -1):
+        packaging_idx.append({"index_date": g.as_of - timedelta(days=7 * w),
+                              "corrugated_index": round(series["PKG_CORR"][w] * 145.5 / 26.0, 1),
+                              "film_index": round(series["PKG_FILM"][w] * 98.9 / 1800, 1)})
 
     # 5. forecast accuracy: past 3- and 6-month forecasts scored against the weekly actuals
     forecast_acc = []
@@ -187,10 +145,10 @@ def generate(g):
         "category_benchmarks": [],         # seed/category_benchmarks.csv
         "components": [],                  # seed/components.csv
         "component_prices": components,
-        "material_supply_outlooks": supply_outlook,
+        "material_supply_outlooks": [],    # seed/material_supply_outlooks.csv
         "packaging_indices": packaging_idx,
         "commodity_cost_outlooks": [],     # seed/commodity_cost_outlooks.csv
-        "recycled_material_premiums": recycled_prem,
+        "recycled_material_premiums": [],  # seed/recycled_material_premiums.csv
         "forecast_accuracy": forecast_acc,
         "price_alerts": [],  # Filled by seed data
     }
