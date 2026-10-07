@@ -1,5 +1,5 @@
 """Quality management data: production lots, inspections, incidents, holds, CARs."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 
 def generate(g):
@@ -251,9 +251,11 @@ def generate(g):
             week_end = week_start + timedelta(days=6)
 
             # Find inspections in this week for this factory
+            week_start_date = week_start if isinstance(week_start, date) else week_start.date()
+            week_end_date = week_start_date + timedelta(days=6)
             week_inspections = [i for i in inspections
                               if i["factory_id"] == factory["factory_id"]
-                              and week_start.date() <= i["inspected_at"].date() <= week_end.date()]
+                              and week_start_date <= i["inspected_at"].date() <= week_end_date]
 
             if not week_inspections:
                 continue
