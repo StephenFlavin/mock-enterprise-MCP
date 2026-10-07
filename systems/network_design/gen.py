@@ -13,25 +13,25 @@ SCENARIOS = [
     # id, name, description, type, dc_count, secondary, tertiary, stores days, customer days, redundancy, setup, months, ecom uplift per pt, profiles
     ("NS-000001", "Baseline: Keep Northampton as main DC",
      "Current network, no new capacity: Northampton (DC1) is the national DC, with Daventry (DC2) and Leeds (DC3) as satellites.",
-     "baseline", 3, "DC2", "", 2.2, 2.9, 55.0, 0, 0, 1.0,
+     "baseline", 3, "DC2", "", 2.2, 2.9, 55.0, 0, 0, 1.2,
      [DC1, DC2, DC3]),
     ("NS-000002", "Second owned DC in the Midlands",
      "Build or lease a second owned Midlands DC (shortlist site Daventry Gateway Park) alongside Northampton; takes about 3,500 units a day off DC1 and DC2.",
      "owned_dc", 4, "", "", 1.8, 2.4, 70.0, 6500000, 18, 0.6,
-     [("DC1", "", 700000, 1500000, 3300000, 1.60, 2.00, 6500, 11000, "UK Midlands", 4.8),
-      ("DC2", "", 500000, 1200000, 1900000, 1.95, 2.35, 2000, 4500, "UK Midlands", 6.5),
-      ("DC3", "", 400000, 900000, 1400000, 1.75, 2.15, 1700, 3500, "UK North", 3.9),
-      ("", "New owned Midlands DC", 600000, 1900000, 2600000, 1.50, 1.60, 3500, 5500, "UK Midlands", 0.0)]),
+     [("DC1", "", 700000, 1500000, 3000000, 1.60, 1.80, 6500, 11000, "UK Midlands", 4.8),
+      ("DC2", "", 500000, 1200000, 1500000, 1.95, 2.10, 2000, 4500, "UK Midlands", 6.5),
+      ("DC3", "", 400000, 900000, 1300000, 1.75, 1.90, 1700, 3500, "UK North", 3.9),
+      ("", "New owned Midlands DC", 600000, 1900000, 2200000, 1.50, 1.40, 3500, 5500, "UK Midlands", 0.0)]),
     ("NS-000003", "Third-party partner DC in the Midlands",
      "Keep the current network and add a third-party logistics partner for Midlands and North volume on a 5-year contract; no capex but higher unit handling fees.",
-     "partner_dc", 4, "", "", 2.0, 2.6, 62.0, 1400000, 6, 0.8,
-     [("DC1", "", 700000, 1500000, 3300000, 1.60, 2.10, 7200, 11000, "UK Midlands", 4.8),
-      ("DC2", "", 500000, 1200000, 1900000, 1.95, 2.45, 2600, 4500, "UK Midlands", 6.5),
-      ("DC3", "", 400000, 900000, 1400000, 1.75, 2.25, 1900, 3500, "UK North", 3.9),
-      ("", "Partner 3PL Midlands (contract)", 100000, 600000, 400000, 2.30, 2.00, 2000, 3200, "UK Midlands", 0.0)]),
+     "partner_dc", 4, "", "", 2.0, 2.6, 62.0, 1400000, 6, 0.9,
+     [("DC1", "", 700000, 1500000, 3100000, 1.60, 2.00, 7200, 11000, "UK Midlands", 4.8),
+      ("DC2", "", 500000, 1200000, 1750000, 1.95, 2.40, 2600, 4500, "UK Midlands", 6.5),
+      ("DC3", "", 400000, 900000, 1300000, 1.75, 2.15, 1900, 3500, "UK North", 3.9),
+      ("", "Partner 3PL Midlands (contract)", 100000, 600000, 400000, 2.10, 1.70, 2000, 3200, "UK Midlands", 0.0)]),
     ("NS-000004", "Close DC2 and consolidate into DC1 and DC3",
      "Close the small southern-Midlands DC (Daventry, DC2) and absorb its volume into Northampton (DC1) and Leeds (DC3). Lower rent and labour, longer runs to southern stores, less resilience.",
-     "consolidation", 2, "DC3", "", 2.5, 3.2, 38.0, 2800000, 9, 1.0,
+     "consolidation", 2, "DC3", "", 2.5, 3.2, 38.0, 2800000, 9, 1.4,
      [("DC1", "", 750000, 1500000, 3900000, 1.58, 2.45, 10200, 11000, "UK Midlands", 4.8),
       ("DC3", "", 400000, 900000, 1600000, 1.72, 2.35, 3500, 4200, "UK North", 3.9)]),
 ]
@@ -177,7 +177,7 @@ def generate(g):
         growth = 1.0 - 0.05 * weeks_back / 104.0
         ecom_share = 0.165 + 0.055 * (1 - weeks_back / 104.0)
         wholesale_share = 0.15
-        total = 90000 * season * growth
+        total = 92000 * season * growth
         for region, w in REGIONS:
             for channel, share in (("stores", 1 - ecom_share - wholesale_share), ("ecommerce", ecom_share), ("wholesale", wholesale_share)):
                 units = int(total * w * share * r.uniform(0.94, 1.06))
