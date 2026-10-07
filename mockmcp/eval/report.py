@@ -20,8 +20,7 @@ def load_run(rd: Path) -> list[dict]:
     """Results for one run, each with its task, verdict and run label attached (results.jsonl is rebuilt from judge.json if missing)."""
     tasks = {t["id"]: t for t in read_jsonl(rd / "tasks.jsonl")}
     results = {r["task_id"]: r for r in read_jsonl(rd / "results.jsonl")}
-    recipe = read_json(rd / "recipe.yaml", None)
-    recipe = recipe if recipe is not None else (yaml.safe_load((rd / "recipe.yaml").read_text()) if (rd / "recipe.yaml").exists() else {}) or {}
+    recipe = (yaml.safe_load((rd / "recipe.yaml").read_text()) if (rd / "recipe.yaml").exists() else None) or {}
     strat = recipe.get("distractors", "n/a")
     strat = strat.get("strategy", "n/a") if isinstance(strat, dict) else strat
     toks = [t["tool_budget"]["tokens"] for t in tasks.values() if (t.get("tool_budget") or {}).get("tokens")]
@@ -97,7 +96,6 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
         ["tool calls", sum(r["tool_calls"] for r in rs)]])
     L += ["## Failures by category", ""]
     if cats:
-        ex = lambda c: ", ".join(f"`{r['task_id']}`" for r in failed if c in r["categories"])[:300]
         L += table(["category", "tasks", "% of tasks", "examples"], [
             [c, k, f"{100 * k / n:.0f}%", ", ".join(f"`{r['task_id']}`" for r in [x for x in failed if c in x["categories"]][:3])]
             for c, k in sorted(cats.items(), key=lambda kv: (-kv[1], CATEGORIES.index(kv[0])))])
