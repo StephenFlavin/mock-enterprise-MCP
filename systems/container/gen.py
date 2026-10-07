@@ -190,8 +190,8 @@ def generate(g):
                 'destination_port': route_dest,
                 'planned_transit_days': planned_days,
                 'actual_transit_days': float(actual_days),
-                'departure_date': depart_date.date(),
-                'arrival_date': (depart_date + timedelta(days=actual_days)).date(),
+                'departure_date': depart_date,
+                'arrival_date': depart_date + timedelta(days=actual_days),
                 'delay_days': float(max(0, actual_days - planned_days)),
                 'port_dwell_hours': r.uniform(24, 96),
                 'containers_count': r.randint(40, 120)
@@ -210,8 +210,8 @@ def generate(g):
             'event_type': r.choice(disruption_types),
             'affected_port': r.choice(list(ports.keys())),
             'region': r.choice(affected_regions),
-            'start_date': (g.as_of - timedelta(days=days_ago)).date(),
-            'end_date': (g.as_of - timedelta(days=days_ago - duration)).date(),
+            'start_date': g.as_of - timedelta(days=days_ago),
+            'end_date': g.as_of - timedelta(days=days_ago - duration),
             'duration_days': duration,
             'containers_affected': r.randint(20, 200),
             'description': f"Weather event affecting operations"
