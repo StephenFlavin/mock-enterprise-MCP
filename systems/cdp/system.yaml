@@ -1,0 +1,130 @@
+id: cdp
+name: Customer Data Platform (CDP)
+instructions: >
+  Customer segments with demographic profiles and behavioral characteristics. Segment ids look like SEG-001.
+  Use it for customer segmentation analysis, returns and resale participation, markdown sensitivity,
+  and stockout impact assessment.
+
+tables:
+  segments:
+    key: segment_id
+    cols:
+      segment_id: {type: str, desc: "Segment id, e.g. SEG-001"}
+      segment_name: {type: str, desc: "Segment name, e.g. Premium Loyalists"}
+      description: {type: str, desc: Segment definition}
+      primary_region: {type: str, desc: Primary region for segment}
+      profile_age_min: {type: int, desc: "Typical age range minimum"}
+      profile_age_max: {type: int, desc: "Typical age range maximum"}
+      profile_spend_tier: {type: enum, values: [high, medium, low], desc: "Typical spend tier"}
+      customer_count: {type: int, desc: "Active customers in segment"}
+      avg_annual_spend_gbp: {type: float, desc: "Average annual spend per customer"}
+
+  segment_behaviors:
+    key: segment_id
+    cols:
+      segment_id: {type: str, desc: "Segment id"}
+      return_rate_pct: {type: float, desc: "Percentage of orders with returns"}
+      return_refund_sensitivity_pct: {type: float, desc: "% likely to reduce spending if charges introduced"}
+      markdown_wait_propensity_pct: {type: float, desc: "% who wait for markdowns instead of buying full price"}
+      markdown_conversion_elasticity: {type: float, desc: "Multiplier of conversion when discounted (e.g. 1.8 = 80% more units)"}
+      stockout_sensitivity_pct: {type: float, desc: "% who cancel or return due to limited availability"}
+      resale_participation_pct: {type: float, desc: "% active in resale programme"}
+      resale_barrier: {type: str, desc: "Primary barrier: awareness, effort, price, or none"}
+      repeat_purchase_rate_pct: {type: float, desc: "% who repurchase within 90 days"}
+      avg_basket_size_gbp: {type: float, desc: "Average basket value"}
+
+tools:
+  - name: search_customers
+    desc: Find customers by segment, region or loyalty tier; returns customer ids and segments.
+    kind: select
+    from: master.customers
+    filters:
+      segment: {op: like, desc: "Segment name or id, e.g. Premium Loyalists"}
+      region: {}
+      loyalty_tier: {}
+    columns: [customer_id, segment, region, loyalty_tier, joined_date]
+    order: customer_id
+    limit: 100
+    example: {segment: Premium}
+
+  - name: get_customer_segment_profile
+    desc: Return customer segment profile with demographics, spend and engagement metrics. Use to understand segment characteristics and needs.
+    kind: sql
+    args:
+      segment_id: {required: true, desc: "Segment id"}
+    sql: |
+      SELECT s.segment_id, s.segment_name, s.description, s.primary_region,
+             s.profile_age_min, s.profile_age_max, s.profile_spend_tier,
+             s.customer_count, s.avg_annual_spend_gbp,
+             b.repeat_purchase_rate_pct, b.avg_basket_size_gbp
+      FROM segments s
+      LEFT JOIN segment_behaviors b USING (segment_id)
+      WHERE s.segment_id = $segment_id
+    limit: 1
+    example: {segment_id: SEG-001}
+
+  - name: get_customer_segment_return_behaviour
+    desc: Segment return behaviour with return rates and sensitivity to return charges. Use to understand return dynamics and charge impact.
+    kind: sql
+    args:
+      segment_id: {required: true, desc: "Segment id"}
+    sql: |
+      SELECT s.segment_id, s.segment_name, b.return_rate_pct,
+             b.return_refund_sensitivity_pct, b.avg_annual_spend_gbp,
+             round(b.avg_annual_spend_gbp * (b.return_rate_pct / 100.0), 2) AS annual_return_value_gbp,
+             round(b.avg_annual_spend_gbp * (b.return_refund_sensitivity_pct / 100.0), 2) AS potential_spend_loss_gbp
+      FROM segments s
+      JOIN segment_behaviors b USING (segment_id)
+      WHERE s.segment_id = $segment_id
+    limit: 1
+    example: {segment_id: SEG-001}
+
+  - name: get_customer_markdown_wait_behaviour
+    desc: Segment markdown wait behaviour with propensity to wait for discounts and conversion lift potential.
+    kind: sql
+    args:
+      segment_id: {required: true, desc: "Segment id"}
+    sql: |
+      SELECT s.segment_id, s.segment_name, b.markdown_wait_propensity_pct,
+             b.markdown_conversion_elasticity, b.avg_basket_size_gbp,
+             round(b.avg_basket_size_gbp * b.markdown_conversion_elasticity, 2) AS expected_basket_when_discounted_gbp,
+             'wait_propensity: % who wait for markdown; elasticity: sales lift multiplier' AS formula
+      FROM segments s
+      JOIN segment_behaviors b USING (segment_id)
+      WHERE s.segment_id = $segment_id
+    limit: 1
+    example: {segment_id: SEG-001}
+
+  - name: get_customer_segment_exposure_to_stockouts
+    desc: Segment stockout sensitivity and impact on sales and retention. Use to set service level targets by segment.
+    kind: sql
+    args:
+      segment_id: {required: true, desc: "Segment id"}
+    sql: |
+      SELECT s.segment_id, s.segment_name, b.stockout_sensitivity_pct,
+             b.repeat_purchase_rate_pct, s.customer_count,
+             s.avg_annual_spend_gbp,
+             round(s.customer_count * s.avg_annual_spend_gbp, 2) AS segment_annual_value_gbp,
+             round(s.customer_count * s.avg_annual_spend_gbp * (b.stockout_sensitivity_pct / 100.0), 2) AS exposure_to_stockout_revenue_gbp
+      FROM segments s
+      JOIN segment_behaviors b USING (segment_id)
+      WHERE s.segment_id = $segment_id
+    limit: 1
+    example: {segment_id: SEG-001}
+
+  - name: get_customer_segment_participation
+    desc: Resale programme participation by segment with barriers to growth. Use to diagnose participation gaps and barriers.
+    kind: sql
+    args:
+      segment_id: {required: true, desc: "Segment id"}
+    sql: |
+      SELECT s.segment_id, s.segment_name, b.resale_participation_pct,
+             b.resale_barrier, s.customer_count,
+             round(s.customer_count * (b.resale_participation_pct / 100.0), 0) AS participating_customers,
+             round(s.customer_count * ((100.0 - b.resale_participation_pct) / 100.0), 0) AS non_participating,
+             'barrier: the identified reason for non-participation' AS formula
+      FROM segments s
+      JOIN segment_behaviors b USING (segment_id)
+      WHERE s.segment_id = $segment_id
+    limit: 1
+    example: {segment_id: SEG-001}

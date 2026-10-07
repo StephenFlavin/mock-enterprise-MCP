@@ -119,7 +119,7 @@ def generate(g):
         third_party_connections.append({
             "connection_id": f"CON-{len(third_party_connections) + 1:06d}",
             "partner_name": sup["name"],
-            "partner_id": sup["supplier_id"],
+            "external_id": sup["supplier_id"],
             "connection_type": "supplier",
             "protocol": r.choice(["edi", "api", "sftp"]),
             "endpoint_url": f"edi.{sup['name'].lower().replace(' ', '')}.com",
@@ -137,7 +137,7 @@ def generate(g):
         third_party_connections.append({
             "connection_id": f"CON-{len(third_party_connections) + 1:06d}",
             "partner_name": ptn["name"],
-            "partner_id": ptn["partner_id"],
+            "external_id": ptn["partner_id"],
             "connection_type": "partner",
             "protocol": r.choice(["api", "webhook", "sftp"]),
             "endpoint_url": f"api.{ptn['name'].lower().replace(' ', '')}.com",

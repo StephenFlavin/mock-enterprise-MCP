@@ -111,7 +111,7 @@ def generate(g):
                     })
 
     # Generate marketing activities for various ranges
-    styles = ["STY-5520", "STY-7731", "STY-T-4410", "SKU-PF-220", "K-1700"]
+    styles = ["STY-5520", "STY-7731", "STY-T-4410", "PF-220", "K-1700"]
     activity_id = 1
     for style in styles:
         for _ in range(r.randint(2, 4)):
