@@ -2,9 +2,11 @@
 import csv
 import importlib.util
 import random
+import tempfile
 import zlib
 from datetime import date, timedelta
 from functools import cache
+from pathlib import Path
 
 from faker import Faker
 
@@ -18,11 +20,17 @@ class Gen:
 
     def __init__(self, system_id: str):
         seed = WORLD["seed"] + zlib.crc32(system_id.encode())
+        self.seed = seed
         self.rng = random.Random(seed)
         self.fake = Faker("en_GB")
         self.fake.seed_instance(seed)
         self.world = WORLD
         self.as_of = date.fromisoformat(WORLD["data_as_of"])
+
+    def rng_for(self, *key) -> random.Random:
+        """An independent stream per entity (e.g. g.rng_for("sku", sku)). Use it when looping over master rows,
+        so adding rows to master data never shifts what other rows get."""
+        return random.Random(f"{self.seed}:" + ":".join(map(str, key)))
 
     def days_ago(self, n: int) -> date:
         return self.as_of - timedelta(days=n)
@@ -52,7 +60,8 @@ def read_rows(path) -> list[dict]:
     return [dict(r) for r in _read(str(path))] if path.exists() else []
 
 
-def generate(system_id: str) -> dict[str, int]:
+def generate(system_id: str, out_dir=None) -> dict[str, int]:
+    """Write data/*.csv (or into out_dir) from gen.py + seed/*.csv."""
     s: System = load_system(system_id)
     out: dict[str, list[dict]] = {}
     g = s.dir / "gen.py"
@@ -81,8 +90,9 @@ def generate(system_id: str) -> dict[str, int]:
             rows = [r for r in rows if k(r) not in seeded] + seed
         if len(rows) > MAX_ROWS:
             raise ValueError(f"{name}: {len(rows)} rows exceeds budget of {MAX_ROWS}")
-        (s.dir / "data").mkdir(exist_ok=True)
-        with open(s.dir / "data" / f"{name}.csv", "w", newline="") as fh:
+        dest = Path(out_dir) if out_dir else s.dir / "data"
+        dest.mkdir(parents=True, exist_ok=True)
+        with open(dest / f"{name}.csv", "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(t.cols)
             for r in rows:
@@ -102,3 +112,24 @@ def _fmt(v):
     if isinstance(v, (list, tuple)):
         return ";".join(map(str, v))
     return v
+
+
+def verify(system_id: str) -> list[str]:
+    """Regenerate into a temp dir and compare with the committed data/*.csv. Servers serve data/ as is, so data/
+    must be exactly what gen.py + seed/ produce: otherwise a regen (or a master change) silently moves answers."""
+    s = load_system(system_id)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            generate(system_id, tmp)
+        except Exception as e:  # noqa: BLE001
+            return [f"gen failed: {type(e).__name__}: {e}"]
+        probs = []
+        for name in s.tables:
+            a, b = s.dir / "data" / f"{name}.csv", Path(tmp) / f"{name}.csv"
+            if not a.exists():
+                probs.append(f"data/{name}.csv missing (run gen)")
+            elif a.read_bytes() != b.read_bytes():
+                old, new = a.read_text().splitlines(), b.read_text().splitlines()
+                diff = sum(1 for x, y in zip(old, new) if x != y) + abs(len(old) - len(new))
+                probs.append(f"data/{name}.csv differs from gen output ({diff} lines; {len(old) - 1} vs {len(new) - 1} rows)")
+        return probs

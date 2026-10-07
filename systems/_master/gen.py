@@ -34,6 +34,10 @@ UK_TOWNS = {
 DC_PORT = {"DC1": "GBFXT", "DC2": "GBSOU", "DC3": "GBLGP", "DC4": "NLRTM", "DC5": "USNYC"}
 
 
+SALES_SCALE = 6.8   # weekly sales volumes -> ~GBP 1.2bn revenue/yr
+PO_SCALE = 22       # PO line quantities x2.2 -> purchases ~ cost of goods sold (~GBP 450m/yr)
+
+
 def generate(g):
     r, as_of = g.rng, g.as_of
     out = {}
@@ -352,7 +356,7 @@ def generate(g):
         fx = {"GBP": 1, "EUR": 1.17, "USD": 1.27}[cur]
         tu, tv = 0, 0.0
         for ln, p in enumerate(r.sample(by_sup[s["supplier_id"]], min(len(by_sup[s["supplier_id"]]), r.randint(1, 5))), 1):
-            q = r.choice([500, 1000, 1500, 2000, 3000, 5000])
+            q = r.choice([500, 1000, 1500, 2000, 3000, 5000]) * PO_SCALE // 10  # purchases ~ cost of goods sold
             rec = q if st in ("closed", "received") else 0
             if st in ("closed", "received") and r.random() < 0.12:
                 rec = int(q * r.uniform(0.85, 1.03))
@@ -382,7 +386,8 @@ def generate(g):
     # weekly sales, last 52 weeks
     sales = []
     for p in products:
-        base = {"A": 260, "B": 90, "C": 25}[p["abc_class"]] * r.uniform(0.6, 1.4)
+        # x SALES_SCALE: about GBP 1.2bn revenue a year (the finance systems' scale); same draws, bigger volumes
+        base = {"A": 260, "B": 90, "C": 25}[p["abc_class"]] * r.uniform(0.6, 1.4) * SALES_SCALE
         for wk in g.weeks(52):
             if wk < p["launch_date"] - timedelta(7):
                 continue

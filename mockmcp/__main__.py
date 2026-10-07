@@ -16,8 +16,10 @@ def main():
     c = sub.add_parser("check", help="lint + run examples + scenarios")
     c.add_argument("ids", nargs="*")
     c.add_argument("--partial", action="store_true", help="allow missing catalogue tools/questions (staged builds)")
-    sub.add_parser("gen", help="regenerate data/*.csv").add_argument("ids", nargs="+")
-    sub.add_parser("reset", help="delete write overlay (state/)").add_argument("ids", nargs="*")
+    g = sub.add_parser("gen", help="regenerate data/*.csv")
+    g.add_argument("ids", nargs="*", help="systems (default with --verify: all, master first)")
+    g.add_argument("--verify", action="store_true", help="regenerate into a temp dir and fail if data/ differs")
+    sub.add_parser("reset", help="delete the persistent write overlay ($MOCKMCP_STATE, default state/)").add_argument("ids", nargs="*")
     sub.add_parser("catalog", help="rebuild catalog/tools.csv from the persona docs")
     sub.add_parser("brief", help="print a system's tools and the questions that use them").add_argument("id")
     p = sub.add_parser("profile", help="MCP client config for one persona, e.g. profile 01 4")
@@ -25,7 +27,7 @@ def main():
     p.add_argument("--url", default="http://127.0.0.1:8800")
     r = sub.add_parser("run", help="call one tool: run <id> <tool> '{\"arg\": 1}'")
     r.add_argument("id"), r.add_argument("tool"), r.add_argument("args", nargs="?", default="{}")
-    r.add_argument("--keep", action="store_true", help="keep writes (default: discard)")
+    r.add_argument("--keep", action="store_true", help="keep writes in $MOCKMCP_STATE (default state/)")
     b = sub.add_parser("bench", help="run a model on each server alone against bench/cases/<id>.yaml")
     b.add_argument("ids", nargs="*", help="systems (default: every system with cases)")
     b.add_argument("--validate", action="store_true", help="only check cases against the data (no model)")
@@ -54,11 +56,21 @@ def main():
             print(f"{'FAIL' if probs else 'ok  '} {sid}" + "".join(f"\n  - {x}" for x in probs))
         sys.exit(1 if bad else 0)
     elif a.cmd == "gen":
-        from .gen import generate
+        from .gen import generate, verify
+        from .spec import system_ids
+        if a.verify:
+            bad = 0
+            for sid in a.ids or ["master", *system_ids()]:
+                probs = verify(sid)
+                bad += bool(probs)
+                print(f"{'FAIL' if probs else 'ok  '} {sid}" + "".join(f"\n  - {x}" for x in probs))
+            sys.exit(1 if bad else 0)
+        if not a.ids:
+            sys.exit("gen: name the systems to regenerate (or use --verify)")
         for sid in a.ids:
             print(sid, generate(sid))
     elif a.cmd == "reset":
-        from .db import STATE
+        from .db import PERSISTENT_STATE as STATE
         for d in ([STATE / i for i in a.ids] if a.ids else [STATE]):
             shutil.rmtree(d, ignore_errors=True)
     elif a.cmd == "catalog":
@@ -77,7 +89,9 @@ def main():
         from . import db
         from .server import Engine
         tmp = None
-        if not a.keep:
+        if a.keep:
+            db.STATE = db.PERSISTENT_STATE
+        else:
             tmp = tempfile.TemporaryDirectory()
             db.STATE = Path(tmp.name)
         text, err = Engine([a.id]).call(a.id, a.tool, json.loads(a.args))

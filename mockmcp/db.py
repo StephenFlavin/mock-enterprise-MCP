@@ -1,6 +1,9 @@
 """DuckDB over CSV. Each table is a view: base CSV ∪ append-only overlay, latest row per key wins."""
+import atexit
 import csv
 import os
+import shutil
+import tempfile
 import re
 import threading
 import time
@@ -11,7 +14,14 @@ import duckdb
 from . import spec
 from .spec import ROOT, WORLD, System, Table
 
-STATE = Path(os.environ.get("MOCKMCP_STATE", ROOT / "state"))
+PERSISTENT_STATE = Path(os.environ.get("MOCKMCP_STATE", ROOT / "state"))
+# Writes go to an overlay. By default it is a fresh temp dir per process, removed on exit, so every server start
+# sees exactly the committed data (tear down = stop the process). Set MOCKMCP_STATE to keep writes across restarts.
+if "MOCKMCP_STATE" in os.environ:
+    STATE = PERSISTENT_STATE
+else:
+    STATE = Path(tempfile.mkdtemp(prefix="mockmcp-state-"))
+    atexit.register(shutil.rmtree, STATE, True)
 DUCK_TYPES = {"str": "VARCHAR", "text": "VARCHAR", "enum": "VARCHAR", "list": "VARCHAR", "int": "BIGINT",
               "float": "DOUBLE", "bool": "BOOLEAN", "date": "DATE", "timestamp": "TIMESTAMP"}
 PARAM = re.compile(r"\$([A-Za-z_]\w*)")
