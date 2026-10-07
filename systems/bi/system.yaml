@@ -62,7 +62,7 @@ tables:
       description: {type: str, desc: Issue description}
       owner_id: {type: str, desc: "Employee responsible for fix"}
       severity: {type: enum, values: [low, medium, high, critical], desc: Business impact}
-      affected_reports: {type: str, desc: "Comma-separated report ids"}
+      affected_reports: {type: str, desc: "Semicolon-separated reports affected"}
       created_at: {type: timestamp, desc: When issue was discovered}
       resolved_at: {type: timestamp, desc: When issue was resolved}
       business_impact: {type: text, desc: "What the issue does to reporting and decisions"}
@@ -81,3 +81,317 @@ tables:
       active: {type: bool, desc: Whether report is active}
       created_at: {type: timestamp, desc: When report was created}
 
+
+tools:
+  - name: get_store_performance_summary_for_region
+    desc: Per-store sales, margin, availability, shrink and labour cost for a region over a period, with sales vs target, best first.
+    kind: sql
+    args:
+      region: {type: str, required: true, desc: "Trading region, e.g. UK North, UK South, UK Midlands, Scotland"}
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+    sql: |
+      SELECT p.site_id, s.name, s.format, s.cluster,
+             sum(p.sales_units) AS sales_units,
+             round(sum(p.sales_gbp), 2) AS sales_gbp,
+             round(sum(t.sales_gbp_target), 2) AS sales_gbp_target,
+             round((sum(p.sales_gbp) / NULLIF(sum(t.sales_gbp_target), 0) - 1) * 100, 1) AS sales_vs_target_pct,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS margin_pct,
+             round(sum(p.sales_gbp * p.availability_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS availability_pct,
+             round(sum(p.sales_gbp * p.shrink_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS shrink_pct,
+             round(sum(p.sales_gbp * p.labour_cost_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS labour_cost_pct
+      FROM store_performance p
+      JOIN store_targets t ON t.site_id = p.site_id AND t.period_end = p.period_end
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE s.region = $region
+        AND p.period_end >= CAST($period_from AS DATE)
+        AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+      GROUP BY p.site_id, s.name, s.format, s.cluster
+      ORDER BY sales_vs_target_pct DESC
+    limit: 100
+    example: {region: "UK North", period_from: "-30d"}
+
+  - name: list_stores_below_target
+    desc: Stores missing sales or margin target by at least the minimum shortfall, worst first. Shows target vs actual.
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to one region, e.g. UK North (default all)"}
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+      min_shortfall_pct: {type: float, default: 2, desc: "Smallest % miss of the sales or margin target to list"}
+    sql: |
+      WITH a AS (
+        SELECT p.site_id,
+               sum(p.sales_gbp) AS sales_gbp, sum(t.sales_gbp_target) AS sales_gbp_target,
+               sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0) AS margin_pct,
+               sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0) AS margin_pct_target
+        FROM store_performance p
+        JOIN store_targets t ON t.site_id = p.site_id AND t.period_end = p.period_end
+        JOIN master.sites s ON s.site_id = p.site_id
+        WHERE p.period_end >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+          AND ($region IS NULL OR s.region = $region)
+        GROUP BY p.site_id)
+      SELECT a.site_id, s.name, s.region, s.format,
+             round(a.sales_gbp, 2) AS sales_gbp, round(a.sales_gbp_target, 2) AS sales_gbp_target,
+             round(a.sales_gbp_target - a.sales_gbp, 2) AS shortfall_gbp,
+             round((1 - a.sales_gbp / a.sales_gbp_target) * 100, 1) AS sales_shortfall_pct,
+             round(a.margin_pct, 1) AS margin_pct, round(a.margin_pct_target, 1) AS margin_pct_target,
+             round(a.margin_pct_target - a.margin_pct, 1) AS margin_gap_pts
+      FROM a JOIN master.sites s ON s.site_id = a.site_id
+      WHERE (1 - a.sales_gbp / a.sales_gbp_target) * 100 >= $min_shortfall_pct
+         OR (1 - a.margin_pct / a.margin_pct_target) * 100 >= $min_shortfall_pct
+      ORDER BY GREATEST((1 - a.sales_gbp / a.sales_gbp_target), (1 - a.margin_pct / a.margin_pct_target)) DESC
+    limit: 30
+    example: {region: "UK North", period_from: "-30d"}
+
+  - name: get_margin_by_store
+    desc: Gross margin by store, highest first, with margin pounds and gap to target margin. Filter by region.
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to one region, e.g. UK North (default all)"}
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+    sql: |
+      SELECT p.site_id, s.name, s.region,
+             round(sum(p.sales_gbp), 2) AS sales_gbp,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS margin_pct,
+             round(sum(p.sales_gbp * p.margin_pct / 100.0), 2) AS margin_gbp,
+             round(sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0), 1) AS margin_pct_target,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0)
+                   - sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0), 1) AS margin_vs_target_pts
+      FROM store_performance p
+      JOIN store_targets t ON t.site_id = p.site_id AND t.period_end = p.period_end
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period_end >= CAST($period_from AS DATE)
+        AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+        AND ($region IS NULL OR s.region = $region)
+      GROUP BY p.site_id, s.name, s.region
+      ORDER BY margin_pct DESC
+    limit: 100
+    example: {region: "UK North", period_from: "-30d"}
+
+  - name: get_range_performance_vs_plan
+    desc: Product sales, margin, returns and ratings vs plan with variances, biggest movers first. Filter by department or sku.
+    kind: sql
+    args:
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+      department: {type: str, desc: "Filter to department, e.g. Womenswear, Electricals (default all)"}
+      sku: {}
+    sql: |
+      WITH a AS (
+        SELECT p.sku,
+               sum(p.sales_units) AS sales_units, sum(p.sales_gbp) AS sales_gbp,
+               sum(t.sales_gbp_target) AS sales_gbp_target,
+               sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0) AS margin_pct,
+               sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0) AS margin_pct_target,
+               sum(p.sales_units * p.returns_pct) / NULLIF(sum(p.sales_units), 0) AS returns_pct,
+               sum(t.sales_units_target * t.returns_pct_target) / NULLIF(sum(t.sales_units_target), 0) AS returns_pct_target,
+               sum(p.sales_units * p.avg_rating) / NULLIF(sum(p.sales_units), 0) AS avg_rating,
+               sum(t.sales_units_target * t.avg_rating_target) / NULLIF(sum(t.sales_units_target), 0) AS avg_rating_target
+        FROM product_performance p
+        JOIN product_targets t ON t.sku = p.sku AND t.period_end = p.period_end
+        WHERE p.period_end >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+          AND ($sku IS NULL OR p.sku = $sku)
+        GROUP BY p.sku)
+      SELECT a.sku, pr.name, pr.style_id, pr.department,
+             a.sales_units, round(a.sales_gbp, 2) AS sales_gbp, round(a.sales_gbp_target, 2) AS sales_gbp_target,
+             round(a.sales_gbp - a.sales_gbp_target, 2) AS sales_variance_gbp,
+             round((a.sales_gbp / NULLIF(a.sales_gbp_target, 0) - 1) * 100, 1) AS sales_variance_pct,
+             round(a.margin_pct, 1) AS margin_pct, round(a.margin_pct_target, 1) AS margin_pct_target,
+             round(a.margin_pct - a.margin_pct_target, 1) AS margin_variance_pts,
+             round(a.returns_pct, 1) AS returns_pct, round(a.returns_pct_target, 1) AS returns_pct_target,
+             round(a.avg_rating, 1) AS avg_rating, round(a.avg_rating_target, 1) AS avg_rating_target
+      FROM a JOIN master.products pr ON pr.sku = a.sku
+      WHERE ($department IS NULL OR pr.department = $department)
+      ORDER BY GREATEST(ABS(a.sales_gbp / NULLIF(a.sales_gbp_target, 0) - 1),
+                        ABS(a.margin_pct / NULLIF(a.margin_pct_target, 0) - 1)) DESC
+    limit: 30
+    example: {period_from: "-30d"}
+
+  - name: get_margin_vs_plan_by_product
+    desc: Margin percentage and margin pounds vs plan by product, biggest margin variance first. Filter by sku or department.
+    kind: sql
+    args:
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+      department: {type: str, desc: "Filter to department, e.g. Womenswear, Electricals (default all)"}
+      sku: {}
+    sql: |
+      SELECT p.sku, pr.name, pr.department,
+             round(sum(p.sales_gbp), 2) AS sales_gbp,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0), 1) AS margin_pct,
+             round(sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0), 1) AS margin_pct_target,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0)
+                   - sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0), 1) AS margin_variance_pts,
+             round(sum(p.sales_gbp * p.margin_pct / 100.0), 2) AS margin_gbp,
+             round(sum(t.sales_gbp_target * t.margin_pct_target / 100.0), 2) AS margin_gbp_target,
+             round(sum(p.sales_gbp * p.margin_pct / 100.0) - sum(t.sales_gbp_target * t.margin_pct_target / 100.0), 2) AS margin_variance_gbp
+      FROM product_performance p
+      JOIN product_targets t ON t.sku = p.sku AND t.period_end = p.period_end
+      JOIN master.products pr ON pr.sku = p.sku
+      WHERE p.period_end >= CAST($period_from AS DATE)
+        AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+        AND ($department IS NULL OR pr.department = $department)
+        AND ($sku IS NULL OR p.sku = $sku)
+      GROUP BY p.sku, pr.name, pr.department
+      ORDER BY ABS(margin_variance_pts) DESC
+    limit: 30
+    example: {period_from: "-30d"}
+
+  - name: list_outliers_vs_plan
+    desc: Products and stores whose sales or margin is far from plan, biggest variance first. Use to flag items to investigate.
+    kind: sql
+    args:
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+      variance_threshold_pct: {type: float, default: 10, desc: "Flag when sales or margin is this many % away from plan"}
+      entity_type: {type: enum, values: [product, store], desc: "Only products or only stores (default both)"}
+    sql: |
+      WITH prod AS (
+        SELECT 'product' AS type, p.sku AS entity_id, pr.name AS name,
+               sum(p.sales_gbp) AS sales_gbp, sum(t.sales_gbp_target) AS sales_gbp_target,
+               sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0) AS margin_pct,
+               sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0) AS margin_pct_target
+        FROM product_performance p
+        JOIN product_targets t ON t.sku = p.sku AND t.period_end = p.period_end
+        JOIN master.products pr ON pr.sku = p.sku
+        WHERE p.period_end >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+          AND ($entity_type IS NULL OR $entity_type = 'product')
+        GROUP BY p.sku, pr.name),
+      stor AS (
+        SELECT 'store' AS type, sp.site_id AS entity_id, s.name AS name,
+               sum(sp.sales_gbp) AS sales_gbp, sum(st.sales_gbp_target) AS sales_gbp_target,
+               sum(sp.sales_gbp * sp.margin_pct) / NULLIF(sum(sp.sales_gbp), 0) AS margin_pct,
+               sum(st.sales_gbp_target * st.margin_pct_target) / NULLIF(sum(st.sales_gbp_target), 0) AS margin_pct_target
+        FROM store_performance sp
+        JOIN store_targets st ON st.site_id = sp.site_id AND st.period_end = sp.period_end
+        JOIN master.sites s ON s.site_id = sp.site_id
+        WHERE sp.period_end >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR sp.period_end <= CAST($period_to AS DATE))
+          AND ($entity_type IS NULL OR $entity_type = 'store')
+        GROUP BY sp.site_id, s.name),
+      u AS (SELECT * FROM prod UNION ALL SELECT * FROM stor),
+      v AS (
+        SELECT *, (sales_gbp / NULLIF(sales_gbp_target, 0) - 1) * 100 AS sales_variance_pct,
+               (margin_pct / NULLIF(margin_pct_target, 0) - 1) * 100 AS margin_variance_pct
+        FROM u)
+      SELECT type, entity_id, name,
+             round(sales_gbp, 2) AS sales_gbp, round(sales_gbp_target, 2) AS sales_gbp_target,
+             round(sales_variance_pct, 1) AS sales_variance_pct,
+             round(margin_pct, 1) AS margin_pct, round(margin_pct_target, 1) AS margin_pct_target,
+             round(margin_variance_pct, 1) AS margin_variance_pct,
+             CASE WHEN ABS(sales_variance_pct) >= $variance_threshold_pct AND ABS(margin_variance_pct) >= $variance_threshold_pct THEN 'sales and margin'
+                  WHEN ABS(sales_variance_pct) >= $variance_threshold_pct THEN 'sales' ELSE 'margin' END AS flagged_on
+      FROM v
+      WHERE ABS(sales_variance_pct) >= $variance_threshold_pct OR ABS(margin_variance_pct) >= $variance_threshold_pct
+      ORDER BY GREATEST(ABS(sales_variance_pct), ABS(margin_variance_pct)) DESC
+    limit: 50
+    example: {period_from: "-30d", variance_threshold_pct: 15}
+
+  - name: calculate_store_priority_score
+    desc: Ranks stores by priority for visits and investment from sales and margin shortfall vs target. Higher score means higher priority.
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to one region, e.g. UK North (default all)"}
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+      sales_weight: {type: float, default: 0.6, desc: "Weight on sales shortfall; margin shortfall gets 1 minus this"}
+    sql: |
+      WITH a AS (
+        SELECT p.site_id,
+               sum(p.sales_gbp) AS sales_gbp, sum(t.sales_gbp_target) AS sales_gbp_target,
+               sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0) AS margin_pct,
+               sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0) AS margin_pct_target
+        FROM store_performance p
+        JOIN store_targets t ON t.site_id = p.site_id AND t.period_end = p.period_end
+        JOIN master.sites s ON s.site_id = p.site_id
+        WHERE p.period_end >= CAST($period_from AS DATE)
+          AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+          AND ($region IS NULL OR s.region = $region)
+        GROUP BY p.site_id)
+      SELECT a.site_id, s.name, s.format, s.cluster,
+             round(a.sales_gbp, 2) AS sales_gbp, round(a.sales_gbp_target, 2) AS sales_gbp_target,
+             round((1 - a.sales_gbp / a.sales_gbp_target) * 100, 1) AS sales_shortfall_pct,
+             round(a.margin_pct, 1) AS margin_pct, round(a.margin_pct_target, 1) AS margin_pct_target,
+             round((1 - a.margin_pct / a.margin_pct_target) * 100, 1) AS margin_shortfall_pct,
+             round($sales_weight * (1 - a.sales_gbp / a.sales_gbp_target) * 100
+                   + (1 - $sales_weight) * (1 - a.margin_pct / a.margin_pct_target) * 100, 2) AS priority_score,
+             'priority_score = ' || CAST($sales_weight AS VARCHAR) || ' * sales_shortfall_pct + '
+               || CAST(round(1 - $sales_weight, 2) AS VARCHAR) || ' * margin_shortfall_pct; shortfall_pct = (target - actual) / target * 100' AS formula
+      FROM a JOIN master.sites s ON s.site_id = a.site_id
+      ORDER BY priority_score DESC
+    limit: 100
+    example: {region: "UK North", period_from: "-30d"}
+
+  - name: calculate_variance_drivers_by_store
+    desc: Sales and margin variance vs plan by store, split into volume and margin-rate effect in pounds, largest impact first.
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to one region, e.g. UK North (default all)"}
+      period_from: {type: date, default: "-30d", desc: "Include periods ending on or after this date"}
+      period_to: {type: date, desc: "Include periods ending on or before this date (default: latest)"}
+    sql: |
+      SELECT p.site_id, s.name, s.format,
+             round(sum(p.sales_gbp - t.sales_gbp_target), 2) AS sales_variance_gbp,
+             round((sum(p.sales_gbp) / NULLIF(sum(t.sales_gbp_target), 0) - 1) * 100, 1) AS sales_variance_pct,
+             round(sum(p.sales_gbp * p.margin_pct) / NULLIF(sum(p.sales_gbp), 0)
+                   - sum(t.sales_gbp_target * t.margin_pct_target) / NULLIF(sum(t.sales_gbp_target), 0), 1) AS margin_variance_pts,
+             round(sum((p.sales_gbp - t.sales_gbp_target) * t.margin_pct_target / 100.0), 2) AS volume_effect_gbp,
+             round(sum(p.sales_gbp * (p.margin_pct - t.margin_pct_target) / 100.0), 2) AS margin_rate_effect_gbp,
+             round(sum(p.sales_gbp * p.margin_pct / 100.0 - t.sales_gbp_target * t.margin_pct_target / 100.0), 2) AS margin_variance_gbp,
+             CASE WHEN ABS(sum((p.sales_gbp - t.sales_gbp_target) * t.margin_pct_target / 100.0))
+                       >= ABS(sum(p.sales_gbp * (p.margin_pct - t.margin_pct_target) / 100.0))
+                  THEN 'sales volume' ELSE 'margin rate' END AS main_driver,
+             'margin_variance_gbp = volume_effect (sales variance * target margin) + margin_rate_effect (actual sales * margin gap)' AS formula
+      FROM store_performance p
+      JOIN store_targets t ON t.site_id = p.site_id AND t.period_end = p.period_end
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period_end >= CAST($period_from AS DATE)
+        AND ($period_to IS NULL OR p.period_end <= CAST($period_to AS DATE))
+        AND ($region IS NULL OR s.region = $region)
+      GROUP BY p.site_id, s.name, s.format
+      ORDER BY ABS(margin_variance_gbp) DESC
+    limit: 50
+    example: {region: "UK North", period_from: "-30d"}
+
+  - name: get_data_quality_issue_impact
+    desc: Data quality issues with the reports and KPIs they affect, business impact, owner and fix estimate. Worst severity first.
+    kind: sql
+    args:
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Filter by severity (default all)"}
+      dataset: {type: str, desc: "Filter to one affected dataset, e.g. store_performance"}
+      dq_issue_id: {}
+      include_resolved: {type: bool, default: false, desc: "Also list resolved issues"}
+    sql: |
+      SELECT d.dq_issue_id, d.dataset, d.issue_type, d.severity, d.description, d.business_impact,
+             d.affected_reports, d.affected_kpis, d.owner_id, e.name AS owner_name, e.role AS owner_role,
+             d.est_fix_days, d.created_at, d.resolved_at,
+             date_diff('day', CAST(d.created_at AS DATE), COALESCE(CAST(d.resolved_at AS DATE), CAST($as_of AS DATE))) AS days_open
+      FROM data_quality_issues d
+      LEFT JOIN master.employees e ON e.employee_id = d.owner_id
+      WHERE ($severity IS NULL OR d.severity = $severity)
+        AND ($dataset IS NULL OR d.dataset = $dataset)
+        AND ($dq_issue_id IS NULL OR d.dq_issue_id = $dq_issue_id)
+        AND ($include_resolved = true OR d.resolved_at IS NULL)
+      ORDER BY CASE d.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+               d.created_at DESC
+    limit: 50
+    example: {severity: "high"}
+
+  - name: create_scheduled_report
+    desc: Schedule a recurring report to be sent to named recipients (daily, weekly, monthly or quarterly).
+    kind: insert
+    table: scheduled_reports
+    id_prefix: RPT-
+    defaults: {active: true, day_of_week: monday, description: "{report_type}, sent {frequency} to {recipient_emails}"}
+    args:
+      report_type: {required: true, desc: "Report name, e.g. Store Performance Summary"}
+      recipient_emails: {required: true, desc: "Email addresses separated by semicolon"}
+      frequency: {required: true}
+      day_of_week: {desc: "Day a weekly report is sent, e.g. friday"}
+      description: {desc: "What the report should contain"}
+    example: {report_type: "Store Performance Summary", recipient_emails: "manager@company.com;director@company.com", frequency: "weekly"}
