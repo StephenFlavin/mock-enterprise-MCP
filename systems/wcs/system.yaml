@@ -51,6 +51,7 @@ tables:
       throughput_impact_units: {type: int, desc: "Estimated units of throughput lost"}
       sensor_prediction_possible: {type: bool, desc: "Could this fault have been predicted from sensors"}
       related_work_order: {type: str, desc: "Related CMMS work order if any"}
+      location: {type: str, desc: "Where the asset sits, e.g. shuttle aisle 3 (blank for robots)"}
 
   charging_schedule:
     key: schedule_id
@@ -83,134 +84,185 @@ tables:
 
 tools:
   - name: get_amr_fleet_firmware_versions
-    desc: AMR firmware versions across the fleet by site. Shows which robots run which versions.
-    kind: select
-    from: amr_fleet
-    filters:
+    desc: AMR robots with firmware version, status, battery, recent faults and robots per version at the site. Use to plan firmware upgrades.
+    kind: sql
+    args:
       site_id: {}
       firmware_version: {}
       status: {}
-    columns: [robot_id, site_id, firmware_version, battery_state_pct, status, total_distance_km, last_fault_at]
-    order: robot_id
+    sql: |
+      WITH fl AS (
+        SELECT f.robot_id, f.site_id, f.firmware_version, f.status, f.battery_state_pct, f.location,
+               f.total_distance_km, f.last_fault_at,
+               (SELECT count(*) FROM fault_log x WHERE x.robot_id = f.robot_id
+                  AND x.occurred_at >= CAST($as_of AS DATE) - INTERVAL 45 DAY) AS faults_last_45d,
+               count(*) OVER (PARTITION BY f.site_id) AS site_fleet_size,
+               count(*) OVER (PARTITION BY f.site_id, f.firmware_version) AS site_robots_on_version
+        FROM amr_fleet f)
+      SELECT * FROM fl
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($firmware_version IS NULL OR firmware_version = $firmware_version)
+        AND ($status IS NULL OR status = $status)
+      ORDER BY site_id, robot_id
     limit: 100
     example: {site_id: DC1}
 
   - name: get_equipment_software_versions
-    desc: Controller and firmware versions per asset (shuttles, conveyors, sorters, motors). Use to assess upgrade readiness.
-    kind: select
-    from: equipment_versions
-    filters:
+    desc: Controller and device firmware versions per asset (shuttles, conveyors, sorters, motors) with stoppages in the last 90 days. Filter by site, class or asset.
+    kind: sql
+    args:
       site_id: {}
-      asset_class: {}
-      status: {}
-    columns: [asset_id, asset_class, controller_software_version, device_firmware_version, installed_date, last_updated_at, status]
-    order: asset_id
-    limit: 50
-    example: {site_id: DC1}
+      asset_class: {type: str, desc: "Equipment class: shuttle, conveyor, sorter, motor, gearbox or sensor"}
+      asset_id: {}
+      status: {type: str, values: [active, degraded, maintenance, offline], desc: "Equipment status, e.g. degraded"}
+    sql: |
+      SELECT e.asset_id, a.name, e.asset_class, a.location, e.controller_software_version, e.device_firmware_version,
+             e.installed_date, e.last_updated_at, e.status,
+             (SELECT count(*) FROM fault_log f WHERE f.asset_id = e.asset_id AND f.throughput_impact_units > 0
+                AND f.occurred_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS stoppages_last_90d,
+             (SELECT coalesce(sum(f.duration_minutes), 0) FROM fault_log f WHERE f.asset_id = e.asset_id AND f.throughput_impact_units > 0
+                AND f.occurred_at >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS stoppage_minutes_last_90d
+      FROM equipment_versions e JOIN master.assets a USING (asset_id)
+      WHERE ($site_id IS NULL OR e.site_id = $site_id)
+        AND ($asset_class IS NULL OR e.asset_class = $asset_class)
+        AND ($asset_id IS NULL OR e.asset_id = $asset_id)
+        AND ($status IS NULL OR e.status = $status)
+      ORDER BY e.asset_id
+    limit: 100
+    example: {site_id: DC2, asset_class: shuttle}
 
   - name: get_fault_log_entries
-    desc: Equipment fault codes and events from the control system with root cause, duration and throughput impact. Newest first.
+    desc: Equipment and robot fault codes and events with component, root cause, duration, throughput lost and software version. Newest first.
     kind: sql
     args:
       site_id: {}
       asset_id: {}
-      fault_code: {type: str, desc: "Fault code pattern, e.g. MOTOR or BATT"}
+      asset_class: {type: str, desc: "Equipment class: shuttle, conveyor, sorter, motor, gearbox or sensor"}
+      fault_code: {type: str, desc: "Fault code or prefix, e.g. MOTOR or GEARBOX-002"}
       severity: {type: enum, values: [info, warning, critical], desc: "Filter by severity"}
-      date_from: {type: date, default: "-30d", desc: "Faults on or after"}
+      date_from: {type: date, default: "-45d", desc: "Faults on or after"}
+      date_to: {type: date, desc: "Faults on or before"}
     sql: |
-      SELECT f.fault_id, f.asset_id, f.robot_id, f.site_id, f.fault_code, f.fault_description,
+      SELECT f.fault_id, f.asset_id, a.name AS asset_name, f.location, f.robot_id, f.site_id, f.fault_code, f.fault_description,
              f.severity, f.occurred_at, f.resolved_at, f.component_failed, f.duration_minutes,
              f.root_cause, f.controller_version_at_fault, f.throughput_impact_units,
-             f.sensor_prediction_possible
-      FROM fault_log f
+             f.sensor_prediction_possible, f.related_work_order
+      FROM fault_log f LEFT JOIN master.assets a ON a.asset_id = f.asset_id
       WHERE ($site_id IS NULL OR f.site_id = $site_id)
         AND ($asset_id IS NULL OR f.asset_id = $asset_id)
-        AND ($fault_code IS NULL OR f.fault_code LIKE $fault_code || '%')
+        AND ($asset_class IS NULL OR a.asset_class = $asset_class)
+        AND ($fault_code IS NULL OR f.fault_code ILIKE $fault_code || '%')
         AND ($severity IS NULL OR f.severity = $severity)
         AND f.occurred_at >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR CAST(f.occurred_at AS DATE) <= CAST($date_to AS DATE))
       ORDER BY f.occurred_at DESC
     limit: 100
-    example: {site_id: DC1}
+    example: {site_id: DC2, asset_class: shuttle}
 
   - name: get_fleet_charging_schedule
-    desc: Charging schedules and current battery states. Shows windows and when robots charge to optimize throughput.
+    desc: Active charging windows for a site with robots per slot and battery levels, plus robots charging now and fleet average battery.
     kind: sql
     args:
       site_id: {required: true}
     sql: |
-      SELECT schedule_id, site_id, time_slot, start_time, end_time, robots_in_slot,
-             battery_avg_start_pct, battery_avg_end_pct, active, effective_from, updated_at,
-             'schedule for efficient charging without impacting peak throughput' AS note
-      FROM charging_schedule
-      WHERE site_id = $site_id AND active = true
-      ORDER BY start_time ASC
+      SELECT c.schedule_id, c.site_id, c.time_slot, c.start_time, c.end_time, c.robots_in_slot,
+             (SELECT count(*) FROM amr_fleet f WHERE f.site_id = c.site_id) AS site_fleet_size,
+             c.battery_avg_start_pct, c.battery_avg_end_pct, c.schedule_version, c.effective_from, c.updated_at,
+             (SELECT count(*) FROM amr_fleet f WHERE f.site_id = c.site_id AND f.status = 'charging') AS robots_charging_now,
+             (SELECT round(avg(f.battery_state_pct), 0) FROM amr_fleet f WHERE f.site_id = c.site_id) AS fleet_avg_battery_pct_now
+      FROM charging_schedule c
+      WHERE c.site_id = $site_id AND c.active = true
+      ORDER BY c.start_time
     limit: 20
     example: {site_id: DC1}
 
   - name: get_robot_throughput_by_hour
-    desc: Robot throughput by hour and zone. Use to detect time-of-day patterns and congestion.
+    desc: Average throughput by hour of day for a site (all zones, or one zone) with robots active, traffic and wait time. Use to spot time-of-day dips.
     kind: sql
     args:
       site_id: {required: true}
-      zone: {}
-      date_from: {type: date, default: "-7d", desc: "Data from this date forward"}
+      zone: {type: str, desc: "Zone name, e.g. zone-A, zone-B, zone-C or pick-area; omit for all zones combined"}
+      date_from: {type: date, default: "-14d", desc: "Data from this date forward"}
     sql: |
-      SELECT site_id, zone, hour_ending, throughput_units, robots_active,
-             traffic_density_pct, congestion_events, avg_wait_time_seconds, battery_health_avg_pct
-      FROM throughput_by_hour
-      WHERE site_id = $site_id
-        AND ($zone IS NULL OR zone = $zone)
-        AND hour_ending >= CAST($date_from AS DATE)
-      ORDER BY hour_ending DESC, zone ASC
-    limit: 168
+      WITH d AS (
+        SELECT CAST(hour_ending AS DATE) AS day, extract(hour FROM hour_ending) AS h,
+               sum(throughput_units) AS tp, sum(robots_active) AS ra, avg(traffic_density_pct) AS td,
+               sum(congestion_events) AS ce, avg(avg_wait_time_seconds) AS wt, avg(battery_health_avg_pct) AS bh
+        FROM throughput_by_hour
+        WHERE site_id = $site_id AND ($zone IS NULL OR zone = $zone) AND hour_ending >= CAST($date_from AS DATE)
+        GROUP BY ALL),
+      p AS (
+        SELECT h, count(*) AS days_observed, avg(tp) AS avg_tp, min(tp) AS min_tp, max(tp) AS max_tp, avg(ra) AS avg_ra,
+               avg(td) AS avg_td, avg(ce) AS avg_ce, avg(wt) AS avg_wt, avg(bh) AS avg_bh
+        FROM d GROUP BY h)
+      SELECT $site_id AS site_id, coalesce($zone, 'all zones') AS zone, printf('%02d:00', CAST(h AS INT)) AS hour_ending,
+             round(avg_tp, 0) AS avg_throughput_units, min_tp AS min_throughput_units, max_tp AS max_throughput_units,
+             round(100.0 * (avg_tp / (SELECT avg(avg_tp) FROM p) - 1), 1) AS pct_vs_daily_hourly_avg,
+             round(avg_ra, 1) AS avg_robots_active, round(avg_td, 0) AS avg_traffic_density_pct,
+             round(avg_ce, 1) AS avg_congestion_events, round(avg_wt, 1) AS avg_wait_time_seconds,
+             round(avg_bh, 0) AS avg_battery_health_pct, days_observed
+      FROM p ORDER BY h
+    limit: 24
     example: {site_id: DC1}
 
   - name: get_robot_traffic_congestion
-    desc: Traffic density, blockage and wait events by area and time. Use to identify bottlenecks.
+    desc: Zones and hours of day with high traffic density, congestion events and wait times, worst first. Use to find robot bottlenecks.
     kind: sql
     args:
       site_id: {required: true}
-      zone: {}
-      date_from: {type: date, default: "-7d", desc: "Data from this date"}
+      zone: {type: str, desc: "Zone name, e.g. zone-A, zone-B, zone-C or pick-area"}
+      date_from: {type: date, default: "-14d", desc: "Data from this date"}
+      min_traffic_density_pct: {type: int, default: 60, desc: "Only hours whose average traffic density is at least this percent"}
     sql: |
-      SELECT site_id, zone, hour_ending, traffic_density_pct, congestion_events, avg_wait_time_seconds,
-             throughput_units, robots_active
+      SELECT site_id, zone, printf('%02d:00', CAST(extract(hour FROM hour_ending) AS INT)) AS hour_ending,
+             round(avg(traffic_density_pct), 0) AS avg_traffic_density_pct, round(avg(congestion_events), 1) AS avg_congestion_events,
+             round(avg(avg_wait_time_seconds), 1) AS avg_wait_time_seconds, round(avg(throughput_units), 0) AS avg_throughput_units,
+             round(avg(robots_active), 1) AS avg_robots_active, count(*) AS days_observed
       FROM throughput_by_hour
-      WHERE site_id = $site_id
-        AND ($zone IS NULL OR zone = $zone)
-        AND hour_ending >= CAST($date_from AS DATE)
-        AND (traffic_density_pct > 50 OR congestion_events > 0)
-      ORDER BY traffic_density_pct DESC, hour_ending DESC
+      WHERE site_id = $site_id AND ($zone IS NULL OR zone = $zone) AND hour_ending >= CAST($date_from AS DATE)
+      GROUP BY site_id, zone, extract(hour FROM hour_ending)
+      HAVING avg(traffic_density_pct) >= $min_traffic_density_pct
+      ORDER BY avg_traffic_density_pct DESC, avg_congestion_events DESC, zone, hour_ending
     limit: 100
     example: {site_id: DC1}
 
   - name: get_throughput_loss_for_stoppage
-    desc: Throughput lost per stoppage event with root cause, duration and recovery time.
+    desc: Stoppages with throughput units lost, duration and root cause, grouped worst root cause first with root-cause totals. Filter by site, asset class or asset.
     kind: sql
     args:
       site_id: {required: true}
-      date_from: {type: date, default: "-30d", desc: "Stoppages on or after"}
+      asset_class: {type: str, desc: "Equipment class: shuttle, conveyor, sorter, motor, gearbox or sensor"}
+      asset_id: {}
+      date_from: {type: date, default: "-45d", desc: "Stoppages on or after"}
+      date_to: {type: date, desc: "Stoppages on or before"}
     sql: |
-      SELECT fault_id, asset_id, robot_id, fault_code, fault_description,
-             occurred_at, duration_minutes, throughput_impact_units, root_cause,
-             controller_version_at_fault, severity,
-             ROUND(throughput_impact_units * 1.0, 0) AS estimated_loss_units,
-             'loss = throughput_impact_units * duration_minutes / 60' AS loss_formula
-      FROM fault_log
-      WHERE site_id = $site_id
-        AND throughput_impact_units > 0
-        AND occurred_at >= CAST($date_from AS DATE)
-      ORDER BY throughput_impact_units DESC, duration_minutes DESC
-    limit: 50
-    example: {site_id: DC1}
+      WITH s AS (
+        SELECT f.fault_id, f.asset_id, a.name AS asset_name, f.location, f.fault_code, f.fault_description, f.component_failed,
+               f.root_cause, f.occurred_at, f.resolved_at, f.duration_minutes AS duration_minutes,
+               f.throughput_impact_units AS throughput_lost_units, f.controller_version_at_fault, f.sensor_prediction_possible,
+               f.related_work_order
+        FROM fault_log f JOIN master.assets a ON a.asset_id = f.asset_id
+        WHERE f.site_id = $site_id AND f.throughput_impact_units > 0
+          AND ($asset_class IS NULL OR a.asset_class = $asset_class)
+          AND ($asset_id IS NULL OR f.asset_id = $asset_id)
+          AND f.occurred_at >= CAST($date_from AS DATE)
+          AND ($date_to IS NULL OR CAST(f.occurred_at AS DATE) <= CAST($date_to AS DATE)))
+      SELECT *, count(*) OVER (PARTITION BY root_cause) AS root_cause_stoppages,
+             sum(throughput_lost_units) OVER (PARTITION BY root_cause) AS root_cause_total_lost_units,
+             sum(duration_minutes) OVER (PARTITION BY root_cause) AS root_cause_total_minutes,
+             sum(throughput_lost_units) OVER () AS all_stoppages_lost_units
+      FROM s
+      ORDER BY root_cause_total_lost_units DESC, root_cause, throughput_lost_units DESC
+    limit: 100
+    example: {site_id: DC2, asset_class: shuttle}
 
   - name: update_fleet_charging_schedule
-    desc: Update charging windows for the AMR fleet (start and end times). Returns old and new schedule.
+    desc: Change the start and end time of one charging window (by schedule id) for the AMR fleet. Returns the old and new window.
     kind: update
     table: charging_schedule
-    set: {start_time: "{start_time}", end_time: "{end_time}"}
+    set: {time_slot: "{start_time}-{end_time}", start_time: "{start_time}", end_time: "{end_time}", effective_from: "$as_of"}
     args:
       schedule_id: {required: true}
-      start_time: {type: str, required: true, desc: "New start time HH:MM"}
-      end_time: {type: str, required: true, desc: "New end time HH:MM"}
-    example: {schedule_id: CHG-900002, start_time: "18:00", end_time: "20:00"}
+      start_time: {type: str, required: true, desc: "New start time HH:MM, e.g. 18:00"}
+      end_time: {type: str, required: true, desc: "New end time HH:MM, e.g. 20:00"}
+    example: {schedule_id: CHG-900003, start_time: "18:00", end_time: "20:00"}
