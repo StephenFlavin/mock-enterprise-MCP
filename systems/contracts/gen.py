@@ -72,6 +72,7 @@ SUP_STORY = {
 }
 
 
+ORIGINAL_STORY_SUPPLIERS = set(SUP_STORY)  # suppliers excluded when sampling lapsed contracts (keeps earlier data stable)
 # --- contracts job 2 stories -----------------------------------------------------------------
 # 04:38:Q1 / 04:38:Q3: the draft supply agreement (v3) with probation knitwear supplier SUP-0072 (CTR-000072) caps liability at
 # the value of the order, carves out nothing for product safety, and deviates from our standard terms in other ways.
@@ -142,7 +143,11 @@ SUP_STORY["SUP-0070"] = {
 }
 
 # 04:38:Q5: IP terms of the suppliers co-developing products with us (plm co-development projects)
-SUP_STORY["SUP-0042"] = {"ip_protection": dict(ownership="buyer", supplier_may_reuse=False, licence_back=False, assignment_of_improvements=True,
+SUP_STORY["SUP-0042"] = {
+    "price_review": dict(frequency="quarterly", max_increase_pct=5, trigger="quarterly reset to the wool index", notice_days=60,
+                         materials=[dict(material="merino wool fabric", index="Australian merino wool indicator", mill_premium_pct=6, reset_lag_months=3)],
+                         summary="Fabric prices reset quarterly to the wool index plus a 6% mill premium, capped at 5% a quarter; the index move reaches us after a 3-month lag."),
+    "ip_protection": dict(ownership="buyer", supplier_may_reuse=False, licence_back=False, assignment_of_improvements=True,
                                               summary="All designs, processes and improvements developed for us are owned by us; the supplier may not reuse them for other customers.")}
 SUP_STORY["SUP-0012"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=False, licence_back=True, assignment_of_improvements=True,
                                               summary="Jointly owned; the supplier may not use the developed designs for other customers and licenses us its background IP needed to make the product.")}
@@ -200,6 +205,7 @@ SUP_STORY["SUP-0073"] = {
 }
 STORY_TITLES = {"SUP-0050": "Energy supply agreement", "SUP-0071": "Energy supply agreement",
                 "SUP-0077": "Corrugated packaging supply agreement", "SUP-0073": "Packaging film supply agreement"}
+STORY_VALUE = {"SUP-0050": 550000.0, "SUP-0071": 200000.0, "SUP-0077": 700000.0, "SUP-0073": 600000.0}  # annual service spend (spend system)
 STORY_CATEGORY = {"SUP-0050": "Energy", "SUP-0071": "Energy", "SUP-0077": "Packaging", "SUP-0073": "Packaging"}
 
 # 04:32:Q1 price-list terms for Supplier A (SUP-0004) and 04:32:Q7 (SUP-0074)
@@ -321,7 +327,7 @@ def generate(g):
     for p in pos:
         first_po[p["supplier_id"]] = min(first_po.get(p["supplier_id"], p["order_date"]), p["order_date"])
     knit_suppliers = {po_sup[l["po_id"]] for l in lines if prods.get(l["sku"], {}).get("category") == "Knitwear"}
-    story_suppliers = set(SUP_STORY) | {"SUP-0072"}
+    story_suppliers = ORIGINAL_STORY_SUPPLIERS | {"SUP-0072"}
 
     contracts, clauses, rate_cards, price_lists = [], [], [], []
 
@@ -361,15 +367,18 @@ def generate(g):
                 end += timedelta(days=365 * term)
         if sid == "SUP-0072":  # probation supplier trading with no signed contract: terms still being negotiated
             status, start, end = "draft", as_of + timedelta(days=21), as_of + timedelta(days=21 + 365 * 2)
+        if sid in SHORT_NOTICE:
+            notice = SHORT_NOTICE[sid]
         if sid == "SUP-0074":  # annual review is coming up: contract anniversary in the next weeks
             start = as_of - timedelta(days=365 * 2 - 6)
             end = start + timedelta(days=365 * 3)
             notice, auto = 90, True
         contracts.append({
             "contract_id": cid, "contract_type": "supplier", "party_type": "supplier_id", "party_id": sid,
-            "party_name": s["name"], "title": f"Supply agreement - {s['name']}", "category": s["category_focus"], "site_id": None,
+            "party_name": s["name"], "title": f"{STORY_TITLES.get(sid, 'Supply agreement')} - {s['name']}",
+            "category": STORY_CATEGORY.get(sid, s["category_focus"]), "site_id": None,
             "owner_id": s["account_manager_id"], "start_date": start, "end_date": end, "renewal_notice_days": notice,
-            "auto_renewal": auto, "status": status, "annual_value_gbp": spend,
+            "auto_renewal": auto, "status": status, "annual_value_gbp": STORY_VALUE.get(sid, spend),
             "created_at": start - timedelta(days=r.randint(10, 40)), "updated_at": g.days_ago(r.randint(0, 90)),
         })
         tier = s["tier"]
@@ -388,7 +397,7 @@ def generate(g):
             "force_majeure": ("Force Majeure", dict(max_suspension_days=r.choice([60, 90]), notice_hours=72,
                                                      summary="Force majeure suspends obligations; either party may terminate after the suspension limit.")),
             "liability": ("Supplier Liability", dict(limit_gbp=r.choice([250000, 500000, 1000000, 2000000]), limit_basis="per claim", deductible_gbp=0,
-                                                     summary="Liability capped per claim; product safety and IP claims uncapped.")),
+                                                     product_safety_uncapped=True, summary="Liability capped per claim; product safety and IP claims uncapped.")),
             "claim_window": ("Claim Window", (lambda sh: dict(shortage_claim_days=sh, damage_claim_days=sh, quality_claim_days=90,
                                                             summary=f"Shortage and damage claims within {sh} days of goods receipt; quality claims within 90 days."))(r.choice([14, 21, 30, 45]))),
             "short_shipment": ("Short Shipment", (lambda tol: dict(tolerance_pct=tol, penalty_gbp_per_unit=r.choice([1.0, 2.5, 5.0]),
@@ -403,15 +412,21 @@ def generate(g):
         }
         if r.random() < 0.3:
             own = r.choice(["buyer", "joint", "supplier"])
-            spec["ip_protection"] = ("IP Protection", dict(ownership=own, summary=f"Designs and tooling developed jointly are owned by the {own}." if own != "joint" else "Jointly developed designs are jointly owned."))
+            own = "joint" if own == "supplier" else own  # supplier-owned IP only where a story plants it
+            spec["ip_protection"] = ("IP Protection", dict(ownership=own, supplier_may_reuse=False, licence_back=True, assignment_of_improvements=True,
+                                                           summary=f"Designs and tooling developed for us are owned by the {own}." if own != "joint" else "Jointly developed designs are jointly owned; the supplier may not reuse them for other customers."))
         for ctype, ov in SUP_STORY.get(sid, {}).items():
             spec[ctype] = ({"chargeback": "Chargebacks", "penalty": "Late Delivery Penalty", "claim_window": "Claim Window",
                             "short_shipment": "Short Shipment", "price_review": "Price Review", "payment_terms": "Payment Terms",
                             "service_level": "Service Level", "termination": "Termination", "force_majeure": "Force Majeure",
-                            "volume_commitment": "Volume Commitment", "other": "Volume Rebate"}[ctype], ov)
+                            "volume_commitment": "Volume Commitment", "other": "Volume Rebate", "liability": "Supplier Liability",
+                            "ip_protection": "IP Protection"}[ctype], ov)
         if sid == "SUP-0044":
             spec["volume_commitment"] = ("Volume Commitment", SUP_STORY["SUP-0044"]["volume_commitment"])
         add_clauses(cid, start, {k: (v[0], {"summary": v[1].pop("summary"), **v[1]}) for k, v in spec.items()})
+        for clause_id, ctype, title, content in EXTRA_CLAUSES.get(sid, []):
+            clauses.append({"contract_id": cid, "clause_id": clause_id, "clause_type": ctype, "title": title,
+                            "content": json.dumps({"summary": content.pop("summary"), **content}), "created_at": start})
 
         terms = dict(payment_terms_days=pay, incoterm=s["incoterm"], moq_units=r.choice([300, 500, 1000, 2000, 5000]),
                      lead_time_days=r.choice([30, 45, 60, 75, 90]), price_validity_days=r.choice([90, 180]))

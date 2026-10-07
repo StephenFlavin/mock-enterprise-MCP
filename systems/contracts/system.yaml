@@ -114,7 +114,7 @@ tables:
       alert_date: {type: date, desc: "Date to send alert"}
       status: {type: enum, values: [scheduled, triggered, dismissed, completed], desc: Alert status}
       created_at: {type: timestamp, desc: When created}
-      sent_at: {type: timestamp, desc: When alert was sent}
+      triggered_at: {type: timestamp, desc: When alert was triggered}
 
   contract_negotiation_positions:
     key: position_id
@@ -138,6 +138,21 @@ tables:
       description: {type: str, desc: "What the draft is for"}
       created_at: {type: timestamp, desc: "When created"}
       status: {type: enum, values: [draft, finalized, rejected], desc: Draft status}
+
+  standard_terms:
+    key: term_id
+    cols:
+      term_id: {type: str, desc: "Standard term, e.g. STD-03"}
+      contract_type: {type: str, desc: "Contract type the standard applies to, e.g. supplier"}
+      clause_type: {type: str, desc: "Clause the standard term belongs to"}
+      field: {type: str, desc: "Field inside the clause that is compared, e.g. limit_gbp"}
+      operator: {type: str, desc: "Standard test on the field: >= minimum, <= maximum, = one of the | separated values"}
+      standard_value: {type: str, desc: "Standard value of the field"}
+      required: {type: bool, desc: "True if a contract must contain the clause; false if the term applies only when the clause is present"}
+      standard_position: {type: text, desc: "Plain-English standard position"}
+      risk_score: {type: int, desc: "Risk weight of a deviation, 1 (minor) to 10 (severe)"}
+      risk_level: {type: enum, values: [high, medium, low], desc: "Risk level of a deviation"}
+      apparel_note: {type: text, desc: "What is normal in the apparel industry for this term"}
 
 tools:
   # Stage 1 tools (20-21 to implement)
@@ -322,24 +337,26 @@ tools:
     example: {customer_id: CUS-002512}
 
   - name: calculate_liability_exposure
-    desc: Estimate liability under a limitation clause. Use to assess risk and insurance needs.
+    desc: "Estimate loss exposure under a contract's limitation clause for an assumed volume and unit loss: what the cap covers and what we bear. Use to assess insurance needs."
     kind: sql
     args:
       contract_id: {required: true}
-      volume_units: {type: int, desc: "Volume or transaction count"}
-      unit_value_gbp: {type: float, desc: "Value per unit"}
+      volume_units: {required: true, type: int, desc: "Units affected by the claim"}
+      unit_value_gbp: {required: true, type: float, desc: "Loss per unit in GBP"}
     sql: |
       SELECT c.contract_id, c.party_id,
-             COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), 1000000) AS liability_limit_gbp,
+             json_extract_string(cc.content, '$.limit_basis') AS limit_basis,
+             TRY_CAST(json_extract_string(cc.content, '$.limit_gbp') AS DOUBLE) AS liability_limit_gbp,
+             json_extract_string(cc.content, '$.product_safety_uncapped') AS product_safety_uncapped,
              $volume_units AS assumed_volume,
              $unit_value_gbp AS unit_value,
-             ($volume_units * $unit_value_gbp) AS total_exposure_gbp,
-             LEAST(($volume_units * $unit_value_gbp), COALESCE(CAST(json_extract_string(cc.content, 'limit_gbp') AS FLOAT), 1000000)) AS capped_liability_gbp,
-             'liability = min(total_exposure, contract_limit)' AS formula
+             round($volume_units * $unit_value_gbp, 2) AS total_exposure_gbp,
+             round(LEAST($volume_units * $unit_value_gbp, COALESCE(TRY_CAST(json_extract_string(cc.content, '$.limit_gbp') AS DOUBLE), $volume_units * $unit_value_gbp)), 2) AS recoverable_under_cap_gbp,
+             round(GREATEST($volume_units * $unit_value_gbp - COALESCE(TRY_CAST(json_extract_string(cc.content, '$.limit_gbp') AS DOUBLE), $volume_units * $unit_value_gbp), 0), 2) AS borne_by_us_gbp,
+             'recoverable = min(total exposure, liability cap); borne by us = exposure - recoverable' AS formula
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id AND cc.clause_type = 'liability'
       WHERE c.contract_id = $contract_id
-        AND cc.clause_type = 'liability'
       LIMIT 1
     example: {contract_id: CTR-000042, volume_units: 100, unit_value_gbp: 1000}
 
@@ -439,39 +456,79 @@ tools:
     example: {supplier_id: SUP-0044, base_volume_units: 400000, unit_cost_gbp: 9.5}
 
   - name: calculate_contract_risk_ranking
-    desc: Rank contracts by clause-based risk score. Use to prioritize contract review work.
+    desc: Rank active contracts by a clause-based risk score from price review, force majeure and termination terms. Use top_by_spend to rank only the largest contracts.
     kind: sql
     args:
-      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency], desc: "Filter by contract type (optional)"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], default: supplier, desc: "Contract type to rank"}
+      top_by_spend: {type: int, desc: "Only score the N contracts with the highest annual value, e.g. 30 (optional)"}
       limit_rows: {type: int, desc: "Return top N", default: 20}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.status,
-             count(DISTINCT cc.clause_type) AS clause_count,
-             CASE WHEN cc.clause_type IN ('liability', 'force_majeure', 'termination') THEN 1 ELSE 0 END AS risk_flags,
-             ROW_NUMBER() OVER (ORDER BY count(*) DESC) AS risk_rank
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE ($contract_type IS NULL OR c.contract_type = $contract_type)
-        AND c.status IN ('active', 'draft')
-      GROUP BY c.contract_id, c.party_id, c.contract_type, c.status, cc.clause_type
+      WITH base AS (
+        SELECT c.contract_id, c.party_id, c.party_name, c.contract_type, c.annual_value_gbp, c.renewal_notice_days, c.auto_renewal,
+               row_number() OVER (ORDER BY c.annual_value_gbp DESC NULLS LAST, c.contract_id) AS spend_rank
+        FROM contracts c WHERE c.status = 'active' AND c.contract_type = $contract_type
+      ), clauses AS (
+        SELECT b.*,
+               bool_or(cc.clause_type = 'price_review') AS has_price_review,
+               max(CASE WHEN cc.clause_type = 'price_review' THEN TRY_CAST(json_extract_string(cc.content, '$.max_increase_pct') AS DOUBLE) END) AS price_review_max_increase_pct,
+               max(CASE WHEN cc.clause_type = 'force_majeure' THEN TRY_CAST(json_extract_string(cc.content, '$.max_suspension_days') AS DOUBLE) END) AS force_majeure_suspension_days,
+               max(CASE WHEN cc.clause_type = 'termination' THEN TRY_CAST(json_extract_string(cc.content, '$.for_convenience_notice_days') AS DOUBLE) END) AS termination_notice_days
+        FROM base b LEFT JOIN contract_clauses cc ON cc.contract_id = b.contract_id
+        WHERE $top_by_spend IS NULL OR b.spend_rank <= $top_by_spend
+        GROUP BY ALL
+      ), scored AS (
+        SELECT k.*,
+               CASE WHEN NOT COALESCE(k.has_price_review, false) THEN 0 WHEN k.price_review_max_increase_pct IS NULL THEN 5
+                    ELSE least(k.price_review_max_increase_pct, 10) / 2 END AS price_exposure_pts,
+               COALESCE(k.force_majeure_suspension_days, 0) / 30 AS force_majeure_pts,
+               COALESCE(k.termination_notice_days, 0) / 60 AS termination_pts
+        FROM clauses k
+      )
+      SELECT row_number() OVER (ORDER BY round(price_exposure_pts + force_majeure_pts + termination_pts, 1) DESC, annual_value_gbp DESC) AS risk_rank,
+             contract_id, party_id, party_name, annual_value_gbp, spend_rank,
+             price_review_max_increase_pct, force_majeure_suspension_days, termination_notice_days, renewal_notice_days,
+             round(price_exposure_pts, 1) AS price_exposure_pts, round(force_majeure_pts, 1) AS force_majeure_pts, round(termination_pts, 1) AS termination_pts,
+             round(price_exposure_pts + force_majeure_pts + termination_pts, 1) AS risk_score,
+             'risk = min(max price increase %, 10)/2 (uncapped = 5) + force majeure suspension days/30 + convenience termination notice days/60' AS formula
+      FROM scored
       ORDER BY risk_rank
       LIMIT $limit_rows
-    example: {}
+    example: {top_by_spend: 30}
 
   - name: compare_contract_to_standard_terms
-    desc: Deviation list of a contract versus standard terms. Use for contract review and redline.
+    desc: Deviations of a supplier contract from our standard terms, ranked by risk, with the apparel-industry norm for each. Use for contract review and redlines.
     kind: sql
     args:
       contract_id: {required: true}
     sql: |
-      SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content,
-             'non-standard deviation' AS deviation_type
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
-      ORDER BY cc.clause_type
+      WITH c AS (
+        SELECT * FROM contracts WHERE ($contract_id IS NOT NULL AND contract_id = $contract_id)
+      ), dev AS (
+        SELECT c.contract_id, c.party_id, st.term_id, st.clause_type, st.field, st.standard_position, st.risk_score, st.risk_level, st.apparel_note,
+               json_extract_string(cc.content, '$.' || st.field) AS actual,
+               cc.clause_type IS NULL AS clause_missing,
+               CASE WHEN cc.clause_type IS NULL THEN st.required
+                    WHEN json_extract_string(cc.content, '$.' || st.field) IS NULL THEN true
+                    WHEN st.operator = '>=' THEN TRY_CAST(json_extract_string(cc.content, '$.' || st.field) AS DOUBLE) < TRY_CAST(st.standard_value AS DOUBLE)
+                    WHEN st.operator = '<=' THEN TRY_CAST(json_extract_string(cc.content, '$.' || st.field) AS DOUBLE) > TRY_CAST(st.standard_value AS DOUBLE)
+                    ELSE NOT list_contains(string_split(lower(st.standard_value), '|'), lower(json_extract_string(cc.content, '$.' || st.field))) END AS deviates,
+               st.operator
+        FROM c JOIN standard_terms st ON st.contract_type = c.contract_type
+        LEFT JOIN contract_clauses cc ON cc.contract_id = c.contract_id AND cc.clause_type = st.clause_type
+      )
+      SELECT d.contract_id, d.party_id, d.clause_type, d.field AS term, d.standard_position AS our_standard,
+             COALESCE(d.actual, CASE WHEN d.clause_missing THEN 'clause missing' ELSE 'not stated or uncapped' END) AS contract_value,
+             CASE WHEN d.clause_missing THEN 'clause missing'
+                  WHEN d.actual IS NULL THEN 'not stated or uncapped'
+                  WHEN d.operator = '>=' THEN 'below our minimum'
+                  WHEN d.operator = '<=' THEN 'above our maximum'
+                  ELSE 'differs from standard' END AS deviation,
+             d.risk_level, d.risk_score, d.apparel_note AS apparel_industry_norm
+      FROM dev d
+      WHERE d.deviates
+      ORDER BY d.risk_score DESC, d.clause_type, d.field
     limit: 30
-    example: {contract_id: CTR-000001}
+    example: {contract_id: CTR-000072}
 
   # Write tools for stage 1
 
@@ -518,7 +575,7 @@ tools:
     kind: insert
     table: negotiation_cases
     id_prefix: NGT-
-    defaults: {status: open}
+    defaults: {status: open, opened_at: "$as_of"}
     args:
       contract_id: {required: true}
       case_type: {required: true}
@@ -640,6 +697,7 @@ tools:
     kind: insert
     table: contract_negotiation_positions
     id_prefix: POS-
+    defaults: {recorded_at: "$as_of"}
     args:
       contract_id: {required: true}
       case_id: {type: str}
@@ -666,27 +724,35 @@ tools:
     example: {contract_id: CTR-000042}
 
   - name: get_contract_notice_periods
-    desc: Notice periods required for each contract. Use to track renewal deadlines.
+    desc: Renewal notice days, notice deadline and termination-for-convenience notice per contract. Give one contract_id or filter by type; shortest renewal notice first.
     kind: sql
     args:
-      contract_id: {required: true}
+      contract_id: {}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: "Contract type (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.end_date,
+      SELECT c.contract_id, c.party_id, c.contract_type, c.status, c.end_date,
              c.renewal_notice_days, c.auto_renewal,
-             CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY AS notice_deadline
+             CAST(CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY AS DATE) AS notice_deadline,
+             max(CASE WHEN cc.clause_type = 'termination' THEN TRY_CAST(json_extract_string(cc.content, '$.for_convenience_notice_days') AS INT) END) AS termination_for_convenience_notice_days,
+             max(CASE WHEN cc.clause_type = 'price_review' THEN TRY_CAST(json_extract_string(cc.content, '$.notice_days') AS INT) END) AS price_review_notice_days
       FROM contracts c
-      WHERE c.contract_id = $contract_id
-    limit: 1
+      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      WHERE ($contract_id IS NOT NULL AND c.contract_id = $contract_id)
+         OR ($contract_id IS NULL AND c.status IN ('active', 'draft') AND ($contract_type IS NULL OR c.contract_type = $contract_type))
+      GROUP BY ALL
+      ORDER BY c.renewal_notice_days, c.end_date
+    limit: 100
     example: {contract_id: CTR-000101}
 
   - name: get_contract_owner
-    desc: Business owner of a contract. Use to identify who manages it.
+    desc: Business owner of a contract with name, role and department. Use to identify who manages it.
     kind: sql
     args:
       contract_id: {required: true}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.owner_id, c.status
+      SELECT c.contract_id, c.party_id, c.contract_type, c.status, c.owner_id, e.name AS owner_name, e.role AS owner_role, e.department AS owner_department
       FROM contracts c
+      LEFT JOIN master.employees e ON e.employee_id = c.owner_id
       WHERE c.contract_id = $contract_id
     limit: 1
     example: {contract_id: CTR-000101}
@@ -729,16 +795,16 @@ tools:
     example: {service_type: racking}
 
   - name: get_contract_remedies_clauses
-    desc: Remedies, delay and termination clauses. Use to understand actions available for breach.
+    desc: "Remedies for a contract breach: late-delivery penalties, termination and cancellation rights, force majeure, service credits and chargebacks. Use to see actions available for a breach."
     kind: sql
     args:
       contract_id: {required: true}
     sql: |
       SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.contract_id = $contract_id
-        AND cc.clause_type IN ('termination', 'penalty', 'force_majeure')
+        AND cc.clause_type IN ('termination', 'penalty', 'force_majeure', 'service_level', 'chargeback')
       ORDER BY cc.clause_type
     limit: 20
     example: {contract_id: CTR-000101}
@@ -841,15 +907,16 @@ tools:
     example: {customer_id: CUS-002512}
 
   - name: get_standard_terms_template
-    desc: Standard terms template for contract comparison. Use as baseline for reviews.
+    desc: Our standard terms by clause (test, standard value, risk level and apparel norm) used as the baseline for contract review. Filter by clause type.
     kind: select
-    from: contract_clauses
+    from: standard_terms
     filters:
-      contract_id: {desc: "Reference contract for standard terms"}
-    columns: [contract_id, clause_id, clause_type, title, content]
-    order: clause_type
+      contract_type: {default: supplier, desc: "Contract type the standard applies to, e.g. supplier"}
+      clause_type: {desc: "Only this clause, e.g. liability"}
+    columns: [term_id, contract_type, clause_type, field, operator, standard_value, standard_position, risk_level, apparel_note]
+    order: term_id
     limit: 30
-    example: {contract_id: CTR-000101}
+    example: {clause_type: liability}
 
   - name: get_supplier_chargeback_clauses
     desc: Chargeback and late-delivery penalty clauses of a supplier contract, including air freight recharge. Use for cost recovery.
@@ -937,74 +1004,119 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: list_contracts_by_supplier_spend
-    desc: Contracts ranked by supplier spend. Use to prioritize renegotiations.
+    desc: Active contracts ranked by annual spend with price review cap, force majeure suspension, termination notice and renewal notice per contract. Use to prioritise renegotiations.
     kind: sql
     args:
-      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency], desc: "Filter by type (optional)"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], default: supplier, desc: "Contract type to rank"}
       limit_rows: {type: int, desc: "Return top N", default: 30}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.status,
-             c.start_date, c.end_date,
-             count(*) AS clause_count
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE ($contract_type IS NULL OR c.contract_type = $contract_type)
-        AND c.status IN ('active', 'draft')
-      GROUP BY c.contract_id, c.party_id, c.contract_type, c.status, c.start_date, c.end_date
-      ORDER BY c.contract_id DESC
+      WITH agg AS (
+        SELECT c.contract_id, c.party_id, c.party_name, c.status, c.annual_value_gbp, c.start_date, c.end_date,
+               c.renewal_notice_days, c.auto_renewal,
+               max(CASE WHEN cc.clause_type = 'price_review' THEN json_extract_string(cc.content, '$.frequency') END) AS price_review_frequency,
+               max(CASE WHEN cc.clause_type = 'price_review' THEN TRY_CAST(json_extract_string(cc.content, '$.max_increase_pct') AS DOUBLE) END) AS price_review_max_increase_pct,
+               max(CASE WHEN cc.clause_type = 'force_majeure' THEN TRY_CAST(json_extract_string(cc.content, '$.max_suspension_days') AS INT) END) AS force_majeure_suspension_days,
+               max(CASE WHEN cc.clause_type = 'termination' THEN TRY_CAST(json_extract_string(cc.content, '$.for_convenience_notice_days') AS INT) END) AS termination_notice_days
+        FROM contracts c
+        LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+        WHERE c.contract_type = $contract_type AND c.status = 'active'
+        GROUP BY ALL
+      )
+      SELECT row_number() OVER (ORDER BY annual_value_gbp DESC NULLS LAST, contract_id) AS spend_rank, *
+      FROM agg
+      ORDER BY spend_rank
       LIMIT $limit_rows
+    limit: 30
     example: {contract_type: supplier, limit_rows: 30}
 
   - name: list_contracts_expiring_within_period
-    desc: Contracts expiring in a period. Use to plan renewals and procurement.
+    desc: Contracts whose end date falls in a period, with notice deadline, auto-renewal trap flag, owner, annual value and recent orders. Use status expired to find lapsed contracts.
     kind: sql
     args:
       date_from: {type: date, default: "-0d", desc: "Period start"}
       date_to: {type: date, default: "+90d", desc: "Period end"}
+      status: {type: enum, values: [active, draft, expired, terminated, archived], desc: "Contract status; default active and draft"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: "Contract type (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.status,
-             c.end_date, c.renewal_notice_days,
-             CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY AS notice_deadline
+      WITH act AS (
+        SELECT supplier_id, max(CAST(order_date AS DATE)) AS last_order_date,
+               count(*) FILTER (WHERE CAST(order_date AS DATE) >= CAST($as_of AS DATE) - INTERVAL 90 DAY) AS orders_last_90d
+        FROM master.purchase_orders WHERE status <> 'cancelled' GROUP BY supplier_id
+      )
+      SELECT c.contract_id, c.contract_type, c.party_id, c.party_name, c.status, c.end_date,
+             c.renewal_notice_days, CAST(CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY AS DATE) AS notice_deadline,
+             c.auto_renewal,
+             CASE WHEN c.status NOT IN ('active', 'draft') THEN 'not live'
+                  WHEN c.auto_renewal AND CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY < CAST($as_of AS DATE) THEN 'AUTO-RENEWAL TRAP: notice date already passed'
+                  WHEN c.auto_renewal AND CAST(c.end_date AS DATE) - INTERVAL (c.renewal_notice_days) DAY <= CAST($as_of AS DATE) + INTERVAL 14 DAY THEN 'AUTO-RENEWAL TRAP: notice date within 14 days'
+                  WHEN c.auto_renewal THEN 'auto-renews, notice date later'
+                  ELSE 'no auto-renewal' END AS renewal_flag,
+             c.owner_id, c.annual_value_gbp,
+             CASE WHEN c.contract_type <> 'supplier' THEN 'n/a' WHEN COALESCE(a.orders_last_90d, 0) > 0 THEN 'in use' ELSE 'not in use' END AS usage,
+             a.last_order_date, COALESCE(a.orders_last_90d, 0) AS orders_last_90d
       FROM contracts c
+      LEFT JOIN act a ON a.supplier_id = c.party_id AND c.contract_type = 'supplier'
       WHERE CAST(c.end_date AS DATE) BETWEEN CAST($date_from AS DATE) AND CAST($date_to AS DATE)
-        AND c.status IN ('active', 'draft')
+        AND (($status IS NULL AND c.status IN ('active', 'draft')) OR c.status = $status)
+        AND ($contract_type IS NULL OR c.contract_type = $contract_type)
       ORDER BY c.end_date ASC
-    limit: 50
+    limit: 60
     example: {date_to: "+12m"}
 
   - name: list_contracts_with_non_standard_terms
-    desc: Contracts flagged for non-standard terms. Use to identify risk and negotiation opportunities.
+    desc: Supplier contracts with deviations from our standard terms, with deviation counts and the worst clauses. Filter by end date to see which need legal input.
     kind: sql
     args:
-      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency], desc: "Filter by type (optional)"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], default: supplier, desc: "Contract type (standard terms exist for supplier contracts)"}
+      ends_from: {type: date, desc: "Only contracts ending on or after this date (optional)"}
+      ends_to: {type: date, desc: "Only contracts ending on or before this date (optional)"}
     sql: |
-      SELECT c.contract_id, c.party_id, c.contract_type, c.status,
-             count(DISTINCT cc.clause_type) AS clause_count,
-             string_agg(DISTINCT cc.clause_type, ', ') AS clause_types
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE ($contract_type IS NULL OR c.contract_type = $contract_type)
-        AND c.status IN ('active', 'draft')
-        AND cc.clause_type NOT IN ('payment_terms', 'renewal')
-      GROUP BY c.contract_id, c.party_id, c.contract_type, c.status
-      ORDER BY c.contract_id
+      WITH c AS (
+        SELECT * FROM contracts WHERE status IN ('active', 'draft') AND contract_type = $contract_type
+          AND ($ends_from IS NULL OR CAST(end_date AS DATE) >= CAST($ends_from AS DATE))
+          AND ($ends_to IS NULL OR CAST(end_date AS DATE) <= CAST($ends_to AS DATE))
+      ), dev AS (
+        SELECT c.contract_id, c.party_id, c.party_name, c.status, c.end_date, c.renewal_notice_days, c.owner_id,
+               st.clause_type, st.field, st.risk_score, st.risk_level,
+               CASE WHEN cc.clause_type IS NULL THEN st.required
+                    WHEN json_extract_string(cc.content, '$.' || st.field) IS NULL THEN true
+                    WHEN st.operator = '>=' THEN TRY_CAST(json_extract_string(cc.content, '$.' || st.field) AS DOUBLE) < TRY_CAST(st.standard_value AS DOUBLE)
+                    WHEN st.operator = '<=' THEN TRY_CAST(json_extract_string(cc.content, '$.' || st.field) AS DOUBLE) > TRY_CAST(st.standard_value AS DOUBLE)
+                    ELSE NOT list_contains(string_split(lower(st.standard_value), '|'), lower(json_extract_string(cc.content, '$.' || st.field))) END AS deviates
+        FROM c JOIN standard_terms st ON st.contract_type = c.contract_type
+        LEFT JOIN contract_clauses cc ON cc.contract_id = c.contract_id AND cc.clause_type = st.clause_type
+      )
+      SELECT d.contract_id, d.party_id, d.party_name, d.status, d.end_date, d.renewal_notice_days, d.owner_id,
+             count(*) AS deviations,
+             count(*) FILTER (WHERE d.risk_level = 'high') AS high_risk_deviations,
+             sum(d.risk_score) AS total_risk_score,
+             string_agg(d.clause_type || '.' || d.field, '; ' ORDER BY d.risk_score DESC) AS deviating_terms
+      FROM dev d
+      WHERE d.deviates
+      GROUP BY ALL
+      ORDER BY total_risk_score DESC, d.end_date
     limit: 50
-    example: {}
+    example: {ends_to: "+6m"}
 
   - name: search_contract_clauses
-    desc: Search clauses across contracts by type or keyword. Use to find specific terms.
+    desc: Search clauses across contracts by type, keyword, counterparty or contract type. Returns the clause terms; use to find specific terms such as IP protection.
     kind: sql
     args:
-      clause_type: {type: enum, values: [liability, payment_terms, renewal, price_review, force_majeure, termination, claim_window, short_shipment, chargeback, rate_review, service_level, penalty, ip_protection, other], desc: "Clause type (optional)"}
+      clause_type: {type: enum, values: [liability, payment_terms, renewal, price_review, force_majeure, termination, claim_window, short_shipment, chargeback, rate_review, service_level, penalty, ip_protection, volume_commitment, other], desc: "Clause type (optional)"}
       keyword: {type: str, desc: "Keyword search in clause title or content (optional)"}
+      party_id: {desc: "Counterparty id, e.g. a supplier_id (optional)"}
+      contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: "Contract type (optional)"}
     sql: |
       SELECT c.contract_id, c.party_id, c.contract_type,
              cc.clause_id, cc.clause_type, cc.title, cc.content
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.status IN ('active', 'draft')
         AND ($clause_type IS NULL OR cc.clause_type = $clause_type)
+        AND ($party_id IS NULL OR c.party_id = $party_id)
+        AND ($contract_type IS NULL OR c.contract_type = $contract_type)
         AND ($keyword IS NULL OR cc.title ILIKE '%' || $keyword || '%' OR cc.content ILIKE '%' || $keyword || '%')
       ORDER BY c.contract_id, cc.clause_type
-    limit: 50
-    example: {clause_type: liability}
+    limit: 100
+    example: {clause_type: ip_protection}
+
