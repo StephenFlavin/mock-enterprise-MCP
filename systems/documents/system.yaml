@@ -30,6 +30,18 @@ tables:
       auto_renewal: {type: bool, desc: "True if the contract renews automatically"}
       annual_value_gbp: {type: float, desc: "Annual contract value in GBP"}
 
+  supplier_documents:
+    key: doc_req_id
+    cols:
+      doc_req_id: {type: str, desc: "Document requirement id, e.g. SDR-000123"}
+      supplier_id: {type: str, desc: "Supplier id, e.g. SUP-0013"}
+      sku: {type: str, desc: "Product SKU the document is needed for, e.g. K-1700"}
+      market_country: {type: str, desc: "Country the product is sold in, e.g. Ireland"}
+      document_type: {type: enum, values: [test_report, certificate, labelling_approval, declaration_of_conformity], desc: "Compliance document type"}
+      status: {type: enum, values: [missing, received], desc: "Whether the supplier has sent the document"}
+      required_by: {type: date, desc: "Date the document is needed by"}
+      received_at: {type: date, desc: "Date received, blank if missing"}
+
 tools:
   - name: read_document
     desc: Read an attached file (CSV, XLSX, PDF or text). CSV and spreadsheet files come back as rows with totals; filter, group and sort them to analyse large files.
@@ -143,24 +155,30 @@ tools:
     example: {pl_file: "sept_pl.xlsx"}
 
   - name: list_suppliers_with_missing_documents
-    desc: List suppliers with missing compliance documents needed for selling in target market.
+    desc: List suppliers with compliance documents still missing for a target market, with the SKUs, document types and earliest deadline. Use to decide who to chase.
     kind: sql
     args:
-      market_country: {type: str, required: true, desc: "Target country, e.g. Ireland"}
-      document_type: {type: str, default: "compliance", desc: "Type of missing document"}
+      market_country:
+        type: str
+        required: true
+        desc: "Target country, e.g. Ireland"
+      document_type:
+        type: str
+        desc: "Only this document type, e.g. test_report, certificate, labelling_approval, declaration_of_conformity"
     sql: |
-      SELECT
-        s.supplier_id,
-        s.name as supplier_name,
-        COUNT(*) as missing_document_count,
-        SUM(pur.total_value) as total_spend_gbp
-      FROM master.suppliers s
-      LEFT JOIN master.purchase_orders pur ON s.supplier_id = pur.supplier_id
-      WHERE s.status = 'active'
-      GROUP BY s.supplier_id, s.name
-      ORDER BY total_spend_gbp DESC
-      LIMIT 20
-    example: {market_country: "Ireland", document_type: "compliance"}
+      SELECT d.supplier_id, s.name AS supplier_name,
+             count(*) AS missing_document_count,
+             string_agg(DISTINCT d.sku, '; ') AS skus,
+             string_agg(DISTINCT d.document_type, '; ') AS missing_document_types,
+             min(d.required_by) AS earliest_required_by
+      FROM supplier_documents d JOIN master.suppliers s USING (supplier_id)
+      WHERE d.status = 'missing'
+        AND lower(d.market_country) IN (lower($market_country), CASE WHEN lower($market_country) = 'ie' THEN 'ireland' END)
+        AND ($document_type IS NULL OR lower(d.document_type) = lower($document_type))
+      GROUP BY ALL
+      ORDER BY missing_document_count DESC, d.supplier_id
+    limit: 50
+    example: {market_country: Ireland}
 
   - name: draft_recommendation_summary
     desc: Draft a one-page recommendation comparing two options on cost, with the saving worked out and the recommendation and rationale stated.
