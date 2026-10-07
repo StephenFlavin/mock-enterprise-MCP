@@ -6,10 +6,14 @@ def generate(g):
     r = g.rng
     hauliers = [c["carrier_id"] for c in g.master("carriers") if c["mode"] == "road"]
     appts, arrivals = [], []
+    # POs whose bookings are hand-seeded (seed/*.csv): do not generate a second appointment for them
+    seeded = {"PO-2026-004674", "PO-2026-005926", "PO-2026-004015", "PO-2026-004022", "PO-2026-004075",
+              "PO-2026-004229", "PO-2026-004275", "PO-2026-004283", "PO-2026-004332", "PO-2026-004682",
+              "PO-2026-004691", "PO-2026-004734"}
     for po in g.master("purchase_orders"):
         due = datetime.fromisoformat(po["due_date"])
         days = (due.date() - g.as_of).days
-        if not -60 <= days <= 14 or po["status"] in ("cancelled", "draft"):
+        if not -60 <= days <= 14 or po["status"] in ("cancelled", "draft") or po["po_id"] in seeded:
             continue
         start = datetime.combine(due.date(), time(r.choice(range(5, 21)), r.choice([0, 30])))
         aid = f"APT-{len(appts) + 1:06d}"
@@ -20,7 +24,7 @@ def generate(g):
                       "status": r.choices(["completed", "no_show"], [96, 4])[0] if past else "booked",
                       "updated_at": start - timedelta(days=3)})
         if past and appts[-1]["status"] == "completed":
-            late = int(r.gauss(10, 25))
+            late = int(r.gauss(4, 12))
             arr = start + timedelta(minutes=late)
             dock = arr + timedelta(minutes=r.randint(10, 60))
             dep = dock + timedelta(minutes=r.randint(45, 150))
