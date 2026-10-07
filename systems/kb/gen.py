@@ -1,3 +1,12 @@
+from datetime import datetime, timedelta
+
+
+def _dt(g, start_days, end_days):
+    """Deterministic timestamp between start_days and end_days before as_of (faker's relative '-30d' uses the wall clock)."""
+    base = datetime.combine(g.as_of, datetime.min.time())
+    return g.fake.date_time_between(start_date=base - timedelta(days=start_days), end_date=base - timedelta(days=end_days))
+
+
 def generate(g):
     """Generate knowledge base data."""
 
@@ -9,8 +18,8 @@ def generate(g):
             "category": "failure_mode",
             "content": "Known issue in WMS 9.2: duplicate replenishment tasks created if system receives two PO receipts in <5 second window. Fixed in patch 9.2.7. Workaround: increase event queue timeout from 1s to 5s in config.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-60d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 60, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000003",
@@ -18,8 +27,8 @@ def generate(g):
             "category": "accounting",
             "content": "Q&A on supplier rebates that depend on annual volume milestones. Treatment: a rebate is a reduction in the cost of purchases (IAS 2), not revenue - credit it to cost of sales as the goods are sold, and to inventory for the part of the rebated stock still on hand. Recognition: accrue progressively through the year only when reaching the volume threshold is highly probable (>75% confidence based on forecast purchases); if the tier is uncertain, accrue at the lower tier's rate and true up when the tier is confirmed. Do not recognise on signature of the agreement alone, and do not recognise rebates that depend on future purchases beyond the agreement period. Documentation: signed rebate agreement with tiers and thresholds, monthly volume tracking against each threshold, the forecast supporting the probability assessment, quarterly reconciliation of the accrual, and supplier statement or confirmation at year end. Auditor challenge points: Is the forecast reliable? Are rebate terms clear (tiers, retrospective vs prospective, product scope)? Is the accrual cut off in the right period? Has the rebate on stock still held been deducted from inventory? Test: compare 3-year actual rebates received to amounts accrued.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-120d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 120, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000004",
@@ -27,8 +36,8 @@ def generate(g):
             "category": "runbook",
             "content": "3PL integration options: EDI (proven, slow setup, LFTP/SFTP batch): 4-6 week setup, ~£5k/year. Risks: latency (2-4 hours), manual reconciliation. API (fast, requires dev resources): 2-3 week setup, ~£15k initial + £10k/year. Risks: downtime on vendor side. File transfer (simple CSV, risky): 1 week setup, <£2k/year. Risks: data loss if file corrupted. RECOMMENDATION: EDI for mature 3PLs, API for modern providers.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-90d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 90, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000005",
@@ -36,8 +45,8 @@ def generate(g):
             "category": "failure_mode",
             "content": "Test results: standard 2mm wall + ribbing cracked at the rib base in the 80cm drop test. Root cause: ribbing concentrates stress at the rib base, and the pulp is brittle at the corners. Fix A: Increase wall to 2.5mm (cost +£0.08/unit, weight +5%). Fix B: Add horizontal reinforcement ribs perpendicular to load (cost +£0.04/unit, weight neutral). Testing shows Fix B passes 120cm drops. RECOMMENDATION: Use Fix B. Impact: packaging NRV risk avoided.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-60d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 60, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000006",
@@ -45,8 +54,8 @@ def generate(g):
             "category": "failure_mode",
             "content": "Zip pull strength spec: 50N minimum (ISO 13441). Failures at 48N (4% under spec). Analysis: Two likely root causes - (1) supplier using lower-grade brass slider (mechanical issue), (2) seam allowance too tight at the zip tape (construction issue); repeat failures after a resubmission usually mean the slider was not changed. Applies to garment zips and backpack main-compartment zips. Field complaint data: 2.1% complaint rate on this SKU vs 0.3% average. Cost of remediation: New supplier tested = £0.12/zip. Solution: Switch supplier for this SKU only. Implement 100% peel test at pack stage.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-75d", end_date="-25d"),
-            "updated_at": g.fake.date_time_between(start_date="-25d", end_date="-5d"),
+            "created_at": _dt(g, 75, 25),
+            "updated_at": _dt(g, 25, 5),
         },
         {
             "article_id": "KB-000007",
@@ -54,8 +63,8 @@ def generate(g):
             "category": "reconciliation",
             "content": "Common gaps between Operations (WMS) and Finance (GL) inventory balances: 1. Timing: WMS records receipt 2-3 days before GL (in-transit goods still counted as supplier's). 2. Status mapping: WMS 'reserved' ≠ GL 'available'. 3. Damage: WMS marks damaged same day; GL waits for write-off approval (lag = 5-15 days). 4. Cutoff: Month-end variance typically £500k-£1.5m. PROCESS: Finance reconciles monthly using GL cutoff date, not WMS date.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-150d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 150, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000008",
@@ -63,8 +72,8 @@ def generate(g):
             "category": "shrink_control",
             "content": "Shrink control ROI study (50 stores, 12 months): Tagging (RFID + EAS): Cost £18k setup + £2k/year. Shrink reduction: 0.8% → 0.5% (annual saving £120k). Payback: 2 months. Layout optimization (clear sightlines, lower shelves): Cost £8k one-time. Shrink: 0.8% → 0.65% (saving £45k). Payback: 2 months. Staffing (add Loss Prevention officer): Cost £35k/year salary. Shrink: 0.8% → 0.55% (saving £75k). Payback: 7 months. Recommendation: COMBINE tagging + layout for fastest ROI.",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-120d", end_date="-30d"),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "created_at": _dt(g, 120, 30),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "article_id": "KB-000010",
@@ -72,8 +81,8 @@ def generate(g):
             "category": "runbook",
             "content": "WMS 9.2.7 patch summary: Fixes duplicate task issue (seen in v9.2.0-9.2.6). Also includes 3 minor fixes to batch picking, 1 security patch. Changes to queue timeout logic (default 5s now, was 1s). Test scope before deploying: (1) Run full PO receipt test (50 concurrent receipts), verify no duplicates. (2) Batch picking with 1000+ item picks, verify performance <2s per pick. (3) User access - verify no permission regression. Deployment window: Saturday 2am-6am recommended (4-hour window).",
             "status": "published",
-            "created_at": g.fake.date_time_between(start_date="-70d", end_date="-20d"),
-            "updated_at": g.fake.date_time_between(start_date="-20d", end_date="-5d"),
+            "created_at": _dt(g, 70, 20),
+            "updated_at": _dt(g, 20, 5),
         },
     ]
 
@@ -86,7 +95,7 @@ def generate(g):
             "content": "Approval limits by role and amount:\n- Store Manager: GBP 5,000\n- Warehouse Manager: GBP 10,000\n- Buyer: GBP 50,000\n- Category Manager: GBP 100,000\n- Director: GBP 500,000\n- CFO/CEO: unlimited\nAll orders over GBP 1,000 require 2 approvals. All supplier bank detail changes require Finance review.\nSplitting an order or payment to stay under a limit is prohibited: related orders to the same supplier within 7 days are added together for the approval check.",
             "version": "2.1",
             "effective_date": g.days_ago(120),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-CREDIT-001",
@@ -95,7 +104,7 @@ def generate(g):
             "content": "Put customer on credit hold when:\n- Invoice >60 days overdue\n- Account balance >GBP 500k\n- DSO >90 days\nAction: stop shipments, escalate to Credit Controller, contact customer. Release after payment received or payment plan agreed.\nESCALATION: 30-60 days overdue: reminder and call, shipments continue. More than 60 days overdue: credit hold, stop shipments on new and open orders. More than 90 days overdue: refer to Legal for a letter before action and consider debt recovery; Finance Director informed.\nEXCEPTIONS: A held order can be released only with Finance approval, for example an urgent order under GBP 25k that is prepaid or covered by credit insurance. Never release in-transit or part-shipped orders without Credit Controller sign-off. Record the reason for every release.",
             "version": "1.3",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-CORRECTIVE-001",
@@ -104,7 +113,7 @@ def generate(g):
             "content": "For quality non-conformances:\n1. High-risk defects (safety, functionality): Immediate hold on all POs. Require corrective action plan within 5 days.\n2. Medium-risk defects (cosmetic, minor): Limit POs to 50% of normal volume. Require action plan within 10 days.\n3. Low-risk defects (documentation): Monitor and notify supplier within 15 days.\nSuspend supplier if repeated issues (>3 in 12 months). Exit if corrective action not implemented within 30 days.\n\nSOCIAL COMPLIANCE AND SAFETY AUDIT FINDINGS (factory audits) - outcome by severity:\n- PASS: no open critical or major findings; minor findings closed within 90 days.\n- CORRECTIVE ACTION: any open major finding, or a repeated minor finding. Written corrective action plan within 10 days; POs continue at normal volume; re-audit within 90 days.\n- SUSPENSION OF ORDERS: any open critical finding (e.g. forced or child labour, blocked fire exits, unpaid overtime) or a repeated major finding. Hold all POs not yet in production (goods already in production may complete). Corrective action plan within 5 days; critical findings must be closed within 30 days and major findings within 60 days. Lift the hold only after a verification re-audit. Exit the factory if critical findings are still open after 30 days.",
             "version": "2.0",
             "effective_date": g.days_ago(365),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-HEDGE-001",
@@ -113,7 +122,7 @@ def generate(g):
             "content": "Currency hedging limits:\n- USD exposure: hedge 50-80% of 12-month forecast. Max 100%.\n- EUR exposure: hedge 40-70% of 12-month forecast. Max 90%.\n- Other major currencies: hedge 40-60%. Max 80%.\nInstruments allowed: forward contracts, options (call spreads max). Forbid: speculative positions, exotic options.\nReview hedge ratios quarterly. Spot rates used for P&L; mark hedges at forward rates.\nApprovals: moving a hedge ratio inside the policy range is approved by the Group Treasurer; any ratio above the top of the range (USD above 80%) needs CFO approval. Forwards have no upfront premium but give up the benefit if sterling strengthens; call spreads cost an upfront premium and keep part of that benefit.",
             "version": "1.4",
             "effective_date": g.days_ago(240),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-INSURANCE-001",
@@ -122,7 +131,7 @@ def generate(g):
             "content": "All suppliers must maintain:\n- General Liability: min GBP 2m (high-risk) or GBP 500k (low-risk)\n- Product Liability: min GBP 5m (food/apparel) or GBP 1m (other)\n- Cyber Liability: min GBP 1m (if data access)\n- Cargo Insurance: min 110% of shipment value\n- All policies: evidence of coverage required at onboarding and annually\n- Liability caps: a supplier's contractual liability cap must never be lower than its required Product Liability cover, and cannot apply to product safety, death or personal injury claims. Buyer to be named as additional insured on the Product Liability policy.",
             "version": "2.2",
             "effective_date": g.days_ago(120),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-ONBOARD-001",
@@ -131,7 +140,7 @@ def generate(g):
             "content": "Requirements by risk tier:\nHIGH-RISK (emerging markets, new sector, high spend):\n- Social and ethical audit (BSCI or equivalent) required before first order\n- Business registration and tax ID verification\n- Bank references (3 suppliers)\n- Insurance evidence (GL 2m+, PL 5m+)\n- Sanctions screening required\nMEDIUM-RISK (developed market, established sector):\n- Audit within 12 months of first order\n- Business registration verification\n- Bank references (2 suppliers)\n- Insurance evidence (GL 1m+, PL 2m+)\nLOW-RISK (existing supplier, low spend):\n- Basic compliance check\n- Insurance verification\n- Annual audit if spend >GBP 500k",
             "version": "1.5",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-INVENTORY-001",
@@ -140,7 +149,7 @@ def generate(g):
             "content": "Inventory ownership: Transfer of title at receipt into our DC (not in-transit). In-transit goods remain supplier's responsibility until gate-in.\nStatus definitions:\n- Available: ready for picking or sale\n- In-transit: on PO, not yet received\n- Reserved: allocated to open orders\n- Damaged: non-saleable, awaiting write-off approval\nValuation: FIFO method. Seasonal stock over 180 days old to be marked down 25% minimum per NRV rules.\nAuthority: the general ledger is authoritative for stock value; the WMS/IMS stock record is authoritative for physical units and status. Operations reports units by status (available, reserved, damaged, with in-transit shown separately and not owned). Finance reports value at the lower of FIFO cost and net realisable value, and includes goods only after gate-in.\nTiming differences: receipts or issues posted after the month-end cutoff in one system, goods received not yet invoiced. Definitional differences: damaged stock awaiting write-off (counted by operations, already provided by Finance), reserved stock, NRV provisions, in-transit goods, standard cost versus FIFO. Errors (duplicate or missing postings) are corrected by journal with Finance Controller approval.",
             "version": "2.0",
             "effective_date": g.days_ago(365),
-            "updated_at": g.fake.date_time_between(start_date="-120d", end_date="-5d"),
+            "updated_at": _dt(g, 120, 5),
         },
         {
             "policy_id": "POL-DUE-DILIGENCE-001",
@@ -149,7 +158,7 @@ def generate(g):
             "content": "When allegations of forced labour or serious violations arise:\n1. IMMEDIATE (within 24 hours): Escalate to General Counsel and Ethics Officer. Secure evidence.\n2. WITHIN 5 DAYS: Assess credibility (review original reporting, NGO corroboration, supply chain connection). Interview factory if credible.\n3. WITHIN 10 DAYS: Decide on hold/suspension/exit. Communicate decision to affected functions (Sourcing, Finance, Supply Chain).\nDo NOT communicate to media or public without Legal approval.\nDocument all steps and findings for regulatory response.\n\nOPTIONS by credibility: not credible - monitor and record; credible but unconfirmed - unannounced audit and hold new POs; confirmed - suspend and remediate, or exit (see responsible exit policy).\nLEGAL OBLIGATIONS: UK Modern Slavery Act 2015 s.54 - the annual modern slavery statement must describe the steps taken and confirmed cases. Possible victims are reported to the authorities through Legal only (not by the business). Do not warn the supplier before evidence is secured. Protect worker identities; no retaliation against workers or whistleblowers.",
             "version": "1.2",
             "effective_date": g.days_ago(240),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-FALLBACK-001",
@@ -158,7 +167,7 @@ def generate(g):
             "content": "Approved fallback positions by clause (standard / first fallback / red line):\n- Limitation of liability: Standard: cap at amounts paid in the previous 12 months, with product safety, injury, IP and data breach uncapped. First fallback: cap at 100% of the value of the affected order for general claims. Red line: never cap product safety, death or personal injury, IP infringement or data breach.\n- IP ownership: Standard: Buyer owns all designs, patterns and improvements. First fallback: supplier keeps pre-existing IP and Buyer gets a royalty-free perpetual licence to improvements. Red line: supplier must not own or resell Buyer designs.\n- Force majeure: Standard: excludes strikes, supplier financial failure and shipping delays; 48-hour notice; either party may terminate after 90 days. First fallback: 120 days before termination. Red line: no relief for supplier financial failure or foreseeable shipping delay.\n- Payment terms: Standard: 60 days from goods receipt. First fallback: 45 days. Red line: never faster than 30 days and no payment before shipment.\n- Termination: Standard: termination for convenience on 90 days' notice. First fallback: 180 days notice on volume-committed frameworks. Red line: no termination fee beyond finished goods and materials bought against firm orders.\n- Audit and code of conduct: Standard: unannounced audit right and signed supplier code of conduct. First fallback: 5 working days' notice. Red line: no audit right means no agreement.\n- Subcontracting: Standard: only with written consent. First fallback: pre-approved subcontractor list. Red line: no unauthorised subcontracting.\n- Volume commitment: Standard: 60% of forecast with +/-20% flexibility. First fallback: 70% with +/-15%. Red line: no commitment above 70% of forecast and no agreement without a flexibility band.",
             "version": "1.3",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-INCIDENT-001",
@@ -167,7 +176,7 @@ def generate(g):
             "content": "QUALITY INCIDENT:\n- Severity 1 (safety): Immediate hold, exec escalation, customer notification within 4 hours\n- Severity 2 (functionality): 24-hour response, manager escalation, customer notification within 24 hours\n- Severity 3 (cosmetic): 5-day response, team escalation\nSUPPLY CHAIN INCIDENT (geopolitical, transport, supplier failure):\n- Tier 1 (affects delivery <72 hours): Escalate to VP Supply Chain immediately\n- Tier 2 (affects delivery 3-7 days): Manager escalation, sourcing team response\n- Tier 3 (future impact): Monitor and document\nSECURITY INCIDENT:\n- CISO involvement mandatory: notify the CISO within 1 hour of a suspected compromise; the CISO owns the incident summary and decides on external notification.\n- Supplier user account compromise (login from an unusual location, access to the EDI portal or vendor bank detail screen): lock account, block payments to vendors whose bank details changed, audit access logs.\n- Safe to do immediately: preserve auth and access logs, force sign-out of active sessions, lock the account, reset credentials and MFA, and flag the vendor bank record. Needs approval first: blocking payment runs (Finance Director), reversing bank detail changes, and any message to the supplier.\n- Supplier notification: do not wait for the full investigation, but only once the account is locked and the CISO agrees. Use the phone number held on the vendor master from before the change, never the email or phone on the compromised account or in the changed bank details. Release held payments only after a call-back verification.\n- If personal data is involved, Legal and the DPO decide on ICO notification within 72 hours. Post-incident review within 5 working days.",
             "version": "1.4",
             "effective_date": g.days_ago(240),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-LEGAL-001",
@@ -176,7 +185,7 @@ def generate(g):
             "content": "Avoid in customer communication, marketing, and internal documents:\n- 'Defect' or 'defective' (use 'does not meet spec' or 'variation')\n- 'We are responsible for...' (use 'The matter involves...')\n- Admitting causation without evidence ('caused by X' without testing)\n- Making comparative claims ('better than competitor') without substantiation\n- Sustainability claims ('eco-friendly', 'sustainable') without certification\nSAFE WORDING:\n- 'We are investigating the matter.'\n- 'Testing to date indicates...'\n- 'Meets ISO 14040 environmental standards.'\n- Absolute safety statements ('no injuries reported', 'safe to use') only when verified against the incident log\n- Always include: 'Pending further testing/investigation/legal review.'",
             "version": "1.5",
             "effective_date": g.days_ago(120),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-LOT-001",
@@ -185,7 +194,7 @@ def generate(g):
             "content": "AQL (Acceptable Quality Level) by defect severity:\n- Critical (safety, function): AQL 0.65%, max 1 defect per 100 units sampled\n- Major (appearance >2cm, function <spec): AQL 1.5%, max 2 defects per 100 units\n- Minor (small appearance): AQL 2.5%, max 3 defects per 100 units\nRelease decision:\n- Results within AQL: Release for sale\n- 1 critical defect: Reject entire lot. Request rework or replacement.\n- >1 major defect: Conditional release at 20% price reduction if customer accepts\n- Sorted and reworked lots: Retest at 2x sample size. All critical defects must be zero.\n\nTEST-RESULT SHORTFALLS against spec (e.g. zip strength, seam strength): not eligible for the 20% price-reduction release.\n- Up to 2% under spec: within measurement tolerance, release for sale.\n- More than 2% and up to 5% under spec (Major): do not release as is. Rework (replace or re-attach the failing component) or sort, then retest at 2x sample size; release only if the retest meets spec.\n- More than 5% under spec, or any shortfall on a safety-critical feature (children's wear closures, small parts): treat as Critical and reject the entire lot.",
             "version": "1.2",
             "effective_date": g.days_ago(150),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-MARKET-001",
@@ -194,7 +203,7 @@ def generate(g):
             "content": "Market entry structures by region and spend:\nUK/EU (mature markets, <GBP 5m annual): Franchise or partnership preferred. Subsidiary if >GBP 50m spend or IP at risk.\nEmerging markets (China, India, SE Asia, <GBP 20m): Joint venture with local partner required. IP strictly protected. Exit clause mandatory.\nNearshore (Turkey, Morocco, Mexico, GBP 5-50m): Joint venture or subsidiary. Build IP gradually; don't over-rely on one partner.\nExit: Subsidiary - require 6-month notice, transfer of contracts and staff obligations. JV - buyout clause if partner underperforms. Franchise - not a standard route for nearshore markets; acceptable as an interim step below GBP 5m annual spend, with a fixed term of up to 3 years, IP licence limited to brand use, step-in rights and 12 months' notice of termination.\nLiability: a franchise keeps local liability with the franchisee; a subsidiary carries full local liability, tax and employment obligations, so ring-fence IP and capitalise it proportionately.",
             "version": "1.1",
             "effective_date": g.days_ago(300),
-            "updated_at": g.fake.date_time_between(start_date="-150d", end_date="-5d"),
+            "updated_at": _dt(g, 150, 5),
         },
         {
             "policy_id": "POL-ASSURANCE-001",
@@ -203,7 +212,7 @@ def generate(g):
             "content": "Assurance requirements for ESG and sustainability reporting:\nScope 1 & 2 Emissions: Annual independent third-party assurance (ISO 14064-3). Acceptable assurance providers: ISAE 3000 accredited bodies.\nScope 3 Emissions: Reasonable assurance required for supply chain emissions >50% of total. Data evidence: supplier questionnaires, shipment records, conversion factors from GHG Protocol.\nSupply Chain Disclosures: Annual audit of forced labour due diligence (legal obligation UK MSA 2015). Evidence: supplier audit reports, sanctions screening, grievance records.\nReporting Framework Compliance: All disclosures against TCFD, GRI, SASB standards require management review and sign-off.",
             "version": "1.2",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-CODE-001",
@@ -212,7 +221,7 @@ def generate(g):
             "content": "Mandatory clauses in supplier code of conduct:\nMINIMUM WAGES: Suppliers must pay at least local legal minimum wage or industry standard (whichever is higher) plus statutory benefits.\nWORKING HOURS: Maximum 48 hours per week normal working hours, max 60 hours including overtime. Overtime voluntary and fairly compensated (at least 1.5x regular rate).\nFREE TIME: Minimum one rest day per 7 days, plus statutory public holidays.\nCHILD LABOUR: No workers under 15 (or local school-leaving age). Under 18s not permitted in hazardous work.\nFORCED LABOUR: Zero tolerance. No wage deductions except legal requirements. All work voluntary.\nFREEDOM OF ASSOCIATION: Workers may join or form unions; suppliers must not interfere or discriminate.",
             "version": "2.1",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-PROVISION-001",
@@ -221,7 +230,7 @@ def generate(g):
             "content": "Seasonal stock provisioning rules:\n- Summer season (May-August): order stock to cover forecast + 20% safety stock\n- Winter season (November-December): order to cover forecast + 30% safety stock due to higher volatility\n- Spring/Autumn: 15% safety stock\nSlow-moving inventory:\n- Aged 90-180 days: offer at 15% discount to sales team\n- Aged 180+ days: 30% markdown (the inventory valuation policy floor is 25%); mark down further per NRV policy\n- Fashion items >3 seasons old: write off\nInventory turns by category:\n- Fashion: minimum 4x annual\n- Home: minimum 2x annual\n- Electronics: minimum 6x annual\nNRV method and audit evidence: NRV is tested line by line as expected selling price less costs to sell, compared with FIFO cost; the lower is carried. Auditors expect the stock ageing report by season, the NRV calculation per line, the approved markdown log and post year-end sales evidence for the aged seasonal lines.",
             "version": "1.3",
             "effective_date": g.days_ago(150),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-RECALL-COMM-001",
@@ -230,7 +239,7 @@ def generate(g):
             "content": "Customer Recall Notice:\n'This product batch [BATCH] may [DEFECT]. If you own this product, please [ACTION]. Return it to any store for full refund. For questions: [PHONE/EMAIL]. Thank you for your patience.'\n\nStore Instructions (internal):\n'Remove batch [BATCH] from sale immediately. Do not process returns on this batch. Direct customers to Customer Service. Destroy stock per instructions [LINK].'\n\nPress Statement (pre-approved language):\n'We have voluntarily recalled batch [BATCH] due to [ISSUE]. No injuries reported. This affects approximately [UNITS] units sold [DATES]. Affected customers should contact Customer Service.'\n\nRegulatory Notification (formal):\n'Harbour & Vale Retail Group notifies [REGULATOR] of the recall of [PRODUCT] batch [BATCH]. Reason: [REASON]. Notification date: [DATE]. Distribution area: [AREA]. Contact: [NAME, PHONE].'",
             "version": "1.2",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "policy_id": "POL-RECALL-VS-WITHDRAWAL-001",
@@ -239,7 +248,7 @@ def generate(g):
             "content": "RECALL: Proactive removal from market because product poses safety or serious performance risk.\nTriggers: Death/serious injury risk, regulatory violation (e.g. banned material), widespread defect affecting >1% of batch.\nAction: Notify regulator within 24-72 hours (varies by country/product). Issue customer recall notice. Seek publicity (press release, media).\n\nWITHDRAWAL: Reactive removal after limited complaints or merchant request. No imminent safety risk.\nTriggers: Cosmetic defect, minor performance gap, customer returns, merchant delisting request.\nAction: Do NOT notify public. Notify regulator if required by law. Offer merchant replacement/credit. No media.\n\nUK timeline:\nRecall: Notify within 24 hours of decision. Escalate to local authorities.\nWithdrawal: Notify within 2 weeks or as scheduled.\nEU/US: Tighter timelines (6-12 hours for safety issues).\n\nSIGN-OFF: The recall or withdrawal classification is signed off by the Director of Product Safety. Regulator notifications are signed off by the Head of Legal before they are sent.",
             "version": "1.1",
             "effective_date": g.days_ago(120),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-REPORTING-001",
@@ -248,7 +257,7 @@ def generate(g):
             "content": "TCFD (Task Force on Climate-related Financial Disclosures):\n- Governance: Board oversight of climate risk\n- Strategy: Climate scenarios, financial impact\n- Risk Management: Process for identifying, assessing climate risks\n- Metrics: GHG emissions (Scope 1, 2, 3), energy, financial metrics\n- Deadline: Recommended for all companies; mandatory for listed entities from 2025\n\nGRI (Global Reporting Initiative):\n- GRI 305 (Emissions): Scope 1, 2, 3 emissions, intensity\n- GRI 403 (Occupational Health & Safety): Injuries, fatalities, hazard assessment\n- GRI 407 (Freedom of Association): Assessed facilities, assessed countries\n- Data evidence: Supplier questionnaires, audit reports, conversion factors\n\nCSRD (Corporate Sustainability Reporting Directive):\n- Double materiality: What impacts the business + what the business impacts\n- Scope 1, 2, 3 emissions; water; waste; biodiversity; social risks\n- Supply chain due diligence mandatory\n- Third-party assurance required (ISAE 3410/3000)\n\nISSB (International Sustainability Standards Board):\n- IFRS S1 (General sustainability): Governance, strategy, risk, metrics\n- IFRS S2 (Climate): Same as TCFD",
             "version": "1.0",
             "effective_date": g.days_ago(90),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
         {
             "policy_id": "POL-EXIT-001",
@@ -257,7 +266,7 @@ def generate(g):
             "content": "DECISION FRAMEWORK (after an audit with critical findings):\n- REMEDIATE when the supplier acknowledges the findings, cooperates and offers a credible time-bound plan: keep existing orders and agree the plan within 30 days.\n- SUSPEND new POs (orders already in production continue) while the remediation plan is being agreed; lift on verified progress.\n- EXIT only when remediation fails, the supplier refuses to engage, or forced or child labour is confirmed and not corrected. Exit must follow the steps below.\nCREDIBLE REMEDIATION: root-cause analysis; a named owner at the supplier; milestones at 30, 60 and 90 days; repayment of recruitment fees and debts to affected workers; worker voice (grievance channel, union or worker-representative involvement); independent verification re-audit before findings are closed.\n\nWhen exiting a supplier (suspension, termination, or market exit):\n\n1. ADVANCE NOTICE (minimum 90 days): Communicate timeline to supplier and affected workers through union/worker representatives.\n\n2. FINANCIAL OBLIGATIONS:\n   - Pay all wages owed plus statutory benefits through exit date\n   - Provide redundancy compensation per local law (minimum 2 weeks per year of service)\n   - Settle any pension/provident fund obligations\n   - Ensure health insurance continuation during notice period\n\n3. WORKER SUPPORT:\n   - Facilitate retraining and job placement (fund if supplier cannot)\n   - Provide documentation for future employment (work history, certifications)\n   - Allow union access for worker communication\n   - Grievance mechanism for wage/benefit disputes\n\n4. PRODUCTION CONTINUITY:\n   - Transition orders to alternative suppliers gradually\n   - Do NOT suspend all POs immediately; phase over 90+ days to allow worker absorption\n   - Support worker access to final orders for wages\n\n5. MONITORING:\n   - Verify wages paid during notice period\n   - Confirm no worker retaliation or blacklisting\n   - Follow up post-exit (6 months) on worker outcome",
             "version": "1.0",
             "effective_date": g.days_ago(60),
-            "updated_at": g.fake.date_time_between(start_date="-30d", end_date="-5d"),
+            "updated_at": _dt(g, 30, 5),
         },
         {
             "policy_id": "POL-CLAIMS-REVIEW-001",
@@ -266,7 +275,7 @@ def generate(g):
             "content": "Claims review checklist to ensure marketing claims pass ASA, CMA and EU greenwashing rules:\n\nSUBSTANTIATION:\n- Do we hold independent third-party evidence (ISO 14040 LCA, Product Environmental Footprint, certification)?\n- Is data current (not >3 years old)? Is sample representative (≥5% of production or clear justification)?\n- Have we disclosed methodology and benchmark comparators (if any)?\n\nWORDING:\n- Avoid absolute terms ('100% sustainable', 'eco-friendly' without qualification)\n- Avoid time-based claims without baseline ('20% reduction since 2020' - baseline stated?)\n- Avoid implied certifications (if claiming ISO cert, state it explicitly)\n- Disclose trade-offs ('lower carbon BUT higher water use')\n- Clear scope: product level? Company level? Supply chain?\n\nREGULATORY RISK:\n- Check recent ASA/CMA enforcement (monthly update)\n- Are similar claims in recent enforcement cases?\n- Legal review sign-off required before ANY publication\n\nHIGH-RISK CLAIMS:\n- 'Sustainable', 'eco-friendly', 'green' without qualifier\n- Comparative claims vs competitors\n- Percentage reductions without baseline\n- Any claim using unverified third-party sources",
             "version": "1.0",
             "effective_date": g.days_ago(90),
-            "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
+            "updated_at": _dt(g, 60, 5),
         },
     ]
 
@@ -279,7 +288,7 @@ def generate(g):
             "item_value": "BSCI audit or equivalent required before first order",
             "description": "Social and ethical audit requirement for high-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-002",
@@ -288,7 +297,7 @@ def generate(g):
             "item_value": "GL 2m, PL 5m minimum",
             "description": "Insurance requirements for high-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-003",
@@ -297,7 +306,7 @@ def generate(g):
             "item_value": "Audit within 12 months of first order",
             "description": "Audit requirement for medium-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-004",
@@ -306,7 +315,7 @@ def generate(g):
             "item_value": "GL 1m, PL 2m minimum",
             "description": "Insurance requirements for medium-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-005",
@@ -315,7 +324,7 @@ def generate(g):
             "item_value": "GL 500k, PL 1m minimum",
             "description": "Insurance requirements for low-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-006",
@@ -324,7 +333,7 @@ def generate(g):
             "item_value": "Sanctions screening of company and beneficial owners before first order",
             "description": "Screening requirement for high-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-007",
@@ -333,7 +342,7 @@ def generate(g):
             "item_value": "Business registration and tax ID verification",
             "description": "Identity checks for high-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
         {
             "item_id": "POL-ITEM-008",
@@ -342,7 +351,7 @@ def generate(g):
             "item_value": "Bank references from 3 suppliers; bank account holder name must match the registered company",
             "description": "Financial checks for high-risk suppliers",
             "effective_date": g.days_ago(180),
-            "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
+            "updated_at": _dt(g, 90, 5),
         },
     ]
 

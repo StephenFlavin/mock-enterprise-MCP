@@ -106,9 +106,9 @@ MATERIALS = {
 GEN_MATERIALS = ["100% cotton", "80/20 poly-cotton", "Wool blend", "Polyester", "Linen blend", "Viscose", "Leather", "Acrylic"]
 
 
-def _value(g, a, p):
-    """Plausible value for attribute `a` (spec tuple) on product `p`."""
-    r, name, cat = g.rng, a[0], p["category"]
+def _value(r, a, p):
+    """Plausible value for attribute `a` (spec tuple) on product `p`, drawing from stream `r`."""
+    name, cat = a[0], p["category"]
     if name in ("Material Composition", "Material", "Fabric", "Materials"):
         return r.choice(MATERIALS.get(cat, GEN_MATERIALS))
     if name == "Care Instructions":
@@ -179,7 +179,8 @@ def _value(g, a, p):
 
 def generate(g):
     r = g.rng
-    products = g.master("products")
+    # only categories with a taxonomy spec (new master categories such as Backpacks/Kitchenware/Toys have none yet)
+    products = [p for p in g.master("products") if p["category"] in SPECS]
     by_cat = {}
     for p in products:
         by_cat.setdefault(p["category"], []).append(p)
@@ -225,21 +226,22 @@ def generate(g):
         live = [p for p in prods if p["status"] in ("active", "new")]
         for a in SPECS[cat]:
             aid = attr_by[(cat, a[0])][0]
-            order = live[:]
-            r.shuffle(order)
-            order.sort(key=lambda p: (p["sku"], a[0]) in err_keys)  # error SKUs keep a (wrong) value
+            rank = {p["sku"]: g.rng_for("missing", aid, p["sku"]).random() for p in live}
+            order = sorted(live, key=lambda p: ((p["sku"], a[0]) in err_keys, rank[p["sku"]]))  # error SKUs keep a (wrong) value
             missing = {p["sku"] for p in order[:round(len(live) * (1 - a[6]))]}
-            missing |= {p["sku"] for p in prods if p["status"] not in ("active", "new") and r.random() > a[6]}
+            missing |= {p["sku"] for p in prods if p["status"] not in ("active", "new")
+                        and g.rng_for("missing-other", aid, p["sku"]).random() > a[6]}
             for p in prods:
-                upd = g.as_of - timedelta(days=r.randint(1, 90))
-                src = r.choices(["supplier", "internal", "marketplace"], [0.4, 0.4, 0.2])[0]
+                pr = g.rng_for("pa", aid, p["sku"])
+                upd = g.as_of - timedelta(days=pr.randint(1, 90))
+                src = pr.choices(["supplier", "internal", "marketplace"], [0.4, 0.4, 0.2])[0]
                 if p["sku"] in missing:
                     rows[(p["sku"], aid)] = {"sku": p["sku"], "attribute_id": aid, "value": None, "confidence": 0,
                                              "source": src, "last_updated": upd, "is_complete": False}
                 else:
-                    rows[(p["sku"], aid)] = {"sku": p["sku"], "attribute_id": aid, "value": _value(g, a, p),
-                                             "confidence": r.randint(80, 98), "source": src, "last_updated": upd,
-                                             "is_complete": r.random() < 0.95}
+                    rows[(p["sku"], aid)] = {"sku": p["sku"], "attribute_id": aid, "value": _value(pr, a, p),
+                                             "confidence": pr.randint(80, 98), "source": src, "last_updated": upd,
+                                             "is_complete": pr.random() < 0.95}
 
     def setv(sku, cat, name, value, conf=92, src="supplier", complete=True):
         aid = attr_by[(cat, name)][0]
@@ -257,7 +259,7 @@ def generate(g):
         setv(sku, "Outerwear", "Waterproof", "true", 94, "supplier")
     for p in by_cat["Outerwear"]:
         if p["sku"] not in waterproof and rows[(p["sku"], attr_by[("Outerwear", "Waterproof")][0])]["value"] is not None:
-            setv(p["sku"], "Outerwear", "Waterproof", "false", r.randint(80, 95), "supplier")
+            setv(p["sku"], "Outerwear", "Waterproof", "false", g.rng_for("wp", p["sku"]).randint(80, 95), "supplier")
 
     # Recycled-content claim SKUs: attribute value agrees with the claim.
     for sku, pct in (("SKU-100154", "100"), ("SKU-100161", "100"), ("SKU-100427", "60")):

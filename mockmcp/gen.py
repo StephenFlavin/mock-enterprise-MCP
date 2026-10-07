@@ -2,6 +2,7 @@
 import csv
 import importlib.util
 import random
+import re
 import tempfile
 import zlib
 from datetime import date, timedelta
@@ -13,6 +14,8 @@ from faker import Faker
 from .spec import SYSTEMS, WORLD, System, load_system
 
 MAX_ROWS = 60000
+WALL_CLOCK = re.compile(r"datetime\.now\(|date\.today\(|time\.time\(|fake\.(?:date_this_\w+|date_time_this_\w+|past_\w+|future_\w+|"
+                        r"date_time_between\(\s*start_date\s*=\s*['\"]|date_between\(\s*start_date\s*=\s*['\"]|date_time\(|date_object\(|year\(|month\()")
 
 
 class Gen:
@@ -118,6 +121,11 @@ def verify(system_id: str) -> list[str]:
     """Regenerate into a temp dir and compare with the committed data/*.csv. Servers serve data/ as is, so data/
     must be exactly what gen.py + seed/ produce: otherwise a regen (or a master change) silently moves answers."""
     s = load_system(system_id)
+    g = s.dir / "gen.py"
+    if g.exists():  # wall-clock reads make data depend on the day you regenerate
+        bad = WALL_CLOCK.findall(g.read_text())
+        if bad:
+            return [f"gen.py reads the wall clock ({', '.join(sorted(set(bad)))}); anchor dates on g.as_of"]
     with tempfile.TemporaryDirectory() as tmp:
         try:
             generate(system_id, tmp)
