@@ -57,7 +57,7 @@ def generate(g):
             "gender_skew": "mixed",
             "female_share_pct": 50,
             "markets": "UK",
-            "top_categories": "basics;kidswear;homeware essentials",
+            "top_categories": "basics;kidswear;everyday essentials",
             "key_needs": "Reliable availability of everyday basics at a low price",
             "segment_name": "Essential Buyers",
             "description": "Value-focused customers buying basics and essentials only",
