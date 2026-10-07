@@ -162,7 +162,7 @@ tools:
     kind: sql
     args:
       sku: {required: true}
-      date_from: {type: date, default: "-60d"}
+      date_from: {type: date, default: "-60d", desc: "History from"}
     sql: |
       SELECT c.competitor_id, c.name, cp.their_name, p.price_date, p.price_gbp,
              p.promotion_type, p.discount_pct, p.in_clearance
@@ -274,18 +274,19 @@ tools:
       event_type: {type: str, desc: "Type of shock, e.g. tariff, cost_rise, seasonal", required: true}
       date_from: {type: date, default: "-180d", desc: "Look back this far"}
     sql: |
-      SELECT DISTINCT c.competitor_id, c.name, prom.promo_type, cp.category,
-             prom.discount_pct, COUNT(*) as promotion_count,
-             AVG(prom.duration_days) as avg_duration_days,
+      SELECT c.competitor_id, c.name, prom.promo_type, cp.category,
+             ROUND(AVG(prom.discount_pct), 1) as avg_discount_pct,
+             COUNT(*) as promotion_count,
+             ROUND(AVG(prom.duration_days), 0) as avg_duration_days,
              MAX(prom.promo_start) as last_promotion_date
       FROM competitor_promotions prom
       JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
       JOIN competitors c ON c.competitor_id = prom.competitor_id
       WHERE prom.promo_start >= CAST($date_from AS DATE)
       GROUP BY c.competitor_id, c.name, prom.promo_type, cp.category
-      ORDER BY promotion_count DESC, discount_pct DESC
+      ORDER BY promotion_count DESC, avg_discount_pct DESC
     limit: 50
-    example: {event_type: "tariff"}
+    example: {event_type: "tariff", date_from: "-180d"}
 
   - name: compare_markdown_to_competitors
     desc: Compare our markdown strategy on a category to what competitors are doing. Shows depth and timing gaps.
@@ -293,15 +294,11 @@ tools:
     args:
       category: {required: true, type: str, desc: "Product category to compare"}
     sql:
-      our_markdowns: |
-        SELECT mp.sku, mp.name, mp.category,
-               pr.retail_price_gbp as full_price,
-               COUNT(*) as markdown_count,
-               MAX(CAST(pr.updated_at AS DATE)) as last_change
-        FROM master.products mp
-        LEFT JOIN master.sales_weekly pr ON pr.sku = mp.sku
-        WHERE mp.category ILIKE '%' || $category || '%'
-        GROUP BY mp.sku, mp.name, mp.category, pr.retail_price_gbp
+      our_products: |
+        SELECT sku, name, category, retail_price_gbp as full_price
+        FROM master.products
+        WHERE category ILIKE '%' || $category || '%'
+        LIMIT 20
       competitor_clearance: |
         SELECT c.competitor_id, c.name, COUNT(*) as clearance_count,
                ROUND(AVG(p.discount_pct), 1) as avg_discount

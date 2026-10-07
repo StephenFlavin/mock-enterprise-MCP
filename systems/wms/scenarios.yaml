@@ -382,3 +382,148 @@
     - tool: get_rollback_requirements
       args: {site_id: DC1, from_date: "-7d"}
       expect: ["data_type", "record_count"]
+
+- question: "01:4:Q2"
+  story: >
+    Adjustment Q3 analysis. list_cycle_count_corrections shows 12 reversals and 28 corrections over £500.
+    Clustering shows 8 adjustments in zone B on night shift, 6 in zone C on morning shift.
+    get_cause_code_definitions helps classify causes. CC-001 used as catch-all for 15 items.
+  checks:
+    - tool: list_cycle_count_corrections
+      args: {site_id: DC1, date_from: "-90d"}
+      expect: ["correction_status", "variance", "location_id"]
+    - tool: get_cause_code_definitions
+      args: {category: counting_error}
+      expect: ["cause_code", "description", "intended_use"]
+
+- question: "01:8:Q1"
+  story: >
+    140 orders stuck in allocation_failed since 6am. list_orders_by_status shows order_id, lines, units.
+    list_allocation_failure_reasons identifies 60 from insufficient_stock, 45 from location_unavailable,
+    35 from configuration_error. SKUs affected: PF-220, K-1700, STY-5520.
+    retry_order_allocation resolves the stuck orders.
+  checks:
+    - tool: list_orders_by_status
+      args: {status: allocated, site_id: DC1, date_from: "-1d"}
+      expect: ["order_id", "lines", "units"]
+    - tool: list_allocation_failure_reasons
+      args: {status: allocation_failed, date_from: "-1d"}
+      expect: ["failure_reason", "order_count"]
+    - tool: retry_order_allocation
+      args: {reference_id: "ORD-2026-191217"}
+      expect: ["new_status", "allocated"]
+
+- question: "01:8:Q3"
+  story: >
+    WMS version 9.2 duplicate task issue. get_wms_version_and_patches shows all DC sites on v9.2-20261001,
+    3 patches applied, status=Stable. list_replenishment_task_duplicates shows 8 duplicate replenishment
+    tasks created after run on 2026-10-02 in zones A and B. Configuration change from wave cutoff
+    adjustment is the likely cause from list_recent_configuration_changes.
+  checks:
+    - tool: get_wms_version_and_patches
+      args: {}
+      expect: ["wms_version", "patches_applied", "status"]
+    - tool: list_replenishment_task_duplicates
+      args: {site_id: DC1, date_from: "-30d"}
+      expect: ["location_id", "task_status"]
+    - tool: list_recent_configuration_changes
+      args: {date_from: "-60d"}
+      expect: ["change_type", "change_date"]
+
+- question: "09:81:Q4"
+  story: >
+    Cost per order model. get_wms_labour_and_handling_cost_by_order for ORD-2026-191217 shows:
+    pick_time=45min, pick_labour=£11.25, pack_labour=£7.50, handling=£3.75, total=£22.50 for 50-unit order.
+  checks:
+    - tool: get_wms_labour_and_handling_cost_by_order
+      args: {reference_id: "ORD-2026-191217"}
+      expect: ["pick_labour_gbp", "pack_labour_gbp", "total_cost_gbp"]
+
+- question: "01:4:Q1_release"
+  story: >
+    Release cycle count tasks to handheld. release_cycle_count_tasks for planned tasks in zone C.
+    Tasks change from planned to released status, ready for operatives.
+  checks:
+    - tool: release_cycle_count_tasks
+      args: {task_id: "CCT-900001"}
+      expect: ["released", "status"]
+
+- question: "01:4:Q3_reassign"
+  story: >
+    Reassign count task to Priya. reassign_cycle_count_task changes assigned_to from EMP-1000 to EMP-2001.
+  checks:
+    - tool: reassign_cycle_count_task
+      args: {task_id: "CCT-900001", assigned_to: "EMP-2001"}
+      expect: ["assigned_to", "EMP-2001"]
+
+- question: "01:4:Q3_search"
+  story: >
+    Search for locations to count. search_locations filters DC1 zone C locations.
+    Returns DC1-C-14-01, DC1-C-14-02, DC1-C-14-03, DC1-C-14-04.
+  checks:
+    - tool: search_locations
+      args: {site_id: DC1, zone: "C"}
+      expect: ["location_id", "DC1-C"]
+
+- question: "01:4:Q1_list"
+  story: >
+    List goods receipts for last 30 days. list_goods_receipts for DC1 shows 15 receipts,
+    including GR-900001 received at dock D07 by EMP-1234 from CAR-0042.
+  checks:
+    - tool: list_goods_receipts
+      args: {site_id: DC1, date_from: "-30d"}
+      expect: ["receipt_id", "dock", "site_id"]
+
+- question: "01:4:Q3_bycount"
+  story: >
+    List locations by last count date. list_locations_by_last_count_date for DC1 shows
+    25 locations not counted in last 30 days, sorted by recency. Zone B has oldest counts.
+  checks:
+    - tool: list_locations_by_last_count_date
+      args: {site_id: DC1, days_since_count: 30}
+      expect: ["location_id", "days_since_count"]
+
+- question: "01:8:Q2_short"
+  story: >
+    Short pick analysis. list_short_picks_by_stage for DC1 shows 12 short picks in last 30 days,
+    mostly in zone A picking stage. ORD-2026-191217 short 5 units of PF-220.
+  checks:
+    - tool: list_short_picks_by_stage
+      args: {site_id: DC1, date_from: "-30d"}
+      expect: ["exception_type", "order_id", "zone"]
+
+- question: "01:8:Q2_stock"
+  story: >
+    Stock balance by SKU. get_wms_stock_by_sku for PF-220 shows 3500 units across 45 locations,
+    valued at £21,000. Lots identified by batch_number.
+  checks:
+    - tool: get_wms_stock_by_sku
+      args: {sku: PF-220, site_id: DC1}
+      expect: ["sku", "total_on_hand", "value_gbp"]
+
+- question: "07:69:Q5_stock"
+  story: >
+    Stock valuation reconciliation. get_wms_stock_valuation for DC1 as of today shows
+    1,234 SKUs, 125,000 total units, £750,000 valuation_gbp.
+  checks:
+    - tool: get_wms_stock_valuation
+      args: {site_id: DC1}
+      expect: ["total_units", "valuation_gbp", "unit_cost_gbp"]
+
+- question: "01:6:Q5_split"
+  story: >
+    Split order locations. get_stock_location_for_split_orders shows 8 orders from 2+ locations
+    in last 30 days, ORD-2026-191217 split across zones A and B for 50 units.
+  checks:
+    - tool: get_stock_location_for_split_orders
+      args: {date_from: "-30d", site_id: DC1}
+      expect: ["order_id", "locations_per_order"]
+
+- question: "01:6:Q5_affinity"
+  story: >
+    Pick affinity pairs. get_pick_affinity_pairs for DC1 shows PF-220 and K-1700 co-picked
+    12 times, STY-5520 and STY-7731 co-picked 8 times.
+  checks:
+    - tool: get_pick_affinity_pairs
+      args: {site_id: DC1, date_from: "-90d"}
+      expect: ["sku_1", "sku_2", "co_pick_count"]
