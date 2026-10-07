@@ -126,7 +126,7 @@ def generate(g):
                     "recyclability_pct": recyclable_pct,
                     "recycled_content_pct": recycled_pct,
                     "recyclability_rating": r.choice(ratings),
-                    "notes": r.choice([None, "Contains non-recyclable laminate", "Single material - easily recyclable", "Mixed materials - partial recyclability"])[:1][0] if r.random() > 0.7 else None,
+                    "notes": r.choice([None, "Contains non-recyclable laminate", "Single material - easily recyclable", "Mixed materials - partial recyclability"]) if r.random() > 0.7 else None,
                     "assessed_date": g.as_of - timedelta(days=r.randint(30, 180))
                 })
 
@@ -192,7 +192,7 @@ def generate(g):
             "status": r.choices(["open", "in_progress", "completed", "cancelled"], [30, 35, 30, 5])[0],
             "due_date": due_date,
             "assigned_to": r.choice([e["employee_id"] for e in employees[:20]]) if employees else "EMP-01234",
-            "cancel_reason": r.choice([None, "Out of scope", "Resource constraints", "Regulatory change"])[:1][0] if r.random() > 0.8 else None,
+            "cancel_reason": r.choice([None, "Out of scope", "Resource constraints", "Regulatory change"]) if r.random() > 0.8 else None,
             "created_at": g.as_of - timedelta(days=r.randint(30, 120)),
             "updated_at": g.as_of - timedelta(days=r.randint(1, 60))
         })

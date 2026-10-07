@@ -88,8 +88,16 @@ def generate(g):
     currencies = ["USD", "EUR", "INR"]
     for currency in currencies:
         for month in range(0, 13):
-            exposure_month = g.as_of + timedelta(days=month * 30)
-            exposure_month = exposure_month.replace(day=1)  # First day of month
+            # Calculate month by adding months properly
+            year = g.as_of.year
+            m = g.as_of.month + month
+            if m > 12:
+                year += m // 12
+                m = m % 12
+                if m == 0:
+                    m = 12
+                    year -= 1
+            exposure_month = date(year, m, 1)
 
             # Base exposure varies by currency
             base_exposure = {"USD": 8000000, "EUR": 3000000, "INR": 2000000}[currency]
