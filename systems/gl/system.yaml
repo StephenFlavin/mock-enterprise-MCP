@@ -1037,7 +1037,7 @@ tools:
         AND ($carrier_id IS NULL OR f.carrier_id = $carrier_id)),
     r AS (
       SELECT COALESCE(f.account_code, 'ALL') AS account_code, COALESCE(any_value(f.account_name), 'All freight accounts') AS account_name,
-             COALESCE(f.carrier_id, 'ALL') AS carrier_id, any_value(f.carrier_name) AS carrier_name,
+             COALESCE(f.carrier_id, 'ALL') AS carrier_id, CASE WHEN f.carrier_id IS NULL THEN '' ELSE any_value(f.carrier_name) END AS carrier_name,
              round(sum(f.cost_gbp), 2) AS total_cost_gbp, count(*) AS postings,
              string_agg(DISTINCT CASE WHEN f.account_code <> '5110' THEN f.invoice_ref END, '; ') AS miscoded_invoice_refs
       FROM f GROUP BY ROLLUP(f.account_code, f.carrier_id))
@@ -1465,12 +1465,12 @@ tools:
   limit: 20
   example: {}
 - name: get_usd_cogs_exposure
-  desc: USD-denominated cost of goods in GBP, its share of total COGS, and the extra cost if sterling falls against the dollar, before hedges.
+  desc: USD-denominated cost of goods in GBP over whole weeks, its share of total COGS, and the extra cost if sterling falls against the dollar, before hedges.
   kind: sql
   args:
     period_start:
       type: date
-      default: -365d
+      default: -364d
       desc: Purchase orders due on or after
     period_end:
       type: date
@@ -1492,7 +1492,8 @@ tools:
     WITH po AS (
       SELECT p.currency, p.total_value, p.total_value / CASE p.currency WHEN 'USD' THEN $gbp_usd_rate WHEN 'EUR' THEN $gbp_eur_rate ELSE 1 END AS gbp_value
       FROM master.purchase_orders p
-      WHERE p.due_date >= CAST($period_start AS DATE) AND p.due_date <= CAST($period_end AS DATE)
+      WHERE p.due_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+        AND p.due_date <= CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE) + 6
         AND p.status NOT IN ('cancelled', 'draft')),
     c AS (SELECT currency, count(*) AS po_count, sum(total_value) AS local_value, sum(gbp_value) AS gbp_value FROM po GROUP BY currency)
     SELECT c.currency, c.po_count, round(c.local_value, 0) AS purchases_in_currency, round(c.gbp_value, 0) AS cogs_gbp,

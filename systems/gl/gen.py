@@ -48,6 +48,8 @@ ACCOUNTS = [
     ('7100', 'IT and software licences', 'expense'),
     ('7200', 'Restructuring costs', 'expense'),
     ('8100', 'FX gains and losses', 'expense'),
+    ('8110', 'Realised FX gains and losses', 'expense'),
+    ('8120', 'Unrealised FX revaluation gains and losses', 'expense'),
 ]
 CATEGORY_ACCOUNT = {'labour': '6110', 'overtime': '6120', 'agency': '6130', 'damages': '6140',
                     'rework': '6150', 'energy': '6200', 'rent': '6210'}
@@ -346,7 +348,7 @@ def generate(g):
             'fx_txn_id': f'FX-{i:06d}', 'je_id': f'JE-{rng.randint(1, 150):06d}', 'posting_date': g.date_between(90, 0),
             'currency': ccy, 'gbp_amount': round(gbp_amount, 2), 'local_amount': round(gbp_amount / o, 2),
             'opening_rate': round(o, 4), 'closing_rate': round(c, 4), 'gain_loss_gbp': round((c - o) * gbp_amount / o, 2),
-            'fx_type': rng.choice(['realised', 'unrealised']), 'account_code': f'{8000 + rng.randint(0, 99):05d}'})
+            'fx_type': (fxt := rng.choice(['realised', 'unrealised'])), 'account_code': '8110' if fxt == 'realised' else '8120'})
 
     # ---------------------------------------------------------------- freight postings (ledger side of the TMS reconciliation)
     freight_costs = []
