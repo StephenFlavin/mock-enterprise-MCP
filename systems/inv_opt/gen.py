@@ -1,175 +1,139 @@
-"""Inventory optimisation data: SKU policies, demand analysis, and service level targets."""
-from datetime import datetime, timedelta
+"""Inventory optimisation data, derived from master sales history, products and suppliers.
+
+Demand statistics come from master.sales_weekly (store + online units), lead times and
+costs from master.products, so every figure agrees with the demand, PO and IMS systems.
+"""
+import statistics as st
+from collections import defaultdict
+from statistics import NormalDist
+
+SEGMENTS = [("SEG-001", "A", "A items (top sellers by value)", 95),
+            ("SEG-002", "B", "B items (mid value)", 92),
+            ("SEG-003", "C", "C items (long tail)", 90)]
+TARGET = {a: t for _, a, _, t in SEGMENTS}
 
 
 def generate(g):
-    """Generate inventory optimisation data for SKUs."""
     r = g.rng
+    products = {p["sku"]: p for p in g.master("products")}
 
-    # Get products from master to base policies on
-    products = g.master("products")
-    suppliers = g.master("suppliers")
-
-    # Filter to active products with reasonable lead times
-    active_products = [p for p in products if p["status"] == "active" and p.get("lead_time_days")]
-
-    # Sort by revenue proxy (volume * price)
-    sorted_products = sorted(
-        active_products,
-        key=lambda p: float(p.get("unit_cost_gbp", 10)) * 100 if p.get("unit_cost_gbp") else 1000,
-        reverse=True
-    )
-
-    # Generate for top 300 SKUs (covers fast sellers, high value, and long tail)
-    policies = []
-    demand_stats = []
-    supplier_lt = []
-
-    for idx, product in enumerate(sorted_products[:300]):
-        sku = product["sku"]
-        category = product.get("category", "Unclassified")
-        lead_time = int(product.get("lead_time_days", 30))
-
-        # ABC classification: top 10% = A, next 20% = B, rest = C
-        if idx < 30:
-            abc_class = "A"
-        elif idx < 90:
-            abc_class = "B"
-        else:
-            abc_class = "C"
-
-        # Generate demand pattern
-        base_weekly_demand = r.randint(50, 5000) if abc_class == "A" else r.randint(20, 500)
-        demand_mean = base_weekly_demand
-
-        # Vary demand variability by category
-        if "clearance" in category.lower() or "seasonal" in category.lower():
-            cv = r.uniform(0.6, 0.95)  # High variability
-        elif abc_class == "A":
-            cv = r.uniform(0.15, 0.35)  # Low variability for fast sellers
-        elif abc_class == "B":
-            cv = r.uniform(0.30, 0.55)
-        else:
-            cv = r.uniform(0.50, 0.90)  # High variability for slow movers
-
-        demand_stdev = demand_mean * cv
-        annual_volume = demand_mean * 52
-
-        # Calculate safety stock using formula: z * stdev * sqrt(LT)
-        z_95 = 1.645
-        z_97 = 1.96
-        z_99 = 2.326
-
-        safety_stock_95 = int(z_95 * demand_stdev * ((lead_time / 7.0) ** 0.5))
-        safety_stock_97 = int(z_97 * demand_stdev * ((lead_time / 7.0) ** 0.5))
-        reorder_point = int(lead_time * demand_mean / 7.0)
-
-        # Service level target: higher for A items
-        if abc_class == "A":
-            sl_target = r.choice([95, 97, 99])
-        elif abc_class == "B":
-            sl_target = r.choice([92, 95, 97])
-        else:
-            sl_target = r.choice([85, 90, 92])
-
-        # Use appropriate safety stock
-        if sl_target >= 97:
-            safety_stock = safety_stock_97
-        elif sl_target >= 95:
-            safety_stock = safety_stock_95
-        else:
-            safety_stock = int(safety_stock_95 * 0.7)
-
-        # Create policy entry (some will be intentionally wrong for testing)
-        # About 15% have "wrong" safety stock that's too high or too low
-        if r.random() < 0.15:
-            if r.random() < 0.5:
-                safety_stock = int(safety_stock * r.uniform(0.5, 0.8))  # Too low
-            else:
-                safety_stock = int(safety_stock * r.uniform(1.3, 1.6))  # Too high
-
-        policy = {
-            "sku": sku,
-            "reorder_point_units": reorder_point,
-            "safety_stock_units": max(1, safety_stock),
-            "service_level_target_pct": sl_target,
-            "lead_time_days": lead_time,
-            "annual_volume_units": int(annual_volume),
-            "cv_demand": round(cv, 3),
-            "category": category,
-            "abc_class": abc_class,
-            "last_review_date": g.days_ago(r.randint(30, 180)),
-            "updated_at": g.as_of - timedelta(days=r.randint(1, 90)),
+    # ---- demand statistics from 52 weeks of master sales ----
+    wk = defaultdict(list)
+    for s in g.master("sales_weekly"):
+        wk[s["sku"]].append((s["week_start"], int(s["store_units"]), int(s["online_units"]), float(s["markdown_gbp"] or 0)))
+    stats = {}
+    for sku, rows in wk.items():
+        if sku not in products or len(rows) < 8:
+            continue
+        rows.sort()
+        u = [a + b for _, a, b, _ in rows]
+        mu = st.mean(u)
+        if mu <= 0:
+            continue
+        sd = st.pstdev(u)
+        n = len(u)
+        peak = max(st.mean(u[i:i + 4]) for i in range(max(1, n - 3)))
+        recent, prior = st.mean(u[-13:]), st.mean(u[:-13]) if n > 13 else mu
+        chg = (recent - prior) / prior * 100 if prior else 0
+        tot = sum(u)
+        stats[sku] = {
+            "mu": mu, "sd": sd, "cv": sd / mu, "n": n, "peak": peak / mu, "chg": chg,
+            "zero": 100.0 * sum(1 for x in u if x == 0) / n,
+            "md": 100.0 * sum(1 for *_, m in rows if m > 0) / n,
+            "store": 100.0 * sum(a for _, a, _, _ in rows) / tot if tot else 0,
+            "annual": mu * 52,
         }
-        policies.append(policy)
 
-        # Demand analysis
-        seasonality = r.uniform(0.9, 1.2) if abc_class == "A" else r.uniform(0.8, 1.3)
-        trend = r.choice(["up", "down", "stable"])
-        high_var = cv > 0.5
+    ranked = sorted(stats, key=lambda k: -stats[k]["annual"])
+    top200 = ranked[:200]
 
-        demand_analysis = {
-            "sku": sku,
-            "demand_52w_mean": round(demand_mean, 1),
-            "demand_52w_stdev": round(demand_stdev, 1),
-            "demand_cv": round(cv, 3),
-            "seasonality_factor": round(seasonality, 2),
-            "trend_direction": trend,
-            "high_variability": high_var,
-            "last_calculated_date": g.days_ago(r.randint(7, 60)),
-        }
-        demand_stats.append(demand_analysis)
+    # ---- supplier lead-time drift: a few suppliers got much slower ----
+    sup_count = defaultdict(int)
+    for k in top200:
+        sup_count[products[k]["supplier_id"]] += 1
+    planted_sup = [s for s, _ in sorted(sup_count.items(), key=lambda x: (-x[1], x[0]))[:3]]
+    sup_shift = {}
+    for s in sorted({p["supplier_id"] for p in products.values()}):
+        sup_shift[s] = r.uniform(-0.04, 0.06)
+    for s, v in zip(planted_sup, (0.45, 0.35, 0.30)):
+        sup_shift[s] = v
 
-        # Supplier lead times
-        if product.get("supplier_id"):
-            supplier = product["supplier_id"]
-            baseline_lt = lead_time
-            actual_lt = baseline_lt + r.randint(-7, 14)
-            lt_stdev = max(1, int(baseline_lt * r.uniform(0.05, 0.2)))
-            change_pct = round((actual_lt - baseline_lt) / baseline_lt * 100, 1) if baseline_lt > 0 else 0
+    # ---- planted mis-set policies among the fastest sellers ----
+    pool = top200[:60]
+    low_plants = set(r.sample(pool, 6))
+    high_plants = set(r.sample([k for k in pool if k not in low_plants], 4))
 
-            lt_entry = {
-                "sku": sku,
-                "supplier_id": supplier,
-                "lead_time_days": actual_lt,
-                "lead_time_stdev_days": round(lt_stdev, 1),
-                "change_from_baseline_pct": change_pct,
-                "sample_size": r.randint(5, 20),
-                "measurement_date": g.days_ago(r.randint(1, 30)),
-            }
-            supplier_lt.append(lt_entry)
+    z = {p: NormalDist().inv_cdf(p / 100.0) for p in range(50, 100)}
+    zrows = [{"service_level_pct": p, "z_score": round(v, 3)} for p, v in z.items()]
 
-    # Create segments
-    segments = [
-        {
-            "segment_id": "SEG-001",
-            "segment_name": "A Items (Top 10%)",
-            "sku_count": 30,
-            "target_service_level_pct": 97,
-            "status": "active",
-            "updated_at": g.as_of,
-        },
-        {
-            "segment_id": "SEG-002",
-            "segment_name": "B Items (20%)",
-            "sku_count": 60,
-            "target_service_level_pct": 95,
-            "status": "active",
-            "updated_at": g.as_of,
-        },
-        {
-            "segment_id": "SEG-003",
-            "segment_name": "C Items (Long Tail)",
-            "sku_count": 210,
-            "target_service_level_pct": 90,
-            "status": "active",
-            "updated_at": g.as_of,
-        },
-    ]
+    policies, demand, lts = [], [], []
+    for sku in sorted(stats):
+        s, p = stats[sku], products[sku]
+        cls = p["abc_class"]
+        sl = TARGET[cls]
+        base_lt = int(p["lead_time_days"])
+        # policy as it was set at the last review (older demand and baseline lead time)
+        mu_p, sd_p = s["mu"] * r.uniform(0.94, 1.06), s["sd"] * r.uniform(0.92, 1.08)
+        sig_l = base_lt * 0.08 / 7.0
+        ss = z[sl] * ((base_lt / 7.0) * sd_p ** 2 + mu_p ** 2 * sig_l ** 2) ** 0.5
+        x = r.random()
+        if sku in low_plants:
+            ss *= r.uniform(0.40, 0.55)
+        elif sku in high_plants:
+            ss *= r.uniform(2.0, 2.4)
+        elif x < 0.05:
+            ss *= r.uniform(0.55, 0.75)
+        elif x < 0.10:
+            ss *= r.uniform(1.35, 1.7)
+        ss = max(1, int(round(ss)))
+        rop = int(round(mu_p * base_lt / 7.0 + ss))
+        review = r.randint(60, 200)
+        policies.append({
+            "sku": sku, "reorder_point_units": rop, "safety_stock_units": ss, "service_level_target_pct": sl,
+            "lead_time_days": base_lt, "annual_volume_units": int(round(s["annual"])), "cv_demand": round(s["cv"], 3),
+            "category": p["category"], "abc_class": cls, "last_review_date": g.days_ago(review),
+            "updated_at": g.days_ago(review),
+        })
 
-    return {
-        "sku_inventory_policies": policies,
-        "sku_demand_analysis": demand_stats,
-        "segment_service_levels": segments,
-        "supplier_lead_time_actuals": supplier_lt,
-    }
+        # demand analysis and the main reason demand is volatile
+        status = p["status"]
+        if s["n"] < 26:
+            why = "Short sales history (recent launch)"
+        elif s["md"] >= 25:
+            why = "Promotion and markdown driven"
+        elif s["zero"] >= 10:
+            why = "Intermittent demand (weeks with no sales)"
+        elif s["peak"] >= 1.6:
+            why = "Strong seasonal peak"
+        elif abs(s["chg"]) >= 25:
+            why = "Recent trend shift (" + ("up" if s["chg"] > 0 else "down") + ")"
+        else:
+            why = "General volatility"
+        demand.append({
+            "sku": sku, "demand_52w_mean": round(s["mu"], 1), "demand_52w_stdev": round(s["sd"], 1),
+            "demand_cv": round(s["cv"], 3), "seasonality_factor": round(s["peak"], 2),
+            "trend_direction": "up" if s["chg"] > 10 else "down" if s["chg"] < -10 else "stable",
+            "high_variability": s["cv"] > 0.40, "last_calculated_date": g.days_ago(r.randint(1, 14)),
+            "weeks_of_history": s["n"], "zero_weeks_pct": round(s["zero"], 1), "markdown_weeks_pct": round(s["md"], 1),
+            "store_share_pct": round(s["store"], 1), "variability_driver": why,
+        })
+
+        # supplier lead time actually observed
+        sup = p["supplier_id"]
+        act = max(1, int(round(base_lt * (1 + sup_shift[sup]) * r.uniform(0.98, 1.02))))
+        sd_frac = r.uniform(0.18, 0.26) if sup in planted_sup else r.uniform(0.06, 0.14)
+        lts.append({
+            "sku": sku, "supplier_id": sup, "lead_time_days": act, "lead_time_stdev_days": round(act * sd_frac, 1),
+            "change_from_baseline_pct": round((act - base_lt) / base_lt * 100, 1), "sample_size": r.randint(6, 24),
+            "measurement_date": g.days_ago(r.randint(1, 21)),
+        })
+
+    counts = defaultdict(int)
+    for pol in policies:
+        counts[pol["abc_class"]] += 1
+    segs = [{"segment_id": sid, "abc_class": cls, "segment_name": nm, "sku_count": counts[cls],
+             "target_service_level_pct": t, "status": "active", "updated_at": g.days_ago(45)}
+            for sid, cls, nm, t in SEGMENTS]
+
+    return {"sku_inventory_policies": policies, "sku_demand_analysis": demand, "segment_service_levels": segs,
+            "supplier_lead_time_actuals": lts, "service_level_z": zrows}

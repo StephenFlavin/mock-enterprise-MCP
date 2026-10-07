@@ -56,7 +56,7 @@ tables:
     key: procedure_id
     cols:
       procedure_id: {type: str, desc: "Procedure, e.g. PROC-000123"}
-      site_id: {type: str, desc: DC}
+      site_id: {type: str, desc: "DC or store"}
       procedure_name: {type: str, desc: Procedure name}
       procedure_type: {type: str, desc: "Type, e.g. forklift operation, battery charging"}
       status: {type: enum, values: [active, inactive, draft], desc: Status}
@@ -71,59 +71,77 @@ tables:
       validation_type: {type: str, desc: "Type, e.g. firmware update, safety checks"}
       status: {type: enum, values: [pass, fail, needs_review], desc: Validation result}
       validated_by: {type: str, desc: Employee who validated}
+      firmware_version: {type: str, desc: "Firmware version validated, e.g. 4.3.0"}
       notes: {type: text, desc: Validation notes}
       updated_at: {type: timestamp, desc: Last updated}
 
   site_jurisdictions:
     key: site_id
     cols:
-      site_id: {type: str, desc: DC}
-      country: {type: str, desc: "ISO country code, e.g. GB, DE, PL"}
+      site_id: {type: str, desc: "Site, DC or store"}
+      name: {type: str, desc: Site name}
+      site_type: {type: str, desc: "dc, store or office"}
+      country: {type: str, desc: "ISO country code, e.g. GB, DE"}
       applicable_regimes: {type: text, desc: "Applicable safety regimes, semicolon-separated"}
 
 tools:
   - name: list_incidents
-    desc: Incidents and near misses with type, severity, location, time and task. Filter by site, type or date.
+    desc: Incidents and near misses with type, severity, location, time, shift, task, equipment and root cause. Filter by site, type, equipment, period or words in the description.
     kind: select
     from: incidents
     filters:
       site_id: {}
       incident_type: {}
-      severity: {}
-      occurred_from: {col: occurred_at, op: ">=", type: date, default: "-365d", desc: Incidents on or after}
+      shift_type: {}
+      equipment_involved: {op: like, desc: "Equipment involved, e.g. forklift, reach truck, conveyor"}
+      description: {op: like, desc: "Words in the description, e.g. pedestrian"}
       task: {op: like}
-    columns: [incident_id, site_id, occurred_at, incident_type, severity, location, task, shift_type, equipment_involved]
+      occurred_from: {col: occurred_at, op: ">=", type: date, default: "-365d", desc: Incidents on or after}
+      occurred_to: {col: occurred_at, op: "<=", type: date, desc: Incidents on or before}
+    columns: [incident_id, site_id, occurred_at, incident_type, severity, location, task, shift_type, equipment_involved, is_fatigue_related, root_cause, description]
     order: occurred_at DESC
-    limit: 50
+    limit: 100
     example: {site_id: DC1}
 
   - name: list_fatigue_related_incidents
-    desc: Incidents tagged to fatigue, long hours or night shifts. Shows task, time and site.
+    desc: Incidents tagged to fatigue, long hours or night shifts, with task, time, shift, severity and root cause. Filter by site and period.
     kind: select
     from: incidents
     filters:
       site_id: {}
+      shift_type: {}
       is_fatigue_related: {default: true}
       occurred_from: {col: occurred_at, op: ">=", type: date, default: "-90d", desc: Incidents on or after}
-    columns: [incident_id, site_id, occurred_at, location, task, shift_type, incident_type, severity]
+      occurred_to: {col: occurred_at, op: "<=", type: date, desc: Incidents on or before}
+    columns: [incident_id, site_id, occurred_at, shift_type, incident_type, severity, location, task, root_cause, description]
     order: occurred_at DESC
     limit: 30
     example: {site_id: DC1}
 
   - name: list_open_corrective_actions
-    desc: Open corrective actions and controls by site. Shows owner, due date and status.
-    kind: select
-    from: corrective_actions
-    filters:
+    desc: Open and in-progress corrective actions with owner, due date, days overdue and whether the work is already completed. Filter by site, or overdue only.
+    kind: sql
+    args:
       site_id: {}
-      status: {default: open}
-    columns: [ca_id, site_id, description, owner, due_date, status, incident_id]
-    order: due_date
-    limit: 30
+      status: {type: enum, values: [open, in_progress], desc: "Only this status; omit for both"}
+      overdue_only: {type: bool, default: false, desc: "True to list only actions past their due date and not completed"}
+    sql: |
+      SELECT ca_id, site_id, description, owner, due_date, status, incident_id, completed_date,
+             completed_date IS NOT NULL AS work_completed,
+             completed_date IS NULL AND due_date < CAST($as_of AS DATE) AS overdue,
+             CASE WHEN completed_date IS NULL AND due_date < CAST($as_of AS DATE)
+                  THEN CAST(CAST($as_of AS DATE) - due_date AS INTEGER) ELSE 0 END AS days_overdue
+      FROM corrective_actions
+      WHERE status IN ('open', 'in_progress')
+        AND ($site_id IS NULL OR site_id = $site_id)
+        AND ($status IS NULL OR status = $status)
+        AND ($overdue_only IS NOT TRUE OR (completed_date IS NULL AND due_date < CAST($as_of AS DATE)))
+      ORDER BY due_date, ca_id
+    limit: 40
     example: {site_id: DC1}
 
   - name: list_risk_assessments_by_site
-    desc: Current risk assessments by site and activity. Shows hazards, controls and residual risk.
+    desc: Current risk assessments by site and activity. Shows hazards, controls, residual risk and date assessed.
     kind: select
     from: risk_assessments
     filters:
@@ -132,22 +150,29 @@ tools:
       activity: {op: like}
     columns: [ra_id, site_id, activity, risk_level, hazards, controls, residual_risk, date_assessed]
     order: site_id, activity
-    limit: 30
+    limit: 40
     example: {site_id: DC1}
 
   - name: list_site_jurisdictions
-    desc: Sites with country and applicable regimes for safety regulation compliance.
-    kind: select
-    from: site_jurisdictions
-    filters:
-      country: {}
-    columns: [site_id, country, applicable_regimes]
-    order: country, site_id
+    desc: Countries and sites with the safety regimes that apply, one row per country and site type. Filter by country or site.
+    kind: sql
+    args:
+      country: {type: str, desc: "ISO country code, e.g. GB, DE"}
+      site_id: {}
+    sql: |
+      SELECT country, site_type, count(*) AS sites,
+             string_agg(site_id, ', ' ORDER BY site_id) AS site_ids,
+             any_value(applicable_regimes) AS applicable_regimes
+      FROM site_jurisdictions
+      WHERE ($country IS NULL OR country = upper($country))
+        AND ($site_id IS NULL OR site_id = $site_id)
+      GROUP BY country, site_type
+      ORDER BY country, CASE site_type WHEN 'dc' THEN 0 WHEN 'store' THEN 1 ELSE 2 END
     limit: 30
-    example: {}
+    example: {country: DE}
 
   - name: list_site_safety_procedures
-    desc: Current procedures and practices by site. Shows procedure type and status.
+    desc: Current safety procedures by site with type, status and last update. Use to check practices against regulations.
     kind: select
     from: site_safety_procedures
     filters:
@@ -156,70 +181,97 @@ tools:
       procedure_type: {op: like}
     columns: [procedure_id, site_id, procedure_name, procedure_type, status, last_updated]
     order: site_id, procedure_name
-    limit: 30
+    limit: 40
     example: {site_id: DC1}
 
   - name: get_incident_location_heatmap
-    desc: Incident counts by aisle, crossing point or area. Shows severity distribution and frequency.
+    desc: Incident counts by site and location (aisle, crossing point or area) with severity split, worst first. Filter by site, period, equipment or description words.
     kind: sql
     args:
       site_id: {}
-      incident_from: {col: occurred_at, op: ">=", type: date, default: "-90d", desc: Incidents on or after}
+      incident_from: {type: date, default: "-90d", desc: Incidents on or after}
+      incident_to: {type: date, desc: Incidents on or before}
+      equipment_involved: {type: str, desc: "Equipment involved, e.g. forklift"}
+      description: {type: str, desc: "Words in the description, e.g. pedestrian"}
+      incident_type: {}
     sql: |
-      SELECT location, count(*) AS total_incidents,
+      SELECT site_id, location, count(*) AS total_incidents,
              count(*) FILTER (WHERE severity = 'critical') AS critical_count,
              count(*) FILTER (WHERE severity = 'high') AS high_count,
              count(*) FILTER (WHERE severity = 'medium') AS medium_count,
              count(*) FILTER (WHERE severity = 'low') AS low_count,
              count(*) FILTER (WHERE incident_type = 'accident') AS accidents,
-             count(*) FILTER (WHERE incident_type = 'near_miss') AS near_misses
+             count(*) FILTER (WHERE incident_type = 'near_miss') AS near_misses,
+             CAST(max(occurred_at) AS DATE) AS latest_incident
       FROM incidents
       WHERE ($site_id IS NULL OR site_id = $site_id)
         AND occurred_at >= CAST($incident_from AS DATE)
-      GROUP BY location
-      ORDER BY total_incidents DESC
+        AND ($incident_to IS NULL OR occurred_at < CAST($incident_to AS DATE) + INTERVAL 1 DAY)
+        AND ($equipment_involved IS NULL OR equipment_involved ILIKE '%' || $equipment_involved || '%')
+        AND ($description IS NULL OR description ILIKE '%' || $description || '%')
+        AND ($incident_type IS NULL OR incident_type = $incident_type)
+      GROUP BY site_id, location
+      ORDER BY total_incidents DESC, critical_count DESC, high_count DESC, site_id, location
     limit: 20
     example: {site_id: DC1}
 
   - name: get_site_safety_incidents
-    desc: Incident and near-miss rates by site over 12 months. Shows totals and severity breakdown.
+    desc: Incident and near-miss totals per DC with severity split and incidents per 100 active staff, worst first. Defaults to the last 12 months.
     kind: sql
     args:
       site_id: {}
       date_from: {type: date, default: "-365d", desc: Incidents on or after}
     sql: |
-      SELECT s.site_id, s.name,
-             count(*) AS total_incidents,
+      WITH inc AS (
+        SELECT * FROM incidents
+        WHERE occurred_at >= CAST($date_from AS DATE) AND ($site_id IS NULL OR site_id = $site_id)
+      ), hc AS (
+        SELECT site_id, count(*) AS active_staff FROM master.employees WHERE status = 'active' GROUP BY site_id
+      )
+      SELECT s.site_id, s.name, count(i.incident_id) AS total_incidents,
              count(*) FILTER (WHERE i.incident_type = 'accident') AS accidents,
              count(*) FILTER (WHERE i.incident_type = 'near_miss') AS near_misses,
+             count(*) FILTER (WHERE i.incident_type = 'dangerous_occurrence') AS dangerous_occurrences,
              count(*) FILTER (WHERE i.severity = 'critical') AS critical_count,
              count(*) FILTER (WHERE i.severity = 'high') AS high_count,
-             round(count(*) * 100.0 / (SELECT count(*) FROM incidents), 1) AS pct_of_total
-      FROM incidents i
-      JOIN master.sites s ON s.site_id = i.site_id
-      WHERE ($site_id IS NULL OR i.site_id = $site_id)
-        AND i.occurred_at >= CAST($date_from AS DATE)
-      GROUP BY s.site_id, s.name
-      ORDER BY total_incidents DESC
+             h.active_staff,
+             round(count(i.incident_id) * 100.0 / h.active_staff, 1) AS incidents_per_100_staff,
+             round(count(i.incident_id) * 100.0 / sum(count(i.incident_id)) OVER (), 1) AS pct_of_total
+      FROM master.sites s
+      LEFT JOIN inc i ON i.site_id = s.site_id
+      LEFT JOIN hc h ON h.site_id = s.site_id
+      WHERE s.type = 'dc' AND ($site_id IS NULL OR s.site_id = $site_id)
+      GROUP BY s.site_id, s.name, h.active_staff
+      ORDER BY total_incidents DESC, s.site_id
     limit: 20
     example: {}
 
   - name: get_safety_validation_records
-    desc: Safety validation and sign-off records for automation. Shows asset, date and validation status.
-    kind: select
-    from: safety_validations
-    filters:
+    desc: Safety validation and sign-off records for automation assets, with validated firmware versus the asset's current version. Filter by asset, site, type or status.
+    kind: sql
+    args:
       asset_id: {}
-      validation_type: {}
-      status: {}
-      validation_from: {col: validation_date, op: ">=", type: date, default: "-90d", desc: Validations on or after}
-    columns: [validation_id, asset_id, validation_date, validation_type, status, validated_by, notes]
-    order: validation_date DESC
+      site_id: {}
+      validation_type: {type: str, desc: "Type, e.g. firmware update, safety checks"}
+      status: {type: enum, values: [pass, fail, needs_review], desc: Validation result}
+      validation_from: {type: date, default: "-180d", desc: Validations on or after}
+    sql: |
+      SELECT v.validation_id, v.asset_id, a.name AS asset_name, a.site_id, v.validation_date, v.validation_type, v.status,
+             v.firmware_version AS validated_firmware, a.software_version AS current_firmware,
+             v.validated_by, v.notes
+      FROM safety_validations v
+      JOIN master.assets a ON a.asset_id = v.asset_id
+      WHERE ($asset_id IS NULL OR v.asset_id = $asset_id)
+        AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($validation_type IS NULL OR v.validation_type ILIKE '%' || $validation_type || '%')
+        AND ($status IS NULL OR v.status = $status)
+        AND v.validation_date >= CAST($validation_from AS DATE)
+      ORDER BY v.validation_date DESC, v.validation_id
     limit: 30
-    example: {}
+    example: {site_id: DC2}
 
   - name: create_corrective_action
-    desc: Create a corrective action with owner, site and due date.
+    desc: Create a corrective action for a site with owner, due date and optional linked incident. Returns the new action.
     kind: insert
     table: corrective_actions
     id_prefix: CA-
@@ -227,17 +279,17 @@ tools:
     args:
       site_id: {required: true}
       description: {required: true}
-      owner: {required: true}
+      owner: {required: true, desc: "Employee id of the owner, e.g. EMP-00108"}
       due_date: {required: true, type: date}
-      incident_id: {type: str}
-    example: {site_id: DC1, description: "Replace safety signage in aisle C", owner: "EMP-01234", due_date: "-7d"}
+      incident_id: {type: str, desc: "Related incident, e.g. INC-900001"}
+    example: {site_id: DC1, description: "Replace safety signage in aisle 3", owner: "EMP-00108", due_date: "+30d"}
 
   - name: update_corrective_action_status
-    desc: Close a corrective action or change its status or due date.
+    desc: Close a corrective action or change its status or due date. Pass completed_date when closing.
     kind: update
     table: corrective_actions
     args:
       status: {type: enum, values: [open, in_progress, completed, closed]}
       due_date: {type: date}
       completed_date: {type: date}
-    example: {ca_id: CA-900001, status: closed, completed_date: "$as_of"}
+    example: {ca_id: CA-900004, status: closed, completed_date: "-3d"}

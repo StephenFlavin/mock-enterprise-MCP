@@ -8,13 +8,13 @@ Story scopes (everything else is generated background that avoids them):
         a festival boost 37 days ago and roadworks drag from 20 days ago.
   ST150, ST159, ST165, ST181, ST183 (all Leeds): self-checkout exception rates up (08:79:Q5).
   Tops: size curve skewed to larger sizes and Scottish stores over-allocated (03:25:Q5).
-  Small Appliances: +5% price rise 11 weeks ago with volume down (08:77:Q2). Home: mix shift to low-margin lines (08:77:Q3).
+  Small Appliances: a 4-week promotion about 4 months ago (10% deeper discount, volume up) to show price response (08:77:Q2). Home: mix shift to low-margin lines (08:77:Q3).
 """
 from datetime import datetime, timedelta, time
 from itertools import accumulate
 
 N_HOME_NEW = 28        # days: Home mix shift applies to the last 28 days
-N_SA_NEW = 77          # days: Small Appliances price rise applies to the last 11 weeks
+SA_PROMO = (126, 98)   # days back: Small Appliances promotion (deeper discount, higher volume) for four weeks
 FESTIVAL_DAY = 37      # ST214 festival Saturday
 ROADWORKS_FROM = 20    # ST214 roadworks start
 
@@ -56,8 +56,7 @@ def generate(g):
     avail_base, avail_mult = {}, {}
     for p in products:
         u = r.random()
-        forced_high = p["category"] in ("Tops", "Small Appliances", "Lighting", "Bedding", "Cookware", "Drinkware",
-                                        "Storage", "Towels") or p["sku"] in STORY_SKUS
+        forced_high = p["category"] == "Tops" or p["sku"] in STORY_SKUS
         if forced_high or u < 0.80:
             avail_base[p["sku"]], avail_mult[p["sku"]] = r.randint(93, 100), 1.0
         elif u < 0.95:
@@ -67,8 +66,8 @@ def generate(g):
 
     cum_cache = {}
 
-    def cum_for(home_new, sa_new, exclude_story):
-        key = (home_new, sa_new, exclude_story)
+    def cum_for(home_new, sa_promo, exclude_story):
+        key = (home_new, sa_promo, exclude_story)
         if key not in cum_cache:
             ws = []
             for p in products:
@@ -79,8 +78,8 @@ def generate(g):
                 w = cw / ncat[cat] * ABC_W[p["abc_class"]] * avail_mult[p["sku"]]
                 if cat == "Tops":
                     w *= TOPS_SIZE_W[p["size"]] * 3
-                if cat == "Small Appliances" and sa_new:
-                    w *= 0.90
+                if cat == "Small Appliances" and sa_promo:
+                    w *= 1.35
                 if exclude_story and p["sku"] in STORY_SKUS:
                     w = 0.0
                 ws.append(w)
@@ -90,10 +89,10 @@ def generate(g):
     sales = []
     n_txn = [0]
 
-    def add_sale(store, p, when, qty, avail, price_mult=1.0):
-        price = float(p["retail_price_gbp"] or 50) * price_mult
+    def add_sale(store, p, when, qty, avail, lo=0.95, hi=1.0):
+        price = float(p["retail_price_gbp"] or 50)
         cost = float(p["unit_cost_gbp"] or 20)
-        disc = r.uniform(0.95, 1.0)
+        disc = r.uniform(lo, hi)
         rev = qty * price * disc
         n_txn[0] += 1
         sales.append({
@@ -108,29 +107,29 @@ def generate(g):
 
     for d in range(182, 0, -1):
         day = g.as_of - timedelta(days=d)
-        home_new, sa_new = d <= N_HOME_NEW, d <= N_SA_NEW
+        home_new, sa_promo = d <= N_HOME_NEW, SA_PROMO[1] <= d <= SA_PROMO[0]
         for st in stores:
             s = sites[st]
             mult = CLUSTER_MULT.get(s["cluster"], 1.0) * dow_mult[day.weekday()]
             if st == "ST214":
                 if d == FESTIVAL_DAY:
-                    mult *= 1.8
+                    mult *= 2.5
                 if d <= ROADWORKS_FROM:
-                    mult *= 0.85
+                    mult *= 0.8
             recent = d <= 56
-            n_rows = 8 if (recent and st == "ST214") else (6 if recent else 2)
+            n_rows = 16 if (recent and st == "ST214") else (6 if recent else 3)
             if st == "ST214" and d in (1, 2, 3):
-                n_rows = 6
-            cum = cum_for(home_new, sa_new, st == "ST214")
+                n_rows = 12
+            cum = cum_for(home_new, sa_promo, st == "ST214")
             for _ in range(n_rows):
                 p = r.choices(products, cum_weights=cum)[0]
-                base = r.randint(1, 7) if recent else r.randint(7, 17)
+                base = (r.randint(1, 3) if st == "ST214" else r.randint(1, 7)) if recent else r.randint(4, 12)
                 qty = max(1, round(base * mult))
                 hour = r.choices(range(9, 21), weights=hour_w)[0]
                 when = datetime.combine(day, time(hour, r.randint(0, 59)))
                 avail = max(0, min(100, avail_base[p["sku"]] + r.randint(-3, 3)))
-                pm = 1.05 if (p["category"] == "Small Appliances" and sa_new) else 1.0
-                add_sale(st, p, when, qty, avail, pm)
+                lo, hi = (0.88, 0.92) if (p["category"] == "Small Appliances" and sa_promo) else (0.95, 1.0)
+                add_sale(st, p, when, qty, avail, lo, hi)
 
     # ---- ST214 story: three best-selling blouses lose availability in the last 72 hours ----
     for sku in sorted(STORY_SKUS):
@@ -138,7 +137,7 @@ def generate(g):
         for d in range(35, 3, -1):
             day = g.as_of - timedelta(days=d)
             for hour in (11, 15):
-                mult = 0.85 if d <= ROADWORKS_FROM else 1.0
+                mult = 0.8 if d <= ROADWORKS_FROM else 1.0
                 add_sale("ST214", p, datetime.combine(day, time(hour, r.randint(0, 59))),
                          max(1, round(r.randint(1, 2) * mult * dow_mult[day.weekday()])), r.randint(93, 99))
     # (day offset, hour, qty, availability) per SKU: morning rush then gaps from lunchtime, worsening each day
@@ -159,7 +158,7 @@ def generate(g):
                      datetime.combine(g.as_of - timedelta(days=d), time(hour, r.randint(0, 59))), qty, av)
 
     # ---- allocation and plan for sell-through (units bought/allocated per store and category) ----
-    cutoff = g.as_of - timedelta(days=30)
+    cutoff = g.as_of - timedelta(days=29)
     units30 = {}
     cat_of = {p["sku"]: p["category"] for p in products}
     for t in sales:
@@ -273,9 +272,9 @@ def generate(g):
     base = {"weight_tolerance": 2.0, "unexpected_item": 1.6, "age_verification": 0.8}
     # rule_type -> store -> function(week index 0..11) -> rate
     story = {
-        ("ST150", "unexpected_item"): lambda i: 1.7 if i < 9 else 4.6,                    # step: scanner fault
-        ("ST159", "unexpected_item"): lambda i: 1.6 if i < 8 else 4.5,                    # step: scanner fault
-        ("ST181", "unexpected_item"): lambda i: 1.7 if i < 10 else 4.8,                   # step: scanner fault
+        ("ST150", "unexpected_item"): lambda i: 1.7 if i < 10 else 4.6,                   # step: scanner fault
+        ("ST159", "unexpected_item"): lambda i: 1.6 if i < 9 else 4.5,                    # step: scanner fault
+        ("ST181", "unexpected_item"): lambda i: 1.7 if i < 11 else 4.8,                   # step: scanner fault
         ("ST165", "unexpected_item"): lambda i: 1.6 if i < 7 else 1.6 + 0.6 * (i - 6),    # gradual ramp: deliberate
         ("ST183", "unexpected_item"): lambda i: 1.7 if i < 7 else 1.7 + 0.55 * (i - 6),
     }

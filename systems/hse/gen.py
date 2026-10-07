@@ -1,187 +1,111 @@
-"""Background health & safety data: incidents, corrective actions, risk assessments by site."""
-from datetime import datetime, timedelta, date
+"""Background health & safety data. The story rows live in seed/ and are overlaid on top.
+
+Background is deliberately quiet around the stories: no forklift-pedestrian wording, no 'Layout change' root
+causes, no hotspot locations in the last 100 days, and no fatigue tags at DC1-DC3 in the last 100 days, so the
+planted rows are what a correct answer finds.
+"""
+from datetime import datetime, timedelta
+
+REGIMES = {
+    "GB": "HSW Act 1974; PUWER 1998; LOLER 1998; COSHH; DSEAR 2002; Manual Handling Operations Regs 1992; Work at Height Regs 2005",
+    "IE": "Safety, Health and Welfare at Work Act 2005; General Application Regs 2007",
+    "DE": "ArbSchG; ArbStaettV; BetrSichV; DGUV Vorschrift 68 (industrial trucks); Arbeitszeitgesetz",
+    "NL": "Arbowet; Arbobesluit; Arbeidstijdenwet",
+    "US": "OSHA 29 CFR 1910.178 (powered industrial trucks); OSHA General Duty Clause",
+    "HK": "Occupational Safety and Health Ordinance (Cap. 509)",
+}
+
+TASKS = {
+    "Forklift operation": (["Forklift"], ["Forklift struck racking upright", "Load slipped from forks", "Forklift clipped a dock door frame", "Forklift tyre failure in aisle"]),
+    "Reach truck operation": (["Reach truck"], ["Reach truck blade caught pallet edge", "Load shifted on raised forks", "Reach truck mast fouled sprinkler pipe"]),
+    "Pallet stacking": (["Racking", "Pallet jack"], ["Pallet overhung beam, stack collapse avoided", "Damaged pallet found in stack", "Pallet jack handle trapped hand"]),
+    "Order picking": ([None, "Lift"], ["Picker slipped on spilt liquid", "Picker strained shoulder reaching to a top shelf", "Tote dropped from pick station"]),
+    "Receiving": (["Pallet jack", None], ["Cage trolley trapped foot at dock", "Pallet dropped during unload", "Cut hand on strapping"]),
+    "Loading dock": ([None], ["Carton fell from trailer load", "Dock plate lip caused trip", "Strapping snapped while unloading"]),
+    "Equipment maintenance": (["Conveyor", "Sorter"], ["Pinch point on conveyor guard", "Minor electric shock testing sensor", "Cut hand during belt change"]),
+}
+LOCS = [f"Aisle {n}" for n in range(1, 13)] + ["Dock area", "Mezzanine", "Packing area", "Crossing point A1", "Crossing point B2", "Crossing point C3"]
+HOTSPOTS = {"Aisle 7", "Aisle 3", "Crossing point A1", "Crossing point B2"}
+ROOTS = ["Inadequate training", "Procedure not followed", "Equipment defect", "Housekeeping"]
 
 
 def generate(g):
     r = g.rng
-    sites = [s["site_id"] for s in g.master("sites") if s["type"] == "dc"]
-    employees = [e["employee_id"] for e in g.master("employees") if e["status"] == "active"]
+    as_of = g.as_of
+    sites = [s for s in g.master("sites")]
+    dcs = [s["site_id"] for s in sites if s["type"] == "dc"]
+    emps = [e for e in g.master("employees") if e["status"] == "active" and e["department"] == "Logistics"]
+    by_site = {d: [e["employee_id"] for e in emps if e["site_id"] == d] for d in dcs}
+    mgrs = {d: [e["employee_id"] for e in emps if e["site_id"] == d and "Manager" in e["role"]] for d in dcs}
 
     incidents = []
-    corrective_actions = []
-    risk_assessments = []
-    site_procedures = []
-    safety_validations = []
-    site_jurisdictions = []
-
-    # Build site jurisdictions (DC sites with their countries)
-    for site in g.master("sites"):
-        if site["type"] == "dc":
-            site_jurisdictions.append({
-                "site_id": site["site_id"],
-                "country": site["country"],
-                "applicable_regimes": "COSHH; PUWER; HSW Act; DSEAR" if site["country"] == "GB" else
-                                     "ArbStättV; TRGS; BetrSichV" if site["country"] == "DE" else
-                                     "Kodeks pracy; Rozporzadzenie; PNHP"
-            })
-
-    # Generate incidents across the 365 days + history, across all DCs
-    for i in range(120):  # ~120 incidents across all 5 DCs
-        site_id = r.choice(sites)
-        incident_date = g.days_ago(r.randint(1, 365))
-        occurred_at = datetime.combine(incident_date, datetime.min.time()).replace(
-            hour=r.randint(6, 22), minute=r.choice([0, 15, 30, 45]))
-
-        incident_type = r.choices(["accident", "near_miss", "dangerous_occurrence"], [60, 35, 5])[0]
-        severity = r.choices(["critical", "high", "medium", "low"], [5, 20, 40, 35])[0]
-
-        # Pick a location (aisle or area)
-        location = r.choice(["Aisle A", "Aisle B", "Aisle C", "Aisle D", "Aisle E", "Aisle F",
-                            "Aisle G", "Dock area", "Mezzanine", "Crossing point A1", "Crossing point B2"])
-
-        task = r.choice(["Forklift operation", "Reach truck operation", "Pallet stacking",
-                        "Order picking", "Receiving", "Loading dock", "Equipment maintenance"])
-
-        equipment = r.choice(["Forklift", "Reach truck", "Conveyor", "Sorter", "Pallet jack",
-                             "Racking", "Lift", None])
-
-        shift = r.choice(["early", "late", "night", "days"])
-        is_fatigue = r.choices([True, False], [20, 80])[0] if shift in ["night", "late"] else r.choices([True, False], [5, 95])[0]
-
+    weights = {"DC1": 1.0, "DC2": 1.0, "DC3": 0.4, "DC4": 0.7, "DC5": 0.2}
+    for _ in range(50):
+        site = r.choices(dcs, [weights[d] for d in dcs])[0]
+        days = r.randint(1, 365)
+        shift = r.choices(["early", "late", "night"], [35, 40, 25])[0]
+        hour = {"early": r.randint(6, 13), "late": r.randint(14, 21), "night": r.choice([22, 23, 0, 1, 2, 3, 4, 5])}[shift]
+        occurred = datetime.combine(g.days_ago(days), datetime.min.time()).replace(hour=hour, minute=r.choice([0, 10, 25, 40, 50]))
+        task = r.choice(list(TASKS))
+        equips, descs = TASKS[task]
+        loc = r.choice(LOCS)
+        while days < 100 and site == "DC1" and loc in HOTSPOTS:
+            loc = r.choice(LOCS)
+        sev = r.choices(["critical", "high", "medium", "low"], [2, 15, 40, 43])[0]
+        typ = r.choices(["accident", "near_miss", "dangerous_occurrence"], [45, 50, 5])[0]
+        if typ == "dangerous_occurrence" and sev in ("low", "medium"):
+            typ = "near_miss"
+        fatigue = shift in ("late", "night") and r.random() < 0.15 and (days > 100 or site in ("DC4", "DC5"))
         incidents.append({
-            "incident_id": f"INC-{len(incidents) + 1:06d}",
-            "site_id": site_id,
-            "occurred_at": occurred_at,
-            "incident_type": incident_type,
-            "severity": severity,
-            "location": location,
-            "task": task,
-            "description": f"{task} incident: {r.choice(['slip hazard', 'struck by', 'crush risk', 'fall hazard', 'near miss with equipment'])}",
-            "reported_by": r.choice(employees),
-            "is_fatigue_related": is_fatigue,
-            "shift_type": shift,
-            "equipment_involved": equipment,
-            "root_cause": r.choice(["Inadequate training", "Fatigue", "Procedure not followed",
-                                    "Equipment defect", "Housekeeping", "Layout change"]),
-            "created_at": occurred_at + timedelta(hours=r.randint(0, 24)),
-            "updated_at": occurred_at + timedelta(hours=r.randint(24, 72))
+            "incident_id": f"INC-{len(incidents) + 1:06d}", "site_id": site, "occurred_at": occurred,
+            "incident_type": typ, "severity": sev, "location": loc, "task": task,
+            "description": r.choice(descs), "reported_by": r.choice(by_site[site]),
+            "is_fatigue_related": fatigue, "shift_type": shift, "equipment_involved": r.choice(equips),
+            "root_cause": "Fatigue" if fatigue else r.choice(ROOTS),
+            "created_at": occurred + timedelta(hours=1), "updated_at": occurred + timedelta(days=1, hours=3),
         })
 
-    # Generate corrective actions - some linked to incidents, many open
-    for i in range(60):
-        site_id = r.choice(sites)
-
-        # Link some to incidents
-        linked_incident = r.choice([None] * 7 + [incidents[j]["incident_id"] for j in range(min(10, len(incidents)))])
-
-        status = r.choices(["open", "in_progress", "completed", "closed"], [40, 20, 25, 15])[0]
-
-        # g.as_of is a date object
-        as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
-        due_date = as_of_date + timedelta(days=r.randint(-30, 60))
-        completed_date = None
-        if status in ["completed", "closed"]:
-            completed_date = due_date - timedelta(days=r.randint(0, 30))
-
-        corrective_actions.append({
-            "ca_id": f"CA-{len(corrective_actions) + 1:06d}",
-            "site_id": site_id,
-            "incident_id": linked_incident,
-            "status": status,
-            "description": r.choice([
-                "Review and update risk assessment for crossing points",
-                "Install additional safety signage",
-                "Replace worn racking in aisle " + r.choice(["A", "B", "C", "D", "E"]),
-                "Conduct safety training refresher",
-                "Inspect equipment for defects",
-                "Review shift patterns for fatigue management",
-                "Improve dock area layout",
-                "Install proximity sensors on equipment"
-            ]),
-            "owner": r.choice(employees),
-            "due_date": due_date,
-            "completed_date": completed_date,
-            "created_at": datetime.combine(as_of_date - timedelta(days=r.randint(10, 180)), datetime.min.time()),
-            "updated_at": datetime.combine(as_of_date - timedelta(days=r.randint(0, 10)), datetime.min.time())
-        })
-
-    # Generate risk assessments for various activities by site
-    activities = ["Reach truck operation", "Forklift operation", "Battery charging", "Order picking",
-                 "Equipment maintenance", "Pallet stacking", "Dock operations", "Mezzanine work"]
-
-    for site_id in sites:
-        for activity in r.sample(activities, r.randint(4, 8)):
-            risk_level = r.choices(["critical", "high", "medium", "low"], [5, 20, 45, 30])[0]
-
-            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
-            date_assessed = as_of_date - timedelta(days=r.randint(30, 365))
-
-            risk_assessments.append({
-                "ra_id": f"RA-{len(risk_assessments) + 1:06d}",
-                "site_id": site_id,
-                "activity": activity,
-                "risk_level": risk_level,
-                "hazards": r.choice([
-                    "Collision with other equipment; pedestrians",
-                    "Battery hazards; fire risk; chemical exposure",
-                    "Struck-by incidents; crushing hazards",
-                    "Fall from height; dropped objects",
-                    "Electrical hazards; shock risk"
-                ]),
-                "controls": r.choice([
-                    "Speed limiters; proximity sensors; operator training",
-                    "Dedicated charging area; ventilation; fire suppression",
-                    "High-visibility clothing; exclusion zones; signage",
-                    "Edge protection; hard hats; PPE",
-                    "Lockout/tagout; warning signs; maintenance logs"
-                ]),
-                "residual_risk": r.choices(["high", "medium", "low"], [20, 50, 30])[0],
-                "date_assessed": date_assessed,
-                "updated_at": datetime.combine(as_of_date - timedelta(days=r.randint(0, 90)), datetime.min.time())
+    cas = []
+    for site in dcs:
+        old_site = site in ("DC1", "DC2", "DC3")
+        for _ in range(5 if old_site else 8):
+            status = r.choice(["completed", "closed"]) if old_site else r.choices(["open", "in_progress", "completed", "closed"], [40, 20, 25, 15])[0]
+            done = status in ("completed", "closed")
+            if old_site or done:
+                due = as_of - timedelta(days=r.randint(30, 200))
+            else:
+                due = as_of + timedelta(days=r.randint(5, 60))
+            comp = due - timedelta(days=r.randint(0, 14)) if done else None
+            cands = [i for i in incidents if i["site_id"] == site and i["occurred_at"].date() < due - timedelta(days=10)]
+            inc = r.choice(cands) if cands and r.random() < 0.6 else None
+            created = (inc["occurred_at"] + timedelta(days=1)) if inc else datetime.combine(due - timedelta(days=r.randint(20, 60)), datetime.min.time())
+            cas.append({
+                "ca_id": f"CA-{len(cas) + 1:06d}", "site_id": site, "incident_id": inc["incident_id"] if inc else None,
+                "status": status, "description": r.choice([
+                    "Review and update risk assessment for crossing points", "Install additional safety signage",
+                    "Conduct safety training refresher", "Inspect equipment for defects",
+                    "Improve dock area layout", "Replace worn racking guards", "Refresh housekeeping audit"]),
+                "owner": r.choice(mgrs[site] or by_site[site]), "due_date": due,
+                "completed_date": comp, "created_at": created,
+                "updated_at": datetime.combine(comp or (as_of - timedelta(days=r.randint(0, 10))), datetime.min.time()) + timedelta(hours=16),
             })
 
-    # Generate site safety procedures by site
-    procedure_types = ["Forklift operation", "Reach truck operation", "Battery charging",
-                      "Dock operations", "Confined spaces", "Working at height", "Equipment maintenance"]
+    jurisdictions = [{
+        "site_id": s["site_id"], "name": s["name"], "site_type": s["type"], "country": s["country"],
+        "applicable_regimes": REGIMES.get(s["country"], ""),
+    } for s in sites]
 
-    for site_id in sites:
-        for ptype in r.sample(procedure_types, r.randint(3, 6)):
-            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
-
-            site_procedures.append({
-                "procedure_id": f"PROC-{len(site_procedures) + 1:06d}",
-                "site_id": site_id,
-                "procedure_name": f"{ptype} - {site_id}",
-                "procedure_type": ptype,
-                "status": r.choices(["active", "inactive", "draft"], [85, 10, 5])[0],
-                "last_updated": as_of_date - timedelta(days=r.randint(0, 180))
+    validations = []
+    for a in g.master("assets"):
+        if a["site_id"] == "DC2" and a["asset_class"] == "shuttle" and a["asset_id"].split("-")[-1].isdigit() \
+                and int(a["asset_id"].split("-")[-1]) >= 4:
+            d = g.days_ago(r.randint(110, 300))
+            validations.append({
+                "validation_id": f"VAL-{len(validations) + 1:06d}", "asset_id": a["asset_id"], "validation_date": d,
+                "validation_type": "Safety checks", "status": "pass", "validated_by": r.choice(mgrs["DC2"]),
+                "firmware_version": a["software_version"], "notes": "Routine safety checks passed; gates and e-stops verified",
+                "updated_at": datetime.combine(d, datetime.min.time()) + timedelta(hours=15),
             })
 
-    # Generate safety validation records for automation assets
-    assets = [a for a in g.master("assets") if a["asset_class"] in ["shuttle", "sorter", "conveyor"]]
-
-    for asset in r.sample(assets, min(15, len(assets))):
-        for _ in range(r.randint(1, 3)):
-            as_of_date = g.as_of if isinstance(g.as_of, date) else g.as_of.date()
-            validation_date = as_of_date - timedelta(days=r.randint(1, 90))
-
-            safety_validations.append({
-                "validation_id": f"VAL-{len(safety_validations) + 1:06d}",
-                "asset_id": asset["asset_id"],
-                "validation_date": validation_date,
-                "validation_type": r.choice(["Firmware update", "Safety checks", "Integration test", "Functional test"]),
-                "status": r.choices(["pass", "fail", "needs_review"], [80, 10, 10])[0],
-                "validated_by": r.choice(employees),
-                "notes": r.choice(["All checks passed", "Minor discrepancy in sensor calibration",
-                                 "Requires follow-up testing", "Documentation review needed"]),
-                "updated_at": datetime.combine(validation_date, datetime.min.time()) + timedelta(hours=r.randint(1, 48))
-            })
-
-    return {
-        "incidents": incidents,
-        "corrective_actions": corrective_actions,
-        "risk_assessments": risk_assessments,
-        "site_safety_procedures": site_procedures,
-        "safety_validations": safety_validations,
-        "site_jurisdictions": site_jurisdictions
-    }
+    return {"incidents": incidents, "corrective_actions": cas, "risk_assessments": [],
+            "site_safety_procedures": [], "safety_validations": validations, "site_jurisdictions": jurisdictions}

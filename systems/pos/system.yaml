@@ -182,7 +182,7 @@ tools:
     example: {store_id: "ST214"}
 
   - name: get_sales_and_margin_history_for_category
-    desc: Weekly units, revenue, average selling price, margin and margin % for a category, newest week first. Use to see price and volume trends.
+    desc: Weekly units, revenue, average selling price, price realised versus list, margin and margin % for a category, newest week first.
     kind: sql
     args:
       category: {required: true, desc: "Product category, e.g. Small Appliances or Tops"}
@@ -191,6 +191,7 @@ tools:
       SELECT DATE_TRUNC('week', t.transaction_time) AS week_start, COUNT(DISTINCT t.sku) AS skus,
              SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
              ROUND(SUM(t.revenue_gbp) / SUM(t.quantity), 2) AS avg_selling_price_gbp,
+             ROUND(100.0 * SUM(t.revenue_gbp) / SUM(t.quantity * p.retail_price_gbp), 1) AS price_realised_vs_list_pct,
              ROUND(SUM(t.margin_gbp), 0) AS margin_gbp, ROUND(100.0 * SUM(t.margin_gbp) / SUM(t.revenue_gbp), 1) AS margin_pct
       FROM sales_transactions t
       JOIN master.products p ON t.sku = p.sku
@@ -343,13 +344,15 @@ tools:
       category: {required: true, desc: "Product category, e.g. Tops"}
       days_back: {type: int, default: 30, desc: "Days to look back"}
     sql: |
-      WITH s AS (
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      s AS (
         SELECT t.store_id, SUM(t.quantity) AS units_sold, COUNT(DISTINCT t.sku) AS skus_sold,
                ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp
         FROM sales_transactions t
         JOIN master.products p ON t.sku = p.sku
+        CROSS JOIN anchor a
         WHERE p.category = $category
-          AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - CAST($days_back AS INT) * INTERVAL 1 DAY
+          AND t.transaction_time > a.latest - CAST($days_back AS INT) * INTERVAL 1 DAY
         GROUP BY t.store_id
       ),
       r AS (
@@ -377,12 +380,14 @@ tools:
     args:
       category: {required: true, desc: "Product category, e.g. Tops"}
     sql: |
-      WITH a AS (
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      a AS (
         SELECT t.size, SUM(t.quantity) AS units
         FROM sales_transactions t
         JOIN master.products p ON t.sku = p.sku
+        CROSS JOIN anchor an
         WHERE p.category = $category
-          AND t.transaction_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 30 DAY
+          AND t.transaction_time > an.latest - INTERVAL 30 DAY
         GROUP BY t.size
       ),
       b AS (SELECT size, units, ROUND(100.0 * units / SUM(units) OVER (), 1) AS sales_pct FROM a)
@@ -399,11 +404,13 @@ tools:
       days_back: {type: int, default: 30, desc: "Days to look back"}
       abc_class: {type: str, desc: "Sales velocity class: A (top sellers), B or C (long tail)"}
     sql: |
-      WITH sku AS (
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      sku AS (
         SELECT t.sku, SUM(t.quantity) AS units, SUM(t.revenue_gbp) AS rev, AVG(t.availability_pct) AS avail
         FROM sales_transactions t
         JOIN master.products p ON t.sku = p.sku
-        WHERE t.transaction_time >= CAST($as_of AS TIMESTAMP) - CAST($days_back AS INT) * INTERVAL 1 DAY
+        CROSS JOIN anchor an
+        WHERE t.transaction_time > an.latest - CAST($days_back AS INT) * INTERVAL 1 DAY
           AND ($abc_class IS NULL OR p.abc_class = $abc_class)
         GROUP BY t.sku
       ),
