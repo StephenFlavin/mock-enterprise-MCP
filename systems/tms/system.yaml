@@ -630,24 +630,27 @@ tools:
     example: {}
 
   - name: calculate_delivery_cutoff_dates
-    desc: "Calculates delivery cutoff dates for order promises based on carrier schedule."
+    desc: "Calculates the last order date and time per lane and carrier to deliver on a target date, from the carrier collection schedule. Parcel lanes allow for the service level's transit days; store road lanes for the days-ahead booking rule."
     kind: sql
     args:
       origin_site_id: {required: true, desc: "DC from which orders ship"}
       delivery_target_date: {type: date, required: true, desc: "Required delivery date"}
+      service_level: {type: enum, values: [standard, next_day, same_day], default: next_day, desc: "Parcel service promised (road store lanes ignore it): standard 4 days from order, next_day 1, same_day 0"}
+      lane: {desc: "Lane code, e.g. DC2-GB; blank for all lanes from the DC"}
     sql: |
       SELECT DISTINCT cl.lane,
              cl.carrier_id,
-             CASE WHEN cl.cutoff_day_offset = 0 THEN CAST($delivery_target_date AS DATE) - INTERVAL 1 DAY
-                  ELSE CAST($delivery_target_date AS DATE) - (INTERVAL (cl.cutoff_day_offset + 1) DAY)
-              END AS order_cutoff_date,
+             CAST($delivery_target_date AS DATE) - (INTERVAL (CASE WHEN cl.mode = 'parcel'
+                    THEN (CASE $service_level WHEN 'standard' THEN 4 WHEN 'same_day' THEN 0 ELSE 1 END)
+                    ELSE cl.cutoff_day_offset + 1 END) DAY) AS order_cutoff_date,
              CONCAT(CAST(cl.cutoff_hour AS VARCHAR), ':00') AS cutoff_time,
              'Orders must be placed by cutoff to deliver on target date' AS note
       FROM carriers_lanes cl
       WHERE SUBSTRING(cl.lane, 1, 3) = $origin_site_id
         AND cl.status = 'active'
-      ORDER BY cl.lane
-    limit: 100
+        AND ($lane IS NULL OR cl.lane = $lane)
+      ORDER BY cl.lane, cl.carrier_id
+    limit: 200
     example: {origin_site_id: "DC1", delivery_target_date: "+7d"}
 
   - name: calculate_delivery_time_by_scenario
@@ -741,23 +744,26 @@ tools:
     example: {period_start: "-90d"}
 
   - name: get_air_freight_volumes_and_emissions
-    desc: Air freight volumes, cost and estimated CO2e by origin lane, with the CO2e if moved by sea.
+    desc: Air freight volumes, cost and estimated CO2e by origin lane, with the CO2e if moved by sea. The first row is the TOTAL over all lanes.
     kind: sql
     args:
       period_start: {type: date, default: "-90d", desc: "Analysis period start"}
       period_end: {type: date, default: "+0d", desc: "Analysis period end"}
     sql: |
-      SELECT af.origin_site_id || '-' || af.dest_site_id AS lane, COUNT(*) AS air_shipments, SUM(af.units) AS units,
-             ROUND(SUM(af.weight_kg), 0) AS weight_kg, ROUND(SUM(af.cost_gbp), 2) AS cost_gbp,
-             ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.602 / 1000, 2) AS est_air_tonnes_co2e,
-             ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.016 / 1000, 2) AS est_sea_tonnes_co2e,
-             'tonnes CO2e = tonnes x km x 0.602 kg per tonne-km (air) or 0.016 (sea) / 1000' AS formula
-      FROM air_freight af
-      JOIN (VALUES ('INNSA', 7200), ('VNSGN', 10000), ('BDCGP', 8000), ('CNSHA', 9200), ('CNNGB', 9200), ('CNYTN', 9300), ('TRMER', 3300),
-                   ('NLRTM', 400), ('DEHAM', 800), ('PTLEI', 1500), ('MXZLO', 9000), ('USNYC', 5600)) AS d(port, km) ON d.port = af.origin_site_id
-      WHERE af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)
-      GROUP BY af.origin_site_id, af.dest_site_id, d.km
-      ORDER BY cost_gbp DESC
+      WITH x AS (
+        SELECT af.origin_site_id || '-' || af.dest_site_id AS lane, COUNT(*) AS air_shipments, SUM(af.units) AS units,
+               ROUND(SUM(af.weight_kg), 0) AS weight_kg, ROUND(SUM(af.cost_gbp), 2) AS cost_gbp,
+               ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.602 / 1000, 2) AS est_air_tonnes_co2e,
+               ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.016 / 1000, 2) AS est_sea_tonnes_co2e
+        FROM air_freight af
+        JOIN (VALUES ('INNSA', 7200), ('VNSGN', 10000), ('BDCGP', 8000), ('CNSHA', 9200), ('CNNGB', 9200), ('CNYTN', 9300), ('TRMER', 3300),
+                     ('NLRTM', 400), ('DEHAM', 800), ('PTLEI', 1500), ('MXZLO', 9000), ('USNYC', 5600)) AS d(port, km) ON d.port = af.origin_site_id
+        WHERE af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)
+        GROUP BY af.origin_site_id, af.dest_site_id, d.km)
+      SELECT *, 'tonnes CO2e = tonnes x km x 0.602 kg per tonne-km (air) or 0.016 (sea) / 1000' AS formula FROM (
+        SELECT 'TOTAL' AS lane, SUM(air_shipments) AS air_shipments, SUM(units) AS units, SUM(weight_kg) AS weight_kg, ROUND(SUM(cost_gbp), 2) AS cost_gbp,
+               ROUND(SUM(est_air_tonnes_co2e), 2) AS est_air_tonnes_co2e, ROUND(SUM(est_sea_tonnes_co2e), 2) AS est_sea_tonnes_co2e FROM x
+        UNION ALL SELECT * FROM x) ORDER BY (lane <> 'TOTAL'), cost_gbp DESC
     limit: 100
     example: {period_start: "-90d"}
 

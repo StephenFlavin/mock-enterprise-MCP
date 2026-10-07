@@ -307,6 +307,17 @@ def generate(g):
                 sh["actual_arrival"] = sh["actual_arrival"] + (sh["planned_departure"] + timedelta(days=t) - sh["planned_arrival"])
             sh["planned_arrival"] = sh["planned_departure"] + timedelta(days=t)
 
+    # Story (08:75:Q5): three northern stores (Manchester Retail Park 2, Manchester Shopping Centre, Bradford High Street) get more than half their loads a day or two late; every other store stays near 94 percent on time.
+    kk = {}
+    for sh in shipments:
+        if (sh["dest_site_id"] in ("ST169", "ST184", "ST187") and sh["origin_site_id"] in ("DC1", "DC3") and sh["mode"] == "road"
+                and sh["status"] == "delivered" and sh["actual_arrival"] is not None
+                and g.as_of - timedelta(days=85) <= sh["actual_arrival"] <= g.as_of - timedelta(days=10)):
+            k = kk[sh["dest_site_id"]] = kk.get(sh["dest_site_id"], 0) + 1
+            extra = (1 + k % 2) if k % 5 < 3 else 0
+            sh["actual_arrival"] = sh["planned_arrival"] + timedelta(days=extra)
+            sh["delay_minutes"] = extra * 1440 or None
+
     # Generate carrier incidents
     for i in range(150):
         carrier = r.choice(road_carriers)

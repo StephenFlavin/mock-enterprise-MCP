@@ -182,6 +182,8 @@ tables:
       region: {type: str, desc: "DC region, e.g. UK Midlands"}
       inbound_units: {type: int, desc: "Units received into the DC in the week, all channels"}
       outbound_units: {type: int, desc: "Units shipped out of the DC in the week, online orders plus store replenishment"}
+      outbound_low_units: {type: int, desc: "Downside outbound plan for the week, units"}
+      outbound_high_units: {type: int, desc: "Upside outbound plan for the week, units"}
 
   lane_volume_forecast:
     key: [lane, week_start]
@@ -327,6 +329,26 @@ tables:
       forecast_week: {type: date, desc: Week starting Monday}
       forecast_type: {type: enum, values: [base, upside, downside], desc: Scenario type}
       units_forecast: {type: int, desc: Category units forecast for the week}
+
+  key_account_forecasts:
+    key: forecast_id
+    cols:
+      forecast_id: {type: str, desc: "Key account forecast row, e.g. KAF-00001"}
+      partner_id: {type: str, desc: "Wholesale partner, e.g. PTN-001"}
+      week_start: {type: date, desc: Week starting Monday}
+      units_forecast: {type: int, desc: Expected order units placed by the account that week}
+      low_units: {type: int, desc: Low end of the range}
+      high_units: {type: int, desc: High end of the range}
+      sell_through_units_week: {type: int, desc: Account's current weekly sell-through in units}
+      stock_on_hand_units: {type: int, desc: Account's stock on hand in units}
+      feed_coverage_pct: {type: float, desc: Share of the account's SKUs covered by its data feed %}
+      data_confidence: {type: enum, values: [high, medium, low], desc: Confidence in the account's data}
+
+  category_groups:
+    key: [group_name, category]
+    cols:
+      group_name: {type: str, desc: "Merchandising group, e.g. Toiletries"}
+      category: {type: str, desc: "Product category in the group, e.g. Haircare"}
 
 tools:
   - name: calculate_corrected_demand_history
@@ -508,22 +530,58 @@ tools:
     example: {config_id: CFG-000001, period_start: -26w, period_end: "$as_of"}
 
   - name: calculate_stock_out_risk
-    desc: Calculate probability of stock-out based on forecast, lead time and variability. Returns risk score 0-100 and recommended safety stock.
+    desc: Probability of running out of a SKU in a window (0-100) from forecast demand, stock, open POs and variability, with shortfall and safety stock. Pass the promotion uplift to test a promotion.
     kind: sql
     args:
       sku: {required: true, desc: SKU}
-      forecast_weeks: {type: int, desc: "Forecast horizon in weeks", default: 4}
+      forecast_weeks: {type: int, desc: "Weeks in the risk window", default: 4}
+      period_start: {type: date, desc: "Start of the window, e.g. promotion start", default: "$as_of"}
+      uplift_pct: {type: float, desc: "Demand uplift % in the window, e.g. promotion uplift", default: 0}
     sql: |
-      SELECT f.sku,
-             ROUND(COALESCE(SUM(CASE WHEN f.units_forecast > 0 THEN f.units_forecast ELSE 0 END) / NULLIF(COUNT(*), 0), 0), 0) AS avg_weekly_demand,
-             ROUND(COALESCE(STDDEV_POP(f.units_forecast), 0), 0) AS demand_std_dev,
-             ROUND(COALESCE(STDDEV_POP(f.units_forecast), 0) / NULLIF(AVG(f.units_forecast), 0) * 100, 1) AS cv_pct,
-             ROUND(LEAST(COALESCE(STDDEV_POP(f.units_forecast), 0) * 1.645, 100), 0) AS stock_out_risk_score,
-             'risk_score = min(cv * forecast * 1.645, 100)' AS formula
-      FROM forecasts f
-      WHERE f.sku = $sku AND f.forecast_type = 'base'
-      GROUP BY f.sku
-      LIMIT $forecast_weeks
+      WITH w AS (
+        SELECT CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AS s0,
+               CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) + INTERVAL ($forecast_weeks * 7) DAY AS s1,
+               CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) AS t0),
+      wk AS (
+        SELECT CAST(g.d AS DATE) AS week_start
+        FROM w, generate_series(LEAST(w.t0, w.s0), w.s1 - INTERVAL 7 DAY, INTERVAL 7 DAY) AS g(d)),
+      dem AS (
+        SELECT wk.week_start,
+               COALESCE((SELECT MAX(f.units_forecast) FROM forecasts f WHERE f.sku = $sku AND f.forecast_type = 'base' AND f.forecast_week = wk.week_start),
+                        (SELECT MAX(h.units_sold) FROM demand_history h WHERE h.sku = $sku AND h.period_date = wk.week_start - INTERVAL 364 DAY),
+                        0) AS units
+        FROM wk),
+      d AS (
+        SELECT COALESCE(SUM(dem.units) FILTER (WHERE dem.week_start < w.s0 AND dem.week_start >= w.t0), 0) AS units_before,
+               COALESCE(SUM(dem.units) FILTER (WHERE dem.week_start >= w.s0), 0) AS window_units,
+               COUNT(*) FILTER (WHERE dem.week_start >= w.t0) AS weeks_total
+        FROM dem, w),
+      v AS (
+        SELECT COALESCE(STDDEV_SAMP(h.units_sold), 0) AS sigma, COALESCE(AVG(h.units_sold), 0) AS avg_hist
+        FROM demand_history h WHERE h.sku = $sku AND h.period_date >= CAST($as_of AS DATE) - INTERVAL 182 DAY),
+      st AS (SELECT COALESCE(SUM(s.available), 0) AS available FROM master.dc_stock s WHERE s.sku = $sku),
+      inb AS (
+        SELECT COALESCE(SUM(l.qty_ordered - l.qty_received), 0) AS inbound
+        FROM master.po_lines l JOIN master.purchase_orders o USING (po_id), w
+        WHERE l.sku = $sku AND o.status IN ('open', 'confirmed', 'shipped') AND o.due_date < w.s1),
+      lt AS (SELECT COALESCE(MAX(p.lead_time_days), 28) AS lead_days FROM master.products p WHERE p.sku = $sku),
+      calc AS (
+        SELECT d.units_before, ROUND(d.window_units * (1 + $uplift_pct / 100.0), 0) AS window_units, d.weeks_total,
+               d.units_before + d.window_units * (1 + $uplift_pct / 100.0) AS need,
+               st.available + inb.inbound AS supply, st.available, inb.inbound, v.sigma, lt.lead_days
+        FROM d, v, st, inb, lt)
+      SELECT $sku AS sku, ROUND(calc.window_units * 1.0 / $forecast_weeks, 0) AS avg_weekly_demand_in_window,
+             calc.window_units AS window_demand_units, calc.units_before AS demand_before_window_units,
+             calc.available AS stock_available_units, calc.inbound AS open_po_units_due, ROUND(calc.supply - calc.need, 0) AS projected_surplus_units,
+             ROUND(calc.sigma, 0) AS weekly_demand_std_dev,
+             ROUND(100.0 * calc.sigma / NULLIF((SELECT avg_hist FROM v), 0), 1) AS cv_pct,
+             CASE WHEN calc.sigma = 0 THEN (CASE WHEN calc.supply < calc.need THEN 100 ELSE 0 END)
+                  ELSE ROUND(100.0 / (1 + exp(1.702 * (calc.supply - calc.need) / (calc.sigma * sqrt(calc.weeks_total)))), 0) END AS stock_out_risk_score,
+             ROUND(1.645 * calc.sigma * sqrt(calc.lead_days / 7.0), 0) AS recommended_safety_stock,
+             GREATEST(0, ROUND(calc.need + 1.645 * calc.sigma * sqrt(calc.lead_days / 7.0) - calc.supply, 0)) AS extra_supply_needed_units,
+             calc.lead_days AS lead_time_days,
+             'risk = P(demand to window end > stock + open POs), normal approximation; safety stock = 1.645 x weekly std dev x sqrt(lead time weeks)' AS formula
+      FROM calc
     example: {sku: "SKU-100056"}
 
   - name: compare_forecast_accuracy_before_after_change
@@ -723,42 +781,57 @@ tools:
     example: {config_id: CFG-000004}
 
   - name: get_cannibalisation_and_pull_forward_estimates
-    desc: Get cannibalisation and pull-forward effects for promotions. Shows incremental versus displaced sales.
+    desc: Uplift, cannibalisation and pull-forward of past promotions by mechanic, optionally for one category, with the net incremental effect. Use to judge which promotions earn their place.
     kind: sql
     args:
-      promo_mechanic: {desc: "Promotion mechanic, e.g. percentage_off"}
-      period_start: {type: date, desc: Period to analyze, default: "-52w"}
+      promo_mechanic: {desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one (bogo)"}
+      category: {desc: "Product category, e.g. Cookware; blank for all categories"}
+      period_start: {type: date, desc: Period to analyze, default: -52w}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
-      SELECT p.promo_mechanic,
+      WITH m AS (SELECT CASE WHEN $promo_mechanic IS NULL THEN NULL ELSE
+          CASE lower(replace(trim($promo_mechanic), ' ', '_'))
+            WHEN 'bogo' THEN 'buy_one_get_one' WHEN 'percentage_discount' THEN 'percentage_off'
+            WHEN 'three_for_two' THEN '3_for_2' WHEN '3for2' THEN '3_for_2' WHEN 'multibuy' THEN '3_for_2'
+            ELSE lower(replace(trim($promo_mechanic), ' ', '_')) END END AS mech)
+      SELECT p.promo_mechanic, COALESCE($category, 'all categories') AS category,
              ROUND(AVG(p.uplift_pct), 1) AS avg_uplift_pct,
              ROUND(AVG(p.cannibalisation_pct), 1) AS avg_cannibalisation_pct,
              ROUND(AVG(p.pull_forward_pct), 1) AS avg_pull_forward_pct,
              ROUND(AVG(p.uplift_pct) - AVG(p.cannibalisation_pct) - AVG(p.pull_forward_pct), 1) AS incremental_pct,
+             COUNT(*) AS instances,
              'incremental = uplift - cannibalisation - pull_forward' AS formula
-      FROM promotion_effects p
-      WHERE ($promo_mechanic IS NULL OR p.promo_mechanic = $promo_mechanic)
+      FROM promotion_effects p, m
+      WHERE (m.mech IS NULL OR p.promo_mechanic = m.mech) AND ($category IS NULL OR p.category = $category)
         AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
       GROUP BY p.promo_mechanic
-    example: {promo_mechanic: "percentage_off"}
+      ORDER BY incremental_pct DESC
+    example: {promo_mechanic: percentage_off}
 
   - name: get_cannibalisation_estimates_for_category
-    desc: Get cannibalisation effect for promotions by category. Shows what % of uplift comes from other items.
+    desc: Cannibalisation of past promotions in a category by mechanic, as % of sales and as share of the uplift. Use to net off displaced sales.
     kind: sql
     args:
-      category: {required: true, desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-52w"}
+      category: {required: true, desc: "Product category or group, e.g. Cookware or Toiletries"}
+      promo_mechanic: {desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one, 3_for_2; blank for all"}
+      period_start: {type: date, desc: Period start, default: -52w}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
+      WITH m AS (SELECT CASE WHEN $promo_mechanic IS NULL THEN NULL ELSE
+          CASE lower(replace(trim($promo_mechanic), ' ', '_'))
+            WHEN 'bogo' THEN 'buy_one_get_one' WHEN 'percentage_discount' THEN 'percentage_off'
+            WHEN 'three_for_two' THEN '3_for_2' WHEN '3for2' THEN '3_for_2' WHEN 'multibuy' THEN '3_for_2'
+            ELSE lower(replace(trim($promo_mechanic), ' ', '_')) END END AS mech)
       SELECT p.category, p.promo_mechanic,
              ROUND(AVG(p.uplift_pct), 1) AS uplift_pct,
              ROUND(AVG(p.cannibalisation_pct), 1) AS cannibalisation_pct,
              ROUND(COALESCE(AVG(p.cannibalisation_pct), 0) / NULLIF(AVG(p.uplift_pct), 0) * 100, 1) AS cannib_of_uplift_pct,
              COUNT(*) AS promo_instances
-      FROM promotion_effects p
-      WHERE p.category = $category AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
+      FROM promotion_effects p, m
+      WHERE p.category = $category AND (m.mech IS NULL OR p.promo_mechanic = m.mech)
+        AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
       GROUP BY p.category, p.promo_mechanic
-    example: {category: "Toiletries"}
+    example: {category: Toiletries}
 
   - name: get_category_demand_history_by_period
     desc: Units, revenue and average price by category for any past period, including earlier years, weekly, monthly or as one total per category. Leave category blank to compare all categories.
@@ -846,21 +919,23 @@ tools:
     example: {item_type: new_product}
 
   - name: get_current_process_forecast_accuracy
-    desc: Accuracy of the existing active forecasting process. Returns current MAPE by category.
+    desc: Accuracy of the existing live forecasting process, MAPE and bias by forecast level and configuration. Use as the baseline when comparing a new model.
     kind: sql
     args:
-      period_start: {type: date, desc: Period start, default: "-13w"}
+      period_start: {type: date, desc: Period start, default: -13w}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
-      SELECT a.forecast_level,
+      SELECT a.forecast_level, c.config_id, c.config_name, c.item_type,
              ROUND(AVG(a.mape_pct), 1) AS mape_pct,
              ROUND(AVG(a.bias_pct), 1) AS bias_pct,
              COUNT(DISTINCT COALESCE(a.sku, a.category)) AS items,
              'Current live forecast accuracy' AS measure
-      FROM forecast_accuracy a
-      WHERE a.config_id IN (SELECT config_id FROM forecast_configs WHERE status = 'active')
+      FROM forecast_accuracy a JOIN forecast_configs c USING (config_id)
+      WHERE c.status = 'active'
+        AND (a.forecast_level <> 'category' OR a.category IN (SELECT DISTINCT p.category FROM master.products p))
         AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      GROUP BY a.forecast_level
+      GROUP BY a.forecast_level, c.config_id, c.config_name, c.item_type
+      ORDER BY c.config_id, a.forecast_level
     example: {}
 
   - name: get_daily_orders_history
@@ -983,24 +1058,40 @@ tools:
 
 
   - name: get_forecast_error_by_category
-    desc: Forecast error and bias by category and period. Shows MAPE trends over time.
+    desc: Forecast error (MAPE) and bias by category for the live fast-mover forecast, comparing the first and last four weeks of the period, worst deterioration first. by_period gives weekly trends.
     kind: sql
     args:
       category: {desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-26w"}
+      period_start: {type: date, desc: Period start, default: -13w}
       period_end: {type: date, desc: Period end, default: "$as_of"}
+      by_period: {type: bool, desc: "Return one row per category and week instead of the first-versus-last comparison", default: false}
     sql: |
-      SELECT a.category, a.period_end,
-             ROUND(AVG(a.mape_pct), 1) AS mape_pct,
-             ROUND(AVG(a.bias_pct), 1) AS bias_pct,
-             COUNT(DISTINCT a.sku) AS skus
-      FROM forecast_accuracy a
-      WHERE ($category IS NULL OR a.category = $category)
-        AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)
-      GROUP BY a.category, a.period_end
-      ORDER BY a.period_end DESC
-    limit: 26
-    example: {category: "Dresses"}
+      WITH a AS (
+        SELECT a.category, a.period_end, a.mape_pct, a.bias_pct, a.sku
+        FROM forecast_accuracy a
+        WHERE a.config_id IN (SELECT config_id FROM forecast_configs WHERE status = 'active' AND item_type = 'fast_mover')
+          AND a.forecast_level = 'category' AND a.category IN (SELECT DISTINCT p.category FROM master.products p)
+          AND ($category IS NULL OR a.category = $category)
+          AND a.period_start >= CAST($period_start AS DATE) AND a.period_end <= CAST($period_end AS DATE)),
+      b AS (SELECT MIN(period_end) AS e0, MAX(period_end) AS e1 FROM a),
+      c AS (
+        SELECT a.category, CAST(NULL AS DATE) AS period_end,
+               ROUND(AVG(a.mape_pct), 1) AS mape_pct, ROUND(AVG(a.bias_pct), 1) AS bias_pct,
+               ROUND(AVG(a.mape_pct) FILTER (WHERE a.period_end <= b.e0 + INTERVAL 21 DAY), 1) AS mape_first_4w_pct,
+               ROUND(AVG(a.mape_pct) FILTER (WHERE a.period_end >= b.e1 - INTERVAL 21 DAY), 1) AS mape_last_4w_pct,
+               ROUND(AVG(a.bias_pct) FILTER (WHERE a.period_end >= b.e1 - INTERVAL 21 DAY), 1) AS bias_last_4w_pct
+        FROM a, b WHERE NOT $by_period GROUP BY a.category),
+      d AS (
+        SELECT a.category, a.period_end, ROUND(AVG(a.mape_pct), 1) AS mape_pct, ROUND(AVG(a.bias_pct), 1) AS bias_pct,
+               CAST(NULL AS DOUBLE) AS mape_first_4w_pct, CAST(NULL AS DOUBLE) AS mape_last_4w_pct, CAST(NULL AS DOUBLE) AS bias_last_4w_pct
+        FROM a WHERE $by_period GROUP BY a.category, a.period_end)
+      SELECT u.category, u.period_end, u.mape_pct, u.bias_pct, u.mape_first_4w_pct, u.mape_last_4w_pct,
+             ROUND(u.mape_last_4w_pct - u.mape_first_4w_pct, 1) AS mape_change_pts, u.bias_last_4w_pct
+      FROM (SELECT * FROM c UNION ALL SELECT * FROM d) u
+      ORDER BY mape_change_pts DESC NULLS LAST, u.category, u.period_end DESC
+    limit: 40
+    example:
+      category: Dresses
 
   - name: get_forecast_error_by_lead_time
     desc: Forecast error (MAPE) and bias by supplier lead time band of four weeks, with the change from the next shorter band. Shows what a shorter lead time buys in accuracy.
@@ -1164,26 +1255,31 @@ tools:
     example: {}
 
   - name: get_past_promotion_uplift_by_mechanic
-    desc: Retrieve past promotion uplift by mechanic type. Shows typical uplift for different promotion types.
+    desc: Typical sales uplift of past promotions by mechanic and category, with range and number of instances. Use to size a planned promotion.
     kind: sql
     args:
-      mechanic: {desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one"}
-      category: {desc: Product category}
-      period_start: {type: date, desc: Period start, default: "-104w"}
+      mechanic: {desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one, 3_for_2"}
+      category: {desc: "Product category or group, e.g. Cookware or Toiletries"}
+      period_start: {type: date, desc: Period start, default: -104w}
       period_end: {type: date, desc: Period end, default: "$as_of"}
     sql: |
+      WITH m AS (SELECT CASE WHEN $mechanic IS NULL THEN NULL ELSE
+          CASE lower(replace(trim($mechanic), ' ', '_'))
+            WHEN 'bogo' THEN 'buy_one_get_one' WHEN 'percentage_discount' THEN 'percentage_off'
+            WHEN 'three_for_two' THEN '3_for_2' WHEN '3for2' THEN '3_for_2' WHEN 'multibuy' THEN '3_for_2'
+            ELSE lower(replace(trim($mechanic), ' ', '_')) END END AS mech)
       SELECT p.promo_mechanic, p.category,
              ROUND(AVG(p.uplift_pct), 1) AS avg_uplift_pct,
              ROUND(MAX(p.uplift_pct), 1) AS max_uplift_pct,
              ROUND(MIN(p.uplift_pct), 1) AS min_uplift_pct,
              COUNT(*) AS instances
-      FROM promotion_effects p
-      WHERE ($mechanic IS NULL OR p.promo_mechanic = $mechanic)
+      FROM promotion_effects p, m
+      WHERE (m.mech IS NULL OR p.promo_mechanic = m.mech)
         AND ($category IS NULL OR p.category = $category)
         AND p.period_start >= CAST($period_start AS DATE) AND p.period_end <= CAST($period_end AS DATE)
       GROUP BY p.promo_mechanic, p.category
       ORDER BY avg_uplift_pct DESC
-    example: {mechanic: "percentage_off"}
+    example: {mechanic: percentage_off}
 
   - name: get_peak_inbound_forecast
     desc: Forecast inbound receipts and outbound shipments by DC across the peak (Black Friday to end of December), with uplift on recent weeks and busiest week.
@@ -1470,7 +1566,7 @@ tools:
     example: {site_id: DC1}
 
   - name: get_volume_forecast
-    desc: Long-range outbound volume forecast by scenario (base, upside, downside) and plan year, optionally for one DC. Use for multi-year capacity and investment cases.
+    desc: Outbound volume forecast by scenario (base, upside, downside), network or per DC, by plan year, quarter, week or one total for a period. Use for capacity, labour and peak planning.
     kind: sql
     args:
       scenario:
@@ -1487,24 +1583,395 @@ tools:
         type: date
         desc: Forecast period end, default seven years
         default: +2520d
+      granularity:
+        type: enum
+        values: [plan_year, quarter, week, period]
+        desc: "plan_year (multi-year), quarter, week (weekly phasing, to about 20 weeks ahead) or period (one total per scenario between the dates, with busiest week and uplift on the last 8 weeks)"
+        default: plan_year
+      by_site:
+        type: bool
+        desc: Split the rows by DC instead of one network total
+        default: false
+    sql: |
+      WITH w0 AS (SELECT CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AS s0, CAST($period_end AS DATE) AS e0),
+      q AS (
+        SELECT CASE WHEN $by_site THEN v.site_id ELSE 'ALL' END AS site_id, v.scenario, v.period_start,
+               SUM(v.units_forecast) AS units_forecast, MAX(v.annual_growth_pct) AS annual_growth_pct,
+               CAST(floor(date_diff('day', (SELECT s0 FROM w0), v.period_start) / 364.0) + 1 AS INTEGER) AS plan_year
+        FROM long_range_volume v, w0
+        WHERE ($scenario IS NULL OR v.scenario = $scenario) AND ($site_id IS NULL OR v.site_id = $site_id)
+          AND v.period_start >= w0.s0 AND v.period_start <= w0.e0
+          AND $granularity IN ('plan_year', 'quarter')
+        GROUP BY ALL),
+      y AS (
+        SELECT site_id, scenario, plan_year, MIN(period_start) AS period_start, SUM(units_forecast) AS units_forecast,
+               COUNT(*) * 13 AS weeks, MAX(annual_growth_pct) AS annual_growth_pct
+        FROM q GROUP BY site_id, scenario, plan_year),
+      wkb AS (
+        SELECT CASE WHEN $by_site THEN f.site_id ELSE 'ALL' END AS site_id, f.week_start,
+               SUM(f.outbound_units) AS base_units, SUM(f.outbound_high_units) AS high_units, SUM(f.outbound_low_units) AS low_units
+        FROM dc_flow_forecast f, w0
+        WHERE ($site_id IS NULL OR f.site_id = $site_id) AND f.week_start >= w0.s0 AND f.week_start <= w0.e0
+          AND $granularity IN ('week', 'period')
+        GROUP BY ALL),
+      wk AS (
+        SELECT k.site_id, s.scenario, k.week_start,
+               CASE s.scenario WHEN 'base' THEN k.base_units WHEN 'upside' THEN k.high_units ELSE k.low_units END AS units
+        FROM wkb k, (VALUES ('base'), ('upside'), ('downside')) s(scenario)
+        WHERE $scenario IS NULL OR s.scenario = $scenario),
+      recent AS (
+        SELECT f.site_id, SUM(f.inbound_units) AS inb, SUM(f.outbound_units) AS outb
+        FROM dc_flow_forecast f
+        WHERE f.week_start >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 8 WEEK
+          AND f.week_start < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE)
+          AND ($region IS NULL OR f.region = $region) AND ($site_id IS NULL OR f.site_id = $site_id)
+        GROUP BY f.site_id),
+      per_site AS (
+        SELECT w.site_id, w.region, SUM(w.inbound_units) AS peak_inbound_units, SUM(w.outbound_units) AS peak_outbound_units,
+               ROUND(AVG(w.inbound_units), 0) AS avg_weekly_inbound, COUNT(*) AS weeks,
+               CAST(arg_max(w.week_start, w.inbound_units) AS VARCHAR) AS busiest_inbound_week,
+               MAX(w.inbound_units) AS busiest_week_inbound_units,
+               ROUND((AVG(w.inbound_units) / (MAX(r.inb) / 8.0) - 1) * 100, 0) AS inbound_uplift_pct_vs_last_8_weeks
+        FROM win w JOIN recent r USING (site_id) GROUP BY w.site_id, w.region),
+      wk AS (SELECT week_start, SUM(inbound_units) AS inb FROM win GROUP BY week_start),
+      tot AS (
+        SELECT 'ALL' AS site_id, 'All DCs' AS region, SUM(w.inbound_units) AS peak_inbound_units,
+               SUM(w.outbound_units) AS peak_outbound_units,
+               ROUND(SUM(w.inbound_units) / COUNT(DISTINCT w.week_start), 0) AS avg_weekly_inbound,
+               COUNT(DISTINCT w.week_start) AS weeks,
+               CAST((SELECT arg_max(week_start, inb) FROM wk) AS VARCHAR) AS busiest_inbound_week,
+               (SELECT MAX(inb) FROM wk) AS busiest_week_inbound_units,
+               ROUND((SUM(w.inbound_units) / COUNT(DISTINCT w.week_start) / ((SELECT SUM(inb) FROM recent) / 8.0) - 1) * 100, 0) AS inbound_uplift_pct_vs_last_8_weeks
+        FROM win w)
+      SELECT * FROM (SELECT * FROM tot UNION ALL SELECT * FROM per_site) u ORDER BY CASE WHEN u.site_id = 'ALL' THEN 0 ELSE 1 END, u.site_id
+    limit: 10
+    example: {}
+
+
+  - name: get_peak_order_volume_forecast_by_region
+    desc: Peak online order units and value by region with each region's share, busiest day and growth on last year's peak. Use for courier capacity by region.
+    kind: sql
+    args:
+      peak_start:
+        type: date
+        desc: Peak start, Black Friday week
+        default: +7w
+      peak_end:
+        type: date
+        desc: Peak end, last pre-Christmas order day
+        default: +11w
+    sql: |
+      WITH cur AS (
+        SELECT o.region, o.order_date, SUM(o.units) AS units, SUM(o.value_gbp) AS value_gbp FROM daily_orders o
+        WHERE o.order_date >= CAST(date_trunc('week', CAST($peak_start AS DATE)) AS DATE)
+          AND o.order_date <= CAST(date_trunc('week', CAST($peak_end AS DATE)) AS DATE) + INTERVAL 6 DAY
+        GROUP BY o.region, o.order_date),
+      tot AS (
+        SELECT region, SUM(units) AS units, SUM(value_gbp) AS value_gbp, arg_max(order_date, units) AS peak_day,
+               MAX(units) AS peak_day_units FROM cur GROUP BY region),
+      ly AS (
+        SELECT o.region, SUM(o.units) AS units FROM daily_orders o
+        WHERE o.order_date >= CAST(date_trunc('week', CAST($peak_start AS DATE)) AS DATE) - INTERVAL 364 DAY
+          AND o.order_date <= CAST(date_trunc('week', CAST($peak_end AS DATE)) AS DATE) + INTERVAL 6 DAY - INTERVAL 364 DAY
+        GROUP BY o.region)
+      SELECT t.region, t.units AS units_forecast, ROUND(t.value_gbp, 0) AS value_gbp,
+             ROUND(t.units * 100.0 / SUM(t.units) OVER (), 1) AS region_pct,
+             CAST(t.peak_day AS VARCHAR) AS busiest_day, t.peak_day_units AS busiest_day_units,
+             l.units AS last_year_units,
+             ROUND((t.units * 1.0 / NULLIF(l.units, 0) - 1) * 100, 1) AS growth_vs_last_year_pct
+      FROM tot t LEFT JOIN ly l USING (region)
+      ORDER BY units_forecast DESC
+    limit: 15
+    example: {}
+
+
+  - name: get_peak_volume_profile
+    desc: Weekly store delivery volume (pallets and units) through the peak by region, with each week's index against the pre-peak week and units per day. Use for peak network costing.
+    kind: sql
+    args:
+      region: {desc: "Store region, e.g. UK North; blank for all regions"}
+      origin_site_id: {desc: "Dispatching DC, e.g. DC1; blank for all DCs"}
+      peak_start: {type: date, desc: "Start, includes the week before Black Friday", default: "+6w"}
+      peak_end: {type: date, desc: "End, includes the week after Christmas", default: "+12w"}
+    sql: |
+      WITH w AS (
+        SELECT l.region, l.week_start, l.week_label, SUM(l.pallets_forecast) AS pallets, SUM(l.units_forecast) AS units,
+               COUNT(DISTINCT l.dest_site_id) AS stores
+        FROM lane_volume_forecast l
+        WHERE ($region IS NULL OR l.region = $region) AND ($origin_site_id IS NULL OR l.origin_site_id = $origin_site_id)
+          AND l.week_start >= CAST(date_trunc('week', CAST($peak_start AS DATE)) AS DATE)
+          AND l.week_start <= CAST($peak_end AS DATE)
+        GROUP BY l.region, l.week_start, l.week_label)
+      SELECT w.region, w.week_start, w.week_label, w.stores, w.pallets AS pallets_forecast, w.units AS units_forecast,
+             ROUND(w.units / 7.0, 0) AS units_per_day,
+             ROUND(w.pallets * 1.0 / NULLIF(MAX(w.pallets) FILTER (WHERE w.week_label = 'pre_peak') OVER (PARTITION BY w.region), 0), 2) AS index_vs_pre_peak_week,
+             ROUND(w.pallets * 100.0 / SUM(w.pallets) OVER (PARTITION BY w.region), 1) AS share_of_period_pct
+      FROM w ORDER BY w.region, w.week_start
+    limit: 60
+    example: {region: UK North}
+
+  - name: get_pipeline_products_for_season
+    desc: Pipeline products launching in a season with launch date, risk levels and score, plus 12-week base units and list-price revenue, highest risk first. Use for season sales and risk.
+    kind: sql
+    args:
+      season: {required: true, desc: "Season code, e.g. SS27"}
+      status: {type: enum, values: [draft, approved, in_production, launched], desc: "Status: draft, approved, in_production, launched"}
+    sql: |
+      WITH ramp AS (
+        SELECT SUM(CASE k WHEN 1 THEN 0.5 WHEN 2 THEN 0.7 WHEN 3 THEN 0.85 ELSE 1.0 END) AS f FROM generate_series(1, 12) t(k)),
+      x AS (
+        SELECT p.pipeline_id, p.sku, p.product_name, p.launch_date, p.category, p.supply_risk, p.demand_risk,
+               p.execution_risk, p.risk_score, p.status, p.planned_weekly_units,
+               ROUND(p.planned_weekly_units * r.f, 0) AS base_units_first_12_weeks,
+               ROUND(p.planned_weekly_units * r.f * CAST(m.retail_price_gbp AS DOUBLE), 0) AS base_revenue_first_12_weeks_gbp
+        FROM pipeline_products p JOIN master.products m ON m.sku = p.sku CROSS JOIN ramp r
+        WHERE p.season = $season AND ($status IS NULL OR p.status = $status))
+      SELECT x.*, COUNT(*) OVER () AS total_pipeline_items,
+             SUM(x.base_units_first_12_weeks) OVER () AS season_base_units,
+             SUM(x.base_revenue_first_12_weeks_gbp) OVER () AS season_base_revenue_gbp,
+             'Sales ramp 50%, 70%, 85% of planned weekly units in weeks 1-3, then 100%' AS formula
+      FROM x ORDER BY x.risk_score DESC, x.pipeline_id
+    limit: 50
+    example: {season: SS27}
+
+  - name: get_return_forecast_by_week
+    desc: Weekly returns forecast in units with low and high range, value, cumulative total and driver. Use for returns centre capacity and staffing.
+    kind: sql
+    args:
+      week_start:
+        type: date
+        desc: First week to show; blank for next week
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to show
+        default: 4
+    sql: |
+      SELECT r.returns_week AS week_start, CAST(r.returns_week + INTERVAL 6 DAY AS DATE) AS week_end,
+             r.returns_units, r.low_units, r.high_units, r.returns_value_gbp,
+             SUM(r.returns_units) OVER (ORDER BY r.returns_week) AS cumulative_returns_units,
+             r.driver
+      FROM returns_forecast r
+      WHERE r.returns_week >= CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE)
+        AND r.returns_week < CAST(date_trunc('week', COALESCE(CAST($week_start AS DATE), CAST($as_of AS DATE) + INTERVAL 7 DAY)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      ORDER BY r.returns_week
+    limit: 30
+    example: {}
+
+
+  - name: get_revenue_dependency_by_supplier
+    desc: Revenue dependent on each supplier over a period, with share of total revenue, SKU count and average weekly revenue, largest first. Filter by supplier or country to size exposure.
+    kind: sql
+    args:
+      supplier_id: {desc: "Supplier, e.g. SUP-0013; blank for all"}
+      country: {desc: "Supplier country code, e.g. VN; blank for all"}
+      period_start: {type: date, desc: Period start, default: "-52w"}
+      period_end: {type: date, desc: Period end, default: "$as_of"}
+    sql: |
+      WITH rev AS (
+        SELECT p.supplier_id, SUM(CAST(w.revenue_gbp AS DOUBLE)) AS revenue_gbp, COUNT(DISTINCT w.sku) AS skus,
+               COUNT(DISTINCT w.week_start) AS weeks
+        FROM master.sales_weekly w JOIN master.products p ON w.sku = p.sku
+        WHERE CAST(w.week_start AS DATE) >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND CAST(w.week_start AS DATE) <= CAST($period_end AS DATE)
+        GROUP BY p.supplier_id),
+      tot AS (SELECT SUM(revenue_gbp) AS total FROM rev)
+      SELECT s.supplier_id, s.name, s.country, ROUND(r.revenue_gbp, 0) AS revenue_gbp,
+             ROUND(r.revenue_gbp * 100.0 / t.total, 1) AS revenue_pct, r.skus,
+             ROUND(r.revenue_gbp / NULLIF(r.weeks, 0), 0) AS avg_weekly_revenue_gbp,
+             ROUND(SUM(r.revenue_gbp) OVER () * 100.0 / t.total, 1) AS listed_suppliers_revenue_pct
+      FROM rev r JOIN master.suppliers s ON s.supplier_id = r.supplier_id CROSS JOIN tot t
+      WHERE ($supplier_id IS NULL OR s.supplier_id = $supplier_id) AND ($country IS NULL OR s.country = $country)
+      ORDER BY r.revenue_gbp DESC
+    limit: 50
+    example: {country: VN}
+
+  - name: get_sales_forecast_for_style
+    desc: Weekly sales forecast for a style across all its SKUs, base with upside and downside range, value and cumulative base units.
+    kind: sql
+    args:
+      style_id:
+        required: true
+        desc: "Style id, e.g. STY-7731"
+      forecast_start:
+        type: date
+        desc: Forecast start
+        default: $as_of
+      weeks_ahead:
+        type: int
+        desc: Number of weeks to forecast
+        default: 12
+    sql: |
+      SELECT f.forecast_week,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base') AS units_forecast,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'downside') AS downside_units,
+             SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'upside') AS upside_units,
+             ROUND(SUM(f.units_forecast * CAST(p.retail_price_gbp AS DOUBLE)) FILTER (WHERE f.forecast_type = 'base'), 0) AS base_value_gbp,
+             SUM(SUM(f.units_forecast) FILTER (WHERE f.forecast_type = 'base')) OVER (ORDER BY f.forecast_week) AS cumulative_base_units,
+             COUNT(DISTINCT f.sku) AS skus
+      FROM forecasts f JOIN master.products p ON p.sku = f.sku
+      WHERE p.style_id = $style_id
+        AND f.forecast_week >= CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE)
+        AND f.forecast_week < CAST(date_trunc('week', CAST($forecast_start AS DATE)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      GROUP BY f.forecast_week
+      ORDER BY f.forecast_week
+    limit: 52
+    example:
+      style_id: STY-7731
+
+
+  - name: get_sales_history_for_products
+    desc: Weekly units and revenue by SKU for a category, style or single SKU, with weeks since launch. Use for comparable-product sales curves.
+    kind: sql
+    args:
+      category:
+        desc: Product category, e.g. Bags
+      style_id:
+        desc: "Style id, e.g. STY-8066"
+      sku:
+        desc: "SKU, e.g. SKU-103745"
+      period_start:
+        type: date
+        desc: Period start
+        default: -26w
+      period_end:
+        type: date
+        desc: Period end
+        default: $as_of
+    sql: |
+      SELECT h.sku, p.style_id, h.period_date, h.units_sold,
+             ROUND(h.revenue_gbp, 0) AS revenue_gbp,
+             ROUND(h.revenue_gbp / NULLIF(h.units_sold, 0), 2) AS price_gbp,
+             date_diff('week', CAST(date_trunc('week', CAST(p.launch_date AS DATE)) AS DATE), h.period_date) + 1 AS weeks_since_launch
+      FROM demand_history h JOIN master.products p ON p.sku = h.sku
+      WHERE ($category IS NULL OR h.category = $category) AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($sku IS NULL OR h.sku = $sku)
+        AND h.period_date >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND h.period_date <= CAST($period_end AS DATE)
+      ORDER BY h.sku, h.period_date
+    limit: 200
+    example:
+      category: Bags
+      period_start: -12w
+
+
+  - name: get_site_volume_forecast
+    desc: Outbound throughput forecast for one DC over a period by scenario (base, upside, downside), with average week, annual growth assumption and busiest base-case week. Use for capacity and automation cases.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Distribution centre, e.g. DC1"}
+      period_start: {type: date, desc: Period start, default: "$as_of"}
+      period_end: {type: date, desc: Period end, default: "+52w"}
     sql: |
       WITH q AS (
-        SELECT v.scenario, v.period_start, v.annual_growth_pct, v.units_forecast,
-               CAST(floor(date_diff('day', CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE), v.period_start) / 364.0) + 1 AS INTEGER) AS plan_year
+        SELECT v.scenario, SUM(v.units_forecast) AS units, COUNT(*) * 13 AS weeks, MAX(v.annual_growth_pct) AS growth
         FROM long_range_volume v
-        WHERE ($scenario IS NULL OR v.scenario = $scenario) AND ($site_id IS NULL OR v.site_id = $site_id)
+        WHERE v.site_id = $site_id
           AND v.period_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
-          AND v.period_start <= CAST($period_end AS DATE)),
+          AND v.period_start < CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE)
+        GROUP BY v.scenario),
+      pk AS (
+        SELECT arg_max(f.week_start, f.outbound_units) AS peak_week, MAX(f.outbound_units) AS peak_units
+        FROM dc_flow_forecast f
+        WHERE f.site_id = $site_id AND f.week_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND f.week_start < CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE))
+      SELECT $site_id AS site_id, q.scenario, q.units AS outbound_units_forecast, ROUND(q.units * 1.0 / q.weeks, 0) AS avg_weekly_units,
+             q.growth AS annual_growth_assumption_pct,
+             ROUND((q.units * 1.0 / MAX(q.units) FILTER (WHERE q.scenario = 'base') OVER () - 1) * 100, 1) AS units_vs_base_pct,
+             CAST(pk.peak_week AS VARCHAR) AS busiest_week, pk.peak_units AS busiest_week_outbound_units
+      FROM q CROSS JOIN pk
+      ORDER BY CASE q.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END
+    example: {site_id: DC1}
+
+  - name: get_volume_forecast
+    desc: Outbound volume forecast by scenario (base, upside, downside), network or per DC, by plan year, quarter, week or one total for a period. Use for capacity, labour and peak planning.
+    kind: sql
+    args:
+      scenario:
+        type: enum
+        values: [base, upside, downside]
+        desc: Volume scenario; blank for all three
+      site_id:
+        desc: "Distribution centre, e.g. DC1; blank for the whole network"
+      period_start:
+        type: date
+        desc: Forecast period start
+        default: $as_of
+      period_end:
+        type: date
+        desc: Forecast period end, default seven years
+        default: +2520d
+      granularity:
+        type: enum
+        values: [plan_year, quarter, week, period]
+        desc: "plan_year (multi-year), quarter, week (weekly phasing, to about 20 weeks ahead) or period (one total per scenario between the dates, with busiest week and uplift on the last 8 weeks)"
+        default: plan_year
+      by_site:
+        type: bool
+        desc: Split the rows by DC instead of one network total
+        default: false
+    sql: |
+      WITH w0 AS (SELECT CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AS s0, CAST($period_end AS DATE) AS e0),
+      q AS (
+        SELECT CASE WHEN $by_site THEN v.site_id ELSE 'ALL' END AS site_id, v.scenario, v.period_start,
+               SUM(v.units_forecast) AS units_forecast, MAX(v.annual_growth_pct) AS annual_growth_pct,
+               CAST(floor(date_diff('day', (SELECT s0 FROM w0), v.period_start) / 364.0) + 1 AS INTEGER) AS plan_year
+        FROM long_range_volume v, w0
+        WHERE ($scenario IS NULL OR v.scenario = $scenario) AND ($site_id IS NULL OR v.site_id = $site_id)
+          AND v.period_start >= w0.s0 AND v.period_start <= w0.e0
+          AND $granularity IN ('plan_year', 'quarter')
+        GROUP BY ALL),
       y AS (
-        SELECT scenario, plan_year, CAST(MIN(period_start) AS VARCHAR) AS year_start, SUM(units_forecast) AS units_forecast,
-               ROUND(SUM(units_forecast) / (COUNT(DISTINCT period_start) * 13.0), 0) AS avg_weekly_units,
-               MAX(annual_growth_pct) AS annual_growth_assumption_pct
-        FROM q GROUP BY scenario, plan_year)
-      SELECT y.scenario, y.plan_year, y.year_start, y.units_forecast, y.avg_weekly_units,
-             ROUND((y.units_forecast * 1.0 / FIRST_VALUE(y.units_forecast) OVER (PARTITION BY y.scenario ORDER BY y.plan_year) - 1) * 100, 1) AS growth_vs_year1_pct,
-             y.annual_growth_assumption_pct
-      FROM y ORDER BY CASE y.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END, y.plan_year
-    limit: 40
+        SELECT site_id, scenario, plan_year, MIN(period_start) AS period_start, SUM(units_forecast) AS units_forecast,
+               COUNT(*) * 13 AS weeks, MAX(annual_growth_pct) AS annual_growth_pct
+        FROM q GROUP BY site_id, scenario, plan_year),
+      ratio AS (
+        SELECT v.scenario, v.period_start AS qs, SUM(v.units_forecast) * 1.0 / SUM(b.units_forecast) AS ratio
+        FROM long_range_volume v JOIN long_range_volume b ON b.site_id = v.site_id AND b.period_start = v.period_start AND b.scenario = 'base'
+        WHERE ($site_id IS NULL OR v.site_id = $site_id) AND ($scenario IS NULL OR v.scenario = $scenario)
+          AND $granularity IN ('week', 'period')
+        GROUP BY v.scenario, v.period_start),
+      wkb AS (
+        SELECT CASE WHEN $by_site THEN f.site_id ELSE 'ALL' END AS site_id, f.week_start, SUM(f.outbound_units) AS base_units
+        FROM dc_flow_forecast f, w0
+        WHERE ($site_id IS NULL OR f.site_id = $site_id) AND f.week_start >= w0.s0 AND f.week_start <= w0.e0
+          AND $granularity IN ('week', 'period')
+        GROUP BY ALL),
+      wk AS (
+        SELECT k.site_id, r.scenario, k.week_start, ROUND(k.base_units * r.ratio, 0) AS units
+        FROM wkb k JOIN ratio r ON k.week_start >= r.qs AND k.week_start < r.qs + INTERVAL 91 DAY),
+      recent AS (
+        SELECT CASE WHEN $by_site THEN f.site_id ELSE 'ALL' END AS site_id, SUM(f.outbound_units) / 8.0 AS avg_wk
+        FROM dc_flow_forecast f
+        WHERE f.week_start >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 8 WEEK
+          AND f.week_start < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE)
+          AND ($site_id IS NULL OR f.site_id = $site_id) AND $granularity IN ('week', 'period')
+        GROUP BY ALL),
+      pr AS (
+        SELECT wk.site_id, wk.scenario, MIN(wk.week_start) AS period_start, COUNT(*) AS weeks, SUM(wk.units) AS units_forecast,
+               ROUND(AVG(wk.units), 0) AS avg_weekly_units, CAST(arg_max(wk.week_start, wk.units) AS VARCHAR) AS busiest_week,
+               MAX(wk.units) AS busiest_week_units
+        FROM wk WHERE $granularity = 'period' GROUP BY wk.site_id, wk.scenario),
+      u AS (
+        SELECT y.site_id, y.scenario, y.plan_year, CAST(y.period_start AS VARCHAR) AS period_start, y.weeks, y.units_forecast,
+               ROUND(y.units_forecast * 1.0 / y.weeks, 0) AS avg_weekly_units,
+               ROUND((y.units_forecast * 1.0 / FIRST_VALUE(y.units_forecast) OVER (PARTITION BY y.site_id, y.scenario ORDER BY y.plan_year) - 1) * 100, 1) AS growth_vs_year1_pct,
+               y.annual_growth_pct AS annual_growth_assumption_pct, CAST(NULL AS VARCHAR) AS busiest_week, CAST(NULL AS DOUBLE) AS busiest_week_units,
+               CAST(NULL AS DOUBLE) AS uplift_vs_last_8_weeks_pct
+        FROM y WHERE $granularity = 'plan_year'
+        UNION ALL
+        SELECT q.site_id, q.scenario, NULL, CAST(q.period_start AS VARCHAR), 13, q.units_forecast, ROUND(q.units_forecast / 13.0, 0),
+               NULL, q.annual_growth_pct, NULL, NULL, NULL
+        FROM q WHERE $granularity = 'quarter'
+        UNION ALL
+        SELECT wk.site_id, wk.scenario, NULL, CAST(wk.week_start AS VARCHAR), 1, wk.units, wk.units, NULL, NULL, NULL, NULL,
+               ROUND((wk.units / NULLIF(r.avg_wk, 0) - 1) * 100, 1)
+        FROM wk JOIN recent r USING (site_id) WHERE $granularity = 'week'
+        UNION ALL
+        SELECT pr.site_id, pr.scenario, NULL, CAST(pr.period_start AS VARCHAR), pr.weeks, pr.units_forecast, pr.avg_weekly_units, NULL, NULL,
+               pr.busiest_week, pr.busiest_week_units, ROUND((pr.avg_weekly_units / NULLIF(r.avg_wk, 0) - 1) * 100, 1)
+        FROM pr JOIN recent r USING (site_id))
+      SELECT * FROM u
+      ORDER BY u.site_id, CASE u.scenario WHEN 'base' THEN 0 WHEN 'upside' THEN 1 ELSE 2 END, u.period_start
+    limit: 150
     example: {site_id: DC1}
 
   - name: list_forecast_model_external_regressors
@@ -1673,20 +2140,36 @@ tools:
     example: {config_id: CFG-000003}
 
   - name: run_key_account_order_forecast
-    desc: Runs key account order forecast based on sell-through and current stock.
+    desc: Expected orders per key wholesale account from its sell-through and stock, with range, data confidence and whether it is likely to cut orders. Use for next-quarter order planning.
     kind: sql
     args:
-      account_id: {desc: "Account/customer id"}
-      period_start: {type: date, desc: "Period start", default: "$as_of"}
-      weeks_ahead: {type: int, desc: "Weeks to forecast", default: 12}
+      partner_id: {desc: "Wholesale account, e.g. PTN-001; blank for all key accounts"}
+      period_start: {type: date, desc: "Start of the forecast", default: "$as_of"}
+      weeks_ahead: {type: int, desc: "Weeks to forecast; 13 is one quarter", default: 13}
     sql: |
-      SELECT CAST($period_start AS DATE) AS period_start,
-             CAST($period_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY AS period_end,
-             COALESCE(SUM(f.units_forecast), 0) AS account_order_forecast_units,
-             'Account forecast based on historical sell-through patterns' AS basis
-      FROM forecasts f
-      WHERE f.forecast_week >= CAST($period_start AS DATE)
-        AND f.forecast_week < CAST($period_start AS DATE) + INTERVAL ($weeks_ahead * 7) DAY
+      WITH k AS (
+        SELECT f.* FROM key_account_forecasts f
+        WHERE ($partner_id IS NULL OR f.partner_id = $partner_id)
+          AND f.week_start >= CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+          AND f.week_start < CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) + INTERVAL ($weeks_ahead * 7) DAY),
+      a AS (
+        SELECT k.partner_id, count(*) AS weeks, sum(k.units_forecast) AS account_order_forecast_units,
+               sum(k.low_units) AS low_units, sum(k.high_units) AS high_units,
+               sum(k.sell_through_units_week) AS sell_through_units, max(k.stock_on_hand_units) AS stock_on_hand_units,
+               max(k.feed_coverage_pct) AS feed_coverage_pct, max(k.data_confidence) AS data_confidence
+        FROM k GROUP BY k.partner_id)
+      SELECT a.partner_id, p.name, p.status AS partner_status, a.weeks, a.account_order_forecast_units, a.low_units, a.high_units,
+             a.sell_through_units, a.stock_on_hand_units,
+             ROUND(a.stock_on_hand_units * 1.0 / (a.sell_through_units * 1.0 / a.weeks), 1) AS weeks_of_cover,
+             ROUND((a.account_order_forecast_units * 1.0 / a.sell_through_units - 1) * 100, 1) AS orders_vs_sell_through_pct,
+             CASE WHEN a.account_order_forecast_units * 1.0 / a.sell_through_units - 1 <= -0.15 THEN 'likely_cut'
+                  WHEN a.account_order_forecast_units * 1.0 / a.sell_through_units - 1 >= 0.10 THEN 'likely_increase'
+                  ELSE 'steady' END AS outlook,
+             a.data_confidence, a.feed_coverage_pct,
+             'orders = sell-through over the period + build to 4 weeks of cover - stock on hand' AS formula
+      FROM a JOIN master.partners p USING (partner_id)
+      ORDER BY a.account_order_forecast_units DESC
+    limit: 30
     example: {}
 
   - name: run_new_product_forecast
@@ -1733,25 +2216,48 @@ tools:
 
 
   - name: run_promotional_volume_forecast
-    desc: Runs promotional volume forecast. Estimates units and revenue during promotion.
+    desc: Promotional volume and revenue for a category or group over given dates, from the base forecast and past uplift of the mechanic, plus a high case.
     kind: sql
     args:
-      category: {required: true, desc: Product category}
-      mechanic: {required: true, desc: "Promotion mechanic, e.g. percentage_off"}
-      period_start: {type: date, required: true, desc: "Promo start"}
-      period_end: {type: date, required: true, desc: "Promo end"}
+      category: {required: true, desc: "Product category or group, e.g. Cookware or Toiletries"}
+      mechanic: {required: true, desc: "Promotion mechanic, e.g. percentage_off, bundle, buy_one_get_one, 3_for_2"}
+      period_start: {type: date, required: true, desc: Promo start}
+      period_end: {type: date, required: true, desc: Promo end}
     sql: |
-      SELECT $category AS category, $mechanic AS mechanic,
-             CAST($period_start AS DATE) AS promo_start,
-             CAST($period_end AS DATE) AS promo_end,
-             COALESCE(SUM(h.units_sold), 0) AS base_period_units,
-             ROUND(COALESCE(SUM(h.units_sold) *
-               (SELECT COALESCE(AVG(p.uplift_pct), 1.3) FROM promotion_effects p WHERE p.category = $category AND p.promo_mechanic = $mechanic), 0), 0) AS promo_volume_forecast
-      FROM demand_history h
-      WHERE h.category = $category
-        AND h.period_date >= CAST($period_start AS DATE) - INTERVAL 4 WEEK
-        AND h.period_date < CAST($period_start AS DATE)
-    example: {category: "Kitchenware", mechanic: "percentage_off", period_start: "$as_of", period_end: "+7d"}
+      WITH m AS (SELECT CASE WHEN $mechanic IS NULL THEN NULL ELSE
+          CASE lower(replace(trim($mechanic), ' ', '_'))
+            WHEN 'bogo' THEN 'buy_one_get_one' WHEN 'percentage_discount' THEN 'percentage_off'
+            WHEN 'three_for_two' THEN '3_for_2' WHEN '3for2' THEN '3_for_2' WHEN 'multibuy' THEN '3_for_2'
+            ELSE lower(replace(trim($mechanic), ' ', '_')) END END AS mech),
+      cats AS (SELECT g.category FROM category_groups g WHERE g.group_name = $category UNION SELECT $category),
+      win AS (SELECT CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AS w0, CAST($period_end AS DATE) AS w1),
+      base AS (
+        SELECT SUM(c.units_forecast) FILTER (WHERE c.forecast_type = 'base') AS base_units,
+               SUM(c.units_forecast) FILTER (WHERE c.forecast_type = 'upside') AS upside_units,
+               COUNT(DISTINCT c.forecast_week) AS weeks
+        FROM category_forecasts c, win
+        WHERE c.category IN (SELECT category FROM cats) AND c.forecast_week >= win.w0 AND c.forecast_week <= win.w1),
+      eff AS (
+        SELECT AVG(p.uplift_pct) AS avg_uplift, MAX(p.uplift_pct) AS max_uplift, COUNT(*) AS instances
+        FROM promotion_effects p, m
+        WHERE p.category IN (SELECT category FROM cats) AND p.promo_mechanic = m.mech),
+      asp AS (
+        SELECT SUM(h.revenue_gbp) / NULLIF(SUM(h.units_sold), 0) AS price
+        FROM demand_history h
+        WHERE h.category IN (SELECT category FROM cats) AND h.period_date >= CAST($as_of AS DATE) - INTERVAL 91 DAY)
+      SELECT $category AS category, m.mech AS mechanic, CAST(win.w0 AS VARCHAR) AS promo_week_start, CAST(win.w1 AS VARCHAR) AS promo_end,
+             base.weeks AS promo_weeks, base.base_units AS base_units_forecast, eff.instances AS past_promotions_used,
+             ROUND(eff.avg_uplift, 1) AS avg_uplift_pct,
+             ROUND(base.base_units * (1 + COALESCE(eff.avg_uplift, 0) / 100.0), 0) AS promo_volume_forecast,
+             ROUND(base.upside_units * (1 + COALESCE(eff.max_uplift, 0) / 100.0), 0) AS promo_volume_high,
+             ROUND(base.base_units * (1 + COALESCE(eff.avg_uplift, 0) / 100.0) * asp.price, 0) AS revenue_at_recent_avg_price_gbp,
+             'promo volume = base forecast x (1 + average uplift); high = upside forecast x (1 + best past uplift)' AS formula
+      FROM m, win, base, eff, asp
+    example:
+      category: Toiletries
+      mechanic: 3_for_2
+      period_start: +13w
+      period_end: +16w
 
   - name: search_comparable_products
     desc: Find comparable products by any keyword in name or category, with price, launch date, 52-week units and units in the first 12 weeks on sale.

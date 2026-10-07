@@ -459,6 +459,13 @@ def generate(g):
                 "inbound_units": int(network_weekly * share * growth * in_mult * r.gauss(1.0, 0.02)),
                 "outbound_units": int(network_weekly * share * growth * (1 + 0.8 * (out_mult - 1)) * r.gauss(1.0, 0.02)),
             })
+    # Short-range scenario band on each week's outbound plan: the downside/upside range widens with the horizon
+    # (3% plus 0.9 points a week, capped at 15%); past weeks carry no band. No random numbers are drawn.
+    for row in dc_flow_forecast:
+        ahead = (row["week_start"] - this_monday).days // 7
+        band = 0.0 if ahead < 0 else min(0.03 + 0.009 * ahead, 0.15)
+        row["outbound_low_units"] = int(round(row["outbound_units"] * (1 - band)))
+        row["outbound_high_units"] = int(round(row["outbound_units"] * (1 + band)))
 
     # ------------------------------------------------------------------------------------------
     # Lane volume forecast (DC to store lanes as used by transport), weekly across the peak.
@@ -853,6 +860,43 @@ def generate(g):
                 "run_date": this_monday + timedelta(weeks=off), "series_count": series,
                 "run_minutes": minutes, "compute_cost_gbp": cost, "data_volume_gb": gb, "planner_review_hours": hours})
 
+    # Key wholesale accounts: expected orders from sell-through and stock (the same account positions the EDI feed
+    # reports). Quarter orders = 13 weeks of sell-through plus the build to a four-week stock cover, less stock
+    # already held. Later weeks run at sell-through. No random numbers are drawn here.
+    key_accounts = {
+        # partner: (sell-through units/week, stock on hand, feed coverage %, feed fresh)
+        "PTN-001": (450, 2800, 95, True), "PTN-002": (620, 3500, 90, True), "PTN-003": (380, 2200, 85, False),
+        "PTN-004": (540, 3100, 92, True), "PTN-005": (420, 2600, 88, True), "PTN-006": (280, 1800, 75, False),
+        "PTN-007": (993, 1233, 71, True), "PTN-008": (565, 1285, 95, True), "PTN-009": (873, 4984, 85, True),
+        "PTN-010": (950, 3375, 76, True),
+    }
+    target_cover_weeks = 4
+    key_account_forecasts = []
+    for ptn, (sell, stock, cov, fresh) in key_accounts.items():
+        total = max(0, sell * (13 + target_cover_weeks) - stock)
+        conf = "high" if (cov >= 90 and fresh) else ("medium" if cov >= 80 and fresh else "low")
+        band = {"high": 0.08, "medium": 0.15, "low": 0.25}[conf]
+        for wk in range(26):
+            if wk < 13:
+                units = total // 13 + (total % 13 if wk == 0 else 0)
+            else:
+                units = sell
+            key_account_forecasts.append({
+                "forecast_id": f"KAF-{len(key_account_forecasts) + 1:05d}",
+                "partner_id": ptn,
+                "week_start": this_monday + timedelta(weeks=wk),
+                "units_forecast": units,
+                "low_units": int(round(units * (1 - band))),
+                "high_units": int(round(units * (1 + band))),
+                "sell_through_units_week": sell,
+                "stock_on_hand_units": stock,
+                "feed_coverage_pct": cov,
+                "data_confidence": conf,
+            })
+
+    # Merchandising groups: "toiletries" is how the business talks about the beauty care categories.
+    category_groups = [{"group_name": "Toiletries", "category": c} for c in ("Bodycare", "Haircare", "Skincare")]
+
     return {
         "demand_history": demand_history,
         "forecasts": forecasts,
@@ -876,4 +920,6 @@ def generate(g):
         "forecast_backtests": forecast_backtests,
         "lead_time_accuracy": lead_time_accuracy,
         "forecast_run_metrics": forecast_run_metrics,
+        "key_account_forecasts": key_account_forecasts,
+        "category_groups": category_groups,
     }

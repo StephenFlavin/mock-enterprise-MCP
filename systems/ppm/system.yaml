@@ -500,15 +500,13 @@ tools:
     args:
       title: {required: true}
       owner_id: {required: true}
-      target_metric: {required: true, desc: "What metric is being improved"}
+      target_metric: {required: true, desc: "What is improved and its unit, e.g. cost per unit (pence), units/hour"}
       current_value: {required: true, type: float}
       target_value: {required: true, type: float}
-      unit: {required: true, desc: "Unit of measurement"}
       target_date: {type: date, required: true}
       site_id: {}
-      team_members: {desc: "Named owners, comma-separated employee ids, e.g. EMP-00108,EMP-00109"}
-      description: {desc: "What the initiative will do"}
-    example: {title: "Productivity Recovery", owner_id: "EMP-00004", site_id: DC1, team_members: "EMP-00108,EMP-00109", target_metric: "labour productivity", current_value: 85, target_value: 100, unit: "units/hour", target_date: "+180d"}
+      team_members: {desc: "Named owners besides the lead, comma-separated employee ids, e.g. EMP-00108,EMP-00109"}
+    example: {title: "Productivity Recovery", owner_id: "EMP-00004", site_id: DC1, team_members: "EMP-00108,EMP-00109", target_metric: "labour productivity (units/hour)", current_value: 85, target_value: 100, target_date: "+180d"}
 
   - name: create_pilot_project
     desc: Creates a pilot project with tasks, budget and pass-fail criteria for a material. Returns the new pilot.
@@ -715,18 +713,24 @@ tools:
     example: {}
 
   - name: list_raid_log_items
-    desc: RAID items with status, owner and last action. For programme health tracking.
-    kind: select
-    from: raid_log_items
-    filters:
-      programme_name: {}
-      item_type: {}
-      status: {default: open}
+    desc: RAID items with status, impact, owner, created and last-updated dates, worst impact first. Omit status for all unresolved items. For programme health tracking.
+    kind: sql
+    args:
+      programme_name: {desc: "Programme the items belong to, e.g. ERP"}
       project_id: {}
-    columns: [raid_id, programme_name, project_id, item_type, title, owner_id, status, impact, probability, target_resolution_date, mitigation_action, created_at, updated_at]
-    order: CASE impact WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, created_at
+      item_type: {type: enum, values: [risk, action, issue, dependency], desc: "Only this item type"}
+      status: {type: enum, values: [open, in_progress, resolved, retired, on_hold], desc: "Only this status; omit for open, in progress and on hold"}
+    sql: |
+      SELECT raid_id, programme_name, project_id, item_type, title, owner_id, status, impact, probability,
+             target_resolution_date, mitigation_action, created_at, updated_at
+      FROM raid_log_items
+      WHERE ($programme_name IS NULL OR programme_name = $programme_name)
+        AND ($project_id IS NULL OR project_id = $project_id)
+        AND ($item_type IS NULL OR item_type = $item_type)
+        AND ($status IS NULL AND status IN ('open', 'in_progress', 'on_hold') OR status = $status)
+      ORDER BY CASE impact WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, created_at
     limit: 50
-    example: {status: open}
+    example: {programme_name: ERP}
 
   - name: list_project_milestones_for_site
     desc: Rollout milestones for one site with project, owner, due and forecast dates and status, earliest first. For tracking site rollouts.

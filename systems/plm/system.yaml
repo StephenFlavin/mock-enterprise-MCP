@@ -328,9 +328,9 @@ tools:
           AND week_start < date_trunc('week', CAST($as_of AS DATE))
         GROUP BY sku
       )
-      SELECT bl.category, count(DISTINCT bl.sku) AS products, sum(coalesce(s.units, 0)) AS units_sold,
+      SELECT bl.category, count(DISTINCT bl.sku) AS product_count, sum(coalesce(s.units, 0)) AS units_sold,
              round(sum(bl.metres_per_unit * coalesce(s.units, 0)), 0) AS fabric_metres,
-             string_agg(DISTINCT bl.fiber_content, '; ') AS blends
+             string_agg(DISTINCT bl.fiber_content, '; ') AS fiber_blends
       FROM blends bl LEFT JOIN sold s ON s.sku = bl.sku
       GROUP BY bl.category
       ORDER BY fabric_metres DESC
@@ -695,7 +695,7 @@ tools:
     example: {material_id: "MAT-POL-100", origin_country: "CN"}
 
   - name: list_products_by_regulated_category
-    desc: Products in a regulated category (e.g. kids_sleepwear, food_contact_materials, battery_products) with regions, rules, worst compliance status and notes. Filter by region or status.
+    desc: Products in a regulated category (e.g. kids_sleepwear, childrens_drinkware, battery_products) with regions, rules, worst compliance status, notes and category totals. Filter by region or status.
     kind: sql
     args:
       category_name: {type: str, desc: "Regulated category: kids_sleepwear, childrens_drinkware, food_contact_materials, battery_products, leather_chromium_vi, waterproof_textiles (optional)"}
@@ -703,22 +703,27 @@ tools:
       compliance_status: {type: str, desc: "Compliance status: compliant, review, non_compliant (optional)"}
       sku: {desc: "SKU (optional)"}
     sql: |
-      SELECT r.sku, t.style_id, t.name, r.category_name,
-             string_agg(DISTINCT r.region, ', ') AS regions,
-             string_agg(DISTINCT r.region || ': ' || replace(replace(replace(r.regulations, '[', ''), ']', ''), '"', ''), ' | ') AS regulations_by_region,
-             CASE WHEN bool_or(r.compliance_status = 'non_compliant') THEN 'non_compliant'
-                  WHEN bool_or(r.compliance_status = 'review') THEN 'review' ELSE 'compliant' END AS compliance_status,
-             bool_or(r.test_required) AS test_required,
-             string_agg(DISTINCT CASE WHEN r.notes <> '' THEN r.region || ': ' || r.notes END, ' | ') AS notes,
-             count(*) OVER (PARTITION BY r.category_name) AS products_in_category
-      FROM product_regulated_categories r
-      JOIN product_tech_pack t ON t.sku = r.sku
-      WHERE ($category_name IS NULL OR lower(r.category_name) = lower($category_name))
-        AND ($region IS NULL OR upper(r.region) = upper($region))
-        AND ($compliance_status IS NULL OR r.compliance_status = $compliance_status)
-        AND ($sku IS NULL OR r.sku = $sku)
-      GROUP BY r.sku, t.style_id, t.name, r.category_name
-      ORDER BY CASE WHEN bool_or(r.compliance_status = 'non_compliant') THEN 0 WHEN bool_or(r.compliance_status = 'review') THEN 1 ELSE 2 END, r.category_name, r.sku
+      WITH g AS (
+        SELECT r.sku, t.style_id, t.name, r.category_name,
+               string_agg(DISTINCT r.region, ', ') AS regions,
+               string_agg(DISTINCT r.region || ': ' || replace(replace(replace(r.regulations, '[', ''), ']', ''), '"', ''), ' | ') AS regulations_by_region,
+               CASE WHEN bool_or(r.compliance_status = 'non_compliant') THEN 'non_compliant'
+                    WHEN bool_or(r.compliance_status = 'review') THEN 'review' ELSE 'compliant' END AS compliance_status,
+               bool_or(r.test_required) AS test_required,
+               string_agg(DISTINCT CASE WHEN r.notes <> '' THEN r.region || ': ' || r.notes END, ' | ') AS notes
+        FROM product_regulated_categories r
+        JOIN product_tech_pack t ON t.sku = r.sku
+        WHERE ($category_name IS NULL OR lower(r.category_name) = lower($category_name))
+          AND ($region IS NULL OR upper(r.region) = upper($region))
+          AND ($compliance_status IS NULL OR r.compliance_status = $compliance_status)
+          AND ($sku IS NULL OR r.sku = $sku)
+        GROUP BY r.sku, t.style_id, t.name, r.category_name
+      )
+      SELECT g.*, count(*) OVER (PARTITION BY category_name) AS products_in_category,
+             count(*) FILTER (WHERE compliance_status = 'non_compliant') OVER (PARTITION BY category_name) AS non_compliant_in_category,
+             count(*) FILTER (WHERE compliance_status = 'review') OVER (PARTITION BY category_name) AS under_review_in_category
+      FROM g
+      ORDER BY CASE compliance_status WHEN 'non_compliant' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, category_name, sku
     limit: 100
     example: {category_name: kids_sleepwear}
 
@@ -757,17 +762,32 @@ tools:
     example: {batch_id: "BATCH-LEATHER-002"}
 
   - name: list_products_using_substance
-    desc: Products containing a substance showing SKUs, concentration and compliance status.
-    kind: select
-    from: product_substances
-    filters:
-      substance_id: {desc: "Substance id (CAS number or similar) (optional)"}
-      substance_name: {op: like, desc: "Substance name (optional)"}
-      list_type: {desc: "Restriction type: restricted, candidate, banned, monitored (optional)"}
-    columns: [sku, substance_name, concentration_pct, component, regulation, list_type, status]
-    order: sku, substance_name
+    desc: Products containing a substance - SKU, product, category, substance, concentration, list type (restricted, candidate), regulation, carrying material and its supplier. Filter by name, list or regulation.
+    kind: sql
+    args:
+      substance_name: {type: str, desc: "Words in the substance name, e.g. lead, perfluorinated (optional)"}
+      substance_id: {type: str, desc: "Substance id (CAS number or similar) (optional)"}
+      list_type: {type: str, desc: "Restriction type: restricted, candidate, banned, monitored (optional)"}
+      regulation: {type: str, desc: "Words in the regulation, e.g. PFAS, REACH (optional)"}
+      category: {type: str, desc: "Product category, e.g. Outerwear (optional)"}
+      material_id: {type: str, desc: "Material carrying the substance, e.g. MAT-LEATHER (optional)"}
+    sql: |
+      SELECT s.sku, t.name, t.category, s.substance_name, s.concentration_pct, s.component, s.material_id,
+             m.name AS material_name, m.supplier_id AS material_supplier_id, sp.name AS material_supplier_name,
+             s.regulation, s.list_type, s.status, s.notes
+      FROM product_substances s
+      JOIN product_tech_pack t ON t.sku = s.sku
+      LEFT JOIN material_library m ON m.material_id = s.material_id
+      LEFT JOIN master.suppliers sp ON sp.supplier_id = m.supplier_id
+      WHERE ($substance_name IS NULL OR s.substance_name ILIKE '%' || $substance_name || '%')
+        AND ($substance_id IS NULL OR s.substance_id = $substance_id)
+        AND ($list_type IS NULL OR s.list_type = lower($list_type))
+        AND ($regulation IS NULL OR s.regulation ILIKE '%' || $regulation || '%')
+        AND ($category IS NULL OR lower(t.category) = lower($category))
+        AND ($material_id IS NULL OR s.material_id = $material_id)
+      ORDER BY s.list_type, s.substance_name, s.sku
     limit: 100
-    example: {}
+    example: {list_type: restricted}
 
   - name: search_alternative_specifications_for_product
     desc: Searches for alternative specifications for product from the library by comparing properties.

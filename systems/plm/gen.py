@@ -13,6 +13,8 @@ STORY_SKUS = {
     "SKU-101813", "SKU-103199", "SKU-103745", "K-1700", "PF-220", "SKU-100847", "SKU-102905",
     "SKU-100574",
 }
+# other products that use the same lithium cell as PF-220 (MAT-LI-BATTERY, supplier SUP-0013, factory FAC-0027)
+CELL_SKUS = {"SKU-100539", "SKU-100546", "SKU-103220", "SKU-104018"}
 STORY_STYLES = {"STY-4595", "STY-6132", "STY-4012", "STY-5094", "STY-4171", "STY-5905"}
 # styles whose size/colour siblings are also hand-written (BOM and tech pack in seed/)
 SEEDED_STYLES = {"STY-4595", "STY-6132", "STY-4012", "STY-5905"}
@@ -53,7 +55,7 @@ ATTRS = {
     "Blouses": ["easy-care", "relaxed fit", "button front", "breathable"],
     "Dresses": ["lined", "side zip", "midi length", "breathable"],
     "Tops": ["stretch", "crew neck", "breathable", "quick-dry"],
-    "Knitwear": ["ribbed cuffs", "warm", "machine washable", "soft handle"],
+    "Knitwear": ["ribbed cuffs", "warm", "wash at 30C", "soft handle"],
     "Trousers": ["comfort fit", "stretch", "belt loops", "zip fly"],
     "Shirts": ["easy-iron", "regular fit", "button down"],
     "T-Shirts": ["soft handle", "crew neck", "pre-shrunk"],
@@ -97,17 +99,18 @@ def generate(g):
                "MAT-VISCOSE": "SUP-0036", "MAT-LINEN": "SUP-0028", "MAT-WOOL": "SUP-0058", "MAT-DENIM": "SUP-0036",
                "MAT-PFAS-COATED": "SUP-0022", "MAT-LINING": "SUP-0053", "MAT-ZIPPER": "SUP-0053", "MAT-BUTTON": "SUP-0053",
                "MAT-ELASTIC": "SUP-0036", "MAT-LEATHER": "SUP-0049", "MAT-RUBBER-SOLE": "SUP-0014", "MAT-HARDWARE": "SUP-0007",
-               "MAT-POL-WADDING": "SUP-0001", "MAT-SS": "SUP-0060", "MAT-PP-LID": "SUP-0060", "MAT-SILICONE": "SUP-0060",
+               "MAT-POL-WADDING": "SUP-0001", "MAT-LI-BATTERY": "SUP-0013", "MAT-SS": "SUP-0060", "MAT-PP-LID": "SUP-0060", "MAT-SILICONE": "SUP-0060",
                "MAT-GIFTBOX": "SUP-0060", "MAT-PLASTIC-BODY": "SUP-0013", "MAT-ELECTRONICS": "SUP-0013",
                "MAT-BATTERY": "SUP-0013", "MAT-MOTOR": "SUP-0013"}
     lib_cost = {"MAT-ZIPPER": 0.40, "MAT-BUTTON": 0.05, "MAT-ELASTIC": 0.60, "MAT-LEATHER": 18.0, "MAT-RUBBER-SOLE": 3.5,
-                "MAT-HARDWARE": 2.5, "MAT-POL-WADDING": 1.10, "MAT-SS": 16.9, "MAT-PP-LID": 1.55, "MAT-SILICONE": 0.75,
+                "MAT-HARDWARE": 2.5, "MAT-POL-WADDING": 1.10, "MAT-LI-BATTERY": 15.0, "MAT-SS": 16.9, "MAT-PP-LID": 1.55, "MAT-SILICONE": 0.75,
                 "MAT-GIFTBOX": 0.85, "MAT-PLASTIC-BODY": 2.5, "MAT-ELECTRONICS": 12.0, "MAT-BATTERY": 8.5, "MAT-MOTOR": 5.0} | FABRIC_COST
     lib_name = NAME | {"MAT-ZIPPER": "Coil Zipper YKK", "MAT-BUTTON": "Polyester Button", "MAT-ELASTIC": "Elastic Waistband",
                        "MAT-LEATHER": "Leather", "MAT-RUBBER-SOLE": "Rubber Sole", "MAT-HARDWARE": "Metal Hardware",
                        "MAT-SS": "304 Stainless Steel", "MAT-PP-LID": "Polypropylene Lid", "MAT-SILICONE": "Silicone",
                        "MAT-GIFTBOX": "Gift Box", "MAT-PLASTIC-BODY": "ABS Plastic Body", "MAT-ELECTRONICS": "Electronics Module",
-                       "MAT-BATTERY": "Rechargeable Battery", "MAT-MOTOR": "DC Motor"}
+                       "MAT-BATTERY": "Rechargeable Battery", "MAT-MOTOR": "DC Motor",
+                       "MAT-LI-BATTERY": "Lithium Battery Pack"}
 
     def fac_for(sup, default):
         f = fac_by_sup.get(sup)
@@ -170,7 +173,11 @@ def generate(g):
             if cat != "Storage":
                 lines.append(mk(sku, 2, "component", "MAT-ELECTRONICS", 1, "pcs", p, "Control board"))
             if p["hazmat"] == "li_ion_battery":
-                lines.append(mk(sku, len(lines) + 1, "component", "MAT-BATTERY", 1, "pcs", p, "Li-ion cell, UN38.3 tested"))
+                if sku in CELL_SKUS:
+                    lines.append(mk(sku, len(lines) + 1, "component", "MAT-LI-BATTERY", 1, "pcs", p, "Battery cell",
+                                    fiber="Li-ion 2600mAh"))
+                else:
+                    lines.append(mk(sku, len(lines) + 1, "component", "MAT-BATTERY", 1, "pcs", p, "Li-ion cell, UN38.3 tested"))
             if cat in ("Small Appliances", "Personal Care"):
                 lines.append(mk(sku, len(lines) + 1, "component", "MAT-MOTOR", 1, "pcs", p))
         # scale component prices so material cost is a believable share of the master unit cost
@@ -200,6 +207,19 @@ def generate(g):
             "created_at": g.days_ago(r.randint(60, 500)), "updated_at": g.days_ago(r.randint(0, 30)),
         })
     tp_by_sku = {t["sku"]: t for t in tech_packs}
+
+    # last season (SS26) apparel: best sellers share easy-care features, worst sellers share fussy ones
+    units = {}
+    for w in g.master("sales_weekly"):
+        units[w["sku"]] = units.get(w["sku"], 0) + float(w["store_units"]) + float(w["online_units"])
+    ss26 = sorted((p["sku"] for p in products if p["season"] == "SS26" and p["department"] in ("Womenswear", "Menswear", "Kids")
+                   and p["sku"] not in STORY_SKUS and p["style_id"] not in SEEDED_STYLES and units.get(p["sku"])),
+                  key=lambda k: (-units[k], k))
+    ss26_top, ss26_bottom = ss26[:25], ss26[-25:]
+    for sku_list, add_attrs in ((ss26[:25], ["pockets", "machine washable"]), (ss26[-25:], ["dry clean only", "heavyweight"])):
+        for sku in sku_list:
+            cur = [a for a in json.loads(tp_by_sku[sku]["design_attributes"]) if a not in ("easy-care", "easy-iron")]
+            tp_by_sku[sku]["design_attributes"] = json.dumps(cur[:2] + add_attrs)
 
     # ======== material_library: seeded ========
     # ======== material_batches and dye_lots (noise) ========
@@ -299,10 +319,10 @@ def generate(g):
     # ======== product_regulated_categories ========
     regs = []
 
-    def add(p, code, name, region, rules, status="compliant", test=False, note=""):
+    def add(p, code, name, region, rules, status="compliant", test=False, note="", rng=None):
         regs.append({"sku": p["sku"], "category_id": f"REGCAT-{code}-{region}", "category_name": name, "region": region,
                      "regulations": json.dumps(rules), "compliance_status": status, "test_required": test,
-                     "last_audit_date": g.days_ago(r.randint(30, 400)),
+                     "last_audit_date": g.days_ago((rng or r).randint(30, 400)),
                      "notes": note or ("Annual test report renewal due" if status == "review" else "")})
 
     planted = {"SKU-100847", "SKU-102779", "SKU-104039", "SKU-100868", "SKU-103136", "SKU-102590", "SKU-104123", "SKU-104795",
@@ -329,9 +349,12 @@ def generate(g):
         if cat in ("Bags", "Footwear"):
             for reg, rules in (("UK", ["UK REACH Annex XVII entry 47"]), ("EU", ["REACH Annex XVII entry 47 (chromium VI in leather, 3 mg/kg)"])):
                 add(p, "CRVI", "leather_chromium_vi", reg, rules, "compliant", False)
-        if cat == "Outerwear" and p["department"] != "Kids" and r.random() < 0.4:
+        coated = primary_fabric.get(p["sku"]) == "MAT-PFAS-COATED"
+        if cat == "Outerwear" and ((p["department"] != "Kids" and r.random() < 0.4) or coated):
             for reg, rules in (("UK", ["UK REACH PFAS restriction (proposed)"]), ("EU", ["EU universal PFAS restriction proposal"])):
-                add(p, "PFAS", "waterproof_textiles", reg, rules, "review", True, "Coating chemistry to be confirmed PFAS-free")
+                add(p, "PFAS", "waterproof_textiles", reg, rules, "review", True,
+                    "PFAS coating to be replaced before the restriction applies" if coated else "Coating chemistry to be confirmed PFAS-free",
+                    rng=random.Random(p["sku"]))
 
     # ======== legacy small tables ========
     legacy = products[:30]
@@ -352,6 +375,21 @@ def generate(g):
         product_substances.append({"sku": p["sku"], "substance_id": s[0], "substance_name": s[1],
                                    "concentration_pct": round(r.uniform(0.1, 5.0), 2) if i % 3 == 0 else 0.0,
                                    "component": s[2], "regulation": s[3], "list_type": "monitored", "status": "active", "notes": ""})
+    # restricted / candidate-list substances traced to BOM materials (separate rng: leaves other data unchanged)
+    sr = random.Random("substances")
+    story_sub = {"SKU-102905", "SKU-101813"}
+    for b in boms:
+        if b["component_id"] == "MAT-PFAS-COATED" and b["sku"] not in story_sub:
+            for sid, nm, lo, hi in (("CAS-000-51", "Perfluorooctanoic acid", 0.05, 0.1), ("CAS-000-52", "Perfluorinated compounds", 0.1, 0.3)):
+                product_substances.append({
+                    "sku": b["sku"], "substance_id": sid, "substance_name": nm, "concentration_pct": round(sr.uniform(lo, hi), 2),
+                    "component": "coating", "material_id": "MAT-PFAS-COATED", "regulation": "PFAS Regulation", "list_type": "restricted",
+                    "status": "active", "notes": "Ban 2027"})
+        elif b["component_id"] == "MAT-HARDWARE":
+            product_substances.append({
+                "sku": b["sku"], "substance_id": "CAS-7439-92-1", "substance_name": "Lead", "concentration_pct": round(sr.uniform(0.12, 0.45), 2),
+                "component": "hardware", "material_id": "MAT-HARDWARE", "regulation": "REACH SVHC candidate list", "list_type": "candidate",
+                "status": "active", "notes": "Zinc alloy hardware; above 0.1% reporting threshold"})
     cands = ["Recycled Polyester Blend", "Bio-based Nylon", "Mycelium Leather", "Algae Fiber", "Cork-Cotton Blend", "Lab-Grown Leather"]
     candidate_mats = [{
         "candidate_id": f"CAND-{i:06d}", "material_name": n, "material_type": r.choice(["fabric", "yarn", "component"]),
@@ -365,6 +403,6 @@ def generate(g):
     return {
         "product_tech_pack": tech_packs, "bill_of_materials": boms, "material_library": [], "material_batches": batches,
         "dye_lots": dye_lots, "fabric_specs": fabric_specs, "product_specifications": specs,
-        "candidate_materials": candidate_mats, "co_development_projects": [], "product_change_requests": change_reqs,
+        "candidate_materials": [], "co_development_projects": [], "product_change_requests": change_reqs,
         "product_substances": product_substances, "product_regulated_categories": regs,
     }

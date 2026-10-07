@@ -216,8 +216,8 @@ def generate(g):
     for i, (cxp_title, cxp_site, capex, payback, irr, delivery, case, spent) in enumerate(capex_projects, 1):
         cxp_id = f"CXP-{i:06d}"
         capex_project_ids.append(cxp_id)
-        start_date = g.as_of + timedelta(days=g.rng.randint(14, 70))
-        end_date = start_date + timedelta(days=g.rng.randint(180, 300))
+        start_date = (g.as_of - timedelta(days=g.rng.randint(30, 60))) if spent else (g.as_of + timedelta(days=g.rng.randint(14, 70)))
+        end_date = start_date + timedelta(days=g.rng.randint(240, 330))
         result["capex_projects"].append({
             "capex_project_id": cxp_id,
             "title": cxp_title,
@@ -451,7 +451,7 @@ def generate(g):
     for prog_name in programme_names:
         result["programmes"].append({
             "programme_name": prog_name,
-            "rag_status": g.pick(["red", "amber", "green"]),
+            "rag_status": g.pick(["red", "amber", "green"]) if prog_name != "ERP" else "red",  # ERP is behind: migration slip
             "owner_id": pick_employee(),
             "description": g.fake.sentence(),
             "created_at": g.as_of - timedelta(days=g.rng.randint(60, 120)),
