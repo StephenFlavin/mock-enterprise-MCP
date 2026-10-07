@@ -1,5 +1,6 @@
 """`mockmcp check <id>`: everything a system must satisfy before it counts as built."""
 import csv
+from functools import cache
 import re
 import tempfile
 from collections import Counter
@@ -102,6 +103,29 @@ def _keysets(s) -> dict[str, tuple[str, set]]:
     return out
 
 
+ID_PATTERNS = {  # value pattern -> (master table, column); catches invented ids in any column
+    r"SKU-\d{6}": ("products", "sku"), r"STY-[\w-]+": ("products", "style_id"), r"SUP-\d{4}": ("suppliers", "supplier_id"),
+    r"FAC-\d{4}": ("factories", "factory_id"), r"CAR-\d{3}": ("carriers", "carrier_id"), r"PO-20\d\d-\d{6}": ("purchase_orders", "po_id"),
+    r"EMP-\d{5}": ("employees", "employee_id"), r"AST-[\w-]+": ("assets", "asset_id"), r"SKU-[A-Z][\w-]*": ("products", "sku")}
+
+
+@cache
+def _master_values(table: str, col: str) -> frozenset:
+    with open(SYSTEMS / "_master" / "data" / f"{table}.csv", newline="") as fh:
+        return frozenset(r[col] for r in csv.DictReader(fh))
+
+
+def _invented_ids(name: str, rows: list[list[str]]) -> list[str]:
+    bad = set()
+    pats = [(re.compile(rf"^{pat}$"), t, c) for pat, (t, c) in ID_PATTERNS.items()]
+    for r in rows[1:]:
+        for v in r:
+            for rx, t, c in pats:
+                if rx.match(v) and v not in _master_values(t, c):
+                    bad.add(v)
+    return [f"data/{name}.csv: ids not in master data, e.g. {sorted(bad)[:4]} (use real ids from systems/_master/data)"] if bad else []
+
+
 def data_problems(s) -> list[str]:
     p = []
     keysets = _keysets(s)
@@ -123,6 +147,7 @@ def data_problems(s) -> list[str]:
                 bad = sorted({r[ci] for r in rows[1:] if r[ci] and r[ci] not in valid})
                 if bad:
                     p.append(f"data/{name}.csv: {len(bad)} {col} values not in {ref}, e.g. {bad[:3]} (use existing ids)")
+        p += _invented_ids(name, rows)
         idx = [rows[0].index(k) for k in t.keys]
         dupes = [k for k, c in Counter(tuple(r[i] for i in idx) for r in rows[1:]).items() if c > 1]
         if dupes:
