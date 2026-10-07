@@ -1,0 +1,244 @@
+id: mdm
+name: Master Data Management (MDM)
+instructions: >
+  Central management of master data: vendors/suppliers, products, sites, and data ownership.
+  Vendor ids look like VEN-000123. Use it for data quality issues, duplicate detection,
+  data ownership governance, and master attribute lookups.
+
+tables:
+  vendor_master:
+    key: vendor_id
+    cols:
+      vendor_id: {type: str, desc: "Vendor/supplier record id, e.g. VEN-000123"}
+      name: {type: str, desc: Vendor name}
+      address: {type: str, desc: Registered address}
+      tax_id: {type: str, desc: "Tax/VAT id"}
+      country: {type: str, desc: ISO country code}
+      status: {type: enum, values: [active, archived, merged, duplicate], desc: Vendor status}
+      merged_into: {type: str, desc: "Master vendor id this was merged into"}
+      bank_account_hash: {type: str, desc: "Hash of primary bank account for matching"}
+      merged_at: {type: timestamp, desc: When this record was merged}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  vendor_bank_details:
+    key: bank_detail_id
+    cols:
+      bank_detail_id: {type: str, desc: "Bank detail record id, e.g. BNK-000123"}
+      vendor_id: {type: str, desc: Vendor id}
+      account_number: {type: str, desc: "Bank account number (partial, last 4 chars shown)"}
+      sort_code: {type: str, desc: "UK sort code or routing number"}
+      iban: {type: str, desc: "IBAN (partial, last 4 chars shown)"}
+      bank_name: {type: str, desc: Bank name}
+      account_holder: {type: str, desc: Account holder name}
+      currency: {type: str, desc: Account currency}
+      status: {type: enum, values: [active, archived, blocked], desc: Status}
+      created_at: {type: timestamp, desc: When added}
+      archived_at: {type: timestamp, desc: When archived}
+
+  vendor_bank_changes:
+    key: change_id
+    cols:
+      change_id: {type: str, desc: "Change record id, e.g. CHG-000123"}
+      vendor_id: {type: str, desc: Vendor id}
+      changed_at: {type: timestamp, desc: When the change occurred}
+      changed_by: {type: str, desc: Employee id of person who made change}
+      field_changed: {type: str, desc: "Field that changed, e.g. account_number"}
+      old_value: {type: str, desc: Previous value}
+      new_value: {type: str, desc: New value}
+      change_type: {type: enum, values: [added, modified, archived], desc: Type of change}
+
+  data_owners:
+    key: dataset_id
+    cols:
+      dataset_id: {type: str, desc: "Dataset id, e.g. DST-001"}
+      name: {type: str, desc: Dataset or domain name}
+      domain: {type: str, desc: "Domain: products, vendors, sites, customers, orders"}
+      owner_id: {type: str, desc: "Employee id of data owner"}
+      steward_id: {type: str, desc: "Employee id of data steward"}
+      slo_accuracy_pct: {type: float, desc: "SLO for data accuracy %"}
+      last_audit_date: {type: date, desc: Date of last audit}
+
+tools:
+  # Lookup tools - list/search across master data
+  - name: search_products
+    desc: Find SKUs by name, style, category or supplier. Returns ids to use with other tools.
+    kind: select
+    from: master.products
+    filters:
+      name: {op: like, desc: "Words in the product name, e.g. glass kettle"}
+      style_id: {op: like, desc: "Style id or part of it, e.g. 5520"}
+      category: {}
+      supplier_id: {}
+    columns: [sku, style_id, name, category, colour, size, supplier_id, status]
+    order: sku
+    limit: 50
+    example: {name: kettle}
+
+  - name: search_sites
+    desc: Find stores, DCs and offices by name, town, region or format. Returns site ids for other tools.
+    kind: select
+    from: master.sites
+    filters:
+      name: {op: like, desc: "Site name or words in it, e.g. Northampton"}
+      city: {op: like, desc: "City name, e.g. Manchester"}
+      region: {}
+      type: {}
+      format: {}
+    columns: [site_id, name, type, format, city, region, status]
+    order: site_id
+    limit: 50
+    example: {name: Northampton}
+
+  - name: search_suppliers
+    desc: Find suppliers by name, country or category. Returns supplier ids for other tools.
+    kind: select
+    from: master.suppliers
+    filters:
+      name: {op: like, desc: "Supplier name or words in it, e.g. Acme"}
+      country: {}
+      category_focus: {op: like, desc: "Product category supplied, e.g. apparel"}
+      status: {}
+    columns: [supplier_id, name, country, category_focus, tier, status, annual_spend_gbp, otif_pct_12m]
+    order: supplier_id
+    limit: 50
+    example: {name: Acme}
+
+  - name: search_partners
+    desc: Find wholesale, franchise and marketplace partners by name or country. Returns partner ids.
+    kind: select
+    from: master.partners
+    filters:
+      name: {op: like, desc: "Partner name or words in it, e.g. JD"}
+      country: {}
+      type: {}
+      status: {}
+    columns: [partner_id, name, type, country, since, status]
+    order: partner_id
+    limit: 50
+    example: {name: JD}
+
+  # MDM read tools
+  - name: get_sku_master_attributes
+    desc: SKU attributes including dimensions, status, handling flags, and supplier info. Use for SKU quality checks.
+    kind: select
+    from: master.products
+    filters:
+      sku: {required: true}
+    columns: [sku, name, style_id, department, category, brand, supplier_id, status,
+              hazmat, pack_type, weight_kg, lead_time_days, moq, unit_cost_gbp, launch_date]
+    example: {sku: PF-220}
+
+  - name: search_duplicate_vendor_candidates
+    desc: Fuzzy-match duplicate vendors by name, address, tax ID or bank account. Returns groups of similar vendors for manual review.
+    kind: sql
+    args:
+      match_type: {type: enum, values: [name, address, tax_id, bank_account, all], default: all, desc: "Type of matching to perform"}
+      min_similarity: {type: float, default: 0.75, desc: "Minimum similarity threshold 0.0-1.0"}
+    sql: |
+      WITH candidates AS (
+        SELECT DISTINCT v1.vendor_id AS v1_id, v2.vendor_id AS v2_id,
+               v1.name, v2.name AS match_name,
+               CASE
+                 WHEN jaro_similarity(v1.name, v2.name) > $min_similarity THEN 'name'
+                 WHEN jaro_similarity(v1.address, v2.address) > $min_similarity THEN 'address'
+                 WHEN v1.tax_id IS NOT NULL AND v1.tax_id = v2.tax_id THEN 'tax_id'
+                 WHEN v1.bank_account_hash IS NOT NULL AND v1.bank_account_hash = v2.bank_account_hash THEN 'bank_account'
+                 ELSE NULL
+               END AS match_reason,
+               ROUND(CASE
+                 WHEN jaro_similarity(v1.name, v2.name) > $min_similarity THEN jaro_similarity(v1.name, v2.name)
+                 ELSE 0
+               END, 2) AS similarity_score
+        FROM vendor_master v1
+        JOIN vendor_master v2 ON v1.vendor_id < v2.vendor_id
+        WHERE v1.status IN ('active', 'duplicate') AND v2.status IN ('active', 'duplicate')
+          AND (($match_type = 'all') OR ($match_type = 'name' AND jaro_similarity(v1.name, v2.name) > $min_similarity)
+            OR ($match_type = 'address' AND jaro_similarity(v1.address, v2.address) > $min_similarity)
+            OR ($match_type = 'tax_id' AND v1.tax_id = v2.tax_id)
+            OR ($match_type = 'bank_account' AND v1.bank_account_hash = v2.bank_account_hash))
+      )
+      SELECT v1_id, v2_id, name, match_name, match_reason, similarity_score
+      FROM candidates
+      WHERE match_reason IS NOT NULL
+      ORDER BY similarity_score DESC, v1_id, v2_id
+    limit: 100
+    example: {match_type: name}
+
+  - name: get_vendor_bank_account_matches
+    desc: Vendors sharing bank accounts (potential fraud or legitimate consolidation). Flags payment risk.
+    kind: sql
+    args:
+      bank_account_hash: {type: str, desc: "Bank account hash or leave blank to find all matches"}
+    sql: |
+      SELECT v.vendor_id, v.name, v.country, v.status,
+             bd.bank_name, bd.account_holder, bd.currency,
+             COUNT(*) OVER (PARTITION BY bd.bank_account_hash) AS vendor_count,
+             STRING_AGG(DISTINCT v.vendor_id, ', ') OVER (PARTITION BY bd.bank_account_hash) AS vendor_ids
+      FROM vendor_master v
+      JOIN vendor_bank_details bd ON v.vendor_id = bd.vendor_id
+      WHERE bd.status = 'active'
+        AND ($bank_account_hash IS NULL OR bd.bank_account_hash = $bank_account_hash)
+      ORDER BY vendor_count DESC, v.vendor_id
+    limit: 100
+    example: {}
+
+  - name: list_vendor_bank_detail_changes
+    desc: Changes to vendor bank details with user and timestamp. Audit trail for compliance and security.
+    kind: sql
+    args:
+      vendor_id: {}
+      changed_from: {type: date, default: "-90d", desc: "Changes on or after"}
+      change_type: {type: enum, values: [added, modified, archived], desc: "Filter by change type"}
+    sql: |
+      SELECT c.change_id, c.vendor_id, v.name, c.changed_at, e.name AS changed_by,
+             c.field_changed, c.old_value, c.new_value, c.change_type
+      FROM vendor_bank_changes c
+      JOIN vendor_master v ON c.vendor_id = v.vendor_id
+      LEFT JOIN master.employees e ON c.changed_by = e.employee_id
+      WHERE ($vendor_id IS NULL OR c.vendor_id = $vendor_id)
+        AND c.changed_at >= CAST($changed_from AS DATE)
+        AND ($change_type IS NULL OR c.change_type = $change_type)
+      ORDER BY c.changed_at DESC
+    limit: 100
+    example: {}
+
+  - name: get_data_owner_for_dataset
+    desc: Data owner and steward for a dataset or domain. Shows ownership, SLO and last audit date.
+    kind: select
+    from: data_owners
+    filters:
+      domain: {op: like, desc: "Domain name, e.g. vendors, products"}
+      owner_id: {}
+    columns: [dataset_id, name, domain, owner_id, steward_id, slo_accuracy_pct, last_audit_date]
+    order: domain
+    limit: 50
+    example: {domain: vendors}
+
+  # MDM write tools
+  - name: merge_vendor_records
+    desc: Merges duplicate vendor records into a surviving master record. Updates references. Returns old and new status.
+    kind: sql
+    args:
+      duplicate_vendor_id: {required: true, type: str, desc: "Vendor record to merge (will be archived)"}
+      merge_reason: {required: true, type: str, desc: "Reason for merge, e.g. Duplicate of XYZ"}
+    sql: |
+      UPDATE vendor_master
+      SET status = 'merged',
+          merged_into = (SELECT vendor_id FROM vendor_master
+                         WHERE vendor_id != $duplicate_vendor_id
+                         AND status = 'active'
+                         LIMIT 1),
+          merged_at = $as_of
+      WHERE vendor_id = $duplicate_vendor_id
+      RETURNING vendor_id, 'merged', merge_reason AS merge_note
+    limit: 1
+    example: {duplicate_vendor_id: VEN-900001, merge_reason: "Duplicate of VEN-0001"}
+
+  - name: archive_duplicate_vendor
+    desc: Archives a duplicate vendor record after merge. Sets status to archived and retains audit trail.
+    kind: update
+    table: vendor_master
+    set: {status: archived}
+    args:
+      archive_reason: {required: true, desc: "Reason for archival, e.g. Merged into VEN-0001"}
+    example: {vendor_id: VEN-900002, archive_reason: "Merged into VEN-0001"}

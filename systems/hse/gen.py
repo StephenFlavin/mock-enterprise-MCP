@@ -28,8 +28,9 @@ def generate(g):
     # Generate incidents across the 365 days + history, across all DCs
     for i in range(120):  # ~120 incidents across all 5 DCs
         site_id = r.choice(sites)
-        occurred_at = g.days_ago(r.randint(1, 365))
-        occurred_at = occurred_at.replace(hour=r.randint(6, 22), minute=r.choice([0, 15, 30, 45]))
+        incident_date = g.days_ago(r.randint(1, 365))
+        occurred_at = datetime.combine(incident_date, datetime.min.time()).replace(
+            hour=r.randint(6, 22), minute=r.choice([0, 15, 30, 45]))
 
         incident_type = r.choices(["accident", "near_miss", "dangerous_occurrence"], [60, 35, 5])[0]
         severity = r.choices(["critical", "high", "medium", "low"], [5, 20, 40, 35])[0]

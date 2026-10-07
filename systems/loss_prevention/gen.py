@@ -145,6 +145,7 @@ def generate(g):
             added_date = g.as_of - timedelta(days=r.randint(30, 365))
 
             high_risk_products.append({
+                "hrp_id": f"HRP-{len(high_risk_products) + 1:06d}",
                 "site_id": store_id,
                 "sku": sku,
                 "added_date": added_date,
@@ -152,6 +153,7 @@ def generate(g):
                 "protection_type": protection,
                 "loss_driver": loss_driver,
                 "notes": "",
+                "status": "active",
                 "updated_at": datetime.combine(added_date, datetime.min.time())
             })
 

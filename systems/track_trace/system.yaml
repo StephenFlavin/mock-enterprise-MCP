@@ -1,0 +1,274 @@
+id: track_trace
+name: Track & Trace Platform
+instructions: >
+  Ocean and air shipment tracking and disruption management for inbound supply chain.
+  Shipment ids like SHP-0004512. Disruption ids like DIS-000123. Batch ids like BAT-000123.
+
+tables:
+  disruptions:
+    key: disruption_id
+    cols:
+      disruption_id: {type: str, desc: "Disruption, e.g. DIS-000123"}
+      reported_at: {type: timestamp, desc: When the disruption was reported}
+      event_type: {type: enum, values: [weather, port_closure, vessel_delay, labor_action, congestion, accident, customs_hold, political], desc: Type of disruption}
+      region: {type: str, desc: "Region affected, e.g. Asia, Europe, Port Name"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: Severity level}
+      status: {type: enum, values: [active, resolved, monitoring], desc: Current status}
+      description: {type: text, desc: Detailed description of the disruption}
+      estimated_impact_days: {type: int, desc: Estimated delay in days}
+      resolved_at: {type: timestamp, desc: When the disruption was resolved}
+      updated_at: {type: timestamp, desc: Last update}
+
+  shipment_tracking:
+    key: shipment_id
+    cols:
+      shipment_id: {type: str, desc: "Inbound shipment, e.g. SHP-0004512"}
+      po_id: {type: str, desc: Purchase order}
+      carrier_id: {type: str, desc: Carrier or forwarder}
+      mode: {type: enum, values: [sea, air, road, rail], desc: Transport mode}
+      origin_port: {type: str, desc: Origin port code}
+      dest_port: {type: str, desc: Destination port code}
+      dest_site_id: {type: str, desc: Destination DC}
+      planned_arrival: {type: date, desc: Originally planned arrival date}
+      predicted_eta: {type: date, desc: Current predicted ETA}
+      actual_arrival: {type: date, desc: Actual arrival date (null if in transit)}
+      eta_accuracy_days: {type: int, desc: Difference between predicted and actual (negative = early)}
+      priority_flag: {type: bool, desc: True if flagged as priority by control tower}
+      status: {type: enum, values: [booked, in_transit, at_port, customs_hold, delivered, delayed], desc: Shipment status}
+      updated_at: {type: timestamp, desc: Last update}
+
+  port_congestion:
+    key: [port_code, measurement_date]
+    cols:
+      port_code: {type: str, desc: "UN/LOCODE, e.g. GBFXT"}
+      measurement_date: {type: date, desc: Date of measurement}
+      avg_dwell_hours: {type: float, desc: Average dwell time at port in hours}
+      max_dwell_hours: {type: float, desc: Maximum dwell time observed}
+      vessel_queue_length: {type: int, desc: Number of vessels in queue}
+      congestion_level: {type: enum, values: [low, medium, high, critical], desc: Congestion level}
+      notes: {type: text, desc: Notes on congestion causes}
+
+  transit_history:
+    key: [origin_port, dest_port, carrier_id, transit_date]
+    cols:
+      origin_port: {type: str, desc: Origin port code}
+      dest_port: {type: str, desc: Destination port code}
+      carrier_id: {type: str, desc: Carrier}
+      service: {type: str, desc: "Service name, e.g. FAL7, FAL9"}
+      transit_date: {type: date, desc: Departure date}
+      mode: {type: enum, values: [sea, air], desc: Transport mode}
+      transit_time_days: {type: float, desc: Actual transit time in days}
+      planned_days: {type: float, desc: Planned transit time}
+      variance_pct: {type: float, desc: "Variance as %, positive = delay"}
+
+  shipment_batches:
+    key: batch_id
+    cols:
+      batch_id: {type: str, desc: "Batch identifier, e.g. BAT-000123"}
+      sku: {type: str, desc: SKU}
+      shipment_id: {type: str, desc: Shipment containing this batch}
+      factory_id: {type: str, desc: Factory origin}
+      batch_number: {type: str, desc: Manufacturer batch number}
+      units_shipped: {type: int, desc: Units in batch}
+      manufacturing_date: {type: date, desc: Manufacturing date}
+      status: {type: enum, values: [in_transit, at_port, delivered, hold], desc: Batch status}
+      updated_at: {type: timestamp, desc: Last update}
+
+  planning_buffers:
+    key: [origin_port, dest_port, service]
+    cols:
+      origin_port: {type: str, desc: Origin port}
+      dest_port: {type: str, desc: Destination port}
+      service: {type: str, desc: Service name}
+      current_buffer_days: {type: float, desc: Current planning buffer in days}
+      recommended_buffer_days: {type: float, desc: Recommended buffer based on recent variance}
+      accuracy_score: {type: float, desc: "ETA accuracy score 0-100"}
+      last_updated: {type: timestamp, desc: Last update}
+
+tools:
+  - name: list_active_disruptions
+    desc: List active disruptions impacting the supply chain, ordered by severity.
+    kind: select
+    from: disruptions
+    filters:
+      status: {values: [active, monitoring], desc: Status}
+      severity: {default: null}
+      region: {op: like}
+      event_type: {}
+    columns: [disruption_id, event_type, region, severity, status, description, estimated_impact_days, updated_at]
+    order: severity DESC, reported_at DESC
+    limit: 50
+    example: {}
+
+  - name: list_new_disruptions_since
+    desc: New disruptions reported since a given date, latest first.
+    kind: select
+    from: disruptions
+    filters:
+      reported_since: {col: reported_at, op: ">=", type: date, default: "-7d"}
+      event_type: {}
+    columns: [disruption_id, event_type, region, severity, description, reported_at]
+    order: reported_at DESC
+    limit: 50
+    example: {}
+
+  - name: get_predicted_eta_vs_planned_arrival
+    desc: Predicted ETA versus planned arrival for active shipments. Shows likely delays and at-risk units.
+    kind: sql
+    args:
+      status: {type: enum, values: [in_transit, at_port, customs_hold], default: in_transit, desc: Shipment status}
+      min_days_late: {type: int, default: 0, desc: Only shipments predicted late by this many days}
+    sql: |
+      SELECT s.shipment_id, s.po_id, p.name AS po_supplier, s.dest_site_id, s.carrier_id,
+             s.planned_arrival, s.predicted_eta,
+             CAST(s.predicted_eta AS DATE) - CAST(s.planned_arrival AS DATE) AS days_late,
+             s.status, s.updated_at
+      FROM shipment_tracking s
+      LEFT JOIN master.purchase_orders po ON s.po_id = po.po_id
+      LEFT JOIN master.suppliers p ON po.supplier_id = p.supplier_id
+      WHERE s.status = $status
+        AND CAST(s.predicted_eta AS DATE) - CAST(s.planned_arrival AS DATE) >= $min_days_late
+      ORDER BY days_late DESC, s.predicted_eta ASC
+    limit: 50
+    example: {status: in_transit}
+
+  - name: get_disruption_impact_on_shipments
+    desc: Shipments affected by a disruption, ranked by potential lost sales impact.
+    kind: sql
+    args:
+      disruption_id: {required: true}
+    sql: |
+      SELECT d.disruption_id, d.event_type, d.region, s.shipment_id, s.po_id,
+             CAST(s.predicted_eta AS DATE) - CAST($as_of AS DATE) AS days_to_arrival,
+             s.planned_arrival, s.predicted_eta, d.estimated_impact_days,
+             s.status, s.dest_site_id
+      FROM disruptions d
+      CROSS JOIN shipment_tracking s
+      WHERE d.disruption_id = $disruption_id
+        AND d.status IN ('active', 'monitoring')
+        AND s.status IN ('in_transit', 'at_port', 'customs_hold')
+        AND (d.region ILIKE '%' || COALESCE(s.origin_port, '') || '%'
+             OR d.region ILIKE '%' || COALESCE(s.dest_port, '') || '%'
+             OR d.region ILIKE 'Asia%')
+      ORDER BY days_to_arrival ASC
+    limit: 30
+    example: {disruption_id: DIS-900001}
+
+  - name: get_ocean_transit_history_by_lane
+    desc: Historical ocean transit times by lane, carrier and service for predictive modelling.
+    kind: select
+    from: transit_history
+    filters:
+      origin_port: {}
+      dest_port: {}
+      carrier_id: {}
+      service: {}
+      mode: {default: sea}
+    columns: [origin_port, dest_port, service, carrier_id, transit_date, transit_time_days, planned_days, variance_pct]
+    order: transit_date DESC
+    limit: 100
+    example: {origin_port: SGSIN, dest_port: GBFXT}
+
+  - name: get_port_congestion_history
+    desc: Port dwell time and congestion history for capacity planning and modelling.
+    kind: select
+    from: port_congestion
+    filters:
+      port_code: {}
+      from_date: {col: measurement_date, op: ">=", type: date, default: "-90d"}
+    columns: [port_code, measurement_date, avg_dwell_hours, max_dwell_hours, vessel_queue_length, congestion_level]
+    order: measurement_date DESC
+    limit: 200
+    example: {port_code: GBFXT}
+
+  - name: get_order_shipment_status
+    desc: Shipment status and ETA for a customer order, including its items and transit status.
+    kind: sql
+    args:
+      order_id: {required: true}
+    sql: |
+      SELECT DISTINCT o.order_id, o.customer_id, o.order_date,
+             s.shipment_id, s.po_id, s.mode, s.origin_port, s.dest_port,
+             s.planned_arrival, s.predicted_eta, s.actual_arrival, s.status,
+             CAST(s.predicted_eta AS DATE) - CAST(o.order_date AS DATE) AS days_in_transit
+      FROM master.orders o
+      LEFT JOIN master.purchase_orders po ON o.fulfil_site_id = po.dest_site_id
+      LEFT JOIN shipment_tracking s ON s.po_id = po.po_id
+      WHERE o.order_id = $order_id
+      ORDER BY s.shipment_id
+    limit: 10
+    example: {order_id: ORD-2026-0001234}
+
+  - name: get_in_transit_stock_for_batch
+    desc: In-transit units for a batch, including shipment location and ETA.
+    kind: sql
+    args:
+      sku: {required: true}
+      batch_number: {type: str, desc: Manufacturer batch number (optional)}
+    sql: |
+      SELECT b.batch_id, b.sku, b.shipment_id, b.factory_id, b.batch_number,
+             b.units_shipped, b.manufacturing_date, b.status,
+             s.po_id, s.carrier_id, s.origin_port, s.dest_port, s.dest_site_id,
+             s.planned_arrival, s.predicted_eta, s.status AS shipment_status
+      FROM shipment_batches b
+      JOIN shipment_tracking s ON b.shipment_id = s.shipment_id
+      WHERE b.sku = $sku
+        AND ($batch_number IS NULL OR b.batch_number = $batch_number)
+        AND b.status IN ('in_transit', 'at_port')
+      ORDER BY b.manufacturing_date DESC
+    limit: 50
+    example: {sku: PF-220}
+
+  - name: get_shipment_tracking_for_franchise
+    desc: Retrieves shipment tracking for franchise. Shows status, ETA and at-risk orders.
+    kind: sql
+    args:
+      partner_id: {required: true, desc: "Franchise partner, e.g. PTN-012"}
+      status: {type: str, desc: "Filter by status (optional)"}
+    sql: |
+      SELECT p.partner_id, p.name AS franchise_name, s.shipment_id, s.po_id,
+             s.mode, s.planned_arrival, s.predicted_eta, s.actual_arrival, s.status,
+             CAST(s.predicted_eta AS DATE) - CAST(s.planned_arrival AS DATE) AS days_late,
+             s.priority_flag
+      FROM master.partners p
+      CROSS JOIN shipment_tracking s
+      WHERE p.partner_id = $partner_id
+        AND p.type = 'franchise'
+        AND SUBSTR(s.dest_site_id, 1, 2) = SUBSTR(COALESCE(p.partner_id, ''), 1, 2)
+      ORDER BY s.predicted_eta ASC
+    limit: 30
+    example: {partner_id: PTN-001}
+
+  - name: calculate_planning_buffer_savings
+    desc: Planning buffer needed based on historical ETA variance. Shows savings vs current buffer.
+    kind: sql
+    args:
+      origin_port: {required: true}
+      dest_port: {required: true}
+      service: {type: str, desc: Service name (optional)}
+    sql: |
+      SELECT $origin_port AS origin_port, $dest_port AS dest_port,
+             COALESCE($service, 'all') AS service,
+             COALESCE(pb.current_buffer_days, 14) AS current_buffer_days,
+             ROUND(AVG(ABS(th.variance_pct)) / 100 * COALESCE(pb.current_buffer_days, 14), 1) AS recommended_buffer_days,
+             ROUND(COALESCE(pb.current_buffer_days, 14) - ROUND(AVG(ABS(th.variance_pct)) / 100 * COALESCE(pb.current_buffer_days, 14), 1), 1) AS potential_saving_days,
+             COALESCE(pb.accuracy_score, 0) AS accuracy_score,
+             'safety_stock = current_buffer * avg_variance_pct' AS formula
+      FROM transit_history th
+      LEFT JOIN planning_buffers pb ON th.origin_port = pb.origin_port
+                                   AND th.dest_port = pb.dest_port
+                                   AND ($service IS NULL OR th.service = $service)
+      WHERE th.origin_port = $origin_port AND th.dest_port = $dest_port
+        AND ($service IS NULL OR th.service = $service)
+      GROUP BY pb.current_buffer_days, pb.accuracy_score
+    limit: 1
+    example: {origin_port: SGSIN, dest_port: GBFXT}
+
+  - name: update_shipment_priority
+    desc: Flag a shipment as priority for expedited handling by control tower.
+    kind: update
+    table: shipment_tracking
+    set: {priority_flag: "{priority_flag}"}
+    args:
+      priority_flag: {type: bool, required: true, desc: "True to flag as priority"}
+    example: {shipment_id: SHP-0004512, priority_flag: true}

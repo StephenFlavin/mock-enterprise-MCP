@@ -30,6 +30,7 @@ def generate(g):
             "forecast_id": f"FOR-{len(cash_forecasts) + 1:06d}",
             "forecast_date": forecast_date,
             "week_no": week_offset,
+            "entity_id": "LE-UK",
             "currency": "GBP",
             "opening_balance_gbp": round(opening, 2),
             "operating_inflows_gbp": round(inflows, 2),

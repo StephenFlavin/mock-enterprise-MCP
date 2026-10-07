@@ -1,0 +1,291 @@
+id: sampling
+name: Sampling & Development Tracker
+instructions: >
+  Product sampling, test orders, and development tracking for new product launches.
+  Tracks sample requests, approvals, fit feedback and launch readiness across seasons.
+  Sample request ids look like SAM-000123. Use it for sample timelines, approval status,
+  launch product development and trend testing.
+
+tables:
+  sample_requests:
+    key: sample_request_id
+    cols:
+      sample_request_id: {type: str, desc: "Sample request, e.g. SAM-000123"}
+      sku: {desc: "Product SKU"}
+      style_id: {desc: "Style"}
+      supplier_id: {desc: "Supplier"}
+      factory_id: {desc: "Factory"}
+      pack_material: {type: str, desc: "For packaging samples (e.g. corrugated, moulded_pulp, recycled_plastic)"}
+      status: {type: enum, values: [requested, in_progress, received, approved, rejected], desc: Sample request status}
+      created_at: {type: timestamp, desc: When requested}
+      required_by_date: {type: date, desc: Required receipt date}
+      received_at: {type: timestamp, desc: When sample was received}
+      approval_deadline: {type: date, desc: Deadline for approval decision}
+      approved_at: {type: timestamp, desc: When approved}
+      approved_by: {type: str, desc: Employee who approved}
+      notes: {type: str, desc: Notes on the sample}
+
+  sample_rounds:
+    key: round_id
+    cols:
+      round_id: {type: str, desc: "Sample round, e.g. RND-000123"}
+      style_id: {desc: "Style"}
+      factory_id: {desc: "Factory"}
+      round_no: {type: int, desc: "Round number (1, 2, 3...)"}
+      status: {type: enum, values: [in_progress, submitted, approved, rejected, resubmitted], desc: Round status}
+      created_at: {type: timestamp, desc: When round started}
+      deadline: {type: date, desc: Sample deadline"}
+      submitted_at: {type: timestamp, desc: When submitted}
+      approval_status: {type: enum, values: [pending, approved, rejected], desc: Approval status}
+      approved_at: {type: timestamp, desc: When approved}
+      approved_by: {type: str, desc: Employee who approved}
+      rejection_reason: {type: str, desc: Why rejected (if rejected)"}
+
+  fit_comments:
+    key: comment_id
+    cols:
+      comment_id: {type: str, desc: "Fit comment, e.g. FIT-000123"}
+      style_id: {desc: "Style"}
+      supplier_id: {desc: "Supplier"}
+      comment_text: {type: text, desc: "Fit feedback comment"}
+      status: {type: enum, values: [open, acknowledged, resolved], desc: Comment status}
+      created_at: {type: timestamp, desc: When comment was added}
+      resolved_at: {type: timestamp, desc: When resolved}
+
+  launch_products:
+    key: product_id
+    cols:
+      product_id: {type: str, desc: "Launch product, e.g. PRD-000123"}
+      sku: {desc: "Product SKU"}
+      style_id: {desc: "Style"}
+      season: {type: str, desc: "Launch season, e.g. SS27, AW27"}
+      planned_launch_date: {type: date, desc: Planned in-store date}
+      risk_level: {type: enum, values: [low, medium, high, critical], desc: Launch risk}
+      status: {type: enum, values: [in_development, sample_phase, approval_phase, production_ready, launched, at_risk], desc: Development status}
+      created_at: {type: timestamp, desc: When added to pipeline}
+      supplier_risk_factor: {type: float, desc: "Supplier delay factor (0.0-1.0)"}
+      approval_risk_factor: {type: float, desc: "Internal approval delay factor (0.0-1.0)"}
+
+  critical_path_milestones:
+    key: milestone_id
+    cols:
+      milestone_id: {type: str, desc: "Milestone, e.g. MLS-000123"}
+      style_id: {desc: "Style"}
+      milestone_type: {type: enum, values: [sample_submission, sample_approval, factory_commitment, production_start, delivery, launch], desc: Milestone type}
+      due_date: {type: date, desc: Milestone due date"}
+      completed_date: {type: date, desc: When completed"}
+      status: {type: enum, values: [on_track, at_risk, delayed, completed], desc: Status}
+
+  launch_readiness_signals:
+    key: signal_id
+    cols:
+      signal_id: {type: str, desc: "Signal, e.g. SIG-000123"}
+      style_id: {desc: "Style"}
+      season: {type: str, desc: "Season"}
+      signal_type: {type: enum, values: [trend_validation, demand_signal, supplier_risk, quality_risk, market_readiness], desc: Signal type}
+      signal_value: {type: float, desc: "Signal value (0.0-1.0 for confidence)"}
+      created_at: {type: timestamp, desc: When signal was generated"}
+      notes: {type: str, desc: "Explanation of signal"}
+
+  lead_times_category:
+    key: lead_time_id
+    cols:
+      lead_time_id: {type: str, desc: "Lead time record, e.g. LT-000123"}
+      category: {type: str, desc: "Product category"}
+      supplier_id: {desc: "Supplier"}
+      lead_days: {type: int, desc: "Standard lead time in days"}
+      fast_track_days: {type: int, desc: "Fast-track lead time in days"}
+      updated_at: {type: timestamp, desc: Last updated"}
+
+  test_orders:
+    key: test_order_id
+    cols:
+      test_order_id: {type: str, desc: "Test order request, e.g. TST-000123"}
+      sku: {desc: "Product SKU"}
+      style_id: {desc: "Style"}
+      volume_units: {type: int, desc: "Test volume in units"}
+      status: {type: enum, values: [requested, approved, in_production, completed, cancelled], desc: Status}
+      created_at: {type: timestamp, desc: When requested"}
+      approved_at: {type: timestamp, desc: When approved"}
+      purpose: {type: str, desc: "Purpose of test (trend validation, demand test, etc)"}
+
+tools:
+  - name: list_launch_products_by_season
+    desc: List products in development by season with launch date and risk status. Use to see pipeline by season.
+    kind: sql
+    args:
+      season: {required: true, desc: "Launch season, e.g. SS27, AW27"}
+      status: {type: str, desc: "Filter by status (default at_risk)"}
+      risk_level: {}
+    sql: |
+      SELECT p.product_id, p.sku, p.style_id, p.season, p.planned_launch_date,
+             p.risk_level, p.status, p.supplier_risk_factor, p.approval_risk_factor,
+             prod.name AS product_name
+      FROM launch_products p
+      LEFT JOIN master.products prod USING (sku)
+      WHERE p.season = $season
+        AND ($status IS NULL OR p.status = 'at_risk')
+        AND ($risk_level IS NULL OR p.risk_level = $risk_level)
+      ORDER BY p.planned_launch_date ASC
+    limit: 50
+    example: {season: "SS27"}
+
+  - name: get_critical_path_milestones_for_product
+    desc: Critical path milestones for product launch with status and delays. Shows which milestones are at risk.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT m.milestone_id, m.style_id, m.milestone_type, m.due_date, m.completed_date,
+             m.status, CASE WHEN m.completed_date > m.due_date THEN
+             CAST(m.completed_date AS DATE) - CAST(m.due_date AS DATE) ELSE 0 END AS days_late
+      FROM critical_path_milestones m
+      WHERE m.style_id = $style_id
+      ORDER BY m.due_date ASC
+    limit: 20
+    example: {style_id: "STY-5520"}
+
+  - name: get_sample_approval_status_for_product
+    desc: Sample approval status for a product with current round number and outstanding approvals.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT DISTINCT r.style_id, r.round_no, r.status, r.approval_status,
+             r.deadline, r.submitted_at, r.approved_at, r.approved_by,
+             r.rejection_reason, COUNT(*) OVER (PARTITION BY r.style_id) AS total_rounds
+      FROM sample_rounds r
+      WHERE r.style_id IN (SELECT DISTINCT style_id FROM launch_products WHERE sku = $sku)
+      ORDER BY r.round_no DESC
+    limit: 10
+    example: {sku: "STY-5520"}
+
+  - name: get_sample_deadlines_by_style
+    desc: Sample deadlines for styles with open fit comments, sorted by urgency.
+    kind: sql
+    args:
+      days_ahead: {type: int, default: 14, desc: "Only deadlines in the next N days"}
+    sql: |
+      SELECT DISTINCT r.style_id, r.deadline, r.round_no, r.status,
+             COUNT(f.comment_id) AS open_fit_comments
+      FROM sample_rounds r
+      LEFT JOIN fit_comments f ON f.style_id = r.style_id AND f.status = 'open'
+      WHERE r.deadline >= CAST($as_of AS DATE)
+        AND r.deadline <= CAST($as_of AS DATE) + INTERVAL CAST($days_ahead AS INT) DAY
+        AND r.status NOT IN ('approved')
+      GROUP BY r.style_id, r.deadline, r.round_no, r.status
+      ORDER BY r.deadline ASC
+    limit: 30
+    example: {}
+
+  - name: list_styles_with_open_fit_comments
+    desc: List styles with open fit comments from suppliers. Use to track outstanding feedback.
+    kind: sql
+    args:
+      days_old: {type: int, default: 30, desc: "Only comments added in the last N days"}
+      supplier_id: {}
+    sql: |
+      SELECT DISTINCT f.comment_id, f.style_id, f.supplier_id, sup.name AS supplier_name,
+             f.comment_text, f.status, f.created_at,
+             COALESCE(r.deadline, DATE('2099-01-01')) AS sample_deadline,
+             COUNT(*) OVER (PARTITION BY f.style_id) AS comments_on_style
+      FROM fit_comments f
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = f.supplier_id
+      LEFT JOIN sample_rounds r ON r.style_id = f.style_id AND r.status NOT IN ('approved')
+      WHERE f.status = 'open'
+        AND f.created_at >= CAST($as_of AS DATE) - INTERVAL CAST($days_old AS INT) DAY
+        AND ($supplier_id IS NULL OR f.supplier_id = $supplier_id)
+      ORDER BY f.created_at DESC
+    limit: 50
+    example: {}
+
+  - name: get_standard_lead_times_by_category
+    desc: Standard lead times by product category and supplier. For planning test-order timelines.
+    kind: sql
+    args:
+      category: {required: true}
+      supplier_id: {}
+    sql: |
+      SELECT l.lead_time_id, l.category, l.supplier_id, sup.name AS supplier_name,
+             l.lead_days, l.fast_track_days, l.updated_at
+      FROM lead_times_category l
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = l.supplier_id
+      WHERE l.category = $category
+        AND ($supplier_id IS NULL OR l.supplier_id = $supplier_id)
+      ORDER BY l.lead_days ASC
+    limit: 20
+    example: {category: "Bedding"}
+
+  - name: get_launch_readiness_signals_for_product
+    desc: Launch readiness signals for product (trend validation, demand, supplier and quality risk). Returns confidence scores.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT s.signal_id, s.style_id, s.season, s.signal_type, s.signal_value,
+             s.created_at, s.notes
+      FROM launch_readiness_signals s
+      WHERE s.style_id = $style_id
+      ORDER BY s.created_at DESC
+    limit: 20
+    example: {style_id: "STY-5520"}
+
+  - name: create_sample_request
+    desc: Raise a sample request to a supplier for a pack or product. Returns the new sample request.
+    kind: insert
+    table: sample_requests
+    id_prefix: SAM-
+    defaults: {status: requested}
+    args:
+      sku: {required: true}
+      style_id: {required: true}
+      supplier_id: {required: true}
+      factory_id: {}
+      pack_material: {desc: "For packaging samples (e.g. corrugated, moulded_pulp, recycled_plastic)"}
+      required_by_date: {type: date, required: true}
+      approval_deadline: {type: date}
+      notes: {}
+    example: {sku: "PF-220", style_id: "STY-5520", supplier_id: "SUP-0001", required_by_date: "+21d"}
+
+  - name: create_test_order_request
+    desc: Create a small test-order request for a trend-led product to validate demand before full commit.
+    kind: insert
+    table: test_orders
+    id_prefix: TST-
+    defaults: {status: requested}
+    args:
+      sku: {required: true}
+      style_id: {required: true}
+      volume_units: {type: int, required: true, desc: "Test volume in units"}
+      purpose: {desc: "Purpose: trend_validation, demand_test, market_test, etc"}
+    example: {sku: "K-1700", style_id: "STY-7731", volume_units: 500, purpose: "trend_validation"}
+
+  - name: reject_sample_for_style
+    desc: Marks a sample round as rejected and requests resubmission from the factory.
+    kind: update
+    table: sample_rounds
+    set: {status: rejected, approval_status: rejected}
+    args:
+      rejection_reason: {required: true, desc: "Why the sample was rejected"}
+    example: {round_id: "RND-900001", rejection_reason: "Zip pull strength test failed again"}
+
+  - name: draft_launch_meeting_update
+    desc: Draft launch meeting update for a product with key milestones and risks.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT p.product_id, p.sku, p.style_id, p.season, p.planned_launch_date,
+             p.status, p.risk_level, prod.name AS product_name,
+             COUNT(m.milestone_id) AS milestone_count,
+             SUM(CASE WHEN m.status = 'delayed' THEN 1 ELSE 0 END) AS delayed_milestones,
+             MAX(r.deadline) AS latest_sample_deadline
+      FROM launch_products p
+      LEFT JOIN critical_path_milestones m ON m.style_id = p.style_id
+      LEFT JOIN master.products prod ON prod.sku = p.sku
+      LEFT JOIN sample_rounds r ON r.style_id = p.style_id
+      WHERE p.style_id = $style_id
+      GROUP BY p.product_id, p.sku, p.style_id, p.season, p.planned_launch_date,
+               p.status, p.risk_level, prod.name
+    limit: 1
+    example: {style_id: "STY-5520"}

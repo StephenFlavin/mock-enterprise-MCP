@@ -84,7 +84,7 @@ def generate(g):
 
         total_cost = refund_cost + logistics_cost + legal_fees + comms_cost
 
-        batch_id = f"{sku}-{g.as_of.strftime('%b').upper()}-{g.as_of.year}-{r.randint(1, 5):02d}"
+        batch_id = f"{sku}-BATCH-{len(recall_cases) + 1:03d}"
 
         recall_cases.append({
             "recall_id": recall_id,
