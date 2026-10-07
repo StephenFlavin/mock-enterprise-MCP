@@ -98,8 +98,13 @@ def _keysets(s) -> dict[str, tuple[str, set]]:
                 f = sys_.dir / "data" / f"{name}.csv"
                 if f.exists():
                     with open(f, newline="") as fh:
-                        out[t.keys[0]] = (f"{'master.' if sys_.id == 'master' else ''}{name}",
-                                          {r.get(t.keys[0], "") for r in csv.DictReader(fh)})
+                        vals = {r.get(t.keys[0], "") for r in csv.DictReader(fh)}
+                    label = f"{'master.' if sys_.id == 'master' else ''}{name}"
+                    if t.keys[0] in out:  # several tables share this key name: accept a value from any of them
+                        prev_label, prev = out[t.keys[0]]
+                        out[t.keys[0]] = (f"{prev_label} or {label}", prev | vals)
+                    else:
+                        out[t.keys[0]] = (label, vals)
     return out
 
 
