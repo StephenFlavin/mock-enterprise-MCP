@@ -1,27 +1,42 @@
 id: treasury
 name: Treasury Management System
 instructions: >
-  Cash forecasting, debt facilities, covenant management and hedging decisions for Harbour & Vale.
-  Covers 13-week and 18-month cash positions, debt facility terms, dividend policy and FX/commodity
-  hedging. Use for liquidity management, covenant headroom and strategic hedging decisions.
+  Cash forecasts (13-week and 18-month, base/downside/upside), bank balances, debt facilities (FAC-), covenant
+  headroom, dividends, forecast FX cash flows and hedging (HDG- requests, HOU- past outcomes) for Harbour & Vale.
+  Money is GBP; the cash pool is reported under LE-UK. Minimum cash policy is 20m.
 
 tables:
   cash_forecasts:
-    key: [forecast_date, forecast_id]
+    key: [forecast_id, week_no]
     cols:
-      forecast_id: {type: str, desc: "Unique forecast run id, e.g. FOR-900001"}
-      forecast_date: {type: date, desc: Date of this forecast entry}
-      week_no: {type: int, desc: "Week number (1=earliest, 13=latest for 13-week forecast)"}
-      entity_id: {type: str, desc: Legal entity}
-      currency: {type: str, desc: "Currency, e.g. GBP"}
-      opening_balance_gbp: {type: float, desc: Opening cash balance for the week in GBP}
-      operating_inflows_gbp: {type: float, desc: Expected operating inflows in GBP}
-      operating_outflows_gbp: {type: float, desc: Expected operating outflows in GBP}
+      forecast_id: {type: str, desc: "Forecast run, one per scenario: FOR-900001 base, FOR-900002 downside, FOR-900003 upside"}
+      scenario: {type: enum, values: [base, downside, upside], desc: Scenario of this forecast run}
+      week_no: {type: int, desc: "Week number: 1 is the first week ahead, 13 ends the 13-week view, 78 ends the 18-month view"}
+      forecast_date: {type: date, desc: Monday starting the forecast week}
+      entity_id: {type: str, desc: Legal entity the group cash pool is reported under}
+      currency: {type: str, desc: "Reporting currency, e.g. GBP"}
+      opening_balance_gbp: {type: float, desc: Opening cash for the week in GBP}
+      operating_inflows_gbp: {type: float, desc: Expected operating receipts in GBP}
+      operating_outflows_gbp: {type: float, desc: "Expected operating payments in GBP (suppliers, payroll, rent, VAT)"}
       capex_gbp: {type: float, desc: Planned capital expenditure in GBP}
-      dividend_payment_gbp: {type: float, desc: Planned dividend payments in GBP}
-      debt_repayment_gbp: {type: float, desc: Planned debt repayments in GBP}
-      closing_balance_gbp: {type: float, desc: Closing balance after all movements in GBP}
-      created_at: {type: timestamp, desc: When this forecast was created}
+      dividend_payment_gbp: {type: float, desc: Dividend paid in the week in GBP}
+      debt_repayment_gbp: {type: float, desc: Scheduled debt repayment in GBP}
+      closing_balance_gbp: {type: float, desc: Closing cash after all movements in GBP}
+      gross_debt_gbp: {type: float, desc: Gross debt outstanding at week end in GBP}
+      key_drivers: {type: text, desc: What drives the week's cash movement}
+      created_at: {type: timestamp, desc: When this forecast was produced}
+
+  covenant_projections:
+    key: [facility_id, scenario, test_date]
+    cols:
+      facility_id: {type: str, desc: "Debt facility, e.g. FAC-900001"}
+      scenario: {type: enum, values: [base, downside, upside], desc: Scenario}
+      test_date: {type: date, desc: Quarter-end covenant test date}
+      metric: {type: str, desc: Covenant metric tested}
+      covenant_type: {type: enum, values: [maximum, minimum], desc: Whether the metric must stay below (maximum) or above (minimum) the limit}
+      covenant_limit: {type: float, desc: Covenant limit}
+      projected_value: {type: float, desc: Projected value of the metric at the test date}
+      basis: {type: text, desc: Inputs behind the projected value}
 
   bank_accounts:
     key: account_id
@@ -31,10 +46,10 @@ tables:
       account_type: {type: enum, values: [operating, investment, overdraft, loan], desc: Account type}
       currency: {type: str, desc: Account currency}
       available_balance_gbp: {type: float, desc: Available balance in GBP equivalent}
-      held_balance_gbp: {type: float, desc: Held/reserved balance in GBP equivalent}
-      facility_limit_gbp: {type: float, desc: Facility limit in GBP}
+      held_balance_gbp: {type: float, desc: Held or reserved balance in GBP equivalent}
+      facility_limit_gbp: {type: float, desc: Overdraft or intraday limit on the account in GBP}
       bank_name: {type: str, desc: Bank name}
-      last_updated: {type: timestamp, desc: When balance was last refreshed}
+      last_updated: {type: timestamp, desc: When the balance was last refreshed}
 
   debt_facilities:
     key: facility_id
@@ -50,10 +65,12 @@ tables:
       start_date: {type: date, desc: Facility start date}
       maturity_date: {type: date, desc: Maturity date}
       interest_rate_pct: {type: float, desc: Interest rate in percent per annum}
-      financial_covenant: {type: str, desc: "e.g. Leverage ratio < 3.0x, Interest coverage > 2.0x"}
+      financial_covenant: {type: str, desc: "Covenant wording, e.g. Leverage: net debt / EBITDA below 3.0x"}
+      covenant_actual: {type: float, desc: Metric value at the last test}
+      covenant_limit: {type: float, desc: Covenant limit}
       covenant_test_date: {type: date, desc: Last covenant test date}
       covenant_status: {type: enum, values: [compliant, at_risk, breached, untested], desc: Covenant compliance status}
-      covenant_headroom_pct: {type: float, desc: Estimated headroom to covenant breach in percent}
+      covenant_headroom_pct: {type: float, desc: "Headroom at the last test: percent the metric can worsen before breach"}
 
   dividends:
     key: dividend_id
@@ -65,7 +82,31 @@ tables:
       amount_gbp: {type: float, desc: Total dividend amount in GBP}
       status: {type: enum, values: [planned, approved, approved_subject_to, paid, cancelled], desc: Dividend status}
       payout_ratio_pct: {type: float, desc: Payout as percentage of earnings}
-      notes: {type: str, desc: "Policy notes or conditions, e.g. subject to covenant compliance"}
+      notes: {type: text, desc: Policy notes and conditions}
+
+  fx_cash_flows:
+    key: [flow_month, currency]
+    cols:
+      flow_month: {type: date, desc: First day of the forecast month}
+      currency: {type: str, desc: "Foreign currency, e.g. USD or EUR"}
+      inflows_gbp: {type: float, desc: "Forecast receipts in this currency, GBP equivalent"}
+      outflows_gbp: {type: float, desc: "Forecast payments in this currency, GBP equivalent"}
+      base_rate: {type: float, desc: Planning rate (units of currency per GBP)}
+      driver: {type: text, desc: What drives the flows}
+
+  hedge_pricing:
+    key: pricing_id
+    cols:
+      pricing_id: {type: str, desc: "Pricing line, e.g. PRC-0001"}
+      underlying_type: {type: enum, values: [fx_forward, commodity], desc: Type of hedge}
+      currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
+      commodity: {type: str, desc: "Commodity, e.g. cotton"}
+      instrument_type: {type: enum, values: [forward, option, collar], desc: Instrument}
+      tenor_months: {type: int, desc: "Hedge tenor in months: 3, 6 or 12"}
+      spot_rate_or_price: {type: float, desc: "Spot rate, or spot price per kg for commodities"}
+      locked_rate_or_price: {type: float, desc: "Forward rate or price, or option strike"}
+      cost_pct: {type: float, desc: "Cost of the instrument as a percent of hedged value (forward points, premium or net collar premium)"}
+      band_pct: {type: float, desc: Collar band either side of spot in percent}
 
   hedging_requests:
     key: hedge_request_id
@@ -74,35 +115,37 @@ tables:
       request_date: {type: date, desc: Date request was submitted}
       underlying_type: {type: enum, values: [fx_forward, commodity, interest_rate, option, other], desc: Type of hedge}
       currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
-      commodity: {type: str, desc: "Commodity name, e.g. cotton, copper"}
-      notional_amount: {type: float, desc: Notional amount to hedge}
-      notional_currency: {type: str, desc: Currency of notional}
-      hedge_ratio_pct: {type: int, desc: "Percentage of exposure to hedge"}
-      instrument_type: {type: str, desc: "e.g. forward, collar, put, straddle"}
-      strike_or_rate: {type: float, desc: "Strike price or forward rate"}
-      maturity_date: {type: date, desc: Hedge maturity/expiry date}
+      commodity: {type: str, desc: "Commodity name, e.g. cotton"}
+      notional_amount: {type: float, desc: Amount to hedge}
+      notional_unit: {type: str, desc: "Unit of the notional, e.g. GBP or tonnes"}
+      hedge_ratio_pct: {type: int, desc: Percentage of exposure to hedge}
+      instrument_type: {type: str, desc: "e.g. forward, collar, option"}
+      strike_or_rate: {type: float, desc: Strike price or forward rate}
+      maturity_date: {type: date, desc: Hedge maturity or expiry date}
       estimated_cost_gbp: {type: float, desc: Estimated cost in GBP}
       status: {type: enum, values: [submitted, approved, rejected, executed, closed, expired], desc: Request status}
       approval_date: {type: date, desc: When approved or rejected}
       approver_id: {type: str, desc: Employee who approved}
+      notes: {type: text, desc: "Rationale or tranche details"}
 
   hedging_outcomes:
     key: outcome_id
     cols:
       outcome_id: {type: str, desc: "Hedging outcome record, e.g. HOU-900001"}
-      hedge_request_id: {type: str, desc: Original hedge request id (if created from request)"}
+      hedge_request_id: {type: str, desc: "Original hedge request id, if any"}
       decision_date: {type: date, desc: Date the hedge decision was made}
       underlying_type: {type: enum, values: [fx_forward, commodity, interest_rate, option, other], desc: Type of hedge}
       currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
       commodity: {type: str, desc: "Commodity, e.g. cotton"}
       notional_amount: {type: float, desc: Notional amount hedged}
-      hedge_ratio_pct: {type: int, desc: "Percentage hedged"}
-      entry_rate_or_price: {type: float, desc: "Entry rate or price"}
-      exit_rate_or_price: {type: float, desc: "Exit rate or price (null if still open)"}
-      settlement_date: {type: date, desc: When hedge settled}
-      realised_gain_loss_gbp: {type: float, desc: Realised gain/loss in GBP (positive = gain)"}
-      strategy_vs_spot: {type: str, desc: "Comparison to spot outcome, e.g. forward was 8% better than spot"}
-      comments: {type: str, desc: "Notes on why this decision was made"}
+      notional_unit: {type: str, desc: "Unit of the notional, e.g. GBP or tonnes"}
+      hedge_ratio_pct: {type: int, desc: Percentage hedged}
+      entry_rate_or_price: {type: float, desc: "Hedge entry rate or price (commodity price per kg in GBP)"}
+      exit_rate_or_price: {type: float, desc: Spot rate or price at settlement}
+      settlement_date: {type: date, desc: When the hedge settled}
+      realised_gain_loss_gbp: {type: float, desc: "Realised gain or loss versus spot in GBP, positive is a gain"}
+      strategy_vs_spot: {type: str, desc: "Comparison to the spot outcome, e.g. forward beat spot by 8%"}
+      comments: {type: text, desc: Notes on the decision and what happened}
 
   covenant_alerts:
     key: alert_id
@@ -110,217 +153,297 @@ tables:
       alert_id: {type: str, desc: "Alert record, e.g. ALT-900001"}
       facility_id: {type: str, desc: Debt facility this alert applies to}
       alert_type: {type: enum, values: [headroom_threshold, breach_imminent, breach_occurred, other], desc: Alert type}
-      threshold_pct: {type: float, desc: "Headroom threshold, e.g. 15%"}
-      current_headroom_pct: {type: float, desc: Current headroom percentage}
+      threshold_pct: {type: float, desc: "Headroom threshold in percent, e.g. 15"}
+      current_headroom_pct: {type: float, desc: Headroom percentage when the alert was set}
       status: {type: enum, values: [active, triggered, resolved, cancelled], desc: Alert status}
-      created_date: {type: date, desc: When alert was created}
-      triggered_date: {type: date, desc: When alert was triggered}
-      actions_taken: {type: str, desc: Actions taken in response}
+      created_date: {type: date, desc: When the alert was created}
+      triggered_date: {type: date, desc: When the alert was triggered}
+      actions_taken: {type: text, desc: Actions taken in response}
 
 tools:
   - name: get_bank_balances
-    desc: Current bank balances and facility limits across all accounts and entities.
+    desc: Current bank balances, held amounts and limits by account and entity. Use for cash on hand today; sum for the group total.
     kind: select
     from: bank_accounts
-    columns: [account_id, entity_id, account_type, currency, available_balance_gbp, facility_limit_gbp, bank_name, last_updated]
-    order: entity_id
+    filters:
+      entity_id: {}
+      account_type: {}
+      currency: {}
+    columns: [account_id, entity_id, account_type, currency, available_balance_gbp, held_balance_gbp, facility_limit_gbp, bank_name, last_updated]
+    order: available_balance_gbp DESC
+    limit: 30
     example: {}
 
   - name: get_13_week_cash_forecast
-    desc: Weekly cash position forecast for the next 13 weeks showing inflows, outflows and closing balances.
-    kind: select
-    from: cash_forecasts
-    filters:
-      forecast_id: {}
-      week_no: {op: "<=", default: "13"}
-    columns: [forecast_date, week_no, opening_balance_gbp, operating_inflows_gbp, operating_outflows_gbp, capex_gbp, closing_balance_gbp]
-    order: forecast_date
-    example: {forecast_id: FOR-900001}
-
-  - name: get_cash_flow_forecast_18_months
-    desc: 18-month cash and debt forecast showing cash position, debt drawn and facility headroom under base case.
+    desc: Weekly cash forecast with inflows, outflows, closing balance, headroom to a minimum cash balance, liquidity incl. undrawn revolver and what drives each week.
     kind: sql
     args:
-      entity_id: {required: false, desc: "Specific entity, e.g. LE-UK (default all)"}
+      scenario: {type: enum, values: [base, downside, upside], default: base, desc: Forecast scenario}
+      min_cash_gbp: {type: float, default: "20000000", desc: Minimum cash balance in GBP used for headroom}
+      weeks: {type: int, default: "13", desc: Number of weeks ahead}
     sql: |
-      SELECT c.forecast_date, c.week_no, c.opening_balance_gbp, c.operating_inflows_gbp,
-             c.operating_outflows_gbp, c.capex_gbp, c.dividend_payment_gbp, c.debt_repayment_gbp,
-             c.closing_balance_gbp, b.total_facility_gbp, b.drawn_amount_gbp, b.undrawn_amount_gbp
-      FROM cash_forecasts c
-      LEFT JOIN debt_facilities b ON b.entity_id = c.entity_id
-      WHERE ($entity_id IS NULL OR c.entity_id = $entity_id)
-      ORDER BY c.forecast_date
-    limit: 100
+      WITH u AS (SELECT coalesce(sum(undrawn_amount_gbp), 0) AS undrawn FROM debt_facilities WHERE facility_type = 'revolving_credit')
+      SELECT c.week_no, c.forecast_date, c.opening_balance_gbp, c.operating_inflows_gbp, c.operating_outflows_gbp,
+             round(c.operating_inflows_gbp - c.operating_outflows_gbp, 0) AS net_operating_flow_gbp,
+             c.capex_gbp, c.dividend_payment_gbp, c.debt_repayment_gbp, c.closing_balance_gbp,
+             round(c.closing_balance_gbp - $min_cash_gbp, 0) AS headroom_vs_min_cash_gbp,
+             round(c.closing_balance_gbp + u.undrawn, 0) AS total_liquidity_gbp,
+             CASE WHEN c.closing_balance_gbp < $min_cash_gbp THEN 'below_minimum' ELSE 'ok' END AS status,
+             CASE WHEN c.closing_balance_gbp = min(c.closing_balance_gbp) OVER () THEN 'tightest week' ELSE '' END AS tightest,
+             c.key_drivers
+      FROM cash_forecasts c CROSS JOIN u
+      WHERE c.scenario = $scenario AND c.week_no <= CAST($weeks AS INT)
+      ORDER BY c.week_no
+    limit: 26
     example: {}
 
-  - name: get_cash_position_forecast
-    desc: Projected cash position and headroom to minimum required balance over the next 90 days.
+  - name: get_cash_flow_forecast_18_months
+    desc: Monthly cash and debt forecast for 18 months in one scenario (base, downside or upside) with flows, closing and lowest cash, gross and net debt, liquidity.
     kind: sql
     args:
-      min_balance_gbp: {type: float, required: false, default: "5000000", desc: Minimum required cash balance in GBP}
+      scenario: {type: enum, values: [base, downside, upside], default: base, desc: "Forecast scenario; call once per scenario to compare"}
     sql: |
-      SELECT forecast_date, week_no, closing_balance_gbp,
-             round(closing_balance_gbp - $min_balance_gbp, 0) AS headroom_gbp,
-             CASE WHEN closing_balance_gbp < $min_balance_gbp THEN 'at_risk' ELSE 'adequate' END AS status
-      FROM cash_forecasts
-      WHERE closing_balance_gbp IS NOT NULL
-      ORDER BY forecast_date
+      WITH u AS (SELECT coalesce(sum(undrawn_amount_gbp), 0) AS undrawn FROM debt_facilities WHERE facility_type = 'revolving_credit')
+      SELECT strftime(date_trunc('month', c.forecast_date), '%Y-%m') AS month,
+             c.scenario,
+             round(arg_min(c.opening_balance_gbp, c.week_no), 0) AS opening_cash_gbp,
+             round(sum(c.operating_inflows_gbp), 0) AS inflows_gbp,
+             round(sum(c.operating_outflows_gbp), 0) AS outflows_gbp,
+             round(sum(c.capex_gbp), 0) AS capex_gbp,
+             round(sum(c.dividend_payment_gbp), 0) AS dividends_gbp,
+             round(sum(c.debt_repayment_gbp), 0) AS debt_repayments_gbp,
+             round(arg_max(c.closing_balance_gbp, c.week_no), 0) AS closing_cash_gbp,
+             round(min(c.closing_balance_gbp), 0) AS lowest_weekly_cash_gbp,
+             round(arg_max(c.gross_debt_gbp, c.week_no), 0) AS gross_debt_gbp,
+             round(arg_max(c.gross_debt_gbp - c.closing_balance_gbp, c.week_no), 0) AS net_debt_gbp,
+             round(arg_max(c.closing_balance_gbp, c.week_no) + any_value(u.undrawn), 0) AS total_liquidity_gbp
+      FROM cash_forecasts c CROSS JOIN u
+      WHERE c.scenario = $scenario
+      GROUP BY date_trunc('month', c.forecast_date), c.scenario
+      ORDER BY date_trunc('month', c.forecast_date)
+    limit: 24
+    example: {scenario: downside}
+
+  - name: get_cash_position_forecast
+    desc: Weekly closing cash for the next 90 days with headroom to a minimum balance and total liquidity. Use to check whether cash can fund a commitment.
+    kind: sql
+    args:
+      min_balance_gbp: {type: float, default: "20000000", desc: Minimum required cash balance in GBP}
+      scenario: {type: enum, values: [base, downside, upside], default: base, desc: Forecast scenario}
+      horizon_days: {type: int, default: "90", desc: Days ahead to cover}
+    sql: |
+      WITH u AS (SELECT coalesce(sum(undrawn_amount_gbp), 0) AS undrawn FROM debt_facilities WHERE facility_type = 'revolving_credit')
+      SELECT c.forecast_date, c.week_no, c.closing_balance_gbp,
+             round(c.closing_balance_gbp - $min_balance_gbp, 0) AS headroom_gbp,
+             CASE WHEN c.closing_balance_gbp < $min_balance_gbp THEN 'at_risk' ELSE 'adequate' END AS status,
+             round(c.closing_balance_gbp + u.undrawn, 0) AS total_liquidity_gbp
+      FROM cash_forecasts c CROSS JOIN u
+      WHERE c.scenario = $scenario
+        AND c.forecast_date <= CAST($as_of AS DATE) + CAST($horizon_days AS INT)
+      ORDER BY c.forecast_date
     limit: 30
     example: {}
 
   - name: get_debt_facilities_and_covenants
-    desc: Facility terms, current covenants and compliance status for all debt facilities.
+    desc: Facility terms, covenant wording, last test value, limit, compliance status and headroom percent, tightest covenant first.
     kind: select
     from: debt_facilities
-    columns: [facility_id, entity_id, facility_type, lender, total_facility_gbp, drawn_amount_gbp, maturity_date, financial_covenant, covenant_status, covenant_headroom_pct]
-    order: maturity_date
+    filters:
+      facility_id: {}
+      entity_id: {}
+      facility_type: {}
+      covenant_status: {}
+    columns: [facility_id, facility_type, lender, total_facility_gbp, drawn_amount_gbp, maturity_date, financial_covenant, covenant_actual, covenant_limit, covenant_test_date, covenant_status, covenant_headroom_pct]
+    order: covenant_headroom_pct
     example: {}
 
   - name: get_debt_facilities_and_headroom
-    desc: Facility limits, drawn amounts and liquidity headroom to undrawn capacity.
+    desc: Facility limits, drawn and undrawn amounts, rates and maturity for liquidity headroom. Undrawn revolving credit is the usable backstop.
     kind: sql
     args:
       entity_id: {required: false}
+      facility_type: {type: enum, values: [term_loan, revolving_credit, bond, acquisition_facility, other], desc: Only this facility type}
     sql: |
       SELECT facility_id, facility_type, lender, total_facility_gbp, drawn_amount_gbp,
-             undrawn_amount_gbp, interest_rate_pct, maturity_date,
+             undrawn_amount_gbp AS headroom_gbp, interest_rate_pct, maturity_date,
              round(100.0 * undrawn_amount_gbp / total_facility_gbp, 1) AS undrawn_pct
       FROM debt_facilities
       WHERE ($entity_id IS NULL OR entity_id = $entity_id)
-      ORDER BY maturity_date
+        AND ($facility_type IS NULL OR facility_type = $facility_type)
+      ORDER BY undrawn_amount_gbp DESC, maturity_date
     limit: 20
     example: {}
 
   - name: get_dividend_policy_and_schedule
-    desc: Dividend policy, planned payment dates and amount, including policy for how much of earnings to return.
+    desc: Planned dividends with payment date, amount, status, payout ratio and the policy conditions that could defer them.
     kind: select
     from: dividends
+    filters:
+      status: {}
+      policy_type: {}
+      payment_from: {col: payment_date, op: ">=", default: "-90d"}
+      payment_to: {col: payment_date, op: "<=", default: "+560d"}
     columns: [dividend_id, entity_id, policy_type, payment_date, amount_gbp, status, payout_ratio_pct, notes]
     order: payment_date
     example: {}
 
   - name: get_forecast_cash_flows_by_currency
-    desc: Forecast monthly cash inflows and outflows by currency for the next 12 months showing net exposure and FX risk.
+    desc: Monthly forecast inflows, outflows and net exposure by foreign currency (USD, EUR) with running total, for the next 12 months.
     kind: sql
     args:
-      currency: {required: false, desc: "Specific currency e.g. GBP, USD (default all)"}
-      horizon_months: {type: int, default: "12", desc: "Forecast horizon in months"}
+      currency: {desc: "Currency, e.g. USD or EUR; omit for all"}
+      horizon_months: {type: int, default: "12", desc: Months ahead to cover}
     sql: |
-      SELECT c.forecast_date, c.currency, c.operating_inflows_gbp, c.operating_outflows_gbp,
-             round(c.operating_inflows_gbp - c.operating_outflows_gbp, 2) AS net_exposure_gbp
-      FROM cash_forecasts c
-      WHERE ($currency IS NULL OR c.currency = $currency)
-      ORDER BY c.forecast_date
+      SELECT flow_month, currency, inflows_gbp, outflows_gbp,
+             round(outflows_gbp - inflows_gbp, 0) AS net_exposure_gbp,
+             round(sum(outflows_gbp - inflows_gbp) OVER (PARTITION BY currency ORDER BY flow_month), 0) AS cumulative_net_exposure_gbp,
+             base_rate, driver,
+             'net_exposure = outflows - inflows (positive = net amount of currency to buy)' AS formula
+      FROM fx_cash_flows
+      WHERE ($currency IS NULL OR upper(currency) = upper($currency))
+        AND flow_month >= CAST($as_of AS DATE)
+        AND flow_month < CAST($as_of AS DATE) + CAST($horizon_months AS INT) * INTERVAL 1 MONTH
+      ORDER BY currency, flow_month
     limit: 50
-    example: {}
+    example: {currency: USD}
 
   - name: get_historic_hedging_outcomes
-    desc: Outcomes of past hedging decisions showing actual gains/losses versus spot and strategy effectiveness.
+    desc: Settled hedges with entry and exit price, realised gain or loss versus spot and why. Use to judge past hedging decisions.
     kind: select
     from: hedging_outcomes
     filters:
-      decision_date: {op: ">=", default: "-365d"}
+      commodity: {}
+      currency_pair: {}
       underlying_type: {}
-      settlement_date: {op: "IS NOT NULL"}
-    columns: [outcome_id, underlying_type, currency_pair, commodity, hedge_ratio_pct, entry_rate_or_price, exit_rate_or_price, realised_gain_loss_gbp, strategy_vs_spot, decision_date]
-    order: decision_date
+      decision_from: {col: decision_date, op: ">=", default: "-1460d"}
+    columns: [outcome_id, decision_date, underlying_type, currency_pair, commodity, notional_amount, notional_unit, hedge_ratio_pct, entry_rate_or_price, exit_rate_or_price, settlement_date, realised_gain_loss_gbp, strategy_vs_spot, comments]
+    order: decision_date DESC
     limit: 50
-    example: {}
+    example: {commodity: cotton}
 
   - name: calculate_hedge_scenarios
-    desc: Cost and P&L impact of forward, option and other hedging strategies for a given notional and time horizon.
+    desc: Compares forward, option, collar and no hedge for a notional and ratio, with upfront cost and outcome if the market moves against or in favour.
     kind: sql
     args:
-      underlying_type: {required: true, values: [fx_forward, commodity, interest_rate], desc: "Type of hedge"}
-      currency_pair: {required: false, desc: "For FX, e.g. GBP/USD"}
-      commodity: {required: false, desc: "For commodity, e.g. cotton"}
-      notional_amount: {required: true, type: float, desc: "Notional amount to hedge"}
-      forward_rate_or_price: {required: false, type: float, desc: "Current forward rate or spot price"}
-      option_strike: {required: false, type: float, desc: "Strike price for option contracts"}
+      underlying_type: {required: true, type: enum, values: [fx_forward, commodity], desc: "Type of hedge: fx_forward or commodity"}
+      notional_amount: {required: true, type: float, desc: "Total exposure to hedge: GBP for a currency pair, tonnes for a commodity such as cotton"}
+      currency_pair: {desc: "Currency pair for fx_forward, e.g. GBP/USD or GBP/EUR"}
+      commodity: {desc: "Commodity for commodity hedges, e.g. cotton"}
+      hedge_ratio_pct: {type: int, default: "60", desc: Percent of the exposure to hedge}
+      compare_ratio_pct: {type: int, desc: "Second ratio to compare side by side, e.g. the current ratio"}
+      horizon_months: {type: int, default: "12", desc: "Hedge tenor in months: 3, 6 or 12"}
+      price_move_pct: {type: float, default: "10", desc: "Size of the market move tested, in percent"}
     sql: |
-      SELECT
-        'Forward hedge' AS strategy,
-        $notional_amount AS notional_gbp,
-        round(($forward_rate_or_price * 100 - 100), 2) AS cost_pct,
-        round($notional_amount * (($forward_rate_or_price * 100 - 100) / 100), 2) AS cost_gbp,
-        'Fixed rate; no upside capture' AS characteristics
+      WITH p AS (
+        SELECT * FROM hedge_pricing
+        WHERE underlying_type = $underlying_type AND tenor_months = CAST($horizon_months AS INT)
+          AND (($currency_pair IS NULL AND $commodity IS NULL)
+               OR upper(currency_pair) = upper($currency_pair) OR lower(commodity) = lower($commodity))
+      ),
+      r AS (SELECT DISTINCT x AS ratio FROM (VALUES (CAST($hedge_ratio_pct AS DOUBLE)), (CAST($compare_ratio_pct AS DOUBLE))) AS t(x) WHERE x IS NOT NULL),
+      e AS (
+        SELECT p.*, r.ratio / 100.0 AS h,
+               CASE WHEN p.underlying_type = 'commodity' THEN $notional_amount * p.spot_rate_or_price * 1000
+                    ELSE $notional_amount END AS exposure_gbp,
+               $price_move_pct / 100.0 AS m
+        FROM p CROSS JOIN r
+      ),
+      s AS (
+        SELECT e.*, exposure_gbp * h AS hedged_gbp, exposure_gbp * h * cost_pct / 100.0 AS cost_gbp,
+               CASE WHEN underlying_type = 'fx_forward' THEN 'sterling falls ' || $price_move_pct || '%' ELSE 'price rises ' || $price_move_pct || '%' END AS adverse_case,
+               CASE WHEN underlying_type = 'fx_forward' THEN 'sterling rises ' || $price_move_pct || '%' ELSE 'price falls ' || $price_move_pct || '%' END AS favourable_case
+        FROM e
+      )
+      SELECT upper(left(instrument_type, 1)) || substr(instrument_type, 2) AS strategy, round(h * 100, 0) AS hedge_ratio_pct,
+             coalesce(currency_pair, commodity) AS underlying, round(exposure_gbp, 0) AS exposure_gbp,
+             round(hedged_gbp, 0) AS hedged_value_gbp, printf('%.4f', locked_rate_or_price) AS locked_rate_or_price, cost_pct,
+             round(cost_gbp, 0) AS upfront_cost_gbp,
+             adverse_case,
+             round(CASE instrument_type
+                     WHEN 'collar' THEN -(1 - h) * exposure_gbp * m - hedged_gbp * least(m, band_pct / 100.0) - cost_gbp
+                     ELSE -(1 - h) * exposure_gbp * m - cost_gbp END, 0) AS outcome_if_adverse_gbp,
+             favourable_case,
+             round(CASE instrument_type
+                     WHEN 'forward' THEN (1 - h) * exposure_gbp * m - cost_gbp
+                     WHEN 'option' THEN exposure_gbp * m - cost_gbp
+                     ELSE (1 - h) * exposure_gbp * m + hedged_gbp * least(m, band_pct / 100.0) - cost_gbp END, 0) AS outcome_if_favourable_gbp,
+             round(CASE instrument_type
+                     WHEN 'forward' THEN hedged_gbp * m + cost_gbp
+                     WHEN 'option' THEN cost_gbp
+                     ELSE hedged_gbp * (m - least(m, band_pct / 100.0)) + cost_gbp END, 0) AS opportunity_cost_if_favourable_gbp,
+             'outcome = P&L versus today spot budget; unhedged share moves with the market, hedged share per instrument, less upfront cost' AS formula
+      FROM s
       UNION ALL
-      SELECT
-        'Option (put)' AS strategy,
-        $notional_amount,
-        round(2.0, 2),
-        round($notional_amount * 0.02, 2),
-        'Premium cost; downside protected; upside captured'
-      UNION ALL
-      SELECT
-        'Wait/spot' AS strategy,
-        $notional_amount,
-        0.0,
-        0.0,
-        'No hedge cost; full exposure to moves'
-    limit: 10
-    example: {underlying_type: fx_forward, notional_amount: 1000000}
+      SELECT 'Wait (no hedge)', 0, any_value(coalesce(currency_pair, commodity)), round(any_value(exposure_gbp), 0), 0.0, printf('%.4f', any_value(spot_rate_or_price)), 0.0, 0.0,
+             any_value(adverse_case), round(-any_value(exposure_gbp) * any_value(m), 0),
+             any_value(favourable_case), round(any_value(exposure_gbp) * any_value(m), 0), 0.0,
+             'outcome = full exposure moves with the market' AS formula
+      FROM s HAVING count(*) > 0
+      ORDER BY hedge_ratio_pct, upfront_cost_gbp
+    limit: 12
+    example: {underlying_type: fx_forward, currency_pair: GBP/USD, notional_amount: 10000000, hedge_ratio_pct: 80, compare_ratio_pct: 60}
 
   - name: calculate_covenant_headroom
-    desc: Current and projected covenant headroom under base, downside and upside scenarios for key debt facilities.
+    desc: Projected covenant headroom at each quarter-end test over 18 months under base, downside and upside scenarios; reports the worst test per facility.
     kind: sql
     args:
-      facility_id: {required: true, desc: "Debt facility id"}
-      scenario: {type: enum, values: [base, downside, upside], default: base, desc: "Scenario assumption"}
+      facility_id: {desc: "Debt facility, e.g. FAC-900001; omit for all facilities"}
+      scenario: {type: enum, values: [base, downside, upside], desc: "Only this scenario; omit for all three"}
     sql: |
-      SELECT
-        f.facility_id,
-        $scenario AS scenario,
-        f.financial_covenant,
-        CASE $scenario
-          WHEN 'downside' THEN round(f.covenant_headroom_pct * 0.5, 1)
-          WHEN 'upside' THEN round(f.covenant_headroom_pct * 1.5, 1)
-          ELSE f.covenant_headroom_pct
-        END AS headroom_pct,
-        CASE
-          WHEN CASE $scenario
-            WHEN 'downside' THEN round(f.covenant_headroom_pct * 0.5, 1)
-            WHEN 'upside' THEN round(f.covenant_headroom_pct * 1.5, 1)
-            ELSE f.covenant_headroom_pct
-          END < 15 THEN 'watch'
-          WHEN CASE $scenario
-            WHEN 'downside' THEN round(f.covenant_headroom_pct * 0.5, 1)
-            WHEN 'upside' THEN round(f.covenant_headroom_pct * 1.5, 1)
-            ELSE f.covenant_headroom_pct
-          END < 10 THEN 'breach_risk'
-          ELSE 'compliant'
-        END AS status,
-        'See covenant alert for ongoing monitoring' AS formula
-      FROM debt_facilities f
-      WHERE f.facility_id = $facility_id
-    limit: 5
-    example: {facility_id: FAC-900001, scenario: base}
+      WITH t AS (
+        SELECT p.*,
+               CASE WHEN p.covenant_type = 'maximum' THEN round(100.0 * (p.covenant_limit - p.projected_value) / p.covenant_limit, 1)
+                    ELSE round(100.0 * (p.projected_value - p.covenant_limit) / p.projected_value, 1) END AS headroom_pct
+        FROM covenant_projections p
+        WHERE ($facility_id IS NULL OR p.facility_id = $facility_id)
+          AND ($scenario IS NULL OR p.scenario = $scenario)
+      ),
+      w AS (
+        SELECT t.*, row_number() OVER (PARTITION BY facility_id, scenario ORDER BY headroom_pct, test_date) AS rn,
+               count(*) FILTER (WHERE headroom_pct < 15) OVER (PARTITION BY facility_id, scenario) AS tests_below_15pct
+        FROM t
+      )
+      SELECT w.facility_id, f.financial_covenant, w.scenario, w.covenant_limit, w.projected_value AS worst_projected_value,
+             w.test_date AS worst_test_date, w.headroom_pct AS min_headroom_pct, w.tests_below_15pct,
+             CASE WHEN w.headroom_pct < 0 THEN 'breached' WHEN w.headroom_pct < 10 THEN 'breach_risk'
+                  WHEN w.headroom_pct < 20 THEN 'watch' ELSE 'compliant' END AS status,
+             w.basis,
+             'headroom = (limit - value) / limit for maximum covenants, (value - limit) / value for minimum covenants' AS formula
+      FROM w JOIN debt_facilities f USING (facility_id)
+      WHERE w.rn = 1
+      ORDER BY w.headroom_pct, w.scenario
+    limit: 12
+    example: {facility_id: FAC-900001}
 
   - name: create_covenant_alert
-    desc: Create or update a threshold alert on covenant headroom to flag when the facility approaches the covenant breach level.
+    desc: Create a threshold alert that triggers when covenant headroom on a facility falls below a percentage. Returns the new alert.
     kind: insert
     table: covenant_alerts
     id_prefix: ALT-
     defaults: {status: active}
     args:
       facility_id: {required: true}
-      alert_type: {required: true}
-      threshold_pct: {required: true, type: float, desc: "Headroom threshold percentage, e.g. 15"}
-    example: {facility_id: FAC-900001, alert_type: headroom_threshold, threshold_pct: 15}
+      threshold_pct: {required: true, type: float, desc: "Alert when headroom falls below this percent, e.g. 15"}
+      current_headroom_pct: {type: float, desc: "Current headroom percent from get_debt_facilities_and_covenants"}
+      alert_type: {type: enum, values: [headroom_threshold, breach_imminent, breach_occurred, other], default: headroom_threshold, desc: Alert type}
+    example: {facility_id: FAC-900001, threshold_pct: 15, current_headroom_pct: 18.7}
 
   - name: submit_hedge_request
-    desc: Submit a forward, option or other hedge request for treasury approval. Returns request id and approval status.
+    desc: Submit a forward, option or collar hedge request for treasury approval. Returns the new request and its submitted status.
     kind: insert
     table: hedging_requests
     id_prefix: HDG-
-    defaults: {status: submitted, estimated_cost_gbp: 0}
+    defaults: {status: submitted, request_date: "$as_of"}
     args:
-      underlying_type: {required: true, desc: "Type of hedge"}
-      currency_pair: {required: false, desc: "For FX, e.g. GBP/USD"}
-      commodity: {required: false, desc: "For commodity, e.g. cotton"}
-      notional_amount: {required: true, type: float, desc: "Amount to hedge"}
-      notional_currency: {required: true, desc: "Currency of notional"}
-      hedge_ratio_pct: {required: true, type: int, desc: "Percentage to hedge (e.g. 60)"}
-      instrument_type: {required: true, desc: "forward, collar, put, etc"}
-      maturity_date: {required: true, type: date, desc: "Hedge expiry date"}
-    example: {underlying_type: fx_forward, currency_pair: GBP/USD, notional_amount: 2000000, notional_currency: GBP, hedge_ratio_pct: 60, instrument_type: forward, maturity_date: "+180d"}
+      underlying_type: {required: true, desc: "Type of hedge: fx_forward or commodity"}
+      notional_amount: {required: true, type: float, desc: "Amount to hedge now: GBP for a currency pair, tonnes for a commodity"}
+      notional_unit: {required: true, desc: "Unit of the notional: GBP or tonnes"}
+      hedge_ratio_pct: {required: true, type: int, desc: "Percent of the total exposure this request covers, e.g. 30"}
+      instrument_type: {required: true, desc: "forward, option or collar"}
+      maturity_date: {required: true, type: date, desc: Hedge expiry date}
+      currency_pair: {desc: "Currency pair for FX, e.g. GBP/USD"}
+      commodity: {desc: "Commodity for commodity hedges, e.g. cotton"}
+      strike_or_rate: {type: float, desc: "Forward rate or price, or option strike"}
+      estimated_cost_gbp: {type: float, desc: Estimated cost in GBP from calculate_hedge_scenarios}
+      notes: {desc: "Rationale or tranche details, e.g. first tranche of 60%"}
+    example: {underlying_type: fx_forward, currency_pair: GBP/USD, notional_amount: 2000000, notional_unit: GBP, hedge_ratio_pct: 60, instrument_type: forward, maturity_date: "+180d"}

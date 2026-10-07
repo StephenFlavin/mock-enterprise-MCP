@@ -247,7 +247,7 @@ def generate(g):
     planning_buffers = []
     for (origin, dest, service), delays in per_lane.items():
         p90 = max(_quantile(delays, 0.9), 0)
-        within = sum(1 for x in delays if abs(x) <= 1) / len(delays)
+        within = sum(1 for x in delays if abs(x) <= 2) / len(delays)
         planning_buffers.append({
             "origin_port": origin, "dest_port": dest, "service": service,
             "current_buffer_days": CURRENT_BUFFER.get((origin, dest, service), r.choice([2.0, 3.0, 3.0, 4.0])),

@@ -78,13 +78,14 @@ def _delivery(g):
     for days_ago in range(60, 0, -1):
         d = g.days_ago(days_ago)
         for area, (w, std, lift, live) in AREAS.items():
-            area_sessions = w * 8 * DOW_SESSIONS[d.weekday()]
+            area_sessions = w * 25 * DOW_SESSIONS[d.weekday()]
             nd_share = 0.30 if live else 0.12     # not-live areas: next-day shown to a pilot cell only
             for opt in ("standard", "next_day"):
                 sessions = int(area_sessions * (nd_share if opt == "next_day" else 1 - nd_share) * r.uniform(0.95, 1.05))
                 rate = std + (lift if opt == "next_day" else 0.0)
                 rate *= r.uniform(0.98, 1.02)
-                orders = int(round(sessions * rate / 100))
+                exp = sessions * rate / 100
+                orders = int(exp) + (1 if r.random() < exp - int(exp) else 0)
                 aov = 51.0 if opt == "next_day" else 48.0
                 rows.append({"date": d, "postcode_area": area, "delivery_option": opt, "sessions": sessions,
                              "orders": orders, "conversion_rate": round(100.0 * orders / max(sessions, 1), 2),
