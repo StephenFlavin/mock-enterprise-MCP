@@ -451,6 +451,7 @@ def generate(g):
             "lanes_affected": ",".join(r.sample(lanes, r.randint(2, 5))),
             "carriers_involved": ",".join([c["carrier_id"] for c in r.sample(road_carriers, r.randint(1, 3))]),
             "volume_units": r.randint(1000, 10000),
+            "share_pct": r.choice([10, 20, 30, 40]),
             "total_cost_gbp": float(r.randint(5000, 30000)),
             "projected_on_time_pct": float(r.randint(85, 98)),
             "projected_fill_rate_pct": float(r.randint(75, 95)),

@@ -16,7 +16,7 @@ STORY_FIN = {
     "SUP-0035": dict(h=48, credit=[586, 620, 650, 690, 700], share=0.07, prior=(0.050, 0.15, 0.35, 1.2, 1.7)),
     "SUP-0036": dict(h=52, credit=[614, 640, 660, 690, 700], share=0.08, prior=(0.050, 0.14, 0.35, 1.2, 1.7)),
     "SUP-0038": dict(h=49, credit=[593, 600, 612, 622, 630], share=0.09, prior=(0.045, 0.14, 0.38, 1.4, 1.5)),
-    "SUP-0027": dict(h=38, credit=[516, 560, 600, 640, 680], share=0.08, prior=(0.065, 0.20, 0.30, 1.4, 1.45)),
+    "SUP-0028": dict(h=38, credit=[516, 560, 600, 640, 680], share=0.09, prior=(0.065, 0.20, 0.30, 1.4, 1.45)),
     "SUP-0065": dict(h=46, credit=[572, 600, 630, 650, 665], share=0.10, prior=(0.060, 0.20, 0.33, 1.2, 1.35)),
     "SUP-0011": dict(h=78, credit=[796, 790, 786, 780, 775], share=0.12, prior=(0.085, 0.14, 0.22, 0.62, 1.9)),
     "SUP-0014": dict(h=74, credit=[768, 765, 760, 758, 750], share=0.10, prior=(0.070, 0.12, 0.26, 0.75, 1.7)),
@@ -33,7 +33,7 @@ STORY_FILING = {
     "SUP-0035": (0.019, 0.045, 0.45, 2.1, 1.05),
     "SUP-0036": (0.022, 0.050, 0.42, 1.9, 1.10),
     "SUP-0038": (0.020, 0.048, 0.44, 1.9, 1.12),
-    "SUP-0027": (0.017, 0.034, 0.40, 2.3, 0.92),
+    "SUP-0028": (0.017, 0.034, 0.40, 2.3, 0.92),
     "SUP-0065": (0.028, 0.048, 0.40, 1.8, 1.05),
     "SUP-0011": (0.095, 0.150, 0.20, 0.55, 2.1),
     "SUP-0014": (0.074, 0.120, 0.24, 0.70, 1.8),
@@ -41,16 +41,16 @@ STORY_FILING = {
     "SUP-0023": (0.030, 0.060, 0.40, 1.4, 1.3),
     "SUP-0044": (0.090, 0.140, 0.20, 0.50, 2.2),
 }
-SOLE_SOURCE = {"SUP-0011": "Towels", "SUP-0014": "Scarves", "SUP-0027": "Smart Home", "SUP-0033": "Fragrance",
+SOLE_SOURCE = {"SUP-0011": "Towels", "SUP-0014": "Scarves", "SUP-0028": "Footwear", "SUP-0033": "Fragrance",
                "SUP-0065": "Knitwear"}
 CRIT_OVERRIDE = {"SUP-0053": "high", "SUP-0055": "medium", "SUP-0038": "high"}
 WATCH = {"SUP-0002": "watch", "SUP-0048": "watch", "SUP-0029": "none"}
 # cyber rating / system access / security rating for the critical suppliers (poor ones are the "weakest three")
 CYBER_STORY = {
     "SUP-0049": ("poor", "financial", "critical"), "SUP-0057": ("poor", "order_placement", "critical"),
-    "SUP-0044": ("poor", "inventory", "high"), "SUP-0036": ("fair", None, "medium"), "SUP-0072": ("fair", None, "medium"),
+    "SUP-0044": ("poor", "inventory", "critical"), "SUP-0036": ("fair", None, "medium"), "SUP-0072": ("fair", None, "medium"),
     "SUP-0035": ("good", None, "low"), "SUP-0011": ("good", None, "low"), "SUP-0014": ("good", None, "low"),
-    "SUP-0027": ("fair", None, "medium"), "SUP-0033": ("good", None, "low"), "SUP-0065": ("fair", None, "medium"),
+    "SUP-0028": ("fair", None, "medium"), "SUP-0033": ("good", None, "low"), "SUP-0065": ("fair", None, "medium"),
     "SUP-0023": ("fair", None, "medium"),
 }
 CYBER_FINDING = {
@@ -68,7 +68,7 @@ SEEDED_INSURANCE = {"SUP-0015"}
 SEEDED_FACTORY_COMPLIANCE = {"FAC-0010", "FAC-0063", "FAC-0099"}
 STORY_ALT_STYLES = {"STY-4012"}
 SEEDED_ALERT_SUPPLIERS = {"SUP-0053", "SUP-0055", "SUP-0001", "SUP-0072", "SUP-0035", "SUP-0036", "SUP-0038",
-                          "SUP-0027", "SUP-0065", "SUP-0046"}
+                          "SUP-0028", "SUP-0065", "SUP-0046"}
 ONBOARDING_STORY = {"SUP-0023", "SUP-0025", "SUP-0042", "SUP-0060"}
 BANK_STORY = {"SUP-0023"}
 REG_STORY = {"SUP-0023"}
@@ -190,7 +190,7 @@ def generate(g):
             prior = (latest[0] * (1 + d), latest[1] * (1 + d), latest[2] * (1 - d), latest[3] * (1 - d), latest[4] * (1 + d))
         for years, shape, scale in ((0, latest, 1.0), (1, prior, 1.0 if sid not in STORY_FILING else 1.0)):
             margin, cash, debt, de, cr = shape
-            growth = 1.0 if years == 0 else (1.07 if sid in ("SUP-0053", "SUP-0027", "SUP-0065", "SUP-0072", "SUP-0035", "SUP-0036") else r.uniform(0.94, 1.04))
+            growth = 1.0 if years == 0 else (1.07 if sid in ("SUP-0053", "SUP-0028", "SUP-0065", "SUP-0072", "SUP-0035", "SUP-0036") else r.uniform(0.94, 1.04))
             revenue = rev / growth
             profit = revenue * margin
             equity = revenue * debt / de
@@ -281,7 +281,7 @@ def generate(g):
         ok = r.random() > 0.12
         bank.append({"supplier_id": sid, "bank_name": BANKS[c], "account_holder": s["name"],
                      "account_number": f"{r.randint(10_000_000, 99_999_999)}{r.randint(1000, 9999)}",
-                     "sort_code": f"{r.randint(10, 99)}-{r.randint(10, 99)}-{r.randint(10, 99)}", "country": c,
+                     "sort_code": f"{r.randint(10, 99)}-{r.randint(10, 99)}-{r.randint(10, 99)}", "bank_country": c,
                      "currency": s["currency"], "verified": ok, "last_verified_at": g.days_ago(r.randint(10, 300)) if ok else None})
 
     # ---- compliance records (supplier or factory level) ----------------------------------------------------------
@@ -320,8 +320,6 @@ def generate(g):
             rating = r.choices(["excellent", "good", "fair", "poor"], [22, 48, 26, 4])[0]
             access = r.choice(["read_only", "inventory", "order_placement"]) if r.random() < 0.22 else None
             sec = {"poor": "high", "fair": "medium", "good": "low", "excellent": "low"}[rating]
-            if rating == "poor" and r.random() < 0.3:
-                sec = "critical"
         sec_rating[sid] = sec
         d = g.days_ago(r.randint(15, 170))
         cyber.append({"supplier_id": sid, "assessment_date": d, "rating": rating,
