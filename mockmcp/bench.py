@@ -163,16 +163,23 @@ def _transcript(stream: str):
     return calls, answer, meta
 
 
+def _argset(v) -> frozenset:
+    """An argument value as a set of lower-case items, so CAR-003, ["car-003"] and "CAR-003, CAR-004" compare sensibly."""
+    items = v if isinstance(v, list) else re.split(r"\s*[,;]\s*", str(v))
+    return frozenset(str(x).strip().lower() for x in items if str(x).strip())
+
+
 def grade(case: dict, calls, answer: str) -> dict:
     called = {}
     for name, args, _ in calls:
-        called.setdefault(name, []).append({k: str(v).strip().lower() for k, v in args.items()})
+        called.setdefault(name, []).append({k: _argset(v) for k, v in args.items()})
     miss_tools = [r["tool"] for r in case["ref"] if r["tool"] not in called]
     bad_args = []
     for r in case["ref"]:
-        want = {k: str(v).strip().lower() for k, v in (r.get("args") or {}).items() if _idlike(v)}
+        want = {k: _argset(v) for k, v in (r.get("args") or {}).items()
+                if _idlike(v) or (isinstance(v, list) and v and all(_idlike(x) for x in v))}
         if r["tool"] in called and want and not any(all(a.get(k) == v for k, v in want.items()) for a in called[r["tool"]]):
-            bad_args.append(f"{r['tool']} {want}")
+            bad_args.append(f"{r['tool']} {dict((k, sorted(v)) for k, v in want.items())}")
     seen = _norm(case["prompt"]) + "\n" + _norm("\n".join(o for *_, o in calls), table=True)
     invented = sorted({i for i in ID_RX.findall(answer) if i.lower() not in seen})
     nums = [n for n in NUM_RX.findall(answer) if len(re.sub(r"\D", "", n)) >= 3]
