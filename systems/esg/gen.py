@@ -402,11 +402,13 @@ def generate(g):
 
     # ------------------------------------------------------------------ transport lanes
     LANES = [  # lane, mode, origin, dest, corridor, km, base factor, monthly tonnes (7 months)
-        ("CNSHA-GBFXT-SEA", "sea", "CNSHA", "GBFXT", "Asia-Europe", 19600, 0.0085, [480, 500, 520, 640, 720, 780, 840]),
+        # INNSA-GBFXT is the biggest Asia sea lane in tms (about 607 t in six months, 142 t of it still by air); CNSHA-GBFXT is about a third of it
+        ("INNSA-GBFXT-SEA", "sea", "INNSA", "GBFXT", "Asia-Europe", 12100, 0.0085, [480, 500, 520, 640, 720, 780, 840]),
         ("VNSGN-GBFXT-SEA", "sea", "VNSGN", "GBFXT", "Asia-Europe", 17900, 0.0085, [260, 270, 280, 340, 390, 420, 450]),
         ("INNSA-GBSOU-SEA", "sea", "INNSA", "GBSOU", "Asia-Europe", 11900, 0.0085, [180, 190, 200, 240, 280, 300, 320]),
         ("BDCGP-GBFXT-SEA", "sea", "BDCGP", "GBFXT", "Asia-Europe", 12800, 0.0085, [150, 150, 160, 200, 230, 250, 270]),
-        ("CNSHA-GBFXT-AIR", "air", "CNSHA", "GBFXT", "Asia-Europe", 9200, 0.55, [120, 115, 110, 90, 70, 60, 50]),
+        ("CNSHA-GBFXT-SEA", "sea", "CNSHA", "GBFXT", "Asia-Europe", 19600, 0.0085, [150, 155, 160, 200, 230, 250, 270]),
+        ("INNSA-GBFXT-AIR", "air", "INNSA", "GBFXT", "Asia-Europe", 7500, 0.55, [120, 115, 110, 90, 70, 60, 50]),
         ("MXZLO-GBFXT-SEA", "sea", "MXZLO", "GBFXT", "Americas-Europe", 14000, 0.0085, [90, 95, 95, 100, 120, 130, 140]),
         ("TRMER-GBFXT-ROAD", "truck", "TRMER", "GBFXT", "Intra-Europe", 3600, 0.095, [900, 920, 910, 900, 880, 870, 860]),
         ("DEHAM-GBFXT-ROAD", "truck", "DEHAM", "GBFXT", "Intra-Europe", 900, 0.095, [600, 610, 590, 600, 610, 600, 590]),

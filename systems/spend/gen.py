@@ -1,19 +1,22 @@
 """Spend analytics: supplier spend (reconciled to master annual spend), savings tracker, price variance, input costs."""
 import math
+import random
 from collections import defaultdict
 from datetime import date, timedelta
 
 NEARSHORE = {"PT", "TR", "PL"}
 
-# service (indirect) spend carved out of a stand-in supplier's master annual spend: supplier -> [(category, 12m gbp, kind)]
+# service (indirect) spend of the indirect suppliers in master (supplier_type indirect, master annual spend 0): supplier -> [(category, 12m gbp, kind)]
+#   SUP-0085 BrightSpace Cleaning (cleaning), SUP-0087 Hartley MRO (maintenance), SUP-0086 Sentinel Facilities Management (roof project),
+#   SUP-0083 Midlands Power & Light and SUP-0084 Pennine Gas (energy), SUP-0081 Calder Corrugated and SUP-0082 Northern Film & Wrap (packaging)
 INDIRECT = {
-    "SUP-0014": [("Facilities", 1220000, "recurring")],
-    "SUP-0026": [("Facilities", 400000, "recurring")],
-    "SUP-0067": [("Facilities", 900000, "project")],
-    "SUP-0050": [("Energy", 550000, "recurring")],
-    "SUP-0071": [("Energy", 200000, "recurring")],
-    "SUP-0073": [("Packaging", 600000, "recurring")],
-    "SUP-0077": [("Packaging", 700000, "recurring")],
+    "SUP-0085": [("Facilities", 1220000, "recurring")],
+    "SUP-0087": [("Facilities", 400000, "recurring")],
+    "SUP-0086": [("Facilities", 900000, "project")],
+    "SUP-0083": [("Energy", 550000, "recurring")],
+    "SUP-0084": [("Energy", 200000, "recurring")],
+    "SUP-0082": [("Packaging", 600000, "recurring")],
+    "SUP-0081": [("Packaging", 700000, "recurring")],
 }
 SERVICE_RATE = {"Facilities": 35.0, "Energy": 190.0, "Packaging": 0.42}
 
@@ -81,15 +84,21 @@ def generate(g):
     spend_rows = []
     cell = {}  # (sid, cat) -> monthly spend list
     for sid, s in sup.items():
-        annual = float(s["annual_spend_gbp"])
         extra = INDIRECT.get(sid, [])
-        product_annual = annual - sum(x[1] for x in extra)
-        cats = dict(sup_cats.get(sid) or {})
-        if not cats:
-            cs = dept_cats[s["category_focus"]]
-            cats = {c: 1 for c in cs[:3]}
-        n = sum(cats.values())
-        base = scale(profile(sid), 1.0)
+        if s.get("supplier_type") == "indirect":  # no products and no master spend: only the service spend below
+            if not extra:
+                continue
+            ir = random.Random("spend-indirect-" + sid)
+            cats, product_annual, n, base = {}, 0.0, 1, None
+        else:
+            ir = r
+            product_annual = float(s["annual_spend_gbp"])
+            cats = dict(sup_cats.get(sid) or {})
+            if not cats:
+                cs = dept_cats[s["category_focus"]]
+                cats = {c: 1 for c in cs[:3]}
+            n = sum(cats.values())
+            base = scale(profile(sid), 1.0)
         for c, k in cats.items():
             vals = [v * product_annual * k / n for v in base]
             cell[(sid, c)] = vals
@@ -97,7 +106,7 @@ def generate(g):
             ws = [0.0] * 24
             if kind == "project":  # one-off refurbishment: three big months plus a small run-rate
                 for i in range(24):
-                    ws[i] = r.uniform(0.9, 1.1) * (1 if i >= 12 else 0.8)
+                    ws[i] = ir.uniform(0.9, 1.1) * (1 if i >= 12 else 0.8)
                 tot12 = sum(ws[12:])
                 ws = [w * 230000 / tot12 for w in ws]  # run-rate base ~ 230k a year
                 for i, amt in ((18, 270000), (19, 240000), (20, 160000)):
@@ -105,8 +114,8 @@ def generate(g):
                 ws[:12] = [w * 0.8 for w in ws[:12]]
             else:
                 for i in range(24):
-                    ws[i] = r.uniform(0.96, 1.04) * (1 if i >= 12 else r.uniform(0.82, 0.92)) * (1 + (0.01 * (i - 12) if cat == "Energy" else 0))
-                if sid == "SUP-0014":
+                    ws[i] = ir.uniform(0.96, 1.04) * (1 if i >= 12 else ir.uniform(0.82, 0.92)) * (1 + (0.01 * (i - 12) if cat == "Energy" else 0))
+                if sid == "SUP-0085":
                     ws[21] += 0.12 * 1.0 * sum(ws[12:]) / 12 * 1.0  # one extra deep-clean month
                 tot12 = sum(ws[12:])
                 ws = [w * total / tot12 for w in ws]
@@ -115,9 +124,12 @@ def generate(g):
     # round to pounds, fix the last-12-month total to the master annual spend
     for sid, s in sup.items():
         keys = [k for k in cell if k[0] == sid]
+        if not keys:
+            continue
         for k in keys:
             cell[k] = [round(v) for v in cell[k]]
-        diff = round(float(s["annual_spend_gbp"])) - sum(sum(cell[k][12:]) for k in keys)
+        target = sum(x[1] for x in INDIRECT[sid]) if s.get("supplier_type") == "indirect" else round(float(s["annual_spend_gbp"]))
+        diff = target - sum(sum(cell[k][12:]) for k in keys)
         big = max(keys, key=lambda k: sum(cell[k][12:]))
         j = max(range(12, 24), key=lambda i: cell[big][i])
         cell[big][j] += diff
@@ -146,6 +158,8 @@ def generate(g):
     explicit = {"SUP-0074": 0.253}
     supplier_volume = []
     for sid in sup:
+        if sup[sid].get("supplier_type") == "indirect":  # service suppliers: no sales figure
+            continue
         share = explicit.get(sid, r.uniform(0.04, 0.4))
         supplier_volume.append({"supplier_id": sid, "annual_sales_gbp": float(round(last12[sid] / share, -3))})
 
@@ -211,7 +225,7 @@ def generate(g):
     # input costs
     ic = []
     for sid, s in sup.items():
-        if s["status"] in ("exited",):
+        if s["status"] in ("exited",) or s.get("supplier_type") == "indirect":
             continue
         dept = s["category_focus"]
         mix = list(MIX[dept])
@@ -231,7 +245,7 @@ def generate(g):
     inc = []
     n = 0
     for sid, s in sup.items():
-        if s["status"] != "active":
+        if s["status"] != "active" or s.get("supplier_type") == "indirect":
             continue
         cats = list(sup_cats.get(sid) or {}) or dept_cats[s["category_focus"]][:1]
         for _ in range(r.choice([0, 0, 1, 1, 2])):

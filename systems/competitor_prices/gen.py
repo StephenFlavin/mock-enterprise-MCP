@@ -19,6 +19,7 @@ COMPETITORS = [
 K1700 = "K-1700"            # 1.7L Glass Kettle, 77.99
 TOASTER = "SKU-101309"      # Small Appliances style STY-4789, 79.99
 COFFEE = "SKU-100532"       # Small Appliances style STY-4301, 99.99
+COFFEE_PRO = "SKU-104732"   # Small Appliances style STY-8598, 334.99 (priced well above its category)
 BOTTLE = "SKU-106307"       # Drinkware style STY-9501, 15.99 (our new 750ml insulated bottle)
 JACKET = "SKU-100161"       # Menswear Outerwear style STY-4102, 66.99 (the jacket on 30% markdown)
 LUNCH = None            # no matched own SKU for lunch boxes
@@ -52,6 +53,11 @@ add(2, "C01", COFFEE, SA[0], "Coffee machines", SA[1], "John Lewis Bean-to-Cup C
 add(4, "C01", COFFEE, SA[0], "Coffee machines", SA[1], "Currys Pod Coffee Machine", "Currys Own", "Compatible with major pod brands", 89.99)
 add(5, "C01", COFFEE, SA[0], "Coffee machines", SA[1], "Argos Filter Coffee Machine", "Argos Brand", "12-cup glass jug; keep-warm plate", 79.99)
 add(3, "C01", COFFEE, SA[0], "Coffee machines", SA[1], "Machine a cafe expresso", "Carrefour Brand", "15 bar pump; steam wand", 94.99, dq="estimated")
+# premium bean-to-cup machine: our SKU-104732 at 334.99 is the small appliance priced furthest above market (pricing flags it too)
+add(2, "C02", COFFEE_PRO, SA[0], "Coffee machines", SA[1], "John Lewis Pro Espresso Machine", "John Lewis", "15 bar pump; steam wand; built-in grinder", 189.00)
+add(4, "C02", COFFEE_PRO, SA[0], "Coffee machines", SA[1], "Currys Smart Bean-to-Cup Machine", "Currys Own", "App control; milk system", 199.99)
+add(5, "C02", COFFEE_PRO, SA[0], "Coffee machines", SA[1], "Argos Espresso Machine", "Argos Brand", "Manual frother; 19 bar", 149.99)
+add(1, "C02", COFFEE_PRO, SA[0], "Coffee machines", SA[1], "HomeShop Barista Machine", "HomeShop Premium", "Built-in grinder; touch screen", 169.99)
 add(4, "A01", None, SA[0], "Air fryers", SA[1], "Currys Air Fryer 4L", "Currys Own", "Digital display; 8 presets", 69.99)
 add(5, "A01", None, SA[0], "Air fryers", SA[1], "Argos 4.5L Air Fryer", "Argos Brand", "Rapid air technology", 59.99)
 add(1, "A01", None, SA[0], "Air fryers", SA[1], "HomeShop Dual Air Fryer 7L", "HomeShop Premium", "Two independent baskets", 89.99)
