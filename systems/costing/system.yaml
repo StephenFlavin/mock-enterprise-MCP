@@ -11,7 +11,7 @@ tables:
     cols:
       costing_id: {type: str, desc: "Costing id, e.g. CST-STY-5520-26S1"}
       style_id: {type: str, desc: "Style, e.g. STY-5520"}
-      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      sku: {type: str, desc: "SKU, e.g. K-1700"}
       season: {type: str, desc: "Season code, e.g. AW26"}
       version: {type: int, desc: "Version number (1=original, 2+=scenario)"}
       origin_country: {type: str, desc: "ISO country code of manufacture"}
@@ -674,3 +674,549 @@ tools:
         'tooling_per_unit = total_tooling / lifetime_volume' AS formula
     limit: 1
     example: {tooling_cost_gbp: 15000, lifetime_volume_units: 50000}
+
+  - name: calculate_trial_cost_and_duration
+    desc: Calculate trial cost and duration for new material evaluation at test volume. Returns cost per unit and time to complete.
+    kind: sql
+    args:
+      material_id: {type: str, desc: "Material identifier, e.g. MAT-COTTON-10OZ"}
+      test_volume_units: {type: int, desc: "Test volume units", default: 500}
+      days_to_produce: {type: int, desc: "Days to produce trial", default: 14}
+    sql: |
+      SELECT
+        $material_id AS material_id,
+        $test_volume_units AS test_volume_units,
+        $days_to_produce AS days_to_produce,
+        COALESCE((SELECT ROUND(cost_per_unit_gbp, 3) FROM material_costs WHERE material_id = $material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) AS cost_per_unit_gbp,
+        ROUND(COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) * $test_volume_units, 2) AS total_trial_cost_gbp,
+        'trial_cost = material_cost_per_unit * test_volume' AS formula
+    limit: 1
+    example: {material_id: "MAT-COTTON-10OZ"}
+
+  - name: calculate_unit_cost_at_volumes
+    desc: Calculate unit cost at different order volumes, accounting for scale discounts.
+    kind: sql
+    args:
+      style_id: {required: true}
+      volumes: {type: str, desc: "Volume levels, comma-separated, e.g. 1000,5000,10000", default: "1000,5000,10000"}
+    sql: |
+      WITH volumes AS (
+        SELECT 1000 AS volume UNION ALL
+        SELECT 5000 UNION ALL
+        SELECT 10000 UNION ALL
+        SELECT 25000
+      )
+      SELECT
+        $style_id AS style_id,
+        v.volume AS volume_units,
+        COALESCE(p.total_cost_gbp, 20.0) AS base_cost_gbp,
+        ROUND(COALESCE(p.total_cost_gbp, 20.0) * CASE 
+          WHEN v.volume >= 10000 THEN 0.92
+          WHEN v.volume >= 5000 THEN 0.95
+          WHEN v.volume >= 1000 THEN 0.98
+          ELSE 1.0
+        END, 2) AS cost_at_volume_gbp
+      FROM volumes v
+      LEFT JOIN product_costings p ON p.style_id = $style_id AND p.status = 'active'
+      ORDER BY v.volume
+    limit: 10
+    example: {style_id: "STY-5520"}
+
+  - name: calculate_unit_cost_impact_of_material_change
+    desc: Calculate unit cost impact when switching to alternative material.
+    kind: sql
+    args:
+      sku: {required: true}
+      old_material_id: {type: str, required: true, desc: "Current material"}
+      new_material_id: {type: str, required: true, desc: "Alternative material"}
+    sql: |
+      SELECT
+        $sku AS sku,
+        $old_material_id AS old_material_id,
+        $new_material_id AS new_material_id,
+        COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $old_material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) AS old_cost_gbp,
+        COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $new_material_id ORDER BY recorded_at DESC LIMIT 1), 5.5) AS new_cost_gbp,
+        ROUND(COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $new_material_id ORDER BY recorded_at DESC LIMIT 1), 5.5) - COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $old_material_id ORDER BY recorded_at DESC LIMIT 1), 5.0), 2) AS cost_change_gbp,
+        ROUND((COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $new_material_id ORDER BY recorded_at DESC LIMIT 1), 5.5) - COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $old_material_id ORDER BY recorded_at DESC LIMIT 1), 5.0)) / COALESCE((SELECT cost_per_unit_gbp FROM material_costs WHERE material_id = $old_material_id ORDER BY recorded_at DESC LIMIT 1), 5.0) * 100, 1) AS cost_change_pct,
+        'material_cost_impact = new_cost - old_cost' AS formula
+    limit: 1
+    example: {sku: "K-1700", old_material_id: "MAT-COTTON-10OZ", new_material_id: "MAT-POLYESTER-100"}
+
+  - name: calculate_wage_impact_on_fob
+    desc: FOB impact of wage changes by country.
+    kind: sql
+    args:
+      origin_country: {type: str, required: true, desc: "Country code, e.g. VN, PT, BD"}
+      wage_increase_pct: {type: float, desc: "Wage increase percentage", default: 5}
+    sql: |
+      SELECT
+        $origin_country AS origin_country,
+        $wage_increase_pct AS wage_increase_pct,
+        ROUND(AVG(p.labour_cost_gbp), 2) AS base_labour_cost_per_unit_gbp,
+        ROUND(AVG(p.labour_cost_gbp) * $wage_increase_pct / 100, 2) AS labour_cost_increase_per_unit_gbp,
+        ROUND(AVG(p.total_cost_gbp), 2) AS base_fob_cost_gbp,
+        ROUND(AVG(p.total_cost_gbp) + AVG(p.labour_cost_gbp) * $wage_increase_pct / 100, 2) AS fob_cost_after_wage_increase_gbp,
+        'fob_impact = base_labour_cost * wage_increase_pct' AS formula
+      FROM product_costings p
+      WHERE p.origin_country = $origin_country AND p.status = 'active'
+    limit: 1
+    example: {origin_country: "VN", wage_increase_pct: 5}
+
+  - name: compare_supplier_pass_through_to_market
+    desc: Supplier price moves versus market index moves.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      sku: {required: true}
+    sql: |
+      SELECT
+        $supplier_id AS supplier_id,
+        $sku AS sku,
+        COALESCE((SELECT ROUND(AVG(market_price_index), 1) FROM supplier_cost_history WHERE sku = $sku), 100.0) AS avg_market_index,
+        COALESCE((SELECT ROUND(AVG(supplier_price_index), 1) FROM supplier_cost_history WHERE supplier_id = $supplier_id AND sku = $sku), 100.0) AS avg_supplier_index,
+        ROUND(COALESCE((SELECT AVG(pass_through_pct) FROM supplier_cost_history WHERE supplier_id = $supplier_id AND sku = $sku), 80.0), 1) AS pass_through_pct,
+        'pass_through = (supplier_index - 100) / (market_index - 100)' AS formula
+    limit: 1
+    example: {supplier_id: "SUP-0001", sku: "K-1700"}
+
+  - name: create_costing_version_for_product
+    desc: Saves a new costing version for a product at given volumes.
+    kind: insert
+    table: product_costings
+    id_prefix: "CST-"
+    defaults: {status: "scenario", version: 2}
+    args:
+      sku: {required: true}
+      quantity_units: {type: int, required: true, desc: "Volume units for this version"}
+      total_cost_gbp: {type: float, required: true, desc: "Total cost per unit in GBP"}
+      retail_price_gbp: {type: float, required: true, desc: "Retail price per unit in GBP"}
+      season: {type: str, desc: "Season code", default: "AW26"}
+      notes: {type: str, desc: "Notes about this version"}
+    example: {sku: "K-1700", quantity_units: 5000, total_cost_gbp: 9.5, retail_price_gbp: 35.0}
+
+  - name: get_buying_margin_by_category_period
+    desc: Buying margin by category and period.
+    kind: sql
+    args:
+      category: {required: true}
+      period_from: {type: date, default: "-90d", desc: "Start date"}
+      period_to: {type: date, default: "today", desc: "End date"}
+    sql: |
+      SELECT
+        $category AS category,
+        CAST($period_from AS DATE) AS period_from,
+        CAST($period_to AS DATE) AS period_to,
+        ROUND(AVG(m.revenue_gbp), 2) AS avg_revenue_gbp,
+        ROUND(AVG(m.cost_of_goods_gbp), 2) AS avg_cogs_gbp,
+        ROUND(AVG(m.gross_margin_gbp), 2) AS avg_gross_margin_gbp,
+        ROUND(AVG(m.gross_margin_pct), 1) AS avg_gross_margin_pct,
+        COUNT(DISTINCT m.sku) AS sku_count
+      FROM margin_analyses m
+      WHERE m.category = $category AND CAST(m.analysed_at AS DATE) BETWEEN CAST($period_from AS DATE) AND CAST($period_to AS DATE)
+      GROUP BY m.category
+    limit: 5
+    example: {category: "Dresses"}
+
+  - name: get_category_margin_benchmarks
+    desc: Category margin benchmarks by channel and season.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT
+        m.category,
+        m.channel,
+        ROUND(AVG(m.gross_margin_pct), 1) AS avg_margin_pct,
+        ROUND(MIN(m.gross_margin_pct), 1) AS min_margin_pct,
+        ROUND(MAX(m.gross_margin_pct), 1) AS max_margin_pct,
+        COUNT(*) AS record_count
+      FROM margin_analyses m
+      WHERE m.category = $category
+      GROUP BY m.category, m.channel
+      ORDER BY m.channel
+    limit: 10
+    example: {category: "Dresses"}
+
+  - name: get_channel_margin_for_product
+    desc: Retrieves channel margin for product.
+    kind: sql
+    args:
+      sku: {required: true}
+      channel: {type: enum, values: [store, online, outlet, wholesale, marketplace], desc: "Sales channel"}
+    sql: |
+      SELECT
+        m.sku,
+        m.channel,
+        ROUND(AVG(m.revenue_gbp), 2) AS avg_revenue_gbp,
+        ROUND(AVG(m.cost_of_goods_gbp), 2) AS avg_cogs_gbp,
+        ROUND(AVG(m.gross_margin_gbp), 2) AS avg_margin_gbp,
+        ROUND(AVG(m.gross_margin_pct), 1) AS avg_margin_pct,
+        COUNT(*) AS periods_recorded
+      FROM margin_analyses m
+      WHERE m.sku = $sku AND m.channel = $channel
+      GROUP BY m.sku, m.channel
+    limit: 1
+    example: {sku: "K-1700", channel: "store"}
+
+  - name: get_channel_revenue_and_margin
+    desc: Revenue and margin by channel and segment.
+    kind: sql
+    args:
+      period: {type: str, desc: "Period, e.g. 2026-W39", required: true}
+    sql: |
+      SELECT
+        m.channel,
+        ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+        ROUND(SUM(m.cost_of_goods_gbp), 2) AS total_cogs_gbp,
+        ROUND(SUM(m.gross_margin_gbp), 2) AS total_margin_gbp,
+        ROUND(SUM(m.gross_margin_gbp) / SUM(m.revenue_gbp) * 100, 1) AS margin_pct,
+        COUNT(DISTINCT m.sku) AS sku_count
+      FROM margin_analyses m
+      WHERE m.period = $period
+      GROUP BY m.channel
+      ORDER BY total_revenue_gbp DESC
+    limit: 10
+    example: {period: "2026-W39"}
+
+  - name: get_cost_price_changes_for_category
+    desc: Retrieves cost price changes for category.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT
+        m.category,
+        m.period,
+        ROUND(AVG(m.revenue_gbp), 2) AS avg_revenue_gbp,
+        ROUND(AVG(m.cost_of_goods_gbp), 2) AS avg_cogs_gbp,
+        COUNT(DISTINCT m.sku) AS sku_count
+      FROM margin_analyses m
+      WHERE m.category = $category
+      GROUP BY m.category, m.period
+      ORDER BY m.period DESC
+      LIMIT 12
+    limit: 12
+    example: {category: "Dresses"}
+
+  - name: get_costed_margin_for_product
+    desc: Return costed margin for product.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT
+        p.sku,
+        p.style_id,
+        p.season,
+        ROUND(p.retail_price_gbp, 2) AS retail_price_gbp,
+        ROUND(p.total_cost_gbp, 2) AS costed_cost_gbp,
+        ROUND(p.gross_margin_gbp, 2) AS margin_gbp,
+        ROUND(p.gross_margin_pct, 1) AS margin_pct,
+        ROUND(p.target_margin_pct, 1) AS target_margin_pct,
+        ROUND(p.target_margin_pct - p.gross_margin_pct, 1) AS variance_to_target_pct
+      FROM product_costings p
+      WHERE p.sku = $sku AND p.status = 'active'
+      ORDER BY p.updated_at DESC
+      LIMIT 1
+    limit: 1
+    example: {sku: "K-1700"}
+
+  - name: get_costed_vs_actual_cost_by_product
+    desc: Return costed vs actual cost by product.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT
+        p.sku,
+        p.style_id,
+        ROUND(p.total_cost_gbp, 2) AS costed_cost_gbp,
+        ROUND(COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp), 2) AS actual_cost_gbp,
+        ROUND(COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp) - p.total_cost_gbp, 2) AS variance_gbp,
+        ROUND((COALESCE((SELECT ROUND(AVG(actual_cost_gbp), 2) FROM supplier_cost_history WHERE sku = $sku), p.total_cost_gbp) - p.total_cost_gbp) / p.total_cost_gbp * 100, 1) AS variance_pct
+      FROM product_costings p
+      WHERE p.sku = $sku AND p.status = 'active'
+      ORDER BY p.updated_at DESC
+      LIMIT 1
+    limit: 1
+    example: {sku: "K-1700"}
+
+  - name: get_costing_sheet_for_product
+    desc: Return costing sheet for product.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT
+        p.costing_id,
+        p.sku,
+        p.style_id,
+        p.season,
+        p.quantity_units,
+        ROUND(p.material_cost_gbp, 2) AS material_cost_gbp,
+        ROUND(p.labour_cost_gbp, 2) AS labour_cost_gbp,
+        ROUND(p.overhead_cost_gbp, 2) AS overhead_cost_gbp,
+        ROUND(p.freight_cost_gbp, 2) AS freight_cost_gbp,
+        ROUND(p.tooling_cost_gbp, 2) AS tooling_cost_gbp,
+        ROUND(p.total_cost_gbp, 2) AS total_cost_gbp,
+        ROUND(p.retail_price_gbp, 2) AS retail_price_gbp,
+        ROUND(p.gross_margin_gbp, 2) AS margin_gbp,
+        ROUND(p.gross_margin_pct, 1) AS margin_pct,
+        p.status,
+        p.notes
+      FROM product_costings p
+      WHERE p.sku = $sku AND p.status IN ('active', 'scenario')
+      ORDER BY p.version DESC, p.updated_at DESC
+    limit: 10
+    example: {sku: "K-1700"}
+
+  - name: get_expected_recovery_rates
+    desc: Expected recovery on aged or clearance stock.
+    kind: sql
+    args:
+      category: {required: true}
+      age_band: {type: str, desc: "Age band, e.g. 0-30d, 31-60d, 61-180d, 180d+", default: "0-30d"}
+    sql: |
+      SELECT
+        r.category,
+        r.age_band,
+        ro.route_name,
+        ROUND(r.recovery_rate_pct, 1) AS recovery_rate_pct,
+        ROUND(r.handling_cost_gbp, 2) AS handling_cost_gbp,
+        r.time_to_realise_days,
+        r.risk_rating,
+        r.volume_last_6m
+      FROM recovery_rates r
+      JOIN recovery_routes ro ON r.route_id = ro.route_id
+      WHERE r.category = $category AND r.age_band = $age_band
+      ORDER BY r.recovery_rate_pct DESC
+    limit: 10
+    example: {category: "Electronics", age_band: "0-30d"}
+
+  - name: get_fabric_cost_history_by_supplier
+    desc: Fabric cost per metre by supplier over time.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      material_type: {type: enum, values: [fabric, packaging, component, dyes_chemicals], default: "fabric"}
+    sql: |
+      SELECT
+        m.material_id,
+        m.material_name,
+        m.supplier_id,
+        m.recorded_at,
+        m.unit,
+        ROUND(m.cost_per_unit_gbp, 2) AS cost_per_unit_gbp,
+        ROUND(m.index_price_gbp, 2) AS index_price_gbp
+      FROM material_costs m
+      WHERE m.supplier_id = $supplier_id AND m.material_type = $material_type
+      ORDER BY m.material_id, m.recorded_at DESC
+      LIMIT 100
+    limit: 100
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_factory_cost_quotes_by_country
+    desc: Factory cost quotes by country.
+    kind: sql
+    args:
+      origin_country: {required: true}
+    sql: |
+      SELECT
+        p.origin_country,
+        p.factory_id,
+        COUNT(DISTINCT p.style_id) AS style_count,
+        ROUND(AVG(p.total_cost_gbp), 2) AS avg_cost_gbp,
+        ROUND(MIN(p.total_cost_gbp), 2) AS min_cost_gbp,
+        ROUND(MAX(p.total_cost_gbp), 2) AS max_cost_gbp,
+        ROUND(AVG(p.labour_cost_gbp), 2) AS avg_labour_cost_gbp,
+        ROUND(AVG(p.material_cost_gbp), 2) AS avg_material_cost_gbp
+      FROM product_costings p
+      WHERE p.origin_country = $origin_country AND p.status = 'active'
+      GROUP BY p.origin_country, p.factory_id
+      ORDER BY avg_cost_gbp
+    limit: 20
+    example: {origin_country: "VN"}
+
+  - name: get_fob_price_history_by_country
+    desc: FOB price history by origin country.
+    kind: sql
+    args:
+      origin_country: {required: true}
+    sql: |
+      SELECT
+        $origin_country AS origin_country,
+        ROUND(AVG(p.total_cost_gbp), 2) AS avg_fob_cost_gbp,
+        ROUND(MIN(p.total_cost_gbp), 2) AS min_fob_cost_gbp,
+        ROUND(MAX(p.total_cost_gbp), 2) AS max_fob_cost_gbp,
+        COUNT(DISTINCT p.sku) AS sku_count,
+        COUNT(DISTINCT p.supplier_id) AS supplier_count
+      FROM product_costings p
+      WHERE p.origin_country = $origin_country AND p.status = 'active'
+    limit: 1
+    example: {origin_country: "VN"}
+
+  - name: get_gross_margin_bridge
+    desc: Gross margin movement bridged by driver.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT
+        v.category,
+        v.period,
+        v.total_variance_pct,
+        v.cost_driver_pct,
+        v.fx_driver_pct,
+        v.mix_driver_pct,
+        v.supplier_driver_pct,
+        v.markdown_driver_pct,
+        v.other_driver_pct,
+        v.notes
+      FROM cost_variance_drivers v
+      WHERE v.category = $category
+      ORDER BY v.period DESC
+      LIMIT 12
+    limit: 12
+    example: {category: "Dresses"}
+
+  - name: get_historical_costings_for_similar_styles
+    desc: Return historical costings for similar styles.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT
+        p.costing_id,
+        p.style_id,
+        p.sku,
+        p.season,
+        p.origin_country,
+        p.supplier_id,
+        ROUND(p.total_cost_gbp, 2) AS cost_gbp,
+        ROUND(p.retail_price_gbp, 2) AS price_gbp,
+        ROUND(p.gross_margin_pct, 1) AS margin_pct,
+        p.updated_at
+      FROM product_costings p
+      WHERE p.sku LIKE (SELECT SUBSTRING(sku, 1, 3) FROM product_costings WHERE style_id = $style_id LIMIT 1) || '%'
+      ORDER BY p.updated_at DESC
+      LIMIT 20
+    limit: 20
+    example: {style_id: "STY-5520"}
+
+  - name: get_inventory_holding_cost_rate
+    desc: Inventory holding cost rate.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT
+        ROUND(0.20, 2) AS annual_holding_cost_rate_pct,
+        'Industry standard: 20% of inventory value per annum' AS notes
+    limit: 1
+    example: {}
+
+  - name: get_margin_bridge_for_category
+    desc: Retrieve margin bridge for category.
+    kind: sql
+    args:
+      category: {required: true}
+    sql: |
+      SELECT
+        v.category,
+        v.period,
+        ROUND(v.total_variance_pct, 1) AS total_variance_pct,
+        ROUND(v.cost_driver_pct, 1) AS cost_driver_pct,
+        ROUND(v.fx_driver_pct, 1) AS fx_driver_pct,
+        ROUND(v.mix_driver_pct, 1) AS mix_driver_pct,
+        ROUND(v.supplier_driver_pct, 1) AS supplier_driver_pct,
+        ROUND(v.markdown_driver_pct, 1) AS markdown_driver_pct,
+        ROUND(v.other_driver_pct, 1) AS other_driver_pct
+      FROM cost_variance_drivers v
+      WHERE v.category = $category
+      ORDER BY v.period DESC
+      LIMIT 1
+    limit: 1
+    example: {category: "Dresses"}
+
+  - name: get_margin_variance_to_plan
+    desc: Retrieve margin variance to plan.
+    kind: sql
+    args:
+      category: {required: true}
+      period_from: {type: date, default: "-30d", desc: "Start date"}
+    sql: |
+      SELECT
+        m.category,
+        m.period,
+        ROUND(AVG(m.gross_margin_pct), 1) AS actual_margin_pct,
+        ROUND(AVG(m.plan_margin_pct), 1) AS plan_margin_pct,
+        ROUND(AVG(m.variance_pct), 1) AS variance_pct,
+        ROUND(SUM(m.revenue_gbp), 2) AS total_revenue_gbp,
+        ROUND(SUM(m.gross_margin_gbp), 2) AS total_margin_gbp,
+        COUNT(DISTINCT m.sku) AS sku_count
+      FROM margin_analyses m
+      WHERE m.category = $category AND CAST(m.analysed_at AS DATE) >= CAST($period_from AS DATE)
+      GROUP BY m.category, m.period
+      ORDER BY m.period DESC
+      LIMIT 12
+    limit: 12
+    example: {category: "Dresses"}
+
+  - name: get_material_cost_and_performance_data
+    desc: Cost and performance of materials.
+    kind: sql
+    args:
+      material_type: {type: enum, values: [fabric, packaging, component, dyes_chemicals]}
+    sql: |
+      SELECT
+        m.material_id,
+        m.material_name,
+        m.material_type,
+        m.supplier_id,
+        m.unit,
+        ROUND(m.cost_per_unit_gbp, 2) AS current_cost_gbp,
+        ROUND(AVG(m.cost_per_unit_gbp) OVER (PARTITION BY m.material_id), 2) AS avg_cost_gbp,
+        m.recorded_at AS last_recorded_at
+      FROM material_costs m
+      WHERE ($material_type IS NULL OR m.material_type = $material_type)
+      ORDER BY m.material_id, m.recorded_at DESC
+      LIMIT 50
+    limit: 50
+    example: {material_type: "fabric"}
+
+  - name: get_material_cost_per_metre
+    desc: Return material cost per metre.
+    kind: sql
+    args:
+      material_id: {required: true}
+    sql: |
+      SELECT
+        m.material_id,
+        m.material_name,
+        m.unit,
+        ROUND(m.cost_per_unit_gbp, 3) AS cost_per_metre_gbp,
+        m.recorded_at,
+        m.supplier_id,
+        m.notes
+      FROM material_costs m
+      WHERE m.material_id = $material_id AND m.unit LIKE '%metre%'
+      ORDER BY m.recorded_at DESC
+      LIMIT 1
+    limit: 1
+    example: {material_id: "MAT-COTTON-10OZ"}
+
+  - name: update_costing_sheet_for_product
+    desc: Updates the active costing sheet for a product with the chosen scenario.
+    kind: update
+    table: product_costings
+    set: {status: archived, updated_at: "$as_of"}
+    args: {}
+    example: {costing_id: "CST-000001"}
+
+  - name: update_costed_price_for_product
+    desc: Updates the costed price for a product for the next season.
+    kind: update
+    table: product_costings
+    set: {retail_price_gbp: "{retail_price_gbp}", updated_at: "$as_of"}
+    args:
+      retail_price_gbp: {type: float, required: true, desc: "New retail price in GBP"}
+    example: {costing_id: "CST-000001", retail_price_gbp: 49.99}
