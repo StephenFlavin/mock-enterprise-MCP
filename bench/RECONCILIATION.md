@@ -3,20 +3,26 @@
 Every system passes `check` and `bench --validate` and every question slice has a case. The items below are the
 cross-system inconsistencies that remain. Each needs a design decision or is a legitimate difference between slices.
 
-## Decisions needed
-- **Scale.** Master has about £180m sales and £210m purchases a year, with per-SKU sales up to about 400/week. The finance
-  systems (budgeting, gl, cost_allocation, consolidation, treasury) assume about £1.2bn revenue. Several operational
-  stories are seeded above the master rates. The choice is to scale master sales up (every generated volume shifts) or
-  to scale finance down.
-- **Sorter age.** Questions say DC1's sorter AST-DC1-SRT is about 12 years old. Master installs it in 2018.
-- **Corby workforce.** Corby is DC6, but master has no DC6 employees, so the hris and lms Corby stories run on DC2.
-  Store staff exist only in store_wfm (STF ids), because master has one manager per store.
-- **Data reproducibility.** Some `data/*.csv` files were patched directly to avoid generator drift (tms air_freight,
-  data_warehouse, qms, reviews, ims). `data/` is the source of truth. Regenerating a system against the current master
-  shifts some facts.
+## Decisions taken
+- **Scale.** Master is now a ~GBP 1.2bn business: sales volumes x6.8 (revenue ~GBP 1,201m), PO quantities x2.2
+  (purchases ~GBP 447m ~ cost of goods), supplier annual spend derived from the last 12 months of POs. dc_stock is
+  unchanged (~19 weeks cover); the online `orders` table and returns built on it are a sample, not every order.
+- **Sorter.** AST-DC1-SRT installed 2014-10-06 (about 12 years old), via systems/_master/seed/assets.csv.
+- **Corby workforce.** Left on DC2 (Daventry) stand-ins; the questions are answerable as is.
+- **Reproducible bring-up / tear-down.** `data/` is exactly what gen.py + seed/ produce (`gen --verify`, run by
+  `check`); generators use per-entity streams (`g.rng_for`) where master growth would shift rows and never read the
+  wall clock; the write overlay is a per-process temp dir removed on exit (`MOCKMCP_STATE` to persist).
+
+## Known small mismatches after the scale-up
+- bi says ST144 is 8% ahead of plan; store_ops has it slightly behind. bi's non-story store totals differ from store_ops (no tool exposes them).
+- store_wfm labour_costs.sales_value (~GBP 30k/week at ST214) is below store_ops (~GBP 76k/week); percentages agree.
+- mfp open-to-buy (GBP 2.1m) and UK North period plan (GBP 6.9m) are small for a GBP 1.2bn business; prompts state them.
+- inv_opt ranks SKU-101617 8th for centralisation, while supplier_portal lists it among the five make-to-order candidates.
+- demand and supply_planning differ by 5 units on the haircare promotion shortfall (2,571 vs 2,566).
+- esg priority score weights are 0.7 emissions / 0.1 spend / 0.2 readiness so the emissions story leads.
 
 ## Remaining id differences per question
-A cross-system id check finds 40 question x entity-type differences remain (down from 100).
+A cross-system id check finds 42 question x entity-type differences (down from 100 before reconciliation).
 Most are different slices of one question (e.g. a candidate list vs the chosen supplier).
 
 ## Known minor mismatches (by persona)
