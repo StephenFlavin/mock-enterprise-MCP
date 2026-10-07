@@ -152,7 +152,7 @@ def generate(g):
                 if cat == "Small Appliances":
                     ly = age_y > 0.55
                     if ly:
-                        cost_f = SA_COST_LY.get(p["supplier_id"], 0.97)
+                        cost_f = SA_COST_LY.get(p["supplier_id"], 0.9595)
                     md = (0.12 if ly else 0.30) if sku == "K-1700" else 0.14 + rr.uniform(-0.01, 0.01)
                     units = base * (0.92 if (ly and sku == "K-1700") else 1.0) * rr.uniform(0.97, 1.03)
                 seg = None

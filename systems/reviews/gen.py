@@ -353,7 +353,7 @@ def generate(g):
                         th, tx = r.choice(neg or pos)
                     else:
                         th, tx = r.choice(neg) if neg else ("fit", "Okay jacket, nothing special")
-                    seg = r.choices(SEGMENTS[1:], SEG_W[1:])[0] 
+                    seg = r.choices(SEGMENTS[1:], SEG_W[1:])[0]
                     add(r.choice(skus), style, rt, th, tx, when(k), seg=seg)
 
     r = random.Random("reviews-returns")

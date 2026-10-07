@@ -57,7 +57,7 @@ GRADE_BY_ROUTE = {"restocked": (("A", 70), ("B", 30)), "refurbished": (("B", 40)
 DAYS_TO_SALE = {"restocked": (3, 8), "refurbished": (14, 28), "liquidated": (6, 12)}
 
 # damage share of returns by category (rest of the profile is scaled around it)
-DAMAGE_W = {"Small Appliances": 7.0, "Audio": 6.0, "Smart Home": 6.5, "Personal Care": 5.5, "Lighting": 10.0,
+DAMAGE_W = {"Small Appliances": 10.0, "Audio": 6.0, "Smart Home": 6.5, "Personal Care": 5.5, "Lighting": 10.0,
             "Cookware": 9.0, "Drinkware": 12.0, "Storage": 4.5, "Towels": 1.5, "Bedding": 1.5,
             "Haircare": 5.0, "Skincare": 5.0, "Bodycare": 5.5, "Fragrance": 6.0}
 
@@ -253,6 +253,8 @@ def generate(g):
             if delay < 2:
                 continue
             p = pmap[skus[made % len(skus)] if isinstance(skus, list) else skus]
+            if o["order_date"] < p["launch_date"]:
+                continue  # not on sale yet when ordered
             reason = reason_fn(p, made)
             add_item(o, p, rd, reason, delay=delay, fit=fit_fn(p, reason) if fit_fn else None,
                      defect=defect_fn(p, reason) if defect_fn else None,

@@ -496,3 +496,294 @@ def generate(g):
         'sourcing_margins': sourcing_margins,
         'supplier_payments': supplier_payments,
     }
+
+
+# ====================================================================================================
+# Job 2 story builders. Each uses the local random stream `lr` so the older background tables keep
+# exactly the values they had before.
+# ====================================================================================================
+PROTECTED = {('SKU-100007', 'DC1'), ('SKU-100819', 'DC3')}      # ERP balances quoted by earlier cases
+VALUATION_TARGET_GBP = 520_000      # ledger cost updates not yet refreshed in WMS
+UNIT_COST_SLIP_TARGET_GBP = 480_000  # one SKU keyed at ten times its cost
+DUPLICATE_RECEIPT_TARGET_GBP = 150_000
+
+
+def apply_erp_story(g, lr, products, erp_stock, goods_movements):
+    """ERP (ledger) stock differs from WMS stock (master dc_stock) for timing, valuation and error reasons."""
+    idx = {(r['sku'], r['site_id']): r for r in erp_stock}
+    touched = set(PROTECTED)
+    for gm in goods_movements:                       # goods receipts ERP posted from the ASN, WMS put-away still pending
+        for site in (gm['from_site_id'], gm['to_site_id']):
+            if site:
+                touched.add((gm['sku'], site))
+        if gm['doc_type'] != 'goods_receipt':
+            continue
+        key = (gm['sku'], gm['to_site_id'])
+        qty = int(gm['quantity'])
+        row = idx.get(key)
+        if row:
+            row['quantity'] += qty
+            row['total_value_gbp'] = round(row['quantity'] * row['unit_cost_gbp'], 2)
+        else:
+            cost = round(float(products[gm['sku']]['unit_cost_gbp']), 2)
+            row = {'sku': gm['sku'], 'site_id': gm['to_site_id'], 'location_id': '', 'as_of_date': erp_stock[0]['as_of_date'],
+                   'quantity': qty, 'unit_cost_gbp': cost, 'total_value_gbp': round(qty * cost, 2)}
+            erp_stock.append(row)
+            idx[key] = row
+    pool = sorted((r for r in erp_stock if (r['sku'], r['site_id']) not in touched and 20 <= r['unit_cost_gbp'] <= 90
+                   and r['quantity'] > 0), key=lambda r: (r['site_id'], r['sku']))
+    # one SKU keyed at ten times its cost (decimal slip in the cost update)
+    slip = min((r for r in pool if 40_000 <= r['total_value_gbp'] <= 70_000),
+               key=lambda r: abs(9 * r['total_value_gbp'] - UNIT_COST_SLIP_TARGET_GBP))
+    slip['unit_cost_gbp'] = round(slip['unit_cost_gbp'] * 10, 2)
+    slip['total_value_gbp'] = round(slip['quantity'] * slip['unit_cost_gbp'], 2)
+    touched.add((slip['sku'], slip['site_id']))
+    # one goods receipt posted twice in ERP: quantity doubled
+    dup = min((r for r in pool if (r['sku'], r['site_id']) not in touched),
+              key=lambda r: abs(r['total_value_gbp'] - DUPLICATE_RECEIPT_TARGET_GBP))
+    dup['quantity'] *= 2
+    dup['total_value_gbp'] = round(dup['quantity'] * dup['unit_cost_gbp'], 2)
+    touched.add((dup['sku'], dup['site_id']))
+    # ledger standard costs updated in September, WMS item cost not yet refreshed
+    cands = [r for r in pool if (r['sku'], r['site_id']) not in touched and 40_000 <= r['total_value_gbp'] <= 300_000]
+    lr.shuffle(cands)
+    total = 0.0
+    for r in cands:
+        if total >= VALUATION_TARGET_GBP:
+            break
+        factor = lr.choice([1.04, 1.06, 1.08, 1.10, 1.12, 1.07, 1.05])
+        new_cost = round(r['unit_cost_gbp'] * factor, 2)
+        new_val = round(r['quantity'] * new_cost, 2)
+        total += new_val - r['total_value_gbp']
+        r['unit_cost_gbp'], r['total_value_gbp'] = new_cost, new_val
+
+
+# (probability slow moving, probability obsolete) by category; others use the default
+CAT_PROP = {'Outerwear': (0.20, 0.05), 'Knitwear': (0.18, 0.04), 'Schoolwear': (0.12, 0.03), 'Smart Home': (0.10, 0.06),
+            'Audio': (0.09, 0.05), 'Lighting': (0.09, 0.04), 'Small Appliances': (0.08, 0.03)}
+POLICY_SLOW, POLICY_OBSOLETE = 0.15, 0.50
+
+
+def build_inventory(g, lr, products, erp_stock):
+    rows = []
+    for e in sorted(erp_stock, key=lambda r: (r['site_id'], r['sku'])):
+        cat = products[e['sku']]['category']
+        p_slow, p_obs = CAT_PROP.get(cat, (0.06, 0.012))
+        x, status, pct = lr.random(), 'active', 0.0
+        if e['quantity'] > 0:
+            if x < p_obs:
+                status, pct = 'obsolete', POLICY_OBSOLETE
+            elif x < p_obs + p_slow:
+                status, pct = 'slow_moving', POLICY_SLOW
+        site = e['site_id']
+        if site == 'DC3' and status != 'active' and lr.random() < 0.6:       # Leeds: provisions booked below policy
+            pct = 0.05 if status == 'slow_moving' else 0.25
+        elif site == 'DC1' and status == 'slow_moving' and lr.random() < 0.08:
+            pct = 0.10
+        val = e['total_value_gbp']
+        prov = round(val * pct, 2)
+        rows.append({'sku': e['sku'], 'site_id': site, 'as_of_date': e['as_of_date'], 'units_on_hand': e['quantity'],
+                     'unit_cost_gbp': e['unit_cost_gbp'], 'total_value_gbp': val, 'provision_pct': pct, 'provision_gbp': prov,
+                     'net_value_gbp': round(val - prov, 2), 'status': status})
+    return rows
+
+
+SEPT = dict(volume=-1_120_000.0, mix=640_000.0, cost_update=2_410_000.0, fx=720_000.0, adjustments=750_000.0)
+DUPLICATE_REVAL = 450_000.0
+FIXED_COST_UPDATE = {('DC2', 'Outerwear'): 712_000.0}   # includes the duplicated standard cost revaluation
+COST_W = {'Outerwear': 3.0, 'Small Appliances': 2.5, 'Smart Home': 2.0, 'Audio': 2.0, 'Knitwear': 2.0}
+FX_W = {'Small Appliances': 3.0, 'Smart Home': 3.0, 'Audio': 3.0, 'Lighting': 3.0, 'Outerwear': 1.5}
+SHRINK_CAT = {'Fragrance': 2.2, 'Small Appliances': 1.8, 'Smart Home': 1.6, 'Audio': 1.5, 'Jewellery': 1.9, 'Haircare': 1.3,
+              'Personal Care': 1.3, 'Skincare': 1.2, 'Bodycare': 1.2}
+WO_CAT = {'Outerwear': 1.7, 'Knitwear': 1.5, 'Bedding': 1.1, 'Schoolwear': 1.2}
+VOL_BIAS = {8: .010, 9: .012, 10: .015, 11: .012, 12: -.030, 1: -.030, 2: -.012, 3: .004, 4: .006, 5: 0.0, 6: .003, 7: .002}
+SHRINK_SEAS = {11: 1.15, 12: 1.35, 1: 1.45, 2: 1.2}
+WO_SEAS = {1: 1.6, 2: 1.5, 7: 1.2}
+
+
+def _spread(total, weights, fixed=None):
+    """Split `total` across keys in proportion to weights; fixed keys get their exact value; remainder to the largest key."""
+    fixed = fixed or {}
+    rest = total - sum(fixed.values())
+    wsum = sum(w for k, w in weights.items() if k not in fixed)
+    out = {k: (fixed[k] if k in fixed else round(rest * w / wsum, 2)) for k, w in weights.items()}
+    big = max((k for k in weights if k not in fixed), key=lambda k: weights[k])
+    out[big] = round(out[big] + total - sum(out.values()), 2)
+    return out
+
+
+def build_inventory_monthly(g, lr, products, inv):
+    agg = {}
+    for r in inv:
+        a = agg.setdefault((r['site_id'], products[r['sku']]['category']), [0, 0.0, 0.0])
+        a[0] += int(r['units_on_hand'])
+        a[1] += float(r['total_value_gbp'])
+        a[2] += float(r['provision_gbp'])
+    keys = sorted(k for k, a in agg.items() if a[1] > 0)
+    months = months_back(g.as_of, 24)[::-1]           # k = 0 is the last complete month (September)
+    base = {k: agg[k][1] * lr.uniform(0.6, 1.4) for k in keys}
+    comp0 = {
+        'volume': _spread(SEPT['volume'], base),
+        'mix': _spread(SEPT['mix'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
+        'cost_update': _spread(SEPT['cost_update'], {k: base[k] * COST_W.get(k[1], 1.0) for k in keys}, FIXED_COST_UPDATE),
+        'fx': _spread(SEPT['fx'], {k: base[k] * FX_W.get(k[1], 0.4) for k in keys}),
+        'adjustments': _spread(SEPT['adjustments'], {k: base[k] * lr.uniform(0.3, 1.7) for k in keys}),
+    }
+    rows = []
+    for key in keys:
+        site, cat = key
+        units0, gross0, prov0 = agg[key]
+        ratio0 = prov0 / gross0
+        G, U, comps = [gross0], [units0], []
+        for k in range(24):
+            y, m = months[k]
+            if k == 0:
+                c = {n: comp0[n][key] for n in comp0}
+            else:
+                gk = G[k]
+                c = {'volume': round(gk * (VOL_BIAS[m] + lr.gauss(0, 0.004)), 2), 'mix': round(gk * lr.gauss(0, 0.003), 2),
+                     'cost_update': round(gk * lr.uniform(0.0, 0.006), 2), 'fx': round(gk * lr.gauss(0, 0.004), 2),
+                     'adjustments': round(gk * lr.gauss(0.0005, 0.0015), 2)}
+            comps.append(c)
+            change = sum(c.values())
+            G.append(round(G[k] - change, 2))
+            unit_val = G[k] / U[k] if U[k] else 0
+            U.append(max(0, U[k] - (round(c['volume'] / unit_val) if unit_val else 0)))
+        for k in range(24):
+            y, m = months[k]
+            f = 1 - 0.22 * min(k, 12) / 12 - (0.02 * (k - 12) / 11 if k > 12 else 0)
+            prov = round(G[k] * ratio0 * (f if k == 0 else f * lr.uniform(0.97, 1.03)), 2) if k else round(prov0, 2)
+            cur = k <= 7                                         # financial year to date (February to September)
+            sh = 0.0011 * SHRINK_CAT.get(cat, 0.8) * SHRINK_SEAS.get(m, 0.9) * lr.uniform(0.92, 1.08)
+            wo = 0.0019 * WO_CAT.get(cat, 0.9) * WO_SEAS.get(m, 0.85) * lr.uniform(0.92, 1.08)
+            if cur:
+                sh *= 1.35 * 1.17 if cat == 'Fragrance' else 1.17
+                wo *= 1.08
+            c = comps[k]
+            note = ''
+            if k == 0 and key == ('DC2', 'Outerwear'):
+                note = ('Cost updates include standard cost revaluation JE-900201 and a duplicate posting JE-900202 '
+                        '(450000 each, same reference REVAL-2026-09-DC2)')
+            rows.append({'site_id': site, 'category': cat, 'month_end': month_end(y, m), 'units_on_hand': U[k],
+                         'gross_value_gbp': G[k], 'provision_gbp': prov, 'volume_gbp': c['volume'], 'mix_gbp': c['mix'],
+                         'cost_update_gbp': c['cost_update'], 'fx_gbp': c['fx'], 'adjustments_gbp': c['adjustments'],
+                         'shrink_gbp': round(G[k] * sh, 2), 'written_off_gbp': round(G[k] * wo, 2), 'movement_note': note})
+    return rows
+
+
+def build_ledger_balances(monthly):
+    by = {}
+    for r in monthly:
+        a = by.setdefault(r['month_end'], [0.0, 0.0, 0.0])
+        a[0] += r['gross_value_gbp']
+        a[1] += r['provision_gbp']
+        a[2] += r['volume_gbp'] + r['mix_gbp'] + r['cost_update_gbp'] + r['fx_gbp'] + r['adjustments_gbp']
+    ends = sorted(by, reverse=True)
+    out = []
+    for k, e in enumerate(ends[:-1]):
+        gross, prov, change = by[e]
+        prev_prov = by[ends[k + 1]][1]
+        label = fy_label(e.year, e.month)
+        out.append({'account_code': '1300', 'account_desc': 'Inventory - finished goods', 'period': label, 'period_end': e,
+                    'opening_balance_gbp': round(gross - change, 2), 'movement_gbp': round(change, 2),
+                    'closing_balance_gbp': round(gross, 2)})
+        out.append({'account_code': '1310', 'account_desc': 'Inventory provision - slow-moving and obsolete', 'period': label,
+                    'period_end': e, 'opening_balance_gbp': round(-prev_prov, 2), 'movement_gbp': round(-(prov - prev_prov), 2),
+                    'closing_balance_gbp': round(-prov, 2)})
+    return out
+
+
+def build_sourcing_margins():
+    quarters = [('FY26-Q3', date(2025, 10, 31)), ('FY26-Q4', date(2026, 1, 31)), ('FY27-Q1', date(2026, 4, 30)),
+                ('FY27-Q2', date(2026, 7, 31))]
+    jitter = [-0.15, 0.10, 0.05, 0.0]
+    spec = [  # sourcing entity, receiving entity, department, quarterly cost base, mark-up on cost (%)
+        ('LE-HK', 'LE-UK', 'Womenswear', 1_200_000, 3.9), ('LE-HK', 'LE-UK', 'Menswear', 900_000, 3.1),
+        ('LE-HK', 'LE-UK', 'Kids', 700_000, 2.8),
+        ('LE-UK', 'LE-IE', 'Home', 800_000, 6.6), ('LE-UK', 'LE-IE', 'Electricals', 700_000, 7.1),
+        ('LE-UK', 'LE-IE', 'Beauty', 400_000, 6.9),
+        ('LE-PL', 'LE-UK', 'Home', 300_000, 9.6), ('LE-PL', 'LE-UK', 'Kids', 200_000, 10.4),
+        ('LE-PL', 'LE-UK', 'Womenswear', 250_000, 9.8)]
+    rows, n = [], 0
+    for qi, (label, qend) in enumerate(quarters):
+        for src, dst, dept, cost, mk in spec:
+            n += 1
+            cost_q = round(cost * (1 + 0.03 * qi), 2)
+            mk_q = round(mk + jitter[qi], 2)
+            fee = round(cost_q * (1 + mk_q / 100), 2)
+            rows.append({'margin_id': f'SM-{n:04d}', 'sourcing_entity_id': src, 'receiving_entity_id': dst, 'period': label,
+                         'period_end': qend, 'department': dept, 'cost_base_gbp': cost_q, 'fee_charged_gbp': fee,
+                         'markup_pct': round((fee / cost_q - 1) * 100, 2), 'policy_markup_pct': 7.0})
+    return rows
+
+
+LATE_PAYERS = {'SUP-0073': (21, 5), 'SUP-0046': (17, 5), 'SUP-0068': (12, 5), 'SUP-0033': (9, 4)}   # days beyond terms (mean, sd)
+GBP_PER = {'GBP': 1.0, 'USD': 0.79, 'EUR': 0.855}
+
+
+def build_supplier_payments(g, lr):
+    sup = {s['supplier_id']: s for s in g.master('suppliers')}
+    rows, n = [], 0
+    for po in sorted(g.master('purchase_orders'), key=lambda p: p['po_id']):
+        if po['status'] not in ('closed', 'received') or po['supplier_id'] not in sup:
+            continue
+        inv_date = date.fromisoformat(po['due_date']) + timedelta(days=lr.randint(0, 3))
+        if inv_date > g.as_of:
+            continue
+        terms = int(float(sup[po['supplier_id']]['payment_terms_days']))
+        due = inv_date + timedelta(days=terms)
+        if po['supplier_id'] in LATE_PAYERS:
+            mu, sd = LATE_PAYERS[po['supplier_id']]
+            lag = max(1, round(lr.gauss(mu, sd)))
+        else:
+            lag = max(-10, min(8, round(lr.gauss(-1.5, 3.0))))
+        paid = due + timedelta(days=lag)
+        n += 1
+        is_paid = paid <= g.as_of
+        rows.append({'payment_id': f'PAY-{n:06d}', 'supplier_id': po['supplier_id'], 'po_id': po['po_id'],
+                     'invoice_ref': f"INV-{po['supplier_id'][4:]}-{n:05d}", 'invoice_date': inv_date, 'due_date': due,
+                     'paid_date': paid if is_paid else '', 'amount_gbp': round(float(po['total_value']) * GBP_PER.get(po['currency'], 1.0), 2),
+                     'payment_terms_days': terms, 'days_to_pay': (paid - inv_date).days if is_paid else '',
+                     'days_late': lag if is_paid else '', 'status': 'paid' if is_paid else 'open'})
+    return rows
+
+
+def build_order_charges(g, lr):
+    entity = {s['site_id']: s['entity_id'] for s in g.master('sites')}
+    cutoff = (g.as_of - timedelta(days=30)).isoformat()
+    rows = []
+    for o in g.master('orders'):
+        if o['order_date'] < cutoff or o['status'] == 'cancelled':
+            continue
+        units, v, svc, ch = int(o['units']), float(o['value_gbp']), o['delivery_service'], o['channel']
+        if svc == 'collect':
+            freight = 0.0
+        elif svc == 'standard':
+            freight = 0.0 if v >= 50 else 3.99
+        elif svc == 'next_day':
+            freight = 5.99 if v < 100 else 2.99
+        else:
+            freight = 8.99
+        if svc == 'collect':
+            handling = 0.60 + 0.25 * units
+        elif ch == 'marketplace':
+            handling = 1.40 + 0.35 * units
+        else:
+            handling = 0.95 + 0.35 * units
+        discount = round(v * lr.uniform(0.05, 0.20), 2) if lr.random() < 0.30 else 0.0
+        x = lr.random()
+        if svc == 'collect':
+            ships = 1
+        elif units >= 6:
+            ships = 3 if x < 0.5 else 2
+        elif units >= 4:
+            ships = 2 if x < 0.35 else 1
+        elif units >= 2:
+            ships = 2 if x < 0.12 else 1
+        else:
+            ships = 1
+        rows.append({'order_id': o['order_id'], 'entity_id': entity[o['fulfil_site_id']], 'posting_date': o['order_date'],
+                     'revenue_gbp': round(v, 2), 'freight_charge_gbp': round(freight, 2), 'handling_charge_gbp': round(handling, 2),
+                     'discount_gbp': discount, 'total_charges_gbp': round(freight + handling, 2), 'je_id': '',
+                     'shipment_count': ships})
+    return rows
