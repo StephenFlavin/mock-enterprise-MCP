@@ -95,6 +95,10 @@ def generate(g):
                     orders = r.randint(20, 200)
                     conversions = int(orders * conversion_rate / 100)
 
+                    # Calculate revenue based on orders and average order value
+                    aov = r.uniform(50, 150)
+                    revenue = orders * aov
+
                     conversion_metrics.append({
                         "date": date,
                         "channel": channel,
@@ -103,6 +107,7 @@ def generate(g):
                         "conversion_rate": round(conversion_rate, 2),
                         "conversions": conversions,
                         "orders": orders,
+                        "revenue_gbp": round(revenue, 2),
                     })
 
     # Generate marketing activities for various ranges
