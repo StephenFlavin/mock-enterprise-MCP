@@ -1,207 +1,102 @@
+from datetime import timedelta
+
+AUDITORS = ["EMP-00101", "EMP-00102", "EMP-00103", "EMP-00104"]
+
+
 def generate(g):
-    """Generate audit data realistic for a retail company."""
-
-    # Get reference data
-    sites = g.master("sites")
-    dc_sites = [s for s in sites if s["site_id"].startswith("DC")]
-    employees = g.master("employees")
-
-    # Common audit areas
-    audit_areas = [
-        "Vendor controls",
-        "Purchase order approvals",
-        "Bank detail changes",
-        "Stock count accuracy",
-        "Inventory valuation",
-        "Cash handling",
-        "Payment authorization",
-        "Fixed asset management",
-        "Travel and expenses",
-        "Journal entries"
-    ]
-
-    fraud_types = [
-        "Duplicate invoice",
-        "Vendor collusion",
-        "Order splitting to bypass limits",
-        "Fictitious vendor",
-        "Unauthorized discount",
-        "Invoice manipulation",
-        "Ghost employee"
-    ]
-
-    # Generate audit_actions (open and completed)
-    audit_actions = []
+    """Background for the audit system. The question stories live in seed/*.csv."""
+    A = g.as_of
     r = g.rng
-    for i in range(1, 31):
-        action_date = g.date_between(540, 90)
-        due_date = g.date_between(90, 0) if action_date < g.as_of else g.date_between(0, -60)
-        status = r.choices(["open", "completed", "reopened"], [0.5, 0.35, 0.15])[0]
-        audit_actions.append({
-            "action_id": f"ACT-{i:06d}",
-            "description": f"{g.pick(audit_areas)} - {g.fake.sentence(nb_words=4)}",
-            "audit_area": g.pick(audit_areas),
-            "owner_employee_id": g.pick([e["employee_id"] for e in employees[:20]]),
-            "due_date": due_date,
-            "status": status,
-            "opened_at": g.fake.date_time_this_year(),
-            "closed_at": g.fake.date_time_this_year() if status == "completed" else None,
-            "evidence": g.fake.paragraph() if status == "completed" else None,
-            "updated_at": g.fake.date_time_this_year(),
-        })
+    dcs = ["DC1", "DC2", "DC3"]
 
-    # Generate audit_cases (findings from data anomalies)
-    audit_cases = []
-    for i in range(1, 21):
-        opened_date = g.date_between(180, 30)
-        audit_cases.append({
-            "case_id": f"CASE-{i:06d}",
-            "finding_area": r.choice(["Purchase orders", "Vendor payments", "Inventory", "Cash", "Expenses"]),
-            "description": g.fake.paragraph(),
-            "risk_score": r.randint(20, 95),
-            "opened_at": g.fake.date_time(tzinfo=None),
-            "status": r.choice(["open", "in_progress", "closed", "escalated"]),
-            "assigned_to": g.pick([e["employee_id"] for e in employees[:20]]) if r.random() > 0.3 else None,
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
-            "estimated_impact_gbp": r.uniform(1000, 150000) if r.random() > 0.5 else None,
-            "updated_at": g.fake.date_time_this_year(),
-        })
+    def ts(d, h=10):
+        return f"{d.isoformat()} {h:02d}:00:00"
 
-    # Generate audit_engagements (planned and completed)
-    audit_engagements = []
-    engagement_ids = []
-    from datetime import timedelta
-    for i in range(1, 16):
-        start_date = g.date_between(180, -90)
-        end_date = start_date + timedelta(days=r.randint(14, 45))
-        engagement_ids.append(f"ENG-{i:06d}")
-        audit_engagements.append({
-            "engagement_id": f"ENG-{i:06d}",
-            "audit_area": g.pick(audit_areas),
-            "scope": g.fake.paragraph(nb_sentences=2),
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
-            "planned_start": start_date,
-            "planned_end": end_date,
-            "status": r.choice(["planned", "in_progress", "completed", "cancelled"]),
-            "lead_auditor": g.pick([e["employee_id"] for e in employees[:20]]),
-            "estimated_hours": r.randint(40, 200),
-            "created_at": g.fake.date_time_this_year(),
-            "updated_at": g.fake.date_time_this_year(),
-        })
+    # ---- older, unrelated findings and actions (cash, fixed assets, other areas; all > 18 months old)
+    old_findings = [
+        ("DC1", "Cash handling", "Safe counts at the DC canteen float not independently witnessed.", "low", 640, "resolved"),
+        ("DC2", "Fixed asset management", "Three forklifts missing from the asset register after a lease swap.", "medium", 610, "resolved"),
+        ("DC3", "Fixed asset management", "Asset tags missing on racking installed in the returns hall.", "low", 590, "resolved"),
+        ("DC1", "Journal entries", "Manual journals posted by preparer who also approved them (two cases).", "medium", 575, "resolved"),
+        ("DC2", "Cash handling", "Petty cash reimbursed without receipts above the 50 limit.", "low", 560, "accepted_risk"),
+        ("DC3", "Journal entries", "Accrual journals lacked supporting calculation.", "low", 545, "resolved"),
+    ]
+    findings = []
+    for i, (site, area, desc, sev, ago, st) in enumerate(old_findings, 1):
+        d = A - timedelta(days=ago)
+        findings.append({"finding_id": f"FND-{i:06d}", "site_id": site, "audit_area": area, "description": desc,
+                         "severity": sev, "audit_date": d, "status": st, "related_action_id": None,
+                         "created_at": ts(d + timedelta(days=5))})
 
-    # Generate control_test_results
-    control_test_results = []
-    for i in range(1, 51):
-        test_date = g.date_between(120, 1)
-        result = r.choices(["pass", "fail", "partial"], [0.65, 0.25, 0.10])[0]
-        control_test_results.append({
-            "test_id": f"TST-{i:06d}",
-            "site_id": g.pick([s["site_id"] for s in dc_sites]),
-            "control_area": r.choice([
-                "Stock count verification",
-                "Payment authorization",
-                "Vendor master changes",
-                "Cycle counting",
-                "Goods receipt matching",
-                "Bank reconciliation"
-            ]),
-            "test_description": g.fake.sentence(nb_words=8),
-            "result": result,
-            "tested_date": test_date,
-            "sample_size": r.randint(20, 200),
-            "exceptions_found": r.randint(0, 15) if result != "pass" else 0,
-            "root_cause": g.fake.sentence(nb_words=6) if result != "pass" else None,
-            "audit_action_id": g.pick(audit_actions)["action_id"] if r.random() > 0.7 else None,
-            "created_at": g.fake.date_time_this_year(),
-        })
+    old_actions = [
+        ("Witness and sign off canteen float counts weekly", "Cash handling", "EMP-00108", 600, 520),
+        ("Reconcile forklift lease register to the asset register", "Fixed asset management", "EMP-00181", 570, 480),
+        ("Tag all racking and add to the asset register", "Fixed asset management", "EMP-00239", 550, 470),
+        ("Block self-approval of manual journals in the ledger", "Journal entries", "EMP-00088", 540, 450),
+    ]
+    actions = []
+    for i, (desc, area, owner, opened_ago, closed_ago) in enumerate(old_actions, 1):
+        o, c = A - timedelta(days=opened_ago), A - timedelta(days=closed_ago)
+        actions.append({"action_id": f"ACT-{i:06d}", "description": desc, "audit_area": area, "owner_employee_id": owner,
+                        "due_date": c + timedelta(days=7), "status": "completed", "opened_at": ts(o), "closed_at": ts(c, 15),
+                        "evidence": "Change implemented and confirmed by the action owner; reviewed by internal audit at the follow-up visit.",
+                        "updated_at": ts(c, 15), "status_changed_at": ts(c, 15), "status_note": None})
 
-    # Generate audit_findings
-    audit_findings = []
-    for i in range(1, 31):
-        audit_date = g.date_between(365, 30)
-        audit_findings.append({
-            "finding_id": f"FND-{i:06d}",
-            "site_id": g.pick([s["site_id"] for s in dc_sites]),
-            "audit_area": g.pick(audit_areas),
-            "description": g.fake.paragraph(),
-            "severity": r.choices(["high", "medium", "low"], [0.2, 0.4, 0.4])[0],
-            "audit_date": audit_date,
-            "status": r.choice(["open", "in_remediation", "resolved", "accepted_risk"]),
-            "related_action_id": g.pick(audit_actions)["action_id"] if r.random() > 0.6 else None,
-            "created_at": g.fake.date_time_this_year(),
-        })
+    # ---- routine control tests in the last two months that pass (background for the stock and valuation tests)
+    tests = []
+    n = 0
+    for site in dcs:
+        for area, desc, size in [("Bank reconciliation", "Monthly bank reconciliation tested for completeness and timeliness.", 1),
+                                 ("Goods receipt matching", "Goods receipts tested for three-way match (PO, receipt, invoice).", 45)]:
+            n += 1
+            d = A - timedelta(days=r.randint(25, 70))
+            tests.append({"test_id": f"TST-{n:06d}", "site_id": site, "control_area": area, "test_description": desc,
+                          "result": "pass", "tested_date": d, "sample_size": size, "exceptions_found": 0,
+                          "root_cause": None, "audit_action_id": None, "created_at": ts(d + timedelta(days=1))})
 
-    # Generate fraud_cases
-    fraud_cases = []
-    for i in range(1, 21):
-        detected_date = g.date_between(730, 30)
-        fraud_cases.append({
-            "fraud_case_id": f"FRD-{i:06d}",
-            "case_type": g.pick(fraud_types),
-            "description": g.fake.paragraph(),
-            "detected_date": detected_date,
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
-            "estimated_loss_gbp": r.uniform(500, 75000),
-            "status": r.choice(["reported", "under_investigation", "closed", "referred_to_authorities"]),
-            "created_at": g.fake.date_time_this_year(),
-        })
+    # ---- a few closed investigation cases from earlier years
+    cases = []
+    for i, (area, desc, score, site, imp, ago) in enumerate([
+        ("Purchase orders", "Two POs raised after the invoice date for the same carton supplier; regularised by procurement.", 38, "DC2", 2100, 400),
+        ("Expenses", "Duplicate taxi claims by a shift manager; repaid.", 30, "DC1", 340, 380),
+        ("Vendor payments", "Payment run released twice for one supplier; recovered by credit note.", 55, "DC3", 8800, 330),
+        ("Inventory", "Pallet write-offs without second signature at one DC; controls reminded.", 44, "DC1", 5600, 300),
+    ], 1):
+        d = A - timedelta(days=ago)
+        cases.append({"case_id": f"CASE-{i:06d}", "finding_area": area, "description": desc, "risk_score": score,
+                      "opened_at": ts(d), "status": "closed", "assigned_to": AUDITORS[i % 4], "site_id": site,
+                      "estimated_impact_gbp": imp, "updated_at": ts(d + timedelta(days=30))})
 
-    # Generate assurance_findings (ESG related)
-    assurance_findings = []
-    esg_categories = ["Scope 2 emissions", "Scope 3 emissions", "Energy efficiency", "Water management", "Waste management"]
-    finding_types = ["Data quality", "Methodology", "Boundary change", "Verification issue"]
-    for i in range(1, 11):
-        audit_date = g.date_between(180, 30)
-        assurance_findings.append({
-            "assurance_finding_id": f"ASSU-{i:06d}",
-            "esg_category": r.choice(esg_categories),
-            "description": g.fake.paragraph(),
-            "audit_date": audit_date,
-            "status": r.choice(["open", "addressed", "under_review"]),
-            "finding_type": r.choice(finding_types),
-            "created_at": g.fake.date_time_this_year(),
-        })
-
-    # Generate audit_universe
-    audit_universe = []
-    for i, area in enumerate(audit_areas, 1):
-        last_audit = g.date_between(730, 30)
-        audit_universe.append({
-            "audit_area_id": f"UA-{i:06d}",
-            "audit_area": area,
-            "description": f"Audit of {area.lower()}",
-            "risk_rating": r.choices(["high", "medium", "low"], [0.2, 0.5, 0.3])[0],
-            "last_audit_date": last_audit,
-            "audit_frequency_months": r.choice([12, 24, 36]),
-            "created_at": g.fake.date_time_this_year(),
-        })
-
-    # Generate audit_resource_plan
-    audit_resource_plan = []
-    current_month = g.as_of.strftime("%Y-%m")
-    for emp in employees[:10]:
-        for month_offset in range(-2, 4):
-            import datetime
-            month_date = g.as_of.replace(day=1) + datetime.timedelta(days=32*month_offset)
-            month_str = month_date.strftime("%Y-%m")
-            audit_resource_plan.append({
-                "resource_plan_id": f"RES-{len(audit_resource_plan)+1:06d}",
-                "auditor_employee_id": emp["employee_id"],
-                "planned_hours_month": g.rng.randint(80, 180),
-                "utilization_pct": g.rng.randint(60, 95),
-                "planned_areas": ", ".join(g.pick(audit_areas, 2)),
-                "plan_month": month_str,
-                "created_at": g.fake.date_time_this_year(),
-            })
+    # ---- resource plan: four auditors, 4-week planning periods from two periods ago to a year ahead
+    period0 = A - timedelta(days=A.weekday())
+    plan = []
+    committed = {-2: 90, -1: 90, 0: 88, 1: 85, 2: 70, 3: 55}
+    areas = {-2: "Payment authorization", -1: "Payment authorization", 0: "Stock count accuracy; Vendor controls",
+             1: "Stock count accuracy; Inventory valuation", 2: "Follow-ups on last year's actions", 3: "Carry-over and report writing"}
+    for k in range(-2, 14):
+        for j, aud in enumerate(AUDITORS):
+            cap = 140
+            pct = committed.get(k, 30 + 5 * ((k + j) % 3))
+            note = areas.get(k, "Unallocated" if pct <= 35 else "Reserved for ad-hoc requests")
+            if aud == "EMP-00103" and k >= 5:
+                cap, note = 70, "Half-time: secondment to ESG reporting project"
+            if aud == "EMP-00104" and k == -2:
+                cap = 80  # joined part way through the period
+            if k in (8, 9):  # summer leave
+                cap = round(cap * 0.75)
+            plan.append({"resource_plan_id": f"RES-{len(plan) + 1:06d}", "auditor_employee_id": aud,
+                         "period_start": period0 + timedelta(weeks=4 * k), "capacity_hours": cap,
+                         "committed_pct": pct, "planned_areas": note,
+                         "created_at": ts(A - timedelta(days=45))})
 
     return {
-        "audit_actions": audit_actions,
-        "audit_cases": audit_cases,
-        "audit_engagements": audit_engagements,
-        "control_test_results": control_test_results,
-        "audit_findings": audit_findings,
-        "fraud_cases": fraud_cases,
-        "assurance_findings": assurance_findings,
-        "audit_universe": audit_universe,
-        "audit_resource_plan": audit_resource_plan,
+        "audit_actions": actions,
+        "audit_cases": cases,
+        "audit_engagements": [],
+        "control_test_results": tests,
+        "audit_findings": findings,
+        "fraud_cases": [],
+        "assurance_findings": [],
+        "audit_universe": [],
+        "audit_resource_plan": plan,
     }

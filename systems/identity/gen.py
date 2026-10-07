@@ -1,311 +1,186 @@
-"""Background security data: alerts, vulnerabilities, auth logs, sessions, and third-party connections."""
+"""Background security data: alert history, scanner noise, auth logs, sessions and user accounts.
+
+Story rows (this week's alerts, the supplier-account incident, the third-party connections, the unpatched
+warehouse systems and the false-positive history) live in seed/*.csv. This file only adds believable background.
+"""
 from datetime import datetime, timedelta
-import random
+
+CITY_BY_COUNTRY = {"CN": "Shanghai", "VN": "Ho Chi Minh City", "TR": "Istanbul", "IN": "Chennai", "PT": "Porto"}
+
+# Same CVE -> same title/score everywhere (scan findings, unpatched systems).
+LOW_CVES = [
+    ("CVE-2024-4410", "Weak TLS cipher suites enabled", 5.9),
+    ("CVE-2024-4421", "Cross-site scripting in admin console", 6.1),
+    ("CVE-2024-4437", "Directory listing exposed on management UI", 5.3),
+    ("CVE-2024-4452", "Denial of service in embedded web server", 6.5),
+]
+
+
+def _at(day, hour, minute=0):
+    return datetime.combine(day, datetime.min.time()) + timedelta(hours=hour, minutes=minute)
 
 
 def generate(g):
     r = g.rng
+    sites = {s["site_id"]: s for s in g.master("sites")}
+    employees = [e for e in g.master("employees") if e["status"] == "active"]
+    suppliers = g.master("suppliers")
+    assets = g.master("assets")
 
-    # Get some master data to reference
-    suppliers = g.master("suppliers")[:10]
-    assets = g.master("assets")[:15]
-    employees = g.master("employees")[:20]
-    sites = [s for s in g.master("sites") if s["type"] == "dc"][:5]
+    # Staff pool: DC logistics staff plus technology staff (story users EMP-00109, EMP-00112, EMP-00115 included).
+    pool = []
+    for site, n in (("DC1", 12), ("DC2", 6), ("DC3", 4), ("HQ1", 4)):
+        want = [e for e in employees if e["site_id"] == site and (site != "HQ1" or e["department"] == "Technology")]
+        pool += want[:n]
+    for must in ("EMP-00109", "EMP-00112", "EMP-00115"):
+        if must not in {e["employee_id"] for e in pool}:
+            pool += [e for e in employees if e["employee_id"] == must]
 
+    def uname(e):
+        return e["name"].lower().replace("dr ", "").replace("ms ", "").replace(" ", ".")
+
+    # ---- alert history (closed) plus a few low-severity open alerts this week ---------------------
+    alert_types = [("failed_login_spike", "siem"), ("suspicious_data_access", "siem"),
+                   ("privilege_escalation", "endpoint"), ("malware_detected", "endpoint"),
+                   ("data_exfiltration", "network"), ("unusual_port_activity", "network")]
+    dc_assets = [a for a in assets if a["site_id"] in ("DC1", "DC2", "DC3") and ("-MHE-" in a["asset_id"] or "-CMP" in a["asset_id"])]
     alerts = []
-    findings = []
-    dispositions = []
-    auth_logs = []
-    sessions = []
-    connections = []
-    conn_controls = []
-    conn_privileges = []
-    unpatched = []
-    incidents = []
-    user_accounts = []
-
-    # Alert type distribution (common types)
-    alert_types = [
-        ("failed_login_spike", "siem"),
-        ("suspicious_data_access", "siem"),
-        ("privilege_escalation", "endpoint"),
-        ("malware_detected", "endpoint"),
-        ("data_exfiltration", "network"),
-        ("unusual_port_activity", "network"),
-    ]
-
-    # Generate security alerts (10-20 total)
-    for i in range(r.randint(10, 20)):
-        alert_type, source = r.choice(alert_types)
-        severity_choices = ["low", "medium", "high", "critical"]
-        severity = r.choices(severity_choices, [50, 35, 12, 3])[0]
-
-        raised_at = g.fake.date_time_between_dates(
-            datetime_start=datetime.combine(g.as_of, datetime.min.time()) - timedelta(days=7),
-            datetime_end=datetime.combine(g.as_of, datetime.min.time())
-        )
-
-        asset = r.choice(assets) if r.random() > 0.3 else None
-        user = r.choice(employees) if r.random() > 0.5 else None
-
-        status_choices = ["open", "open", "open", "investigating", "resolved", "false_positive"]
-        status = r.choice(status_choices)
-
-        closed_at = None
-        if status != "open":
-            closed_at = raised_at + timedelta(hours=r.randint(1, 48))
-
+    for i in range(18):
+        t, src = r.choice(alert_types)
+        raised = _at(g.days_ago(r.randint(9, 70)), r.randint(0, 23), r.randint(0, 59))
+        status = r.choices(["resolved", "false_positive"], [4, 6])[0]
+        closed = raised + timedelta(hours=r.randint(1, 36))
         alerts.append({
-            "alert_id": f"ALT-{len(alerts) + 1:06d}",
-            "source_system": source,
-            "alert_type": alert_type,
-            "severity": severity,
-            "asset_id": asset["asset_id"] if asset else None,
-            "user_id": user["employee_id"] if user else None,
-            "raised_at": raised_at,
-            "description": f"Alert: {alert_type} from {source}",
-            "status": status,
-            "closed_at": closed_at,
-            "disposition_reason": "False positive - routine activity" if status == "false_positive" else None,
-            "updated_at": closed_at if closed_at else raised_at,
-        })
+            "alert_id": f"ALT-{len(alerts) + 1:06d}", "source_system": src, "alert_type": t,
+            "severity": r.choices(["low", "medium", "high"], [45, 40, 15])[0],
+            "asset_id": r.choice(dc_assets)["asset_id"] if r.random() < 0.6 else None,
+            "user_id": r.choice(pool)["employee_id"] if r.random() < 0.6 else None,
+            "raised_at": raised, "description": f"{t.replace('_', ' ').capitalize()} reported by {src}",
+            "status": status, "closed_at": closed,
+            "disposition_reason": "Expected activity, no action needed" if status == "false_positive" else "Reviewed and remediated",
+            "updated_at": closed})
+    for i in range(3):  # low-severity open noise this week
+        t, src = r.choice(alert_types[:2] + alert_types[5:])
+        raised = _at(g.days_ago(r.randint(1, 5)), r.randint(6, 20), r.randint(0, 59))
+        alerts.append({
+            "alert_id": f"ALT-{len(alerts) + 1:06d}", "source_system": src, "alert_type": t, "severity": "low",
+            "asset_id": None, "user_id": r.choice(pool)["employee_id"], "raised_at": raised,
+            "description": f"{t.replace('_', ' ').capitalize()} reported by {src} (low confidence)",
+            "status": "open", "closed_at": None, "disposition_reason": None, "updated_at": raised})
 
-    # Alert disposition history (for false positive rates)
-    for alert_type, source in alert_types:
-        false_pos = r.randint(10, 50)
-        confirmed_incidents = r.randint(5, 25)
-        total = false_pos + confirmed_incidents + r.randint(5, 20)
-
-        dispositions.append({
-            "disposition_id": f"DSP-{len(dispositions) + 1:06d}",
-            "alert_type": alert_type,
-            "source_system": source,
-            "past_disposition": "false_positive",
-            "count": false_pos,
-            "percentage": round(100.0 * false_pos / total, 1),
-            "last_occurrence_date": g.as_of - timedelta(days=r.randint(1, 60)),
-        })
-
-    # Generate vulnerability findings (15-30)
-    cve_samples = [
-        ("CVE-2024-1234", "Remote Code Execution in OpenSSH", 9.8, True, True),
-        ("CVE-2024-5678", "SQL Injection in Database Driver", 8.7, True, False),
-        ("CVE-2024-9012", "Privilege Escalation in Kernel", 8.1, False, False),
-        ("CVE-2024-3456", "Buffer Overflow in Web Server", 7.5, True, False),
-        ("CVE-2024-7890", "XXE in XML Parser", 7.2, False, False),
-    ]
-
-    for i in range(r.randint(15, 30)):
-        cve, title, cvss, exposed, exploited = r.choice(cve_samples)
-
-        asset = r.choice(assets)
-        site = r.choice(sites)
-        discovered = g.as_of - timedelta(days=r.randint(1, 90))
-        patch_avail = discovered - timedelta(days=r.randint(5, 30)) if r.random() > 0.3 else None
-        remediation = "unpatched" if patch_avail and r.random() > 0.7 else ("patch_available" if patch_avail else "unpatched")
-
+    # ---- scan findings: medium-score background on non-critical equipment -------------------------
+    findings = []
+    for i in range(10):
+        a = r.choice(dc_assets)
+        cve, title, cvss = r.choice(LOW_CVES)
+        disc = g.days_ago(r.randint(5, 80))
+        patch_since = disc - timedelta(days=r.randint(3, 20))
+        status = r.choice(["unpatched", "patch_available", "patch_available", "patched"])
         findings.append({
-            "finding_id": f"VUL-{len(findings) + 1:06d}",
-            "asset_id": asset["asset_id"],
-            "site_id": site["site_id"],
-            "cve_id": cve,
-            "vulnerability_title": title,
-            "cvss_score": cvss,
-            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-            "is_externally_exposed": exposed,
-            "is_exploited_in_wild": exploited,
-            "is_patched": remediation == "patched",
-            "patch_available_since": patch_avail,
-            "affected_software": "OpenSSH 7.4" if "OpenSSH" in title else "Database Driver 2.1",
-            "current_version": "7.4p1",
-            "patched_version": "8.0p1",
-            "discovered_date": discovered,
-            "last_scanned": g.as_of,
-            "remediation_status": remediation,
-            "updated_at": datetime.now(),
-        })
+            "finding_id": f"VUL-{len(findings) + 1:06d}", "asset_id": a["asset_id"], "site_id": a["site_id"],
+            "cve_id": cve, "vulnerability_title": title, "cvss_score": cvss,
+            "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N",
+            "is_externally_exposed": False, "is_exploited_in_wild": False, "is_patched": status == "patched",
+            "patch_available_since": patch_since, "affected_software": "Embedded firmware",
+            "current_version": "3.2", "patched_version": "3.4", "discovered_date": disc,
+            "last_scanned": g.days_ago(r.randint(0, 3)), "remediation_status": status,
+            "updated_at": _at(g.as_of, 6)})
 
-    # Generate auth logs (50-100)
-    systems = ["edi_portal", "vendor_portal", "payroll_system", "financial_system"]
-    for i in range(r.randint(50, 100)):
-        user = r.choice(employees)
-        ts = g.fake.date_time_between_dates(
-            datetime_start=datetime.combine(g.as_of, datetime.min.time()) - timedelta(days=7),
-            datetime_end=datetime.combine(g.as_of, datetime.min.time())
-        )
+    # ---- accounts ---------------------------------------------------------------------------------
+    accounts = []
+    last_login = {}
+    sup_users = []
+    for i, s in enumerate(suppliers[:4]):
+        sup_users.append((f"SUPP-{i + 1:05d}", f"supplier-user-{i + 1}", s))
 
-        result_choices = ["success", "success", "success", "failed", "mfa_required", "blocked"]
-        result = r.choice(result_choices)
+    # ---- auth logs and sessions: employees ---------------------------------------------------------
+    emp_systems = ["wms", "edi_portal", "financial_system", "payroll_system"]
+    records = {"wms": "stock;orders", "edi_portal": "po_lines;shipments",
+               "financial_system": "budget_data;reports", "payroll_system": "payroll_summary"}
+    logs, sessions = [], []
 
-        # Only assign session_id if success
-        session_id = None
-        if result == "success" and sessions:
-            # Reference an existing session or create one
-            if r.random() > 0.7:
-                session_id = r.choice(sessions)["session_id"]
+    def add_login(uid, username, ip, loc, method, system, ts, ok=True, reason=None, utype="employee",
+                  actions=None, viewed=None, minutes=None, suspicious=False):
+        sid = None
+        if ok:
+            sid = f"SES-{len(sessions) + 1:06d}"
+            end = ts + timedelta(minutes=minutes or r.randint(10, 120))
+            sessions.append({
+                "session_id": sid, "user_id": uid, "username": username, "user_type": utype,
+                "started_at": ts, "ended_at": end, "source_ip": ip, "source_location": loc,
+                "system_accessed": system, "actions_count": actions or r.randint(3, 40),
+                "data_accessed_systems": system, "data_viewed_records": viewed or records.get(system, "reports"),
+                "is_suspicious": suspicious, "block_reason": None})
+            last_login[uid] = max(last_login.get(uid, ts), ts)
+        logs.append({
+            "log_id": f"LOG-{len(logs) + 1:06d}", "timestamp": ts, "user_id": uid, "username": username,
+            "source_ip": ip, "source_location": loc, "authentication_method": method,
+            "result": "success" if ok else "failed", "reason": reason, "system_accessed": system,
+            "session_id": sid, "updated_at": ts})
 
-        auth_logs.append({
-            "log_id": f"LOG-{len(auth_logs) + 1:06d}",
-            "timestamp": ts,
-            "user_id": user["employee_id"],
-            "username": user["name"].lower().replace(" ", "."),
-            "source_ip": f"203.0.113.{r.randint(1, 254)}",
-            "source_location": r.choice(["London", "Manchester", "Birmingham", "Unknown"]),
-            "authentication_method": r.choice(["password", "mfa", "sso"]),
-            "result": result,
-            "reason": "Invalid password" if result == "failed" else None,
-            "system_accessed": r.choice(systems),
-            "session_id": session_id,
-            "updated_at": ts,
-        })
+    ips = {}
+    for e in pool:
+        ips[e["employee_id"]] = f"203.0.113.{r.randint(10, 250)}"
+    for i in range(45):
+        e = r.choice(pool)
+        day = g.days_ago(r.randint(0, 13))
+        if day.weekday() >= 5:
+            continue
+        ts = _at(day, r.randint(6, 17), r.randint(0, 59))
+        loc = sites[e["site_id"]]["city"]
+        ok = r.random() > 0.08
+        add_login(e["employee_id"], uname(e), ips[e["employee_id"]], loc, r.choice(["sso", "mfa", "mfa"]),
+                  r.choice(emp_systems), ts, ok, None if ok else "Invalid password")
 
-    # Generate user sessions (20-40)
-    for i in range(r.randint(20, 40)):
-        user = r.choice(employees)
-        start = g.fake.date_time_between_dates(
-            datetime_start=datetime.combine(g.as_of, datetime.min.time()) - timedelta(days=7),
-            datetime_end=datetime.combine(g.as_of, datetime.min.time())
-        )
-        duration_minutes = r.randint(5, 240)
-        end = start + timedelta(minutes=duration_minutes)
+    # ---- supplier users: ordinary daytime logins from their own country ----------------------------
+    for uid, uname_, s in sup_users:
+        city = CITY_BY_COUNTRY.get(s["country"], "Shanghai")
+        ip = f"198.51.100.{20 + int(uid[-2:])}"
+        for back in (1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12):
+            day = g.days_ago(back + 2)
+            if day.weekday() >= 5:
+                continue
+            ts = _at(day, 8 + int(uid[-1]) % 3, r.randint(0, 50))
+            add_login(uid, uname_, ip, city, "password", "edi_portal", ts, True, utype="supplier",
+                      actions=r.randint(4, 15), viewed="po_lines;shipments", minutes=r.randint(10, 35))
 
-        sessions.append({
-            "session_id": f"SES-{len(sessions) + 1:06d}",
-            "user_id": user["employee_id"],
-            "username": user["name"].lower().replace(" ", "."),
-            "user_type": "employee",
-            "started_at": start,
-            "ended_at": end,
-            "source_ip": f"203.0.113.{r.randint(1, 254)}",
-            "source_location": user.get("site_id", "London"),
-            "system_accessed": r.choice(systems),
-            "actions_count": r.randint(1, 50),
-            "data_accessed_systems": "vendor_portal;edi_data",
-            "data_viewed_records": "bank_details;po_lines",
-            "is_suspicious": r.random() < 0.1,
-            "block_reason": None,
-        })
+    # ---- user accounts ------------------------------------------------------------------------------
+    for e in pool:
+        accounts.append({
+            "user_id": e["employee_id"], "username": uname(e), "user_type": "employee", "supplier_id": None,
+            "name": e["name"], "status": "active", "locked_at": None, "lock_reason": None,
+            "is_privileged": e["department"] == "Technology", "mfa_enabled": r.random() > 0.1,
+            "last_login": last_login.get(e["employee_id"]), "failed_login_count": r.randint(0, 2),
+            "created_at": _at(g.days_ago(r.randint(200, 1500)), 9), "updated_at": _at(g.as_of, 6)})
+    for uid, uname_, s in sup_users:
+        accounts.append({
+            "user_id": uid, "username": uname_, "user_type": "supplier", "supplier_id": s["supplier_id"],
+            "name": f"{s['name']} portal user", "status": "active", "locked_at": None, "lock_reason": None,
+            "is_privileged": False, "mfa_enabled": uid != "SUPP-00001", "last_login": last_login.get(uid),
+            "failed_login_count": 0, "created_at": _at(g.days_ago(r.randint(200, 900)), 9),
+            "updated_at": _at(g.as_of, 6)})
 
-    # Generate third-party connections (8-12)
-    for i, supplier in enumerate(suppliers[:r.randint(8, 12)]):
-        connection_id = f"CON-{i + 1:06d}"
-
-        connections.append({
-            "connection_id": connection_id,
-            "connection_name": supplier["name"],
-            "connection_type": "supplier",
-            "supplier_id": supplier["supplier_id"],
-            "partner_id": None,
-            "primary_purpose": "EDI and order management",
-            "connection_established": g.as_of - timedelta(days=r.randint(30, 730)),
-            "connection_status": r.choice(["active", "active", "active", "inactive"]),
-            "risk_rating": r.choices(["low", "medium", "high", "critical"], [40, 35, 20, 5])[0],
-            "data_scope": "po_lines;purchase_orders;shipments",
-            "systems_accessed": "edi_portal;api_gateway",
-            "privileged_access": r.random() < 0.2,
-            "updated_at": datetime.now(),
-        })
-
-        # Add controls for this connection
-        controls = [
-            ("mfa", "Duo MFA", r.random() > 0.2),
-            ("ip_allowlist", "IP restrict to 203.0.113.0/24", r.random() > 0.15),
-            ("data_encryption", "TLS 1.3 for all connections", r.random() > 0.1),
-            ("logging", "All API calls logged to SIEM", r.random() > 0.05),
-        ]
-
-        for ctrl_type, ctrl_name, enabled in controls:
-            conn_controls.append({
-                "connection_id": connection_id,
-                "control_type": ctrl_type,
-                "control_name": ctrl_name,
-                "is_enabled": enabled,
-                "enabled_date": g.as_of - timedelta(days=r.randint(30, 180)) if enabled else None,
-                "audit_trail": enabled and r.random() > 0.3,
-                "last_verified": g.as_of - timedelta(days=r.randint(1, 30)) if enabled else None,
-                "effectiveness_rating": "high" if enabled else "low",
-            })
-
-        # Add access privileges
-        systems = ["edi_portal", "api_gateway", "order_management"]
-        for sys in r.sample(systems, r.randint(1, 2)):
-            conn_privileges.append({
-                "connection_id": connection_id,
-                "system_id": sys,
-                "privilege_level": r.choices(["read_only", "read_write", "admin"], [70, 25, 5])[0],
-                "data_scope": "po_lines;shipments" if sys == "edi_portal" else "all",
-                "scope_description": f"Access to {sys} for order management",
-                "access_granted_date": g.as_of - timedelta(days=r.randint(30, 365)),
-                "access_reviewed_date": g.as_of - timedelta(days=r.randint(1, 90)),
-                "requires_approval_for": "data_export;payment_change",
-                "audit_events_enabled": r.random() > 0.1,
-            })
-
-    # Generate unpatched systems (list of critical issues)
-    for asset in assets[:r.randint(8, 12)]:
-        site = r.choice(sites)
-
-        for cve, title, cvss, exposed, exploited in r.sample(cve_samples, r.randint(1, 3)):
+    # ---- unpatched systems: low-criticality background (all below the default CVSS 7.0 cut) ---------
+    unpatched = []
+    for sysid, name, site in (("SYS-LBL", "Label printing server", "DC3"), ("SYS-KIOSK", "Staff kiosk service", "DC2"),
+                              ("SYS-BADGE", "Badge reader controller", "DC1"), ("SYS-DOCK", "Dock booking display", "DC1")):
+        for cve, title, cvss in r.sample(LOW_CVES, 2):
             unpatched.append({
-                "system_id": asset["asset_id"],
-                "system_name": asset["name"],
-                "site_id": site["site_id"],
-                "cve_id": cve,
-                "vulnerability_title": title,
-                "cvss_score": cvss,
-                "is_externally_exposed": exposed,
-                "patch_available": r.random() > 0.3,
-                "days_unpatched": r.randint(5, 90),
-                "business_criticality": asset.get("criticality", "medium"),
-                "exploitability": r.choices(["low", "medium", "high"], [30, 40, 30])[0],
-            })
-
-    # Generate user accounts (20-30)
-    for i, emp in enumerate(employees[:r.randint(20, min(30, len(employees)))]):
-        user_accounts.append({
-            "user_id": emp["employee_id"],
-            "username": emp["name"].lower().replace(" ", "."),
-            "user_type": "employee",
-            "name": emp["name"],
-            "status": r.choices(["active", "locked", "disabled"], [85, 10, 5])[0],
-            "locked_at": None,
-            "lock_reason": None,
-            "is_privileged": r.random() < 0.15,
-            "mfa_enabled": r.random() > 0.2,
-            "last_login": g.as_of - timedelta(days=r.randint(0, 7)),
-            "failed_login_count": r.randint(0, 5),
-            "created_at": datetime.now() - timedelta(days=r.randint(30, 730)),
-            "updated_at": datetime.now(),
-        })
-
-    # Add some supplier user accounts
-    for i, supplier in enumerate(suppliers[:r.randint(3, 5)]):
-        user_accounts.append({
-            "user_id": f"SUPP-{i + 1:05d}",
-            "username": f"supplier{i+1}",
-            "user_type": "supplier",
-            "name": f"Supplier {supplier['name'][:20]} User",
-            "status": r.choices(["active", "active", "locked"], [90, 5, 5])[0],
-            "locked_at": None,
-            "lock_reason": None,
-            "is_privileged": False,
-            "mfa_enabled": r.random() > 0.5,
-            "last_login": g.as_of - timedelta(days=r.randint(0, 30)),
-            "failed_login_count": r.randint(0, 3),
-            "created_at": datetime.now() - timedelta(days=r.randint(30, 365)),
-            "updated_at": datetime.now(),
-        })
+                "system_id": sysid, "system_name": name, "site_id": site, "cve_id": cve,
+                "vulnerability_title": title, "cvss_score": cvss, "is_externally_exposed": False,
+                "patch_available": True, "days_unpatched": r.randint(10, 120),
+                "business_criticality": "low", "exploitability": "low"})
 
     return {
         "security_alerts": alerts,
         "vulnerability_scan_findings": findings,
-        "alert_dispositions": dispositions,
-        "auth_logs": auth_logs,
+        "alert_dispositions": [],       # seed/alert_dispositions.csv
+        "auth_logs": logs,
         "user_sessions": sessions,
-        "third_party_connections": connections,
-        "connection_controls": conn_controls,
-        "connection_access_privileges": conn_privileges,
+        "third_party_connections": [],  # seed: ids match integration's CON-9000xx connections
+        "connection_controls": [],
+        "connection_access_privileges": [],
         "unpatched_systems": unpatched,
-        "security_incidents": incidents,
-        "user_accounts": user_accounts,
+        "security_incidents": [],
+        "user_accounts": accounts,
     }

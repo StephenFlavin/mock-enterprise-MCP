@@ -34,8 +34,8 @@ tables:
       cvss_vector: {type: str, desc: "CVSS vector string"}
       is_externally_exposed: {type: bool, desc: "Whether asset is externally accessible"}
       is_exploited_in_wild: {type: bool, desc: "Whether CVE has known public exploits"}
-      is_patched: {type: bool, desc: "Whether patch is available"}
-      patch_available_since: {type: date, desc: "When patch was released"}
+      is_patched: {type: bool, desc: "Whether the patch has been applied"}
+      patch_available_since: {type: date, desc: "When a patch was released"}
       affected_software: {type: str, desc: "Software/version affected"}
       current_version: {type: str, desc: "Current installed version"}
       patched_version: {type: str, desc: "First patched version"}
@@ -51,8 +51,7 @@ tables:
       alert_type: {type: str, desc: "Type of alert this disposition applies to"}
       source_system: {type: str, desc: "Source system"}
       past_disposition: {type: enum, values: [false_positive, benign, incident, unknown], desc: "How past alerts were resolved"}
-      count: {type: int, desc: "Number of past alerts with this disposition"}
-      percentage: {type: float, desc: "Percentage of this type that were false positives"}
+      count: {type: int, desc: "Number of past alerts of this type and source with this disposition"}
       last_occurrence_date: {type: date, desc: "Most recent occurrence"}
 
   auth_logs:
@@ -97,6 +96,7 @@ tables:
       connection_type: {type: enum, values: [supplier, partner, vendor, contractor], desc: "Type of connection"}
       supplier_id: {type: str, desc: "Supplier id if applicable"}
       partner_id: {type: str, desc: "Partner id if applicable"}
+      carrier_id: {type: str, desc: "Carrier id if applicable"}
       primary_purpose: {type: str, desc: "Primary reason for connection"}
       connection_established: {type: date, desc: "When connection was established"}
       connection_status: {type: enum, values: [active, inactive, onboarding, deactivating], desc: "Connection status"}
@@ -170,6 +170,7 @@ tables:
       user_id: {type: str, desc: "User account id"}
       username: {type: str, desc: "Login username"}
       user_type: {type: enum, values: [employee, supplier, partner, contractor], desc: "Type of account"}
+      supplier_id: {type: str, desc: "Supplier the account belongs to, for supplier users"}
       name: {type: str, desc: "User full name"}
       status: {type: enum, values: [active, locked, disabled, suspended], desc: "Account status"}
       locked_at: {type: timestamp, desc: "When account was locked"}
@@ -183,152 +184,179 @@ tables:
 
 tools:
   - name: list_open_security_alerts
-    desc: Open security alerts with severity and asset, ranked by severity then age. Use for daily triage.
-    kind: select
-    from: security_alerts
-    filters:
-      status: {default: open}
-      severity: {}
+    desc: Open security alerts with severity, asset and user, most severe first then newest. Use for daily triage.
+    kind: sql
+    args:
+      status: {default: open, type: enum, values: [open, investigating, resolved, false_positive], desc: "Alert status"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Only this severity"}
       asset_id: {}
-      source_system: {}
-      raised_from: {col: raised_at, op: ">=", default: "-7d"}
-    columns: [alert_id, alert_type, severity, source_system, asset_id, raised_at, description]
-    order: severity
+      alert_type: {desc: "Alert type, e.g. failed_login_spike, data_exfiltration, malware_detected"}
+      raised_from: {type: date, default: "-7d", desc: "Alerts raised on or after"}
+    sql: |
+      SELECT a.alert_id, a.alert_type, a.severity, a.source_system, a.asset_id, a.user_id, a.raised_at,
+             a.description, a.status, a.disposition_reason
+      FROM security_alerts a
+      WHERE ($status IS NULL OR a.status = $status)
+        AND ($severity IS NULL OR a.severity = $severity)
+        AND ($asset_id IS NULL OR a.asset_id = $asset_id)
+        AND ($alert_type IS NULL OR a.alert_type = $alert_type)
+        AND CAST(a.raised_at AS DATE) >= CAST($raised_from AS DATE)
+      ORDER BY CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+               a.raised_at DESC
     limit: 50
     example: {}
 
   - name: list_vulnerability_scan_findings
-    desc: Unpatched vulnerabilities from scanner, ranked by CVSS and external exposure. Use to see what needs patching.
+    desc: Unpatched scanner findings with CVSS, asset, exposure, exploited-in-the-wild flag and age in days. Worst first.
     kind: sql
     args:
-      is_externally_exposed: {type: bool, desc: "Filter to externally exposed (default all)"}
-      min_cvss: {type: float, default: 5.0, desc: "Minimum CVSS score"}
+      asset_id: {}
       site_id: {}
+      is_externally_exposed: {type: bool, desc: "True for externally exposed findings only; omit for all"}
+      is_exploited_in_wild: {type: bool, desc: "True for findings with known exploits only; omit for all"}
+      min_cvss: {type: float, default: 5.0, desc: "Minimum CVSS score"}
     sql: |
-      SELECT f.finding_id, f.asset_id, f.cve_id, f.vulnerability_title, f.cvss_score,
+      SELECT f.finding_id, f.asset_id, f.site_id, f.cve_id, f.vulnerability_title, f.cvss_score,
              f.is_externally_exposed, f.is_exploited_in_wild, f.remediation_status,
-             f.discovered_date, f.patch_available_since
+             f.discovered_date, date_diff('day', f.discovered_date, CAST($as_of AS DATE)) AS age_days,
+             f.patch_available_since,
+             CASE WHEN f.patch_available_since IS NULL THEN NULL
+                  ELSE date_diff('day', f.patch_available_since, CAST($as_of AS DATE)) END AS days_since_patch_available
       FROM vulnerability_scan_findings f
       WHERE f.cvss_score >= $min_cvss
         AND f.remediation_status IN ('unpatched', 'patch_available')
-        AND ($is_externally_exposed IS NULL OR f.is_externally_exposed = $is_externally_exposed)
+        AND ($asset_id IS NULL OR f.asset_id = $asset_id)
         AND ($site_id IS NULL OR f.site_id = $site_id)
-      ORDER BY f.cvss_score DESC, f.is_externally_exposed DESC, f.discovered_date ASC
-    limit: 100
+        AND ($is_externally_exposed IS NULL OR f.is_externally_exposed = $is_externally_exposed)
+        AND ($is_exploited_in_wild IS NULL OR f.is_exploited_in_wild = $is_exploited_in_wild)
+      ORDER BY f.is_exploited_in_wild DESC, f.is_externally_exposed DESC, f.cvss_score DESC, f.discovered_date
+    limit: 50
     example: {}
 
   - name: get_alert_false_positive_history
-    desc: Disposition history of similar alerts; percentage that were false positives. Use to judge false positive likelihood.
+    desc: Past dispositions of similar alerts by type and source, with the false positive percentage. Omit alert_type for all types.
     kind: sql
     args:
-      alert_type: {required: true, desc: "Alert type, e.g. failed_login_spike"}
-      source_system: {desc: "Source system, e.g. siem"}
+      alert_type: {desc: "Alert type, e.g. failed_login_spike, data_exfiltration, malware_detected"}
+      source_system: {desc: "Source system, e.g. siem, endpoint, network"}
     sql: |
       SELECT alert_type, source_system,
-             count(*) FILTER (WHERE past_disposition = 'false_positive') AS false_positive_count,
-             count(*) AS total_count,
-             round(100.0 * count(*) FILTER (WHERE past_disposition = 'false_positive') / count(*), 1) AS false_positive_pct,
-             count(*) FILTER (WHERE past_disposition = 'incident') AS confirmed_incident_count,
+             sum(count) FILTER (WHERE past_disposition = 'false_positive') AS false_positive_count,
+             sum(count) FILTER (WHERE past_disposition = 'benign') AS benign_count,
+             sum(count) FILTER (WHERE past_disposition = 'incident') AS confirmed_incident_count,
+             sum(count) AS total_count,
+             round(100.0 * sum(count) FILTER (WHERE past_disposition = 'false_positive') / sum(count), 1) AS false_positive_pct,
              max(last_occurrence_date) AS most_recent
       FROM alert_dispositions
-      WHERE alert_type = $alert_type
+      WHERE ($alert_type IS NULL OR alert_type = $alert_type)
         AND ($source_system IS NULL OR source_system = $source_system)
       GROUP BY alert_type, source_system
-    limit: 1
-    example: {alert_type: "failed_login_spike"}
+      ORDER BY false_positive_pct DESC
+    limit: 20
+    example: {alert_type: failed_login_spike}
 
   - name: search_auth_logs
-    desc: Authentication events by user, IP, time and result. Use to investigate suspicious logins and access patterns.
+    desc: Authentication events by user, IP, time window and result, newest first. Use to investigate suspicious logins.
     kind: sql
     args:
       user_id: {}
-      username: {}
       source_ip: {}
       result: {type: enum, values: [success, failed, mfa_required, mfa_failed, blocked], desc: "Filter by auth result"}
-      logged_from: {col: timestamp, op: ">=", type: timestamp, default: "-7d", desc: "Events on or after"}
-      system_accessed: {}
+      logged_from: {type: timestamp, default: "-14d", desc: "Events on or after"}
+      logged_to: {type: timestamp, desc: "Events on or before (end of day if only a date is given)"}
+      system_accessed: {desc: "System accessed, e.g. edi_portal, vendor_portal, wms"}
     sql: |
       SELECT log_id, timestamp, user_id, username, source_ip, source_location,
              authentication_method, result, reason, system_accessed, session_id
       FROM auth_logs
       WHERE ($user_id IS NULL OR user_id = $user_id)
-        AND ($username IS NULL OR username = $username)
         AND ($source_ip IS NULL OR source_ip = $source_ip)
         AND ($result IS NULL OR result = $result)
         AND ($system_accessed IS NULL OR system_accessed = $system_accessed)
         AND timestamp >= CAST($logged_from AS TIMESTAMP)
+        AND ($logged_to IS NULL OR timestamp < CAST($logged_to AS TIMESTAMP) + INTERVAL 1 DAY)
       ORDER BY timestamp DESC
     limit: 100
-    example: {system_accessed: "edi_portal"}
+    example: {user_id: SUPP-00001}
 
   - name: get_user_session_history
-    desc: Sessions and actions taken by a user, with data accessed. Use to see what a user touched in a timeframe.
+    desc: Sessions and actions taken by a user account, with systems and record types accessed. Newest first.
     kind: sql
     args:
-      user_id: {required: true, desc: "User account id"}
-      started_from: {col: started_at, op: ">=", type: timestamp, default: "-7d", desc: "Sessions on or after"}
+      user_id: {required: true, desc: "User account id, e.g. SUPP-00001 or EMP-00109"}
+      started_from: {type: timestamp, default: "-14d", desc: "Sessions on or after"}
     sql: |
       SELECT session_id, user_id, username, user_type, started_at, ended_at,
              source_ip, source_location, system_accessed, actions_count,
-             data_accessed_systems, data_viewed_records, is_suspicious
+             data_accessed_systems, data_viewed_records, is_suspicious, block_reason
       FROM user_sessions
       WHERE user_id = $user_id
         AND started_at >= CAST($started_from AS TIMESTAMP)
       ORDER BY started_at DESC
     limit: 50
-    example: {user_id: "SUPP-00001"}
+    example: {user_id: SUPP-00001}
 
   - name: list_controls_in_place_for_connection
-    desc: Existing controls on a third-party connection (MFA, IP allow-list, logging). Use to assess control strength.
+    desc: Controls on third-party connections (MFA, IP allow-list, encryption, logging) and whether each is enabled. Omit connection_id for all.
     kind: sql
     args:
-      connection_id: {required: true, desc: "Connection id"}
+      connection_id: {desc: "Connection id, e.g. CON-900001; omit for all connections"}
+      control_type: {desc: "Control type: mfa, ip_allowlist, data_encryption, logging"}
+      is_enabled: {type: bool, desc: "False to list only controls that are missing"}
     sql: |
-      SELECT connection_id, control_type, control_name, is_enabled,
-             enabled_date, audit_trail, last_verified, effectiveness_rating
-      FROM connection_controls
-      WHERE connection_id = $connection_id
-      ORDER BY is_enabled DESC, effectiveness_rating DESC
-    limit: 20
-    example: {connection_id: "CON-000001"}
+      SELECT c.connection_id, t.connection_name, c.control_type, c.control_name, c.is_enabled,
+             c.enabled_date, c.audit_trail, c.last_verified, c.effectiveness_rating
+      FROM connection_controls c
+      JOIN third_party_connections t ON t.connection_id = c.connection_id
+      WHERE ($connection_id IS NULL OR c.connection_id = $connection_id)
+        AND ($control_type IS NULL OR c.control_type = $control_type)
+        AND ($is_enabled IS NULL OR c.is_enabled = $is_enabled)
+      ORDER BY c.connection_id, c.is_enabled, c.control_type
+    limit: 60
+    example: {connection_id: CON-900001}
 
   - name: get_connection_access_privileges
-    desc: Privileges and data scope of a third-party account. Returns what systems and data it can access.
+    desc: Systems, privilege level and data scope of third-party accounts, admin first. Omit connection_id for all.
     kind: sql
     args:
-      connection_id: {required: true, desc: "Connection id"}
+      connection_id: {desc: "Connection id, e.g. CON-900001; omit for all connections"}
+      privilege_level: {type: enum, values: [read_only, read_write, admin], desc: "Only this access level"}
     sql: |
-      SELECT c.connection_id, c.connection_name, c.privileged_access,
+      SELECT c.connection_id, c.connection_name, c.risk_rating, c.privileged_access,
              p.system_id, p.privilege_level, p.data_scope, p.scope_description,
              p.access_granted_date, p.access_reviewed_date, p.audit_events_enabled
       FROM connection_access_privileges p
       JOIN third_party_connections c ON c.connection_id = p.connection_id
-      WHERE p.connection_id = $connection_id
-      ORDER BY p.privilege_level DESC
-    limit: 20
-    example: {connection_id: "CON-000001"}
+      WHERE ($connection_id IS NULL OR p.connection_id = $connection_id)
+        AND ($privilege_level IS NULL OR p.privilege_level = $privilege_level)
+      ORDER BY p.connection_id,
+               CASE p.privilege_level WHEN 'admin' THEN 1 WHEN 'read_write' THEN 2 ELSE 3 END
+    limit: 60
+    example: {connection_id: CON-900001}
 
   - name: get_unpatched_exposure_by_system
-    desc: Unpatched and externally exposed vulnerabilities per system, ranked by risk. Use for ransomware risk assessment.
+    desc: Per system, count of unpatched and externally exposed CVEs with worst CVSS and criticality. Use for ransomware risk.
     kind: sql
     args:
       site_id: {}
       min_cvss: {type: float, default: 7.0, desc: "Minimum CVSS score"}
+      is_externally_exposed: {type: bool, desc: "True to count only externally exposed CVEs; omit for all"}
     sql: |
       SELECT u.system_id, u.system_name, u.site_id, u.business_criticality,
              count(*) AS total_unpatched_cves,
              count(*) FILTER (WHERE u.is_externally_exposed) AS externally_exposed_count,
+             count(*) FILTER (WHERE u.patch_available) AS patchable_count,
              round(avg(u.cvss_score), 1) AS avg_cvss,
              max(u.cvss_score) AS max_cvss,
-             max(u.days_unpatched) AS days_since_patch_available,
+             max(u.days_unpatched) AS max_days_unpatched,
              string_agg(DISTINCT u.cve_id, '; ') AS cve_list
       FROM unpatched_systems u
       WHERE u.cvss_score >= $min_cvss
-        AND u.patch_available = true
         AND ($site_id IS NULL OR u.site_id = $site_id)
+        AND ($is_externally_exposed IS NULL OR u.is_externally_exposed = $is_externally_exposed)
       GROUP BY u.system_id, u.system_name, u.site_id, u.business_criticality
-      ORDER BY count(*) FILTER (WHERE u.is_externally_exposed) DESC,
-               max(u.cvss_score) DESC, u.business_criticality DESC
+      ORDER BY externally_exposed_count DESC, max_cvss DESC,
+               CASE u.business_criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END
     limit: 50
     example: {}
 
@@ -337,28 +365,28 @@ tools:
     kind: insert
     table: security_incidents
     id_prefix: INC-
-    defaults: {status: open}
+    defaults: {status: open, detected_at: "$as_of"}
     args:
-      alert_ids: {required: true, desc: "Semicolon-separated alert ids"}
+      alert_ids: {required: true, desc: "Semicolon-separated alert ids, e.g. ALT-900002"}
       incident_type: {required: true, desc: "Type: breach, compromise, malware, data_exfil"}
-      severity: {required: true, desc: "Severity: low, medium, high, critical"}
+      severity: {required: true, type: enum, values: [low, medium, high, critical], desc: "Incident severity"}
       description: {required: true, desc: "Incident summary"}
-      detected_at: {type: timestamp, desc: "When detected (default now)"}
-      systems_affected: {desc: "Semicolon-separated systems affected"}
-    example: {alert_ids: "ALT-900001;ALT-900002", incident_type: "data_exfil", severity: "high", description: "Supplier account accessed from unusual IP"}
+      user_involved: {desc: "User account id if known, e.g. SUPP-00001"}
+      systems_affected: {desc: "Semicolon-separated systems affected, e.g. edi_portal;vendor_portal"}
+    example: {alert_ids: "ALT-900002", incident_type: "data_exfil", severity: "critical", description: "Supplier account accessed bank details from unusual location", user_involved: "SUPP-00001", systems_affected: "edi_portal;vendor_portal"}
 
   - name: update_security_alert_status
-    desc: Sets the status of a security alert (e.g. closed as false positive). Returns old and new status.
+    desc: Closes a security alert as resolved or false positive with a reason. Returns old and new status.
     kind: update
     table: security_alerts
-    set: {status: "{status}"}
+    set: {status: "{status}", closed_at: "$as_of"}
     args:
-      status: {required: true, type: enum, values: [investigating, resolved, false_positive], desc: "New status"}
-      disposition_reason: {desc: "Why alert is being closed"}
-    example: {alert_id: "ALT-900001", status: "false_positive", disposition_reason: "Routine batch job from known IP"}
+      status: {required: true, type: enum, values: [resolved, false_positive], desc: "New status"}
+      disposition_reason: {required: true, desc: "Why alert is being closed"}
+    example: {alert_id: "ALT-900006", status: "false_positive", disposition_reason: "User forgot password after leave"}
 
   - name: block_user_account
-    desc: Locks a user account and revokes active sessions. Returns the locked account and reason.
+    desc: Locks a user account and records the reason. Returns the locked account.
     kind: update
     table: user_accounts
     set: {status: locked, locked_at: "$as_of"}

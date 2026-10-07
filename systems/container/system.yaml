@@ -1,22 +1,25 @@
 id: container
 name: Container Visibility Platform
 instructions: >
-  Ocean freight container tracking and port visibility. Vessel positions, ETA updates,
-  port congestion, container routings and contents, and historical disruptions.
-  Container ids look like CONT-000123.
+  Ocean freight container tracking and port visibility for inbound stock. Vessels, containers and their SKU contents,
+  port status and congestion, rail legs, transit and ETA history, past disruptions and costs. Container ids look like
+  CONT-000123, vessels CONT-VESSEL-900001, ports are UN/LOCODEs (NLRTM, ESVLC), sites DC1.
 
 tables:
   vessels:
     key: vessel_id
     cols:
-      vessel_id: {type: str, desc: "Vessel identifier, e.g. CONT-VESSEL-001"}
+      vessel_id: {type: str, desc: "Vessel identifier, e.g. CONT-VESSEL-900001"}
       name: {type: str, desc: Vessel name}
-      current_port: {type: str, desc: "Current port or anchorage"}
+      carrier_id: {type: str, desc: "Operating ocean carrier, e.g. CAR-007"}
+      current_port: {type: str, desc: "Current port or anchorage, or At Sea"}
       berth_status: {type: enum, values: [at_berth, anchored, underway, departed], desc: Berth status}
       current_position: {type: str, desc: "Current position lat/lon"}
-      eta_port: {type: str, desc: "Destination port code"}
-      eta_timestamp: {type: timestamp, desc: "Estimated time of arrival at destination"}
-      eta_berth_timestamp: {type: timestamp, desc: "Estimated berth time (may differ from port arrival)"}
+      eta_port: {type: str, desc: "Next port of call, e.g. NLRTM"}
+      eta_timestamp: {type: timestamp, desc: "Estimated (or original, if overdue) arrival at the port"}
+      eta_berth_timestamp: {type: timestamp, desc: "Estimated berth time; blank when no berth slot is known"}
+      anchored_since: {type: timestamp, desc: "When the vessel started waiting at anchor, if anchored"}
+      delay_days: {type: float, desc: "Days late against the original ETA"}
       container_count: {type: int, desc: "Total containers aboard"}
       updated_at: {type: timestamp, desc: "Last update of vessel position"}
 
@@ -24,25 +27,25 @@ tables:
     key: container_id
     cols:
       container_id: {type: str, desc: "Container identifier, e.g. CONT-000123"}
-      shipment_id: {type: str, desc: "Shipment group identifier"}
-      vessel_id: {type: str, desc: Vessel carrying the container}
-      origin_port: {type: str, desc: "Port of origin, e.g. SHA (Shanghai)"}
-      destination_port: {type: str, desc: "Destination port, e.g. ROT (Rotterdam)"}
-      next_port: {type: str, desc: "Next port (for multi-leg routes)"}
-      route: {type: str, desc: "Route code e.g. China-Europe"}
-      transship_port: {type: str, desc: "Transshipment port if any"}
+      shipment_id: {type: str, desc: "Inbound shipment, e.g. SHP-0000102 (several containers per shipment)"}
+      vessel_id: {type: str, desc: "Vessel carrying the container; blank while only booked"}
+      origin_port: {type: str, desc: "Port of loading, e.g. VNSGN"}
+      destination_port: {type: str, desc: "Port of discharge, e.g. GBFXT"}
+      next_port: {type: str, desc: "Next port on the route (the transshipment port if there is one)"}
+      route: {type: str, desc: "Lane, e.g. Asia-UK"}
+      transship_port: {type: str, desc: "Transshipment port if any, e.g. NLRTM"}
       container_type: {type: enum, values: ["40ft", "20ft"], desc: Container type}
-      status: {type: enum, values: [booked, in_transit, at_port, delayed, diverted], desc: Shipment status}
-      actual_arrival: {type: timestamp, desc: Actual arrival at destination}
+      status: {type: enum, values: [booked, in_transit, at_port, delayed, diverted], desc: Container status}
+      actual_arrival: {type: timestamp, desc: Actual arrival at port}
       destination_site_id: {type: str, desc: "Destination DC, e.g. DC1"}
-      value_gbp: {type: float, desc: "Goods value in GBP"}
+      value_gbp: {type: float, desc: "Goods value in GBP (sum of contents)"}
       booking_date: {type: date, desc: Booking date}
       updated_at: {type: timestamp, desc: Last status update}
 
   container_contents:
     key: [container_id, line_number]
     cols:
-      container_id: {type: str, desc: Container ID}
+      container_id: {type: str, desc: "Container, e.g. CONT-000123"}
       line_number: {type: int, desc: "Line number in container (1-based)"}
       sku: {type: str, desc: "Product SKU"}
       quantity: {type: int, desc: "Number of units"}
@@ -52,43 +55,48 @@ tables:
   port_status:
     key: port_code
     cols:
-      port_code: {type: str, desc: "IATA port code, e.g. ROT (Rotterdam)"}
+      port_code: {type: str, desc: "UN/LOCODE port code, e.g. NLRTM (Rotterdam)"}
       port_name: {type: str, desc: "Port name"}
-      region: {type: str, desc: "Geographic region, e.g. Northern Europe"}
+      region: {type: str, desc: "Geographic region, e.g. Northern Europe, East Asia"}
       status: {type: enum, values: [open, congested, closed, strike], desc: "Current port status"}
-      current_wait_hours: {type: float, desc: "Current average wait time in hours"}
+      status_until: {type: date, desc: "Date the status is expected to end, if known"}
+      current_wait_hours: {type: float, desc: "Current average wait for a berth in hours"}
       congestion_level: {type: enum, values: [low, medium, high, critical], desc: "Congestion level"}
       vessels_waiting: {type: int, desc: "Number of vessels at anchor"}
       avg_dwell_hours: {type: float, desc: "Average port dwell time in hours"}
       status_updated_at: {type: timestamp, desc: "Last status update"}
+      note: {type: text, desc: "Operator notice about the port"}
 
   transit_history:
     key: [route_code, transit_id]
     cols:
-      route_code: {type: str, desc: "Route e.g. China-Europe"}
+      route_code: {type: str, desc: "Lane, e.g. Asia-UK"}
       transit_id: {type: str, desc: "Transit event identifier"}
-      origin_port: {type: str, desc: Origin port code}
-      destination_port: {type: str, desc: Destination port code}
-      planned_transit_days: {type: int, desc: "Planned transit time in days"}
+      origin_port: {type: str, desc: "Port of loading, e.g. CNSHA"}
+      via_port: {type: str, desc: "Port where the cargo was discharged or transshipped, e.g. NLRTM, ESVLC"}
+      destination_port: {type: str, desc: "UK gateway: a UK port, or DIRFT (Daventry rail terminal) for rail routings"}
+      mode_chain: {type: str, desc: "sea+feeder or sea+rail"}
+      planned_transit_days: {type: int, desc: "Planned door-to-gateway transit in days"}
       actual_transit_days: {type: float, desc: "Actual transit time in days"}
       departure_date: {type: date, desc: "Actual departure date"}
       arrival_date: {type: date, desc: "Actual arrival date"}
       delay_days: {type: float, desc: "Days of delay vs plan"}
-      port_dwell_hours: {type: float, desc: "Time spent at destination port in hours"}
-      containers_count: {type: int, desc: "Containers in transit"}
+      port_dwell_hours: {type: float, desc: "Time spent at the via port in hours"}
+      containers_count: {type: int, desc: "Containers in the movement"}
 
   disruptions:
     key: disruption_id
     cols:
-      disruption_id: {type: str, desc: "Disruption event ID, e.g. DISR-000001"}
+      disruption_id: {type: str, desc: "Disruption event ID, e.g. DISR-000011"}
       event_type: {type: enum, values: [weather, strike, closure, congestion, mechanical, geopolitical], desc: "Type of disruption"}
-      affected_port: {type: str, desc: "Primary affected port"}
+      affected_port: {type: str, desc: "Primary affected port, e.g. NLRTM"}
       region: {type: str, desc: "Geographic region"}
-      start_date: {type: date, desc: "Start date of disruption"}
-      end_date: {type: date, desc: "End date of disruption"}
+      start_date: {type: date, desc: "Start date (future for scheduled events)"}
+      end_date: {type: date, desc: "End date (future for ongoing or scheduled events)"}
       duration_days: {type: int, desc: "Duration in days"}
-      containers_affected: {type: int, desc: "Number of containers affected"}
-      description: {type: str, desc: "Description of disruption"}
+      containers_affected: {type: int, desc: "Number of containers affected or expected to be"}
+      description: {type: text, desc: "Description of disruption"}
+      lead_time_impact_days: {type: float, desc: "Extra lead-time days measured for shipments hit by a past weather event"}
 
   disruption_costs:
     key: cost_id
@@ -104,339 +112,467 @@ tables:
     key: segment_id
     cols:
       segment_id: {type: str, desc: "Rail segment identifier"}
-      origin_port: {type: str, desc: "Starting port, e.g. Valencia (VAL)"}
-      destination_port: {type: str, desc: "Destination port or inland terminal"}
+      origin_port: {type: str, desc: "Starting port, e.g. ESVLC (Valencia)"}
+      destination_port: {type: str, desc: "Inland terminal, e.g. DIRFT (Daventry) or DEDUI (Duisburg)"}
       region: {type: str, desc: "Route region"}
       transit_count: {type: int, desc: "Number of transits tracked"}
       on_time_count: {type: int, desc: "Transits completed on time"}
       on_time_pct: {type: float, desc: "On-time percentage"}
       avg_delay_hours: {type: float, desc: "Average delay when late in hours"}
       reliability_score: {type: float, desc: "Reliability score 0-100"}
+      avg_transit_hours: {type: float, desc: "Average rail transit time in hours"}
 
   port_dwell_history:
     key: [port_code, dwell_id]
     cols:
-      port_code: {type: str, desc: Port code}
+      port_code: {type: str, desc: "Port, e.g. NLRTM"}
       dwell_id: {type: str, desc: "Dwell history ID"}
-      arrival_date: {type: date, desc: "Arrival date at port"}
-      dwell_hours: {type: float, desc: "Hours spent at port"}
-      vessel_count: {type: int, desc: "Vessels at port that day"}
-      congestion_status: {type: enum, values: [low, medium, high], desc: "Congestion at time of visit"}
+      arrival_date: {type: date, desc: "Week start (Monday) the average applies to"}
+      dwell_hours: {type: float, desc: "Average hours spent at port that week"}
+      vessel_count: {type: int, desc: "Vessels at port that week (typical per day)"}
+      congestion_status: {type: enum, values: [low, medium, high], desc: "Congestion at the time"}
 
   eta_predictions:
     key: prediction_id
     cols:
       prediction_id: {type: str, desc: "ETA prediction record ID"}
-      vessel_id: {type: str, desc: Vessel ID}
-      route: {type: str, desc: Route code}
-      prediction_date: {type: date, desc: "Date prediction was made"}
+      voyage_id: {type: str, desc: "Voyage identifier"}
+      carrier_id: {type: str, desc: "Carrier that issued the ETA, e.g. CAR-006"}
+      route: {type: str, desc: "Lane, e.g. Asia-UK"}
+      port_code: {type: str, desc: "Arrival port the ETA was for"}
+      prediction_date: {type: date, desc: "Date the carrier gave the ETA"}
       predicted_eta: {type: timestamp, desc: "Predicted arrival time"}
       actual_eta: {type: timestamp, desc: "Actual arrival time"}
-      eta_accuracy_hours: {type: float, desc: "Difference between predicted and actual in hours"}
+      horizon_days: {type: int, desc: "Days before arrival the ETA was given"}
+      eta_accuracy_hours: {type: float, desc: "Actual minus predicted arrival in hours; positive means later than predicted"}
+
+  option_rates:
+    key: option_type
+    cols:
+      option_type: {type: enum, values: [wait, transship, air], desc: "Recovery option"}
+      base_cost_per_container_gbp: {type: float, desc: "Fixed cost per container"}
+      cost_per_day_per_container_gbp: {type: float, desc: "Daily demurrage and detention per container"}
+      cost_per_unit_gbp: {type: float, desc: "Cost per unit moved (air freight)"}
+      share_of_stock_pct: {type: float, desc: "Share of the container's units the option moves quickly"}
+      transit_days: {type: int, desc: "Days to delivery once the option is chosen"}
+      basis: {type: text, desc: "Where the rate comes from"}
 
 tools:
   - name: list_vessels_and_containers_in_transit
-    desc: Vessels currently at sea with container counts, position, ETA and berth status. Use to see what's exposed.
-    kind: select
-    from: vessels
-    filters:
+    desc: Vessels not yet departed their port of call, with container count, goods value, position, ETA and berth status, soonest ETA first. Use to see what is exposed.
+    kind: sql
+    args:
       berth_status: {}
       eta_port: {}
-    columns: [vessel_id, name, current_position, current_port, berth_status, eta_timestamp, container_count]
-    order: eta_timestamp
-    limit: 50
-    example: {berth_status: "underway"}
+      carrier_id: {}
+      eta_to: {type: date, desc: "Only vessels due by this date, e.g. +14d (includes overdue vessels)"}
+    sql: |
+      SELECT v.vessel_id, v.name, v.carrier_id, v.berth_status, v.current_port, v.current_position, v.eta_port,
+             v.eta_timestamp, v.eta_berth_timestamp, v.container_count, round(sum(c.value_gbp)) AS total_value_gbp
+      FROM vessels v LEFT JOIN container_shipments c ON c.vessel_id = v.vessel_id
+      WHERE v.berth_status <> 'departed'
+        AND ($berth_status IS NULL OR v.berth_status = $berth_status)
+        AND ($eta_port IS NULL OR v.eta_port = $eta_port)
+        AND ($carrier_id IS NULL OR v.carrier_id = $carrier_id)
+        AND ($eta_to IS NULL OR v.eta_timestamp < CAST($eta_to AS DATE) + INTERVAL 1 DAY)
+      GROUP BY ALL
+      ORDER BY v.eta_timestamp
+    limit: 100
+    example: {eta_to: "+14d"}
 
   - name: get_port_status_and_congestion
-    desc: Port status (open/closed), congestion level, wait times and vessel queue. Use to assess port risk.
-    kind: select
-    from: port_status
-    filters:
+    desc: Port status (open, congested, closed, strike), notices, wait times and any disruption events due within the look-ahead. Worst ports first. Use to assess port risk.
+    kind: sql
+    args:
       port_code: {}
+      region: {type: str, desc: "Region words, e.g. Northern Europe"}
       status: {}
-      region: {}
-    columns: [port_code, port_name, status, congestion_level, current_wait_hours, vessels_waiting, avg_dwell_hours]
-    order: congestion_level
-    limit: 50
-    example: {port_code: "ROT"}
+      days_ahead: {type: int, default: 14, desc: "Look-ahead window in days for scheduled strikes, closures and weather"}
+    sql: |
+      SELECT p.port_code, p.port_name, p.region, p.status, p.status_until, p.congestion_level,
+             p.current_wait_hours, p.vessels_waiting, p.note,
+             (SELECT string_agg(d.event_type || ' ' || CAST(d.start_date AS VARCHAR) || ' to ' || CAST(d.end_date AS VARCHAR) || ': ' || d.description, '; ')
+                FROM disruptions d
+               WHERE d.affected_port = p.port_code AND d.end_date >= CAST($as_of AS DATE)
+                 AND d.start_date <= CAST($as_of AS DATE) + $days_ahead * INTERVAL 1 DAY) AS events_in_window
+      FROM port_status p
+      WHERE ($port_code IS NULL OR p.port_code = $port_code)
+        AND ($status IS NULL OR p.status = $status)
+        AND ($region IS NULL OR lower(p.region) LIKE '%' || lower($region) || '%')
+      ORDER BY CASE p.status WHEN 'closed' THEN 0 WHEN 'strike' THEN 1 WHEN 'congested' THEN 2 ELSE 3 END,
+               CASE p.congestion_level WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               p.current_wait_hours DESC
+    limit: 30
+    example: {region: "Northern Europe"}
 
   - name: list_containers_on_vessel
-    desc: All containers aboard a vessel with destination ports and statuses. Use to assess which containers can be rerouted.
+    desc: All containers aboard a vessel with route, destination DC, goods value and status, highest value first. Use to assess which containers can be rerouted.
     kind: select
     from: container_shipments
     filters:
       vessel_id: {required: true}
       status: {}
-    columns: [container_id, shipment_id, origin_port, destination_port, destination_site_id, container_type, value_gbp, status]
-    order: destination_port
+    columns: [container_id, shipment_id, origin_port, transship_port, destination_port, destination_site_id, container_type, value_gbp, status]
+    order: value_gbp DESC
     limit: 200
-    example: {vessel_id: "CONT-VESSEL-001"}
+    example: {vessel_id: "CONT-VESSEL-900001"}
 
   - name: get_container_sku_contents
-    desc: SKU and quantity breakdown of a container with unit costs. Use to assess value and store priority.
-    kind: select
-    from: container_contents
-    filters:
-      container_id: {required: true}
-    columns: [container_id, sku, quantity, unit_cost_gbp, total_value_gbp]
-    order: total_value_gbp DESC
-    limit: 100
+    desc: SKU lines of one container, or of every container on a vessel, with product name, category, quantity and value. Use to assess value and store priority.
+    kind: sql
+    args:
+      container_id: {}
+      vessel_id: {}
+      sku: {}
+    sql: |
+      SELECT cc.container_id, c.destination_site_id, cc.sku, pr.name AS product_name, pr.category,
+             cc.quantity, cc.unit_cost_gbp, cc.total_value_gbp
+      FROM container_contents cc
+      JOIN container_shipments c ON c.container_id = cc.container_id
+      LEFT JOIN master.products pr ON pr.sku = cc.sku
+      WHERE ($container_id IS NULL OR cc.container_id = $container_id)
+        AND ($vessel_id IS NULL OR c.vessel_id = $vessel_id)
+        AND ($sku IS NULL OR cc.sku = $sku)
+      ORDER BY cc.total_value_gbp DESC, cc.container_id, cc.sku
+    limit: 300
     example: {container_id: "CONT-000001"}
 
   - name: get_container_value
-    desc: Total goods value per container from contents. Use to prioritise high-value shipments.
+    desc: Goods value per container from its contents, highest first. Filter by container, vessel or a port on its route. Use to prioritise high-value boxes.
     kind: sql
     args:
-      container_id: {required: true}
+      container_id: {}
+      vessel_id: {}
+      port_code: {desc: "Any port on the container's route: loading, transshipment or discharge"}
+      destination_site_id: {}
     sql: |
-      SELECT c.container_id, SUM(cc.total_value_gbp) AS total_value_gbp, COUNT(*) AS line_count, COUNT(DISTINCT cc.sku) AS sku_count
-      FROM container_contents cc
-      JOIN container_shipments c USING (container_id)
-      WHERE c.container_id = $container_id
-      GROUP BY c.container_id
-    limit: 1
-    example: {container_id: "CONT-000001"}
+      SELECT c.container_id, c.vessel_id, c.destination_port, c.destination_site_id, c.status,
+             round(sum(cc.total_value_gbp), 2) AS total_value_gbp, sum(cc.quantity) AS units,
+             count(*) AS line_count, count(DISTINCT cc.sku) AS sku_count
+      FROM container_shipments c JOIN container_contents cc ON cc.container_id = c.container_id
+      WHERE ($container_id IS NULL OR c.container_id = $container_id)
+        AND ($vessel_id IS NULL OR c.vessel_id = $vessel_id)
+        AND ($port_code IS NULL OR $port_code IN (c.origin_port, c.transship_port, c.destination_port))
+        AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
+      GROUP BY ALL
+      ORDER BY total_value_gbp DESC, c.container_id
+    limit: 25
+    example: {vessel_id: "CONT-VESSEL-900001"}
 
   - name: get_vessel_position_and_status
-    desc: Vessel location, ETA to destination, berth status and delays. Use to assess urgency.
+    desc: Vessel location, ETA, berth ETA, berth status, how long it has been anchored and days late. Use to assess urgency.
     kind: select
     from: vessels
     filters:
       vessel_id: {required: true}
-    columns: [vessel_id, name, current_position, current_port, berth_status, eta_port, eta_timestamp, eta_berth_timestamp, updated_at]
+    columns: [vessel_id, name, carrier_id, current_position, current_port, berth_status, eta_port, eta_timestamp, eta_berth_timestamp, anchored_since, delay_days, container_count, updated_at]
     limit: 1
-    example: {vessel_id: "CONT-VESSEL-001"}
+    example: {vessel_id: "CONT-VESSEL-900001"}
 
   - name: list_inbound_containers_via_port
-    desc: Inbound containers routed through a specific port (transship or destination). Use to assess port closure impact.
+    desc: Containers whose route discharges or transships at a port, with units, product categories, destination DC, value and vessel ETA. Use to assess a port closure.
     kind: sql
     args:
-      port_code: {required: true}
-      status: {type: str, desc: "Container status filter, e.g. in_transit"}
+      port_code: {desc: "Port the containers call at, e.g. NLRTM"}
+      region: {type: str, desc: "Alternative to port_code: any port in this region, e.g. Northern Europe"}
+      status: {type: str, desc: "Container status filter, e.g. delayed"}
+      destination_site_id: {}
     sql: |
-      SELECT c.container_id, c.shipment_id, c.vessel_id, c.origin_port, c.destination_port,
-             c.transship_port, c.route, c.destination_site_id, c.status, c.value_gbp, c.container_type
+      SELECT c.container_id, c.shipment_id, c.vessel_id, c.origin_port, c.transship_port, c.destination_port,
+             c.destination_site_id, c.status, c.value_gbp, x.units, x.categories, v.eta_timestamp
       FROM container_shipments c
-      WHERE ($port_code IS NULL OR c.destination_port = $port_code OR c.next_port = $port_code OR c.transship_port = $port_code)
+      LEFT JOIN vessels v ON v.vessel_id = c.vessel_id
+      LEFT JOIN (SELECT cc.container_id, sum(cc.quantity) AS units, string_agg(DISTINCT pr.category, ', ') AS categories
+                 FROM container_contents cc LEFT JOIN master.products pr ON pr.sku = cc.sku
+                 GROUP BY cc.container_id) x ON x.container_id = c.container_id
+      WHERE ($port_code IS NULL OR $port_code IN (c.transship_port, c.destination_port, c.next_port))
+        AND ($region IS NULL OR EXISTS (SELECT 1 FROM port_status ps
+                                        WHERE lower(ps.region) LIKE '%' || lower($region) || '%'
+                                          AND ps.port_code IN (c.transship_port, c.destination_port, c.next_port)))
         AND ($status IS NULL OR c.status = $status)
+        AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
       ORDER BY c.value_gbp DESC, c.container_id
-    limit: 200
-    example: {port_code: "ROT"}
+    limit: 300
+    example: {port_code: "NLRTM"}
 
   - name: list_shipments_through_port
-    desc: Shipments routing through a port (inbound to our DC). Use to trace port impact on DC deliveries.
+    desc: Inbound shipments (grouped containers) loading at, transshipping at or discharging at a port, with DC, value, units and ETA. Use to trace a port's impact on DC deliveries.
     kind: sql
     args:
-      port_code: {required: true}
+      port_code: {desc: "Port on the route: loading, transshipment or discharge, e.g. VNSGN"}
+      status: {type: str, desc: "Container status filter, e.g. booked, in_transit, delayed"}
+      destination_site_id: {}
     sql: |
-      SELECT c.container_id, c.shipment_id, c.vessel_id, c.origin_port, c.destination_port,
-             c.transship_port, c.destination_site_id, c.status, c.value_gbp, c.booking_date
+      SELECT c.shipment_id, c.origin_port, c.transship_port, c.destination_port, c.destination_site_id, c.status,
+             CASE WHEN c.origin_port = $port_code THEN 'loading' WHEN c.transship_port = $port_code THEN 'transshipment' ELSE 'discharge' END AS port_role,
+             count(*) AS containers, round(sum(c.value_gbp)) AS value_gbp, sum(x.units) AS units,
+             min(v.eta_timestamp) AS vessel_eta, min(c.booking_date) AS booking_date
       FROM container_shipments c
-      WHERE (c.destination_port = $port_code OR c.next_port = $port_code OR c.transship_port = $port_code)
-        AND c.status IN ('in_transit', 'at_port', 'delayed')
-      ORDER BY c.destination_site_id, c.updated_at DESC
+      LEFT JOIN vessels v ON v.vessel_id = c.vessel_id
+      LEFT JOIN (SELECT container_id, sum(quantity) AS units FROM container_contents GROUP BY container_id) x ON x.container_id = c.container_id
+      WHERE $port_code IN (c.origin_port, c.transship_port, c.destination_port, c.next_port)
+        AND ($status IS NULL OR c.status = $status)
+        AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
+      GROUP BY ALL
+      ORDER BY c.destination_site_id, vessel_eta
     limit: 200
-    example: {port_code: "ROT"}
+    example: {port_code: "VNSGN"}
 
   - name: list_shipments_through_affected_ports
-    desc: Shipments routed through ports currently affected by disruptions. Use to identify exposed containers.
+    desc: Shipments routed through ports that are congested, closed, on strike or have a disruption event due, with value, DC and ETA. Use to identify exposed cargo.
     kind: sql
-    args: []
+    args:
+      port_code: {desc: "Limit to one affected port, e.g. NLRTM"}
+      destination_site_id: {}
+      days_ahead: {type: int, default: 14, desc: "Look-ahead window in days for scheduled events"}
     sql: |
-      SELECT DISTINCT c.container_id, c.shipment_id, c.vessel_id, c.destination_port, c.destination_site_id,
-             c.status, c.value_gbp, d.event_type, d.description, p.congestion_level
+      WITH aff AS (
+        SELECT p.port_code, p.status AS port_state, p.congestion_level,
+               (SELECT string_agg(d.event_type || ' ' || CAST(d.start_date AS VARCHAR) || ' to ' || CAST(d.end_date AS VARCHAR), '; ')
+                  FROM disruptions d
+                 WHERE d.affected_port = p.port_code AND d.end_date >= CAST($as_of AS DATE)
+                   AND d.start_date <= CAST($as_of AS DATE) + $days_ahead * INTERVAL 1 DAY) AS events
+        FROM port_status p)
+      SELECT c.shipment_id, c.route, c.origin_port, c.transship_port, c.destination_port, c.destination_site_id, c.status,
+             count(*) AS containers, round(sum(c.value_gbp)) AS value_gbp, min(v.eta_timestamp) AS vessel_eta,
+             string_agg(DISTINCT a.port_code || ' (' || CASE WHEN a.port_state <> 'open' THEN a.port_state || ', ' || a.congestion_level || ' congestion' ELSE 'open' END
+                        || coalesce(', ' || a.events, '') || ')', '; ') AS affected_ports
       FROM container_shipments c
-      LEFT JOIN port_status p ON (c.destination_port = p.port_code OR c.transship_port = p.port_code OR c.next_port = p.port_code)
-      LEFT JOIN disruptions d ON p.port_code = d.affected_port AND d.end_date >= CAST($as_of AS DATE)
-      WHERE p.status IN ('closed', 'strike', 'congested') OR d.disruption_id IS NOT NULL
-      ORDER BY c.value_gbp DESC
+      LEFT JOIN vessels v ON v.vessel_id = c.vessel_id
+      JOIN aff a ON a.port_code IN (c.origin_port, c.transship_port, c.destination_port)
+      WHERE (a.port_state <> 'open' OR a.events IS NOT NULL)
+        AND ($port_code IS NULL OR a.port_code = $port_code)
+        AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
+      GROUP BY c.shipment_id, c.route, c.origin_port, c.transship_port, c.destination_port, c.destination_site_id, c.status
+      ORDER BY value_gbp DESC
     limit: 200
     example: {}
 
   - name: get_port_congestion_status
-    desc: Current port congestion and waiting times. Use to assess delay risk and alternative routes.
+    desc: Current congestion, berth wait hours, vessels at anchor and dwell for ports, longest wait first. Filter by port, region or minimum wait.
     kind: select
     from: port_status
     filters:
       port_code: {}
-      region: {}
+      region: {op: like, desc: "Region words, e.g. Northern Europe, Southern Europe, East Asia"}
       status: {}
-    columns: [port_code, port_name, status, congestion_level, current_wait_hours, vessels_waiting, avg_dwell_hours, status_updated_at]
-    limit: 50
-    example: {port_code: "ROT"}
+      congestion_level: {}
+      min_wait_hours: {col: current_wait_hours, op: ">=", desc: "Only ports with at least this berth wait in hours"}
+    columns: [port_code, port_name, region, status, congestion_level, current_wait_hours, vessels_waiting, avg_dwell_hours, note, status_updated_at]
+    order: current_wait_hours DESC
+    limit: 30
+    example: {region: "Northern Europe"}
 
   - name: get_transit_time_history_by_route
-    desc: Historic transit times by route including dwell time. Use to compare planned vs actual.
-    kind: select
-    from: transit_history
-    filters:
-      route_code: {required: true}
+    desc: Historic transit times by lane and routing port, with planned vs actual days, delay, on-time share and port dwell. Use to compare routings such as via Rotterdam or Valencia plus rail.
+    kind: sql
+    args:
+      route_code: {type: str, desc: "Lane, e.g. Asia-UK"}
+      via_port: {type: str, desc: "Discharge or transshipment port, e.g. NLRTM, DEHAM, ESVLC, GRPIR"}
       origin_port: {}
-      destination_port: {}
-    columns: [route_code, planned_transit_days, actual_transit_days, delay_days, port_dwell_hours, containers_count, departure_date, arrival_date]
-    order: departure_date DESC
-    limit: 50
-    example: {route_code: "China-Europe"}
+      date_from: {type: date, default: "-180d", desc: "Earliest departure date"}
+    sql: |
+      SELECT t.route_code, t.via_port, t.mode_chain, t.destination_port, count(*) AS transits,
+             round(avg(t.planned_transit_days), 1) AS avg_planned_days, round(avg(t.actual_transit_days), 1) AS avg_actual_days,
+             round(avg(t.delay_days), 1) AS avg_delay_days, round(max(t.delay_days), 1) AS max_delay_days,
+             round(100.0 * count(*) FILTER (WHERE t.delay_days <= 2) / count(*), 0) AS pct_within_2_days,
+             round(avg(t.port_dwell_hours), 0) AS avg_port_dwell_hours
+      FROM transit_history t
+      WHERE ($route_code IS NULL OR lower(t.route_code) = lower($route_code))
+        AND ($via_port IS NULL OR t.via_port = $via_port)
+        AND ($origin_port IS NULL OR t.origin_port = $origin_port)
+        AND t.departure_date >= CAST($date_from AS DATE)
+      GROUP BY ALL
+      ORDER BY t.route_code, avg_delay_days
+    limit: 30
+    example: {route_code: "Asia-UK"}
+
+  - name: get_rail_leg_reliability
+    desc: Rail legs from ports to inland terminals with on-time share, average delay when late, transit hours and reliability score. Use to compare rail options such as Valencia or Piraeus to Daventry (DIRFT).
+    kind: select
+    from: rail_segments
+    filters:
+      origin_port: {}
+      destination_port: {op: like, desc: "Inland terminal, e.g. DIRFT (Daventry) or DEDUI (Duisburg)"}
+    columns: [segment_id, origin_port, destination_port, transit_count, on_time_pct, avg_delay_hours, avg_transit_hours, reliability_score]
+    order: on_time_pct DESC
+    limit: 20
+    example: {origin_port: "ESVLC"}
 
   - name: get_port_dwell_time_history
-    desc: Port dwell time history by congestion level. Use to estimate current dwell based on congestion.
+    desc: Weekly average dwell hours and congestion at a port, newest first. Use to see whether dwell is rising and to estimate current dwell from congestion.
     kind: select
     from: port_dwell_history
     filters:
       port_code: {required: true}
       congestion_status: {}
+      date_from: {col: arrival_date, op: ">=", default: "-120d", desc: "Earliest week"}
     columns: [port_code, arrival_date, dwell_hours, vessel_count, congestion_status]
     order: arrival_date DESC
-    limit: 50
-    example: {port_code: "ROT"}
+    limit: 30
+    example: {port_code: "NLRTM"}
 
   - name: get_carrier_eta_update_accuracy
-    desc: Accuracy of carrier ETA updates by route. Poor accuracy indicates where estimates need adjustment.
+    desc: "Accuracy of carriers' ETA updates by lane and carrier, worst first: share within 24h, average error and lateness. Use to find where estimates go wrong."
     kind: sql
     args:
-      route: {type: str, desc: "Route code, e.g. Asia-UK"}
+      route: {type: str, desc: "Lane, e.g. Asia-UK"}
+      carrier_id: {}
+      date_from: {type: date, default: "-90d", desc: "Earliest ETA prediction date"}
     sql: |
-      SELECT p.route, COUNT(*) AS total_predictions,
-             COUNT(*) FILTER (WHERE ABS(p.eta_accuracy_hours) <= 24) AS within_1day,
-             ROUND(100.0 * COUNT(*) FILTER (WHERE ABS(p.eta_accuracy_hours) <= 24) / COUNT(*), 1) AS accuracy_pct,
-             ROUND(AVG(ABS(p.eta_accuracy_hours)), 1) AS avg_error_hours,
-             ROUND(MAX(p.eta_accuracy_hours), 1) AS max_delay_hours
-      FROM eta_predictions p
-      WHERE ($route IS NULL OR p.route = $route)
-      GROUP BY p.route
+      SELECT p.route, p.carrier_id, ca.name AS carrier_name, count(*) AS predictions,
+             round(100.0 * count(*) FILTER (WHERE abs(p.eta_accuracy_hours) <= 24) / count(*), 1) AS accuracy_pct,
+             round(avg(abs(p.eta_accuracy_hours)), 1) AS avg_error_hours,
+             round(avg(p.eta_accuracy_hours), 1) AS avg_hours_later_than_predicted,
+             round(max(p.eta_accuracy_hours), 1) AS max_hours_late
+      FROM eta_predictions p LEFT JOIN master.carriers ca ON ca.carrier_id = p.carrier_id
+      WHERE ($route IS NULL OR lower(p.route) = lower($route))
+        AND ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+        AND p.prediction_date >= CAST($date_from AS DATE)
+      GROUP BY ALL
       ORDER BY accuracy_pct ASC
     limit: 20
     example: {route: "Asia-UK"}
 
-  - name: get_rail_leg_reliability
-    desc: Reliability of rail legs by on-time percentage and average delay. Use to compare rail routes.
-    kind: select
-    from: rail_segments
-    filters:
-      origin_port: {}
-      destination_port: {}
-    columns: [segment_id, origin_port, destination_port, on_time_pct, avg_delay_hours, reliability_score, transit_count]
-    order: on_time_pct DESC
-    limit: 20
-    example: {origin_port: "VAL"}
-
   - name: get_historical_disruption_durations
-    desc: Durations of past comparable disruptions. Use to estimate current delays.
+    desc: Past disruptions with type, port, duration and containers affected, newest first, plus average duration for the type. Use to estimate how long a current event may last.
     kind: sql
     args:
-      event_type: {type: str, desc: "Disruption type: weather, strike, closure, etc."}
-      region: {}
+      event_type: {type: enum, values: [weather, strike, closure, congestion, mechanical, geopolitical], desc: "Disruption type"}
+      region: {type: str, desc: "Region words, e.g. Northern Europe, East Asia"}
+      affected_port: {}
     sql: |
-      SELECT disruption_id, event_type, affected_port, region, start_date, end_date,
-             duration_days, containers_affected, description
-      FROM disruptions
-      WHERE ($event_type IS NULL OR event_type = $event_type)
-        AND ($region IS NULL OR region = $region)
-      ORDER BY start_date DESC
+      SELECT d.disruption_id, d.event_type, d.affected_port, d.region, d.start_date, d.end_date, d.duration_days,
+             d.containers_affected, round(avg(d.duration_days) OVER (PARTITION BY d.event_type), 1) AS avg_duration_days_for_type,
+             d.description
+      FROM disruptions d
+      WHERE d.end_date < CAST($as_of AS DATE)
+        AND ($event_type IS NULL OR d.event_type = $event_type)
+        AND ($region IS NULL OR lower(d.region) LIKE '%' || lower($region) || '%')
+        AND ($affected_port IS NULL OR d.affected_port = $affected_port)
+      ORDER BY d.start_date DESC
     limit: 50
     example: {event_type: "weather"}
 
   - name: get_historical_weather_disruption_lead_times
-    desc: Past lead-time impact of weather events on ports. Use to forecast production delays.
+    desc: Past weather events by port with measured extra lead-time days, transits hit and their average delay. Use to forecast how far weather will push out lead times.
     kind: sql
     args:
-      region: {type: str, desc: "Geographic region, e.g. Southeast Asia"}
+      region: {type: str, desc: "Region words, e.g. East Asia, Southeast Asia, South Asia"}
+      affected_port: {}
     sql: |
       SELECT d.disruption_id, d.affected_port, d.region, d.start_date, d.duration_days, d.description,
-             COUNT(th.transit_id) AS transits_count,
-             COALESCE(ROUND(AVG(th.delay_days), 1), 2.5) AS avg_route_delay_days
+             d.lead_time_impact_days AS extra_lead_time_days, count(t.transit_id) AS transits_hit,
+             round(avg(t.delay_days), 1) AS avg_delay_days_of_transits_hit
       FROM disruptions d
-      LEFT JOIN transit_history th ON (CAST(d.start_date AS DATE) <= th.arrival_date AND th.arrival_date <= CAST(d.end_date AS DATE))
-      WHERE d.event_type = 'weather'
-        AND ($region IS NULL OR d.region = $region)
-      GROUP BY d.disruption_id, d.affected_port, d.region, d.start_date, d.duration_days, d.description
+      LEFT JOIN transit_history t ON (t.origin_port = d.affected_port OR t.via_port = d.affected_port)
+                                 AND t.departure_date BETWEEN d.start_date AND d.end_date
+      WHERE d.event_type = 'weather' AND d.end_date < CAST($as_of AS DATE)
+        AND ($region IS NULL OR lower(d.region) LIKE '%' || lower($region) || '%')
+        AND ($affected_port IS NULL OR d.affected_port = $affected_port)
+      GROUP BY d.disruption_id, d.affected_port, d.region, d.start_date, d.duration_days, d.description, d.lead_time_impact_days
       ORDER BY d.start_date DESC
-    limit: 50
-    example: {region: "Southeast Asia"}
+    limit: 30
+    example: {region: "East Asia"}
 
   - name: get_past_disruption_costs
-    desc: Costs of previous disruptions by type. Use to estimate cost of current risks.
+    desc: Costs of previous disruptions by cost type (demurrage, detention, air freight, transshipment) with per-event totals, biggest first. Use to estimate the cost of a current risk.
     kind: sql
     args:
       disruption_id: {}
+      event_type: {type: enum, values: [weather, strike, closure, congestion, mechanical, geopolitical], desc: "Disruption type"}
+      affected_port: {}
     sql: |
-      SELECT dc.disruption_id, d.event_type, d.affected_port, d.region, d.description,
-             dc.cost_type, SUM(dc.cost_gbp) AS total_cost_gbp,
-             SUM(dc.containers_affected) AS containers_affected,
-             ROUND(AVG(dc.cost_per_container_gbp), 2) AS avg_cost_per_container_gbp
-      FROM disruption_costs dc
-      JOIN disruptions d USING (disruption_id)
+      SELECT dc.disruption_id, d.event_type, d.affected_port, d.region, d.start_date, d.description,
+             dc.cost_type, sum(dc.cost_gbp) AS cost_gbp, sum(dc.containers_affected) AS containers_affected,
+             round(avg(dc.cost_per_container_gbp), 2) AS cost_per_container_gbp,
+             sum(sum(dc.cost_gbp)) OVER (PARTITION BY dc.disruption_id) AS disruption_total_gbp
+      FROM disruption_costs dc JOIN disruptions d ON d.disruption_id = dc.disruption_id
       WHERE ($disruption_id IS NULL OR dc.disruption_id = $disruption_id)
-      GROUP BY dc.disruption_id, d.event_type, d.affected_port, d.region, d.description, dc.cost_type
-      ORDER BY total_cost_gbp DESC
-    limit: 50
-    example: {}
+        AND ($event_type IS NULL OR d.event_type = $event_type)
+        AND ($affected_port IS NULL OR d.affected_port = $affected_port)
+      GROUP BY dc.disruption_id, d.event_type, d.affected_port, d.region, d.start_date, d.description, dc.cost_type
+      ORDER BY disruption_total_gbp DESC, cost_gbp DESC
+    limit: 60
+    example: {event_type: "congestion"}
 
   - name: get_port_exposure_by_region
-    desc: Port volumes by region for current in-transit containers. Use to assess geographic risk.
+    desc: In-flight containers by region and port, counting each container at its loading, transshipment and discharge port, with vessels and goods value. Use to assess geographic risk.
     kind: sql
     args:
-      status: {type: str, desc: "Container status, default in_transit,at_port"}
+      region: {type: str, desc: "Region words, e.g. East Asia, Southeast Asia, South Asia"}
+      status: {type: str, desc: "Container status filter, e.g. in_transit"}
     sql: |
-      SELECT p.region, COUNT(DISTINCT c.container_id) AS container_count,
-             COUNT(DISTINCT c.vessel_id) AS vessel_count,
-             SUM(c.value_gbp) AS total_value_gbp,
-             ROUND(AVG(c.value_gbp), 2) AS avg_value_per_container_gbp
-      FROM container_shipments c
-      JOIN port_status p ON c.destination_port = p.port_code
-      WHERE ($status IS NULL OR c.status IN ('in_transit', 'at_port'))
-      GROUP BY p.region
-      ORDER BY total_value_gbp DESC
+      WITH legs AS (
+        SELECT container_id, vessel_id, value_gbp, status, origin_port AS port_code, 'loading' AS role FROM container_shipments
+        UNION ALL SELECT container_id, vessel_id, value_gbp, status, transship_port, 'transshipment' FROM container_shipments WHERE transship_port IS NOT NULL
+        UNION ALL SELECT container_id, vessel_id, value_gbp, status, destination_port, 'discharge' FROM container_shipments)
+      SELECT p.region, l.port_code, p.port_name, count(DISTINCT l.container_id) AS containers,
+             count(DISTINCT l.vessel_id) AS vessels, round(sum(l.value_gbp)) AS total_value_gbp,
+             count(*) FILTER (WHERE l.role = 'loading') AS as_loading_port,
+             count(*) FILTER (WHERE l.role = 'transshipment') AS as_transshipment_port,
+             count(*) FILTER (WHERE l.role = 'discharge') AS as_discharge_port
+      FROM legs l JOIN port_status p ON p.port_code = l.port_code
+      WHERE ($region IS NULL OR lower(p.region) LIKE '%' || lower($region) || '%')
+        AND ($status IS NULL OR l.status = $status)
+      GROUP BY ALL
+      ORDER BY p.region, total_value_gbp DESC
     limit: 50
     example: {}
 
   - name: get_in_transit_inventory_by_sku
-    desc: In-transit quantities by SKU with ETA. Use to plan stock cover by expected arrival.
+    desc: Quantities on the water by SKU with value, container count and ETA range. Filter by SKU, supplier, a port on the route or destination DC. Use to plan stock cover by arrival.
     kind: sql
     args:
       sku: {}
+      supplier_id: {}
+      port_code: {desc: "Any port on the container's route: loading, transshipment or discharge, e.g. VNSGN"}
+      destination_site_id: {}
     sql: |
-      SELECT cc.sku, SUM(cc.quantity) AS total_quantity,
-             SUM(cc.total_value_gbp) AS total_value_gbp,
-             MIN(v.eta_timestamp) AS earliest_eta,
-             MAX(v.eta_timestamp) AS latest_eta,
-             COUNT(DISTINCT c.container_id) AS container_count,
-             COUNT(DISTINCT c.vessel_id) AS vessel_count
+      SELECT cc.sku, pr.name AS product_name, pr.supplier_id, sum(cc.quantity) AS total_quantity,
+             round(sum(cc.total_value_gbp)) AS total_value_gbp, min(v.eta_timestamp) AS earliest_eta,
+             max(v.eta_timestamp) AS latest_eta, count(DISTINCT c.container_id) AS container_count,
+             count(DISTINCT c.vessel_id) AS vessel_count
       FROM container_contents cc
-      JOIN container_shipments c USING (container_id)
-      JOIN vessels v ON c.vessel_id = v.vessel_id
-      WHERE c.status IN ('in_transit', 'at_port')
+      JOIN container_shipments c ON c.container_id = cc.container_id
+      JOIN vessels v ON v.vessel_id = c.vessel_id
+      LEFT JOIN master.products pr ON pr.sku = cc.sku
+      WHERE c.status IN ('in_transit', 'at_port', 'delayed', 'diverted')
         AND ($sku IS NULL OR cc.sku = $sku)
-      GROUP BY cc.sku
+        AND ($supplier_id IS NULL OR pr.supplier_id = $supplier_id)
+        AND ($port_code IS NULL OR $port_code IN (c.origin_port, c.transship_port, c.destination_port))
+        AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
+      GROUP BY cc.sku, pr.name, pr.supplier_id
       ORDER BY total_value_gbp DESC
     limit: 100
-    example: {sku: "PF-220"}
+    example: {port_code: "VNSGN"}
 
   - name: calculate_option_cost_and_service_impact
-    desc: Cost and service impact of wait, transship or air options for stranded containers.
+    desc: Cost and days to delivery for wait, transship and air options for one container or a whole vessel's containers, from stored option rates. Use to compare recovery options.
     kind: sql
     args:
-      container_id: {required: true}
-      option_type: {type: enum, values: [wait, transship, air], required: true, desc: "Option to evaluate"}
-      delay_days: {type: int, desc: "Expected delay in days for wait option", default: 7}
+      container_id: {}
+      vessel_id: {}
+      option_type: {type: enum, values: [wait, transship, air], desc: "Evaluate one option only; omit to compare all three"}
+      delay_days: {type: int, default: 7, desc: "Expected extra days waiting for a berth, for the wait option"}
     sql: |
-      SELECT
-        $container_id AS container_id,
-        $option_type AS option,
-        c.value_gbp,
-        c.destination_site_id,
-        CASE
-          WHEN $option_type = 'wait' THEN ROUND(c.value_gbp * 0.15, 2)
-          WHEN $option_type = 'transship' THEN ROUND(c.value_gbp * 0.08, 2)
-          WHEN $option_type = 'air' THEN ROUND(c.value_gbp * 0.35, 2)
-        END AS estimated_cost_gbp,
-        CASE
-          WHEN $option_type = 'wait' THEN $delay_days
-          WHEN $option_type = 'transship' THEN 3
-          WHEN $option_type = 'air' THEN 1
-        END AS estimated_days_to_delivery,
-        'estimated cost and delivery time based on container value and option type' AS formula
-      FROM container_shipments c
-      WHERE c.container_id = $container_id
-    limit: 1
-    example: {container_id: "CONT-000001", option_type: "air"}
+      WITH sel AS (
+        SELECT c.container_id, c.value_gbp, (SELECT coalesce(sum(cc.quantity), 0) FROM container_contents cc WHERE cc.container_id = c.container_id) AS units
+        FROM container_shipments c
+        WHERE ($container_id IS NULL OR c.container_id = $container_id) AND ($vessel_id IS NULL OR c.vessel_id = $vessel_id)),
+      tot AS (SELECT count(*) AS containers, coalesce(sum(units), 0) AS units, coalesce(sum(value_gbp), 0) AS value_gbp FROM sel),
+      w AS (SELECT $delay_days + transit_days AS wait_days FROM option_rates WHERE option_type = 'wait')
+      SELECT o.option_type AS option, t.containers, t.units, round(t.value_gbp) AS value_gbp,
+             round(t.containers * (o.base_cost_per_container_gbp + o.cost_per_day_per_container_gbp * $delay_days)
+                   + t.units * o.share_of_stock_pct / 100.0 * o.cost_per_unit_gbp) AS estimated_cost_gbp,
+             round((t.containers * (o.base_cost_per_container_gbp + o.cost_per_day_per_container_gbp * $delay_days)
+                   + t.units * o.share_of_stock_pct / 100.0 * o.cost_per_unit_gbp) / nullif(t.containers, 0)) AS cost_per_container_gbp,
+             CASE WHEN o.option_type = 'wait' THEN $delay_days + o.transit_days ELSE o.transit_days END AS estimated_days_to_delivery,
+             w.wait_days - CASE WHEN o.option_type = 'wait' THEN $delay_days + o.transit_days ELSE o.transit_days END AS days_saved_vs_wait,
+             o.share_of_stock_pct AS stock_delivered_at_that_speed_pct,
+             'cost = containers x (base + daily x delay_days) + units x share x per-unit rate; days = transit days (wait: delay_days + onward days)' AS formula
+      FROM option_rates o CROSS JOIN tot t CROSS JOIN w
+      WHERE ($option_type IS NULL OR o.option_type = $option_type)
+      ORDER BY estimated_cost_gbp
+    limit: 3
+    example: {vessel_id: "CONT-VESSEL-900001"}
