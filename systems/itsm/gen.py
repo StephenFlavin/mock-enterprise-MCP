@@ -354,7 +354,7 @@ def generate(g):
     # Generate releases and changes
     releases = []
     for i in range(15):
-        release_date = g.date_between(g.days_ago(90), g.days_ago(0))
+        release_date = g.days_ago(g.rng.randint(0, 90))
         releases.append({
             "release_id": f"REL-{900000 + i:06d}",
             "release_name": f"v{g.rng.randint(1, 10)}.{g.rng.randint(0, 9)}.{g.rng.randint(0, 30)}",
