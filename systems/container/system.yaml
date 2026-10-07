@@ -198,7 +198,7 @@ tools:
       FROM port_status p
       WHERE ($port_code IS NULL OR p.port_code = $port_code)
         AND ($status IS NULL OR p.status = $status)
-        AND ($region IS NULL OR lower(p.region) LIKE '%' || lower($region) || '%')
+        AND ($region IS NULL OR regexp_matches(lower(p.region), '(^|[^a-z])' || lower($region)))
       ORDER BY CASE p.status WHEN 'closed' THEN 0 WHEN 'strike' THEN 1 WHEN 'congested' THEN 2 ELSE 3 END,
                CASE p.congestion_level WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                p.current_wait_hours DESC
@@ -287,7 +287,7 @@ tools:
                  GROUP BY cc.container_id) x ON x.container_id = c.container_id
       WHERE ($port_code IS NULL OR $port_code IN (c.transship_port, c.destination_port, c.next_port))
         AND ($region IS NULL OR EXISTS (SELECT 1 FROM port_status ps
-                                        WHERE lower(ps.region) LIKE '%' || lower($region) || '%'
+                                        WHERE regexp_matches(lower(ps.region), '(^|[^a-z])' || lower($region))
                                           AND ps.port_code IN (c.transship_port, c.destination_port, c.next_port)))
         AND ($status IS NULL OR c.status = $status)
         AND ($destination_site_id IS NULL OR c.destination_site_id = $destination_site_id)
@@ -350,16 +350,23 @@ tools:
 
   - name: get_port_congestion_status
     desc: Current congestion, berth wait hours, vessels at anchor and dwell for ports, longest wait first. Filter by port, region or minimum wait.
-    kind: select
-    from: port_status
-    filters:
+    kind: sql
+    args:
       port_code: {}
-      region: {op: like, desc: "Region words, e.g. Northern Europe, Southern Europe, East Asia"}
+      region: {type: str, desc: "Region words, e.g. Northern Europe, Southern Europe, East Asia"}
       status: {}
       congestion_level: {}
-      min_wait_hours: {col: current_wait_hours, op: ">=", desc: "Only ports with at least this berth wait in hours"}
-    columns: [port_code, port_name, region, status, congestion_level, current_wait_hours, vessels_waiting, avg_dwell_hours, note, status_updated_at]
-    order: current_wait_hours DESC
+      min_wait_hours: {type: float, desc: "Only ports with at least this berth wait in hours"}
+    sql: |
+      SELECT p.port_code, p.port_name, p.region, p.status, p.congestion_level, p.current_wait_hours, p.vessels_waiting,
+             p.avg_dwell_hours, p.note, p.status_updated_at
+      FROM port_status p
+      WHERE ($port_code IS NULL OR p.port_code = $port_code)
+        AND ($region IS NULL OR regexp_matches(lower(p.region), '(^|[^a-z])' || lower($region)))
+        AND ($status IS NULL OR p.status = $status)
+        AND ($congestion_level IS NULL OR p.congestion_level = $congestion_level)
+        AND ($min_wait_hours IS NULL OR p.current_wait_hours >= $min_wait_hours)
+      ORDER BY p.current_wait_hours DESC
     limit: 30
     example: {region: "Northern Europe"}
 
@@ -448,7 +455,7 @@ tools:
       FROM disruptions d
       WHERE d.end_date < CAST($as_of AS DATE)
         AND ($event_type IS NULL OR d.event_type = $event_type)
-        AND ($region IS NULL OR lower(d.region) LIKE '%' || lower($region) || '%')
+        AND ($region IS NULL OR regexp_matches(lower(d.region), '(^|[^a-z])' || lower($region)))
         AND ($affected_port IS NULL OR d.affected_port = $affected_port)
       ORDER BY d.start_date DESC
     limit: 50
@@ -468,7 +475,7 @@ tools:
       LEFT JOIN transit_history t ON (t.origin_port = d.affected_port OR t.via_port = d.affected_port)
                                  AND t.departure_date BETWEEN d.start_date AND d.end_date
       WHERE d.event_type = 'weather' AND d.end_date < CAST($as_of AS DATE)
-        AND ($region IS NULL OR lower(d.region) LIKE '%' || lower($region) || '%')
+        AND ($region IS NULL OR regexp_matches(lower(d.region), '(^|[^a-z])' || lower($region)))
         AND ($affected_port IS NULL OR d.affected_port = $affected_port)
       GROUP BY d.disruption_id, d.affected_port, d.region, d.start_date, d.duration_days, d.description, d.lead_time_impact_days
       ORDER BY d.start_date DESC
@@ -513,7 +520,7 @@ tools:
              count(*) FILTER (WHERE l.role = 'transshipment') AS as_transshipment_port,
              count(*) FILTER (WHERE l.role = 'discharge') AS as_discharge_port
       FROM legs l JOIN port_status p ON p.port_code = l.port_code
-      WHERE ($region IS NULL OR lower(p.region) LIKE '%' || lower($region) || '%')
+      WHERE ($region IS NULL OR regexp_matches(lower(p.region), '(^|[^a-z])' || lower($region)))
         AND ($status IS NULL OR l.status = $status)
       GROUP BY ALL
       ORDER BY p.region, total_value_gbp DESC

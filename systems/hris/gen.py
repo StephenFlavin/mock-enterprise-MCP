@@ -23,8 +23,8 @@ MARKET_MULT = {"DC1": (1.01, 1.01, 1.03), "DC2": (1.05, 1.06, 1.14), "DC3": (1.0
 
 HOME_AREAS = {  # area -> typical km to site
     "DC1": {"Northampton": 8, "Wellingborough": 19, "Kettering": 27, "Daventry": 19, "Towcester": 14, "Milton Keynes": 32},
-    "DC2": {"Daventry": 6, "Northampton": 19, "Rugby": 21, "Towcester": 23, "Banbury": 33, "Coventry": 38,
-            "Leicester": 47, "Milton Keynes": 43},
+    "DC2": {"Daventry": 6, "Northampton": 19, "Rugby": 21, "Towcester": 23, "Banbury": 35, "Coventry": 40,
+            "Leicester": 50, "Milton Keynes": 45},
     "DC3": {"Leeds": 8, "Bradford": 14, "Wakefield": 15, "Harrogate": 24, "Huddersfield": 26, "York": 40},
     "DC4": {"Venlo": 5, "Tegelen": 4, "Horst": 12, "Venray": 15, "Roermond": 22},
     "DC5": {"Columbus": 12, "Grove City": 17, "Dublin OH": 20, "Westerville": 22, "Newark OH": 45},
@@ -177,7 +177,8 @@ def _leavers(g, dc_sites, dc_emps, heads, by_id, managers, wh_mgr):
         else:
             ag = 0.28 if shift == "night" else 0.20
             etype = _wchoice(r, [("permanent", 0.97 - ag - 0.07), ("agency", ag), ("temporary", 0.07), ("fixed_term", 0.03)])
-        if emp and emp["role"] in ("Shift Manager", "Warehouse Manager"):
+        if emp and (emp["role"] in ("Shift Manager", "Warehouse Manager")
+                    or (g.as_of - date.fromisoformat(emp["start_date"])).days > 400):
             etype = "permanent"
         if etype == "agency":
             route = "agency"
@@ -214,7 +215,7 @@ def _leavers(g, dc_sites, dc_emps, heads, by_id, managers, wh_mgr):
         if site == "DC2":
             if reason != "Pay and benefits" and r.random() < 0.25:
                 themes.append("Pay")
-            if reason != "Commute" and shift == "night" and r.random() < 0.10:
+            if reason != "Commute" and shift == "night" and r.random() < 0.30:
                 themes.append("Commute distance")
             if reason != "Management style" and shift == "late" and r.random() < 0.15:
                 themes.append("Management")
@@ -281,12 +282,13 @@ def _commute(g, heads):
     for e in heads:
         site = e["site_id"]
         areas = HOME_AREAS[site]
-        if site == "DC2" and e["shift"] == "night" and r.random() < 0.8:
+        if site == "DC2" and e["shift"] == "night" and r.random() < 0.9:
             area = r.choice(DC2_FAR)
         elif site == "DC2":
             area = r.choice([a for a in areas if a not in DC2_FAR])
         else:
-            area = r.choice(list(areas))
+            names = list(areas)
+            area = r.choices(names, [1 / areas[a] for a in names])[0]
         dist = round(max(1.5, r.gauss(areas[area], areas[area] * 0.12)), 1)
         far = dist > 25
         method = _wchoice(r, [("car", 0.92 if far else 0.6), ("public_transport", 0.03 if far else 0.25),

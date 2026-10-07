@@ -1,176 +1,267 @@
-"""Generate KPI targets, actuals, variances, site metrics, and circularity data."""
+"""Generate KPI targets, weekly actuals, variances, site metrics, circularity targets, root causes and alerts.
+
+Story (all relative to g.as_of, the latest Monday):
+- Four-week periods k=0 (latest) .. 5. Over the last 12 weeks five headline KPIs have slipped:
+  lost-time injuries (DC2), stock turnover days, waste diversion, cost per unit, OTIF.
+- ST214 (Glasgow Retail Park) and DC2 (Daventry DC) are the two worst sites.
+- Circularity: units collected / value recovered weekly KPIs with fixed 52-week totals for YoY.
+"""
 from datetime import datetime, timedelta
-import math
+
+# id, name, domain, unit, target (per week), better_when, aggregation, decimals, weekly noise (fraction of target)
+KPIS = [
+    ("KPI-0001", "On-Time-In-Full (OTIF)", "service", "%", 95.5, "higher", "avg", 1, 0.004),
+    ("KPI-0002", "Cost per Unit Handled", "cost", "£", 2.35, "lower", "avg", 2, 0.006),
+    ("KPI-0003", "Inventory Accuracy", "inventory", "%", 98.5, "higher", "avg", 1, 0.002),
+    ("KPI-0004", "Stock Turnover Days", "inventory", "days", 28.0, "lower", "avg", 1, 0.006),
+    ("KPI-0005", "Lost Time Injury Frequency", "safety", "rate", 0.5, "lower", "avg", 2, 0.03),
+    ("KPI-0006", "Quality First Pass", "quality", "%", 96.5, "higher", "avg", 1, 0.003),
+    ("KPI-0007", "Supplier OTIF", "service", "%", 94.0, "higher", "avg", 1, 0.004),
+    ("KPI-0008", "GHG Emissions per Unit", "sustainability", "kg CO2e", 0.85, "lower", "avg", 2, 0.008),
+    ("KPI-0009", "Waste Diversion Rate", "sustainability", "%", 72.0, "higher", "avg", 1, 0.004),
+    ("KPI-0010", "DC Throughput", "service", "units/hr", 850.0, "higher", "avg", 0, 0.006),
+    ("KPI-0011", "Circularity Units Collected", "sustainability", "units", 1000.0, "higher", "sum", 0, 0.05),
+    ("KPI-0012", "Circularity Value Recovered", "sustainability", "£", 5000.0, "higher", "sum", 0, 0.05),
+]
+
+# actual / target factor for the four-week periods k = 0 (latest) .. 5
+FACTORS = {
+    "KPI-0001": [0.9466, 0.965, 0.985, 0.995, 0.998, 1.0],
+    "KPI-0002": [1.068, 1.05, 1.03, 1.01, 1.0, 0.99],
+    "KPI-0003": [0.996, 0.998, 1.0, 0.999, 1.0, 1.001],
+    "KPI-0004": [1.1214, 1.09, 1.06, 1.02, 1.0, 0.99],
+    "KPI-0005": [1.54, 1.32, 1.12, 1.04, 1.0, 0.96],
+    "KPI-0006": [0.992, 0.995, 0.996, 0.998, 1.0, 1.0],
+    "KPI-0007": [0.985, 0.99, 0.995, 1.0, 1.0, 1.0],
+    "KPI-0008": [1.03, 1.02, 1.01, 1.0, 1.0, 0.99],
+    "KPI-0009": [0.919, 0.945, 0.97, 0.99, 0.995, 1.0],
+    "KPI-0010": [1.02, 1.01, 1.0, 0.99, 1.0, 1.01],
+    "KPI-0011": [0.97, 0.96, 0.95, 0.93, 0.91, 0.90],
+    "KPI-0012": [0.97, 0.94, 0.92, 0.90, 0.88, 0.86],
+}
+# 52-week totals for the summed circularity KPIs: (this year, prior year)
+YEAR_TOTALS = {"KPI-0011": (47650, 39300), "KPI-0012": (224900, 178600)}
+
+# Root causes for the latest-period (k=0) variances
+CAUSES = {
+    "KPI-0005": dict(
+        site_id="DC2", severity="critical", dept="Operations", weeks=6, status="action_raised",
+        cause="Forklift injuries at Daventry DC (DC2) after the peak temporary-labour intake; MHE refresher training not completed",
+        factors="Agency staff started without MHE refresher; Night-shift aisle congestion; Two near-miss reports not escalated"),
+    "KPI-0004": dict(
+        site_id="", severity="high", dept="Supply Chain", weeks=28, status="open",
+        cause="Excess seasonal stock landed ahead of peak; slow-moving lines sit well above cover targets",
+        factors="Supplier minimum order quantities; Autumn range forecast over-called; Clearance plan not yet agreed"),
+    "KPI-0009": dict(
+        site_id="", severity="medium", dept="Sustainability", weeks=32, status="in_progress",
+        cause="Regional recycling processor capped cardboard and plastics intake; overflow sent to residual waste",
+        factors="Waste contract renegotiation pending; Contamination in mixed-waste skips"),
+    "KPI-0002": dict(
+        site_id="", severity="medium", dept="Operations", weeks=8, status="in_progress",
+        cause="Peak-season overtime and agency labour driving up handling cost per unit",
+        factors="Volume running ahead of forecast; Slow pick rate on the new returns flow"),
+    "KPI-0001": dict(
+        site_id="", severity="medium", dept="Logistics", weeks=9, status="action_raised",
+        cause="Carrier capacity shortfall on store replenishment lanes and short-picks on promotional lines",
+        factors="Two carriers declined peak loads; Promo stock allocated late to DCs"),
+}
+
+
+def severity_of(adverse_pct):
+    if adverse_pct > 10:
+        return "severe"
+    if adverse_pct > 5:
+        return "moderate"
+    if adverse_pct > 2:
+        return "minor"
+    return "on_track"
 
 
 def generate(g):
     r = g.rng
-    fake = g.fake
     as_of = g.as_of
+    mid = datetime.min.time()
 
-    # KPI domains and definitions
-    kpi_definitions = [
-        {"id": "KPI-0001", "name": "On-Time-In-Full (OTIF)", "domain": "service", "unit": "%", "target": 95.5},
-        {"id": "KPI-0002", "name": "Cost per Unit Handled", "domain": "cost", "unit": "£", "target": 2.35},
-        {"id": "KPI-0003", "name": "Inventory Accuracy", "domain": "inventory", "unit": "%", "target": 98.5},
-        {"id": "KPI-0004", "name": "Stock Turnover Days", "domain": "inventory", "unit": "days", "target": 28},
-        {"id": "KPI-0005", "name": "Lost Time Injury Frequency", "domain": "safety", "unit": "rate", "target": 0.5},
-        {"id": "KPI-0006", "name": "Quality First Pass", "domain": "quality", "unit": "%", "target": 96.5},
-        {"id": "KPI-0007", "name": "Supplier OTIF", "domain": "service", "unit": "%", "target": 94.0},
-        {"id": "KPI-0008", "name": "GHG Emissions per Unit", "domain": "sustainability", "unit": "kg CO2e", "target": 0.85},
-        {"id": "KPI-0009", "name": "Waste Diversion Rate", "domain": "sustainability", "unit": "%", "target": 72.0},
-        {"id": "KPI-0010", "name": "DC Throughput", "domain": "service", "unit": "units/hr", "target": 850},
-    ]
+    def ts(d):
+        return datetime.combine(d, mid)
 
-    sites = [s["site_id"] for s in g.master("sites") if s["type"] in ["dc", "store"]]
-
-    # Generate KPI targets
+    # ---- targets ------------------------------------------------------------------------
     kpi_targets = []
-    for kpi in kpi_definitions:
-        variation = r.uniform(0.95, 1.05)
+    for kid, name, domain, unit, target, better, agg, dp, noise in KPIS:
+        if better == "higher":
+            min_t, yellow_t = target * 0.90, target * 0.95
+        else:
+            min_t, yellow_t = target * 1.10, target * 1.05
         kpi_targets.append({
-            "kpi_id": kpi["id"],
-            "kpi_name": kpi["name"],
-            "domain": kpi["domain"],
-            "frequency": "monthly",
-            "unit": kpi["unit"],
-            "target_value": round(kpi["target"] * variation, 2),
-            "min_threshold": round(kpi["target"] * 0.90, 2),
-            "yellow_threshold": round(kpi["target"] * 0.95, 2),
-            "effective_from": datetime.combine(g.as_of, datetime.min.time()),
-            "updated_at": datetime.combine(g.as_of, datetime.min.time()),
+            "kpi_id": kid, "kpi_name": name, "domain": domain, "frequency": "weekly", "unit": unit,
+            "better_when": better, "aggregation": agg,
+            "target_value": round(target, 2), "min_threshold": round(min_t, 3),
+            "yellow_threshold": round(yellow_t, 3),
+            "effective_from": as_of - timedelta(days=300),
+            "updated_at": ts(as_of - timedelta(days=90)),
         })
 
-    # Generate KPI actuals - daily for last 60 days
+    # ---- weekly actuals (week i is i weeks before as_of; 104 weeks) --------------------
+    weeks_n = 104
+    series = {}
+    for kid, name, domain, unit, target, better, agg, dp, noise in KPIS:
+        fac = FACTORS[kid]
+        vals = []
+        for i in range(weeks_n):
+            if i < 24:
+                f = fac[i // 4]
+            else:
+                f = 1.0
+            vals.append(target * f * (1 + r.gauss(0, noise)))
+        # force each four-week period (k0..k5) to its exact mean factor
+        for k in range(6):
+            seg = vals[4 * k:4 * k + 4]
+            adj = target * fac[k] - sum(seg) / 4
+            for j in range(4):
+                vals[4 * k + j] += adj
+        if agg == "sum":
+            this_total, prior_total = YEAR_TOTALS[kid]
+            fixed = sum(vals[:24])
+            rest = vals[24:52]
+            scale = (this_total - fixed) / sum(rest)
+            vals[24:52] = [v * scale for v in rest]
+            prior = vals[52:104]
+            pscale = prior_total / sum(prior)
+            vals[52:104] = [v * pscale for v in prior]
+            vals = [round(v) for v in vals]
+            vals[51] += this_total - sum(vals[:52])
+            vals[103] += prior_total - sum(vals[52:104])
+        else:
+            vals = [round(v, dp) for v in vals]
+        series[kid] = vals
+
     kpi_actuals = []
-    ytd_accums = {kpi["id"]: 0 for kpi in kpi_definitions}
-    for kpi in kpi_definitions:
-        for days_ago in range(60, -1, -1):
-            mdate = as_of - timedelta(days=days_ago)
-            # Generate realistic actuals with some variance
-            base_target = next(k["target"] for k in kpi_definitions if k["id"] == kpi["id"])
-            if kpi["domain"] == "cost":
-                actual = round(base_target * r.uniform(0.95, 1.10), 2)
-            elif kpi["domain"] == "safety":
-                actual = round(base_target * r.uniform(0.7, 1.4), 2)
-            else:
-                actual = round(base_target * r.uniform(0.92, 1.05), 1)
-
-            ytd_accums[kpi["id"]] += actual
+    meta = {k[0]: k for k in KPIS}
+    for kid, vals in series.items():
+        _, name, domain, unit, target, better, agg, dp, noise = meta[kid]
+        run_sum, run_n, run_year = 0.0, 0, None
+        for i in range(weeks_n - 1, -1, -1):  # oldest first
+            d = as_of - timedelta(days=7 * i)
+            if d.year != run_year:
+                run_sum, run_n, run_year = 0.0, 0, d.year
+            run_sum += vals[i]
+            run_n += 1
+            ytd = run_sum if agg == "sum" else run_sum / run_n
+            note = ""
+            dq = "good" if r.random() > 0.08 else "estimated"
             kpi_actuals.append({
-                "kpi_id": kpi["id"],
-                "measured_date": mdate,
-                "actual_value": actual,
-                "ytd_value": round(ytd_accums[kpi["id"]], 2),
-                "vs_target_pct": round((actual / base_target) * 100, 1),
-                "data_quality": r.choice(["good", "good", "good", "estimated"]),
-                "notes": "" if r.random() > 0.1 else fake.sentence(nb_words=4),
+                "kpi_id": kid, "measured_date": d, "actual_value": vals[i],
+                "ytd_value": round(ytd, 2), "vs_target_pct": round(vals[i] / target * 100, 1),
+                "data_quality": dq, "notes": note,
             })
 
-    # Generate variances for last 6 months
+    # ---- variances (four-week periods, k=0 latest) --------------------------------------
     kpi_variances = []
-    for idx, kpi in enumerate(kpi_definitions):
-        for month_ago in range(6):
-            period_end = as_of - timedelta(days=30 * month_ago)
-            period_start = period_end - timedelta(days=30)
-            target = next(k["target"] for k in kpi_definitions if k["id"] == kpi["id"])
-
-            # Actuals vary around target
-            actual = target * r.uniform(0.90, 1.08)
-            variance = actual - target
-            variance_pct = (variance / target) * 100
-
-            if abs(variance_pct) > 5:
-                severity = "severe" if abs(variance_pct) > 10 else "moderate"
-            elif abs(variance_pct) > 2:
-                severity = "minor"
+    variance_of = {}
+    for k in range(5, -1, -1):
+        period_end = as_of - timedelta(days=28 * k)
+        for kid, name, domain, unit, target, better, agg, dp, noise in KPIS:
+            seg = series[kid][4 * k:4 * k + 4]
+            actual = round(sum(seg) / 4, 2)
+            var = actual - target
+            pct = var / target * 100
+            adverse = pct if better == "lower" else -pct
+            sev = severity_of(adverse)
+            vid = f"VAR-{len(kpi_variances) + 1:06d}"
+            variance_of[(kid, k)] = vid
+            if k == 0:
+                status = {"KPI-0005": "action_raised", "KPI-0004": "investigating", "KPI-0009": "investigating",
+                          "KPI-0002": "root_cause_identified", "KPI-0001": "action_raised"}.get(kid, "open" if sev != "on_track" else "resolved")
             else:
-                severity = "on_track"
-
-            if severity != "on_track":
-                kpi_variances.append({
-                    "variance_id": f"VAR-{len(kpi_variances) + 1:06d}",
-                    "kpi_id": kpi["id"],
-                    "period_start": period_start,
-                    "period_end": period_end,
-                    "target_value": round(target, 2),
-                    "actual_value": round(actual, 2),
-                    "variance_value": round(variance, 2),
-                    "variance_pct": round(variance_pct, 1),
-                    "severity": severity,
-                    "status": r.choice(["open", "investigating", "root_cause_identified", "action_raised"]),
-                    "updated_at": datetime.combine(as_of, datetime.min.time()),
-                })
-
-    # Generate site metrics
-    site_metrics = []
-    for site in sites:
-        # Generate metrics for last 30 days
-        for days_ago in range(30, -1, -1):
-            mdate = as_of - timedelta(days=days_ago)
-            site_metrics.append({
-                "site_id": site,
-                "measured_date": mdate,
-                "service_score": round(r.uniform(85, 99), 1),
-                "cost_per_unit_gbp": round(r.uniform(1.8, 3.2), 2),
-                "safety_ltif": round(r.uniform(0.2, 1.2), 2),
-                "quality_first_pass_pct": round(r.uniform(92, 99), 1),
-                "stock_accuracy_pct": round(r.uniform(95, 99.5), 1),
-                "oh_es": r.randint(-50, 50),
+                status = "resolved"
+            kpi_variances.append({
+                "variance_id": vid, "kpi_id": kid,
+                "period_start": period_end - timedelta(days=27), "period_end": period_end,
+                "target_value": round(target, 2), "actual_value": actual,
+                "variance_value": round(var, 2), "variance_pct": round(pct, 1),
+                "severity": sev, "status": status, "updated_at": ts(as_of),
             })
 
-    # Generate circularity targets
-    channels = ["Reuse", "Repair", "Recycle", "Refurbish"]
-    circularity_targets = []
-    for idx, channel in enumerate(channels):
-        circularity_targets.append({
-            "channel_id": f"CHN-{idx + 1:06d}",
-            "channel_name": channel,
-            "units_collected_target": r.randint(5000, 50000),
-            "value_recovered_target_gbp": round(r.uniform(10000, 150000), 2),
-            "handling_cost_per_unit_gbp": round(r.uniform(0.5, 2.5), 2),
-            "effective_from": datetime.combine(as_of, datetime.min.time()),
-        })
-
-    # Generate issue root causes
+    # ---- root causes for the latest period ----------------------------------------------
     issue_root_causes = []
-    for var in kpi_variances[:10]:  # Root causes for severe variances
+    for kid, c in CAUSES.items():
         issue_root_causes.append({
             "cause_id": f"CAS-{len(issue_root_causes) + 1:06d}",
-            "variance_id": var["variance_id"],
-            "kpi_id": var["kpi_id"],
-            "root_cause": fake.sentence(nb_words=6),
-            "contributing_factors": "; ".join([fake.sentence(nb_words=4) for _ in range(2)]),
-            "department_responsible": r.choice(["Supply Chain", "Operations", "Quality", "HR", "Logistics"]),
-            "severity": var["severity"],
-            "identified_at": datetime.combine(as_of - timedelta(days=7), datetime.min.time()),
-            "target_fix_date": (as_of + timedelta(days=r.randint(7, 30))).isoformat(),
-            "status": r.choice(["open", "action_raised", "in_progress"]),
-            "updated_at": datetime.combine(as_of, datetime.min.time()),
+            "variance_id": variance_of[(kid, 0)], "kpi_id": kid, "site_id": c["site_id"],
+            "root_cause": c["cause"], "contributing_factors": c["factors"],
+            "department_responsible": c["dept"], "severity": c["severity"],
+            "identified_at": ts(as_of - timedelta(days=10)),
+            "target_fix_date": as_of + timedelta(weeks=c["weeks"]),
+            "status": c["status"], "updated_at": ts(as_of - timedelta(days=2)),
         })
 
-    # Generate alert thresholds
+    # ---- site metrics (weekly, 13 weeks, DCs + stores) -----------------------------------
+    sites = [s for s in g.master("sites") if s["type"] in ("dc", "store")]
+    story = {
+        # latest-week values for the two worst sites; earlier weeks drift towards normal
+        "ST214": dict(service=88.5, cost=3.12, ltif=1.2, fp=92.1, acc=95.5, oh=32),
+        "DC2": dict(service=95.8, cost=2.45, ltif=0.8, fp=94.5, acc=97.1, oh=-25),
+    }
+    normal = dict(service=97.0, cost=2.15, ltif=0.3, fp=97.8, acc=99.1, oh=0)
+    site_ids = [s["site_id"] for s in sites]
+    decoys = {sid: r.choice(["service", "cost", "fp"]) for sid in r.sample([s for s in site_ids if s not in story and s.startswith("ST")], 6)}
+    site_metrics = []
+    for s in sites:
+        sid = s["site_id"]
+        for i in range(12, -1, -1):
+            d = as_of - timedelta(days=7 * i)
+            if sid in story:
+                w = max(0.0, 1 - i / 8.0)  # 1 at latest week, 0 from 8 weeks ago
+                tgt = story[sid]
+                v = {k: normal[k] + (tgt[k] - normal[k]) * w for k in tgt}
+                if sid == "DC2":
+                    v["service"] = 96.4 + (tgt["service"] - 96.4) * w
+                    v["cost"] = 2.2 + (tgt["cost"] - 2.2) * w
+                row = dict(service=round(v["service"], 1), cost=round(v["cost"], 2), ltif=round(v["ltif"], 2),
+                           fp=round(v["fp"], 1), acc=round(v["acc"], 1), oh=int(round(v["oh"])))
+            else:
+                row = dict(service=round(r.uniform(95.7, 98.8), 1), cost=round(r.uniform(1.95, 2.3), 2),
+                           ltif=round(r.uniform(0.15, 0.45), 2), fp=round(r.uniform(96.6, 98.9), 1),
+                           acc=round(r.uniform(98.6, 99.6), 1), oh=r.randint(-12, 12))
+                if sid in decoys and i < 4:
+                    m = decoys[sid]
+                    if m == "service":
+                        row["service"] = round(r.uniform(93.8, 94.8), 1)
+                    elif m == "cost":
+                        row["cost"] = round(r.uniform(2.45, 2.6), 2)
+                    else:
+                        row["fp"] = round(r.uniform(94.8, 95.8), 1)
+            site_metrics.append({
+                "site_id": sid, "measured_date": d, "service_score": row["service"],
+                "cost_per_unit_gbp": row["cost"], "safety_ltif": row["ltif"],
+                "quality_first_pass_pct": row["fp"], "stock_accuracy_pct": row["acc"], "oh_es": row["oh"],
+            })
+
+    # ---- circularity channel targets (annual) --------------------------------------------
+    circularity_targets = []
+    for idx, (ch, units, value, cost) in enumerate([
+        ("Reuse", 13000, 104000.0, 1.20), ("Repair", 6500, 52000.0, 3.00),
+        ("Recycle", 28000, 28000.0, 0.60), ("Refurbish", 4500, 76000.0, 5.00)]):
+        circularity_targets.append({
+            "channel_id": f"CHN-{idx + 1:06d}", "channel_name": ch, "units_collected_target": units,
+            "value_recovered_target_gbp": value, "handling_cost_per_unit_gbp": cost,
+            "effective_from": as_of - timedelta(days=300),
+        })
+
+    # ---- alert thresholds (red = worst acceptable value, amber = warning) -----------------
     alert_thresholds = []
-    for idx, kpi in enumerate(kpi_definitions):
-        target = kpi["target"]
-        for level, pct in [("red", 0.85), ("amber", 0.92)]:
+    for t in kpi_targets:
+        on = "below" if t["better_when"] == "higher" else "above"
+        for level, val in (("red", t["min_threshold"]), ("amber", t["yellow_threshold"])):
             alert_thresholds.append({
-                "alert_id": f"ALT-{len(alert_thresholds) + 1:06d}",
-                "kpi_id": kpi["id"],
-                "alert_level": level,
-                "threshold_value": round(target * pct, 2),
-                "alert_on": "below",
-                "enabled": True,
-                "last_breached_at": None if r.random() > 0.3 else datetime.combine(as_of - timedelta(days=r.randint(1, 14)), datetime.min.time()),
-                "updated_at": datetime.combine(as_of, datetime.min.time()),
+                "alert_id": f"ALT-{len(alert_thresholds) + 1:06d}", "kpi_id": t["kpi_id"],
+                "alert_level": level, "threshold_value": round(val, 3), "alert_on": on, "enabled": True,
+                "last_breached_at": ts(as_of - timedelta(days=3)) if t["kpi_id"] in ("KPI-0005", "KPI-0004") and level == "amber" else None,
+                "updated_at": ts(as_of - timedelta(days=90)),
             })
 
     return {
-        "kpi_targets": kpi_targets,
-        "kpi_actuals": kpi_actuals,
-        "kpi_variances": kpi_variances,
-        "site_metrics": site_metrics,
-        "circularity_targets": circularity_targets,
-        "issue_root_causes": issue_root_causes,
-        "alert_thresholds": alert_thresholds,
+        "kpi_targets": kpi_targets, "kpi_actuals": kpi_actuals, "kpi_variances": kpi_variances,
+        "site_metrics": site_metrics, "circularity_targets": circularity_targets,
+        "issue_root_causes": issue_root_causes, "alert_thresholds": alert_thresholds,
     }
