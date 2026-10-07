@@ -1,0 +1,230 @@
+id: store_wfm
+name: Store Workforce Management
+instructions: >
+  Staff rotas, shifts and labour scheduling for store operations. Rota ids look like ROT-000123,
+  shift ids like SFT-000123. Use it for weekly staffing plans, shift assignments, labour standards,
+  staff availability and labour costs by store.
+
+tables:
+  staff_rotas:
+    key: rota_id
+    cols:
+      rota_id: {type: str, desc: "Rota, e.g. ROT-000123"}
+      site_id: {type: str, desc: "Store, e.g. ST214"}
+      week_start: {type: date, desc: "Monday of the week"}
+      status: {type: enum, values: [draft, approved, published, archived], desc: "Rota status"}
+      approved_by: {type: str, desc: "Employee id of approver"}
+      approved_at: {type: timestamp, desc: "When the rota was approved"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+      total_hours: {type: float, desc: "Total hours scheduled for the week"}
+
+  rota_shifts:
+    key: shift_id
+    cols:
+      shift_id: {type: str, desc: "Shift, e.g. SFT-000123"}
+      rota_id: {type: str, desc: "Parent rota"}
+      employee_id: {type: str, desc: "Employee assigned"}
+      day_of_week: {type: int, desc: "Day 0=Monday to 6=Sunday"}
+      shift_start: {type: timestamp, desc: "Shift start time"}
+      shift_end: {type: timestamp, desc: "Shift end time"}
+      task_category: {type: str, desc: "Task: receiving, shelf, till, stock, checkout, relabel, cleaning, management"}
+      hours_worked: {type: float, desc: "Hours for this shift"}
+      status: {type: enum, values: [scheduled, swapped, cancelled], desc: "Shift status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_standards:
+    key: standard_id
+    cols:
+      standard_id: {type: str, desc: "Standard, e.g. STD-000123"}
+      task_category: {type: str, desc: "Task type"}
+      description: {type: str, desc: "What the task involves"}
+      standard_hours: {type: float, desc: "Standard labour hours required"}
+      unit_of_measure: {type: str, desc: "Per what (e.g. per delivery, per 1000 units)"}
+      status: {type: enum, values: [active, archived], desc: "Status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  staff_availability:
+    key: availability_id
+    cols:
+      availability_id: {type: str, desc: "Availability record, e.g. AVL-000123"}
+      employee_id: {type: str, desc: "Employee"}
+      week_start: {type: date, desc: "Monday of the week"}
+      monday_available: {type: bool, desc: "Available Monday"}
+      tuesday_available: {type: bool, desc: "Available Tuesday"}
+      wednesday_available: {type: bool, desc: "Available Wednesday"}
+      thursday_available: {type: bool, desc: "Available Thursday"}
+      friday_available: {type: bool, desc: "Available Friday"}
+      saturday_available: {type: bool, desc: "Available Saturday"}
+      sunday_available: {type: bool, desc: "Available Sunday"}
+      notes: {type: str, desc: "Absence reason or notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_costs:
+    key: [site_id, week_start]
+    cols:
+      site_id: {type: str, desc: "Store"}
+      week_start: {type: date, desc: "Monday of the week"}
+      total_hours: {type: float, desc: "Total hours scheduled"}
+      total_labour_cost_gbp: {type: float, desc: "Total labour cost in GBP"}
+      average_hourly_rate_gbp: {type: float, desc: "Average hourly rate in GBP"}
+      sales_value_gbp: {type: float, desc: "Store sales for the week in GBP"}
+      labour_cost_pct: {type: float, desc: "Labour cost as % of sales"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_staff_rota_for_store
+    desc: Retrieve staff rota for a store and week. Shows all shifts by employee and task category.
+    kind: sql
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "-7d"}
+      status: {default: approved}
+    sql: |
+      SELECT r.rota_id, r.site_id, r.week_start, e.name, rs.employee_id, rs.day_of_week,
+             rs.shift_start, rs.shift_end, rs.task_category, rs.hours_worked, rs.status
+      FROM staff_rotas r
+      JOIN rota_shifts rs ON rs.rota_id = r.rota_id
+      JOIN master.employees e ON e.employee_id = rs.employee_id
+      WHERE r.site_id = $site_id
+        AND r.week_start = CAST($week_start AS DATE)
+        AND ($status IS NULL OR r.status = $status)
+      ORDER BY rs.day_of_week, rs.shift_start
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_staff_rota_for_stores
+    desc: Retrieve rotas for multiple stores and a week. Returns shifts by employee, task and site.
+    kind: sql
+    args:
+      week_start: {type: date, default: "-7d"}
+      status: {default: approved}
+      region: {desc: "Filter stores by region, e.g. UK North"}
+    sql: |
+      SELECT r.rota_id, r.site_id, s.name AS store_name, r.week_start, e.name, rs.employee_id,
+             rs.day_of_week, rs.shift_start, rs.shift_end, rs.task_category, rs.hours_worked
+      FROM staff_rotas r
+      JOIN rota_shifts rs ON rs.rota_id = r.rota_id
+      JOIN master.employees e ON e.employee_id = rs.employee_id
+      JOIN master.sites s ON s.site_id = r.site_id
+      WHERE r.week_start = CAST($week_start AS DATE)
+        AND ($status IS NULL OR r.status = $status)
+        AND ($region IS NULL OR s.region = $region)
+        AND s.type = 'store'
+      ORDER BY r.site_id, rs.day_of_week, rs.shift_start
+    limit: 500
+    example: {week_start: "-7d"}
+
+  - name: get_store_staff_schedules
+    desc: Rostered staff by shift for a store and week. Returns shifts with employee names and hours.
+    kind: sql
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "-7d"}
+    sql: |
+      SELECT rs.shift_id, e.name, e.role, rs.day_of_week, rs.shift_start, rs.shift_end,
+             rs.task_category, rs.hours_worked, rs.status
+      FROM rota_shifts rs
+      JOIN staff_rotas r ON r.rota_id = rs.rota_id
+      JOIN master.employees e ON e.employee_id = rs.employee_id
+      WHERE r.site_id = $site_id
+        AND r.week_start = CAST($week_start AS DATE)
+        AND r.status IN ('approved', 'published')
+      ORDER BY rs.day_of_week, rs.shift_start
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_staff_availability_for_week
+    desc: Staff availability for a week. Shows which employees are available each day.
+    kind: sql
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "-7d"}
+    sql: |
+      SELECT a.availability_id, a.employee_id, e.name, e.role, a.monday_available,
+             a.tuesday_available, a.wednesday_available, a.thursday_available,
+             a.friday_available, a.saturday_available, a.sunday_available, a.notes
+      FROM staff_availability a
+      JOIN master.employees e ON e.employee_id = a.employee_id
+      WHERE e.site_id = $site_id
+        AND a.week_start = CAST($week_start AS DATE)
+      ORDER BY e.name
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_labour_standards_for_tasks
+    desc: Labour standards by task category. Shows standard hours required per task unit.
+    kind: select
+    from: labour_standards
+    filters:
+      task_category: {op: like}
+      status: {default: active}
+    columns: [standard_id, task_category, description, standard_hours, unit_of_measure, status]
+    order: task_category
+    limit: 50
+    example: {status: active}
+
+  - name: calculate_hourly_labour_requirement
+    desc: Calculate hourly labour required based on forecast, tasks and standards. Returns total hours and breakdown by task.
+    kind: py
+    fn: calc_labour_requirement
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "-7d"}
+      forecast_footfall: {type: int, desc: "Expected daily footfall or units"}
+      receiving_deliveries: {type: int, default: 2, desc: "Number of deliveries"}
+      promotional_events: {type: int, default: 0, desc: "Number of promotional tasks"}
+
+  - name: get_labour_cost_percentage_by_store
+    desc: Labour cost as percentage of sales by store. Use to compare labour efficiency across stores.
+    kind: sql
+    args:
+      week_start: {type: date, default: "-7d"}
+      site_id: {}
+      region: {desc: "Filter by region, e.g. UK North"}
+    sql: |
+      SELECT lc.site_id, s.name, lc.week_start, lc.total_hours, lc.total_labour_cost_gbp,
+             lc.sales_value_gbp, lc.labour_cost_pct, lc.average_hourly_rate_gbp
+      FROM labour_costs lc
+      JOIN master.sites s ON s.site_id = lc.site_id
+      WHERE lc.week_start = CAST($week_start AS DATE)
+        AND ($site_id IS NULL OR lc.site_id = $site_id)
+        AND ($region IS NULL OR s.region = $region)
+      ORDER BY lc.labour_cost_pct DESC
+    limit: 50
+    example: {week_start: "-7d"}
+
+  - name: get_staffing_levels_for_store
+    desc: Current staffing levels by role for a store. Returns employee counts and FTE equivalent.
+    kind: sql
+    args:
+      site_id: {required: true}
+    sql: |
+      SELECT e.site_id, s.name, e.role, COUNT(*) AS headcount,
+             COUNT(*) FILTER (WHERE e.status = 'active') AS active_staff,
+             COUNT(*) FILTER (WHERE e.status = 'agency') AS agency_staff,
+             'headcount = active + agency' AS formula
+      FROM master.employees e
+      JOIN master.sites s ON s.site_id = e.site_id
+      WHERE e.site_id = $site_id
+      GROUP BY ALL
+    limit: 50
+    example: {site_id: ST214}
+
+  - name: approve_rota_for_store
+    desc: Approves a draft rota and publishes it to staff. Returns the updated rota status.
+    kind: update
+    table: staff_rotas
+    set: {status: published, approved_at: "$as_of"}
+    args:
+      approved_by: {required: true, desc: "Employee id of approver"}
+    example: {rota_id: ROT-900001, approved_by: EMP-00100}
+
+  - name: update_shift_for_employee
+    desc: Change an employee's shift date, start or end time. Returns the updated shift details.
+    kind: update
+    table: rota_shifts
+    set: {status: swapped, updated_at: "$as_of"}
+    args:
+      shift_start: {type: timestamp, desc: "New shift start time"}
+      shift_end: {type: timestamp, desc: "New shift end time"}
+    example: {shift_id: SFT-900001, shift_start: "2026-10-14T09:00:00", shift_end: "2026-10-14T17:00:00"}
