@@ -1,0 +1,62 @@
+- question: "08:75:Q1"
+  story: |
+    PTN-002 (major wholesale customer) had four orders placed from Sep 20-26 (WOL-900001 to WOL-900004)
+    for 1,850 total units across four SKUs. Each arrived short or failed: WOL-900001 50 units short due to carrier
+    (shipped 450 of 500), WOL-900002 80 short due to quality (shipped 320 of 400), WOL-900003 400 short due to
+    stock (shipped 200 of 600 allocated), WOL-900004 fully failed (0 of 350 allocated due to zero stock allocation).
+    This story lets us investigate each short order with its allocation, pick, and carrier details.
+  checks:
+    - tool: get_wholesale_orders_for_customer
+      args: {partner_id: PTN-002}
+      expect: ["WOL-900001", "WOL-900002", "WOL-900003", "WOL-900004", "partial", "failed"]
+    - tool: draft_response_to_customer_buyer
+      args: {partner_id: PTN-002}
+      expect: ["Freeman-Sharp", "order fulfillment", "WOL-900001", "WOL-900002"]
+
+- question: "08:75:Q2"
+  story: |
+    Three customers placed orders totalling 1,850 units but we only have 800 units. PTN-003 ordered 550 units (WOL-900006, WOL-900007),
+    PTN-004 ordered 1,400 units (WOL-900008, WOL-900009), PTN-005 ordered 1,000 units (WOL-900010, WOL-900011).
+    With only 800 available, we need to allocate: PTN-004 (highest value £920k) gets 400, PTN-002 (value £1.2M) gets 250, PTN-005 (value £750k) gets 150.
+    After allocation, send short-shipment notices to PTN-005 and PTN-003 for the shortfall.
+  checks:
+    - tool: get_customer_account_value
+      args: {partner_id: PTN-004}
+      expect: ["PTN-004", "920000"]
+    - tool: get_customer_account_value
+      args: {partner_id: PTN-005}
+      expect: ["PTN-005", "750000"]
+    - tool: send_short_shipment_notice_to_customers
+      args: {partner_id: PTN-005, order_id: WOL-900010, qty_short: 100, reason: "Insufficient stock for allocation"}
+      expect: ["SSN-", "PTN-005", "WOL-900010", "sent"]
+
+- question: "08:75:Q4"
+  story: |
+    Key accounts for next quarter forecast: PTN-001 (value £850k, 450 units/week sell-through, 2,800 units stock),
+    PTN-002 (value £1.2M, 620 units/week, 3,500 stock), PTN-004 (£920k, 540/week, 3,100 stock) all have active data feeds (95%, 90%, 92% coverage).
+    PTN-003 and PTN-006 have stale feeds (85% and 75% coverage, last updated 7+ days ago).
+    This data supports forecasting next quarter orders based on current sell-through and stock ratios.
+  checks:
+    - tool: get_key_account_sell_through_and_stock
+      args: {}
+      expect: ["PTN-001", "PTN-002", "PTN-004", "active", "620", "850000"]
+    - tool: get_data_feed_coverage_by_account
+      args: {data_feed_status: active}
+      expect: ["PTN-001", "PTN-002", "active", "95"]
+
+- question: "09:83:Q1"
+  story: |
+    On 2026-10-05, PO_ACK messages from five partners (PTN-001, PTN-002, PTN-004, PTN-005, and others) failed with mapping errors.
+    The common cause is a mapping issue in our EDI transformation (MAPPING_ERROR). PTN-001 had 5 failures (EDI-900001 through -900005 plus EDI-900013),
+    PTN-002 had 2 failures plus 1 validation error. PTN-001's connection status degraded to "failed" with 8 recent errors.
+    After mapping is corrected, we reprocess EDI-900001 (and others) by submitting for reprocessing, which increments retry_count and changes status to reprocessing.
+  checks:
+    - tool: get_failed_edi_messages
+      args: {date_from: "-1d"}
+      expect: ["EDI-900001", "PTN-001", "PO_ACK", "MAPPING_ERROR", "failed"]
+    - tool: get_edi_partner_status
+      args: {partner_id: PTN-001}
+      expect: ["PTN-001", "failed", "8"]
+    - tool: submit_edi_message_reprocess
+      args: {message_id: EDI-900001, retry_reason: "Mapping corrected"}
+      expect: ["EDI-900001", "reprocessing"]

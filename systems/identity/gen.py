@@ -260,7 +260,7 @@ def generate(g):
             "username": emp["name"].lower().replace(" ", "."),
             "user_type": "employee",
             "name": emp["name"],
-            "status": r.choices(["active", "active", "active", "locked", "disabled"], [85, 10, 3, 2])[0],
+            "status": r.choices(["active", "locked", "disabled"], [85, 10, 5])[0],
             "locked_at": None,
             "lock_reason": None,
             "is_privileged": r.random() < 0.15,

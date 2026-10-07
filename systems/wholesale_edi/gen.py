@@ -18,7 +18,7 @@ def generate(g):
         # Generate 3-8 orders per partner
         for _ in range(r.randint(3, 8)):
             order_counter += 1
-            order_date = g.date_between(g.days_ago(60), g.days_ago(1))
+            order_date = g.as_of - timedelta(days=r.randint(1, 60))
             sku = r.choice(skus)
             qty_ordered = r.randint(50, 500)
 
@@ -72,7 +72,7 @@ def generate(g):
         # Generate 10-30 messages per partner
         for _ in range(r.randint(10, 30)):
             message_counter += 1
-            sent_at = g.date_between(g.days_ago(30), datetime.now())
+            sent_at = g.as_of - timedelta(days=r.randint(0, 30))
             msg_type = r.choice(message_types)
 
             # Status: mostly success, some failed/reprocessing
