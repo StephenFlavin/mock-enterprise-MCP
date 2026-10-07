@@ -124,8 +124,8 @@ tools:
       sailing_to: {type: date, desc: "Only sailings on or before this date, e.g. +60d"}
     sql: |
       SELECT booking_id, po_id, shipment_id, carrier_id, origin_port, dest_port, planned_sailing,
-             CAST(planned_sailing AS DATE) - cut_off_days AS cargo_cut_off_date,
-             CAST(planned_sailing AS DATE) + transit_days AS planned_eta,
+             CAST(planned_sailing AS DATE) - CAST(cut_off_days AS INTEGER) AS cargo_cut_off_date,
+             CAST(planned_sailing AS DATE) + CAST(transit_days AS INTEGER) AS planned_eta,
              container_count, booking_status, priority, partner_id, franchise_order_id, cargo_range, cost_gbp
       FROM ocean_bookings
       WHERE ($booking_status = 'any' OR booking_status = $booking_status)
@@ -156,7 +156,7 @@ tools:
              roll_count, CAST(original_sailing AS DATE) - CAST(booking_date AS DATE) AS booking_lead_days,
              container_count, roll_reason, booking_status
       FROM ocean_bookings
-      WHERE roll_count > 0 AND booking_status <> 'cancelled'
+      WHERE roll_count > 0 AND booking_status <> 'cancelled' AND partner_id IS NULL
         AND ($carrier_id IS NULL OR carrier_id = $carrier_id)
         AND ($origin_port IS NULL OR origin_port = upper($origin_port))
         AND ($dest_port IS NULL OR dest_port = upper($dest_port))
@@ -181,7 +181,7 @@ tools:
                     ELSE '3 28+ days ahead' END AS lead_band,
                CASE WHEN container_count >= 3 THEN '3+ containers' ELSE '1-2 containers' END AS size_band
         FROM ocean_bookings
-        WHERE booking_status IN ('sailed', 'in_transit', 'delivered')
+        WHERE booking_status IN ('sailed', 'in_transit', 'delivered') AND partner_id IS NULL
           AND CAST(planned_sailing AS DATE) >= CAST($sailing_from AS DATE)
           AND ($carrier_id IS NULL OR carrier_id = $carrier_id))
       SELECT CASE $group_by WHEN 'carrier_id' THEN carrier_id WHEN 'origin_port' THEN origin_port
@@ -234,7 +234,7 @@ tools:
              round(avg(container_count), 1) AS avg_containers_per_booking,
              round(100.0 * sum(container_count) / sum(sum(container_count)) OVER (), 1) AS share_of_selection_pct
       FROM ocean_bookings
-      WHERE booking_status IN ('sailed', 'in_transit', 'delivered')
+      WHERE booking_status IN ('sailed', 'in_transit', 'delivered') AND partner_id IS NULL
         AND ($origin_port IS NULL OR origin_port = upper($origin_port))
         AND ($dest_port IS NULL OR dest_port = upper($dest_port))
         AND CAST(planned_sailing AS DATE) >= CAST($as_of AS DATE) - INTERVAL (CAST($months_back AS INT) * 30) DAY
@@ -276,9 +276,9 @@ tools:
       WITH org AS (SELECT upper(COALESCE($origin_port, (SELECT origin_port FROM ocean_bookings WHERE po_id = $po_id AND booking_status <> 'cancelled' LIMIT 1))) AS port)
       SELECT 'booked_sailing' AS source, booking_id AS reference, carrier_id, 'sea' AS mode, origin_port, dest_port,
              planned_sailing AS departure_date,
-             CAST(planned_sailing AS DATE) - cut_off_days AS cargo_cut_off,
-             CAST(planned_sailing AS DATE) - cut_off_days - 1 AS documents_cut_off,
-             (CAST(planned_sailing AS DATE) - cut_off_days) - CAST($as_of AS DATE) AS days_until_cargo_cut_off,
+             CAST(planned_sailing AS DATE) - CAST(cut_off_days AS INTEGER) AS cargo_cut_off,
+             CAST(planned_sailing AS DATE) - CAST(cut_off_days AS INTEGER) - 1 AS documents_cut_off,
+             CAST(planned_sailing AS DATE) - CAST(cut_off_days AS INTEGER) - CAST($as_of AS DATE) AS days_until_cargo_cut_off,
              'Cargo gated in ' || cut_off_days || ' days before sailing; documents 1 day earlier' AS rule
       FROM ocean_bookings
       WHERE booking_status IN ('booked', 'rolled')

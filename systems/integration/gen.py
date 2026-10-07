@@ -140,9 +140,9 @@ def generate(g):
         proto = r.choice(["edi", "edi", "api", "sftp"])
         add_conn(f"CON-{i + 1:06d}", sup["name"], sup["supplier_id"], "supplier", proto, r.choice(TECH),
                  sup["supplier_id"] == "SUP-0006", sup["status"] == "active", sup["onboarded_date"] or g.days_ago(365),
-                 r.choices(["low", "medium"], [70, 30])[0], access_by_proto[proto])
+                 "low" if sup["supplier_id"] == "SUP-0006" else r.choices(["low", "medium"], [70, 30])[0], access_by_proto[proto])
     for j, ptn in enumerate(list(ptn_master.values())[:10]):
-        proto = r.choice(["api", "webhook", "sftp", "edi"])
+        proto = {"marketplace": "webhook", "franchise": "api"}.get(ptn["type"]) or r.choice(["edi", "edi", "sftp"])
         add_conn(f"CON-{16 + j:06d}", ptn["name"], ptn["partner_id"], "partner", proto, r.choice(TECH), False,
                  ptn["status"] == "active", ptn["since"], r.choices(["low", "medium"], [65, 35])[0], access_by_proto[proto])
     for cid, car in [("CON-000026", "CAR-001"), ("CON-000027", "CAR-002")]:

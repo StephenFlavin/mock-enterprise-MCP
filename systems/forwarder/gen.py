@@ -16,8 +16,8 @@ ASIA = {"CNSHA", "CNNGB", "CNYTN", "VNSGN", "INNSA", "BDCGP"}
 EUROPE = {"GBFXT", "GBSOU", "GBLGP", "NLRTM", "DEHAM"}
 COUNTRY_PORTS = {"CN": ["CNSHA", "CNNGB", "CNYTN"], "VN": ["VNSGN"], "IN": ["INNSA"], "BD": ["BDCGP"]}
 PORT_COST = {"CNSHA": 6700, "CNNGB": 6600, "CNYTN": 6500, "VNSGN": 6900, "INNSA": 6300, "BDCGP": 7800}
-CARRIER_ROLL = {"CAR-006": 3.0, "CAR-005": 2.2, "CAR-007": 1.0, "CAR-009": 0.6, "CAR-010": 0.5}
-GAPS = [(-97, -89), (-187, -179), (-367, -359), (53, 70)]   # day offsets from as-of left empty on purpose
+CARRIER_ROLL = {"CAR-006": 3.2, "CAR-005": 2.4, "CAR-007": 0.8, "CAR-009": 0.5, "CAR-010": 0.4}
+GAPS = [(-91, -83), (-181, -173), (-361, -353), (59, 70)]   # day offsets from as-of left empty on purpose
 BLANKS = [("CAR-005", "NLRTM", 12), ("CAR-006", "DEHAM", 19), ("CAR-007", "NLRTM", 33), ("CAR-005", "GBFXT", 26)]
 AIRPORT = {"CNSHA": "PVG", "CNNGB": "NGB", "CNYTN": "SZX", "VNSGN": "SGN", "INNSA": "BOM", "BDCGP": "DAC", "MXZLO": "MEX"}
 STORY_FROM = -82            # roll story window starts here (days from as-of)
@@ -89,18 +89,18 @@ def generate(g):
     def weight(b):
         w = CARRIER_ROLL.get(b["s"]["carrier_id"], 1.0)
         w *= 5.0 if b["lead"] < 14 else 1.2 if b["lead"] < 28 else 0.35
-        w *= 1.7 if b["n"] >= 3 else 1.0
-        w *= 2.6 if b["s"]["dest_port"] == "NLRTM" else 1.0
-        w *= 1.5 if b["s"]["origin_port"] in ("CNSHA", "CNYTN") else 1.0
+        w *= 2.6 if b["n"] >= 3 else 1.0
+        w *= 4.0 if b["s"]["dest_port"] == "NLRTM" else 1.0
+        w *= 1.8 if b["s"]["origin_port"] in ("CNSHA", "CNYTN") else 1.0
         return w
 
-    ranked = sorted(story, key=lambda b: -(r.random() ** (1.0 / weight(b))))
+    ranked = sorted(story, key=lambda b: -(math.log(weight(b)) + r.gauss(0, 0.45)))
     rolled = {id(b) for b in ranked[:k]}
     for b in base:
         b["rolls"] = 0
         if id(b) in rolled:
             b["rolls"] = 2 if r.random() < 0.15 else 1
-        elif b["status"] != "booked" and off(b["sail"]) < -97 and r.random() < 0.07:
+        elif b["status"] != "booked" and off(b["sail"]) < -91 and r.random() < 0.07:
             b["rolls"] = 1
 
     def reason(b):
@@ -140,7 +140,7 @@ def generate(g):
         if arr:
             p = 0.07
             if b["rolls"]:
-                p = 0.75 if s["dest_port"] == "NLRTM" else 0.4
+                p = 0.9
             if r.random() < p:
                 days = r.randint(2, 7) if b["rolls"] else r.randint(1, 4)
                 cdate = arr + timedelta(days=r.randint(3, 8))

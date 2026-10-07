@@ -102,12 +102,12 @@ tools:
     kind: select
     from: registered_models
     filters:
-      status: {default: active}
+      status: {}
       owner_id: {}
     columns: [model_id, name, owner_id, purpose, status, current_version, last_retrained, next_scheduled_retrain]
     order: model_id
     limit: 50
-    example: {status: active}
+    example: {}
 
   - name: get_model_health_summary
     desc: Current accuracy, drift and data freshness per model. Use to quickly assess if models need attention.
@@ -126,32 +126,41 @@ tools:
     example: {}
 
   - name: get_model_accuracy_history
-    desc: Accuracy metrics over time for a model, by segment. Use to understand degradation patterns.
+    desc: Accuracy, precision and recall over time for one model (weekly average by default, or daily). Use to see when and how fast a model degraded.
     kind: sql
     args:
       model_id: {required: true}
-      date_from: {type: date, default: "-90d", desc: "Start of history period"}
+      date_from: {type: date, default: "-120d", desc: "Start of history period"}
       date_to: {type: date, default: "+0d", desc: "End of history period"}
+      grain: {type: enum, values: [weekly, daily], default: weekly, desc: "Weekly averages or daily rows"}
     sql: |
-      SELECT model_id, metric_date, accuracy, precision, recall, prediction_count
+      SELECT model_id,
+             CASE WHEN $grain = 'daily' THEN metric_date ELSE CAST(date_trunc('week', metric_date) AS DATE) END AS period_start,
+             round(avg(accuracy), 1) AS accuracy, round(avg(precision), 1) AS precision, round(avg(recall), 1) AS recall,
+             CAST(avg(prediction_count) AS INT) AS avg_daily_predictions
       FROM model_performance_metrics
       WHERE model_id = $model_id AND metric_date >= CAST($date_from AS DATE) AND metric_date <= CAST($date_to AS DATE)
-      ORDER BY metric_date
-    limit: 100
+      GROUP BY ALL ORDER BY period_start
+    limit: 200
     example: {model_id: MOD-demand}
 
   - name: get_feature_drift_report
-    desc: Input and prediction drift statistics for a model. Use to diagnose accuracy drops or model shift.
+    desc: Feature drift score and data freshness over time for one model (weekly average by default, or daily). Use to diagnose accuracy drops or model shift.
     kind: sql
     args:
       model_id: {required: true}
-      days_back: {type: int, default: 30, desc: "Days of history"}
+      days_back: {type: int, default: 120, desc: "Days of history"}
+      grain: {type: enum, values: [weekly, daily], default: weekly, desc: "Weekly averages or daily rows"}
     sql: |
-      SELECT model_id, metric_date, feature_drift_score, data_freshness_hours, prediction_count
+      SELECT model_id,
+             CASE WHEN $grain = 'daily' THEN metric_date ELSE CAST(date_trunc('week', metric_date) AS DATE) END AS period_start,
+             round(avg(feature_drift_score), 1) AS feature_drift_score,
+             round(avg(data_freshness_hours), 0) AS data_freshness_hours,
+             CAST(avg(prediction_count) AS INT) AS avg_daily_predictions
       FROM model_performance_metrics
       WHERE model_id = $model_id AND metric_date >= CAST($as_of AS DATE) - $days_back
-      ORDER BY metric_date DESC
-    limit: 100
+      GROUP BY ALL ORDER BY period_start DESC
+    limit: 200
     example: {model_id: MOD-demand}
 
   - name: get_model_training_dataset_summary
@@ -181,16 +190,18 @@ tools:
     example: {}
 
   - name: list_model_retraining_schedule
-    desc: Last and next retraining dates for each model. Use to plan maintenance and resource allocation.
+    desc: Last and next retraining dates per model, soonest next retrain first, with days until it and the latest completed job accuracy. Use to plan retraining.
     kind: sql
     args:
-      status_filter: {type: enum, values: [active, all], default: active, desc: "Include all or active only"}
+      status_filter: {type: enum, values: [active, all], default: all, desc: "Include all models or active only"}
     sql: |
-      SELECT m.model_id, m.name, m.last_retrained, m.next_scheduled_retrain,
-             COALESCE(rj.job_id, 'none') AS latest_job_id, COALESCE(rj.new_accuracy, 'N/A') AS latest_accuracy
+      SELECT m.model_id, m.name, m.status, m.last_retrained, m.next_scheduled_retrain,
+             CAST(m.next_scheduled_retrain AS DATE) - CAST($as_of AS DATE) AS days_until_next_retrain,
+             rj.job_id AS latest_completed_job_id, rj.new_accuracy AS latest_completed_accuracy
       FROM registered_models m
-      LEFT JOIN retraining_jobs rj ON m.model_id = rj.model_id AND rj.status = 'completed'
-        AND rj.completed_at = (SELECT MAX(completed_at) FROM retraining_jobs WHERE model_id = m.model_id AND status = 'completed')
+      LEFT JOIN (SELECT *, row_number() OVER (PARTITION BY model_id ORDER BY completed_at DESC) AS rn
+                 FROM retraining_jobs WHERE status = 'completed') rj
+        ON m.model_id = rj.model_id AND rj.rn = 1
       WHERE ($status_filter = 'all' OR m.status = 'active')
       ORDER BY m.next_scheduled_retrain
     limit: 50
@@ -217,7 +228,7 @@ tools:
     kind: insert
     table: model_alert_rules
     id_prefix: RULE-
-    defaults: {enabled: true}
+    defaults: {enabled: true, created_at: $as_of, updated_at: $as_of}
     args:
       model_id: {required: true}
       rule_type: {required: true, type: enum, values: [drift, accuracy, data_freshness]}
@@ -225,20 +236,20 @@ tools:
     example: {model_id: MOD-demand, rule_type: drift, threshold: 15.0}
 
   - name: delete_model_alert_rule
-    desc: Removes an alert rule from a model. Use to disable noisy or outdated alerts.
+    desc: Deletes an alert rule by rule id. Use to remove noisy or outdated alerts; find rule ids with get_model_alert_rules.
     kind: update
     table: model_alert_rules
-    set: {enabled: false}
+    delete: true
     args: {}
-    example: {alert_rule_id: RULE-000001}
+    example: {alert_rule_id: RULE-900003}
 
   - name: submit_model_retraining_job
     desc: Starts a retraining run for a registered model on a chosen dataset. Use to refresh model with newer data.
     kind: insert
     table: retraining_jobs
     id_prefix: RET-
-    defaults: {status: scheduled}
+    defaults: {status: scheduled, scheduled_date: $as_of, created_at: $as_of}
     args:
       model_id: {required: true}
-      dataset_version: {required: true, desc: "Training dataset version to use"}
+      dataset_version: {required: true, desc: "Training dataset version to use, e.g. v2.2 (see get_model_training_dataset_summary)"}
     example: {model_id: MOD-demand, dataset_version: v2.2}

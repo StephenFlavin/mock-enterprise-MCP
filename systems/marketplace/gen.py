@@ -1,254 +1,236 @@
-"""Marketplace data: listings, rejections, policies, fees, requirements and category trees."""
-from datetime import datetime, timedelta
+"""Marketplace data: listings, rejections, policies, fees, requirements and category trees.
+
+Story: 340 listings rejected this week (5 seeded + 335 generated), grouped by error; German/French home-appliance
+requirements (DE strictest); DE/FR commission rises and DE returns/video policies this quarter.
+"""
+from datetime import timedelta
+
+MARKETS = [("MKT-DE", 0), ("MKT-FR", 13), ("MKT-UK", 26)]
+LANG = {"MKT-DE": 0, "MKT-FR": 1, "MKT-UK": 2}
+
+# (idx, parent idx, pim category, [DE name, FR name, UK name])
+NODES = [
+    (0, None, "home", ["Home & Living", "Maison", "Home & Living"]),
+    (1, 0, "kitchen", ["Kitchen & Dining", "Cuisine", "Kitchen & Dining"]),
+    (2, 1, "kitchen", ["Small Kitchen Appliances", "Petit electromenager", "Small Kitchen Appliances"]),
+    (3, 1, "kitchen", ["Cookware", "Batterie de cuisine", "Cookware"]),
+    (4, 1, "kitchen", ["Drinkware", "Verres et tasses", "Drinkware"]),
+    (5, 0, "bedding", ["Bedding & Bath", "Linge de maison", "Bedding & Bath"]),
+    (6, 5, "bedding", ["Bedding", "Literie", "Bedding"]),
+    (7, 5, "bedding", ["Towels", "Serviettes", "Towels"]),
+    (8, 0, "electrics", ["Electrics", "Electricite", "Electrics"]),
+    (9, 8, "electrics", ["Smart Home", "Maison connectee", "Smart Home"]),
+    (10, 8, "electrics", ["Lighting", "Eclairage", "Lighting"]),
+    (11, 8, "electrics", ["Fans & Heating", "Ventilateurs et chauffage", "Fans & Heating"]),
+    (12, 0, "home", ["Storage & Organisation", "Rangement", "Storage & Organisation"]),
+]
+LOCAL = {  # German / French local names where they differ from the English name
+    "MKT-DE": ["Heim & Wohnen", "Kueche", "Kleine Kuechengeraete", "Kochgeschirr", "Trinkgefaesse", "Bettwaren & Bad",
+               "Bettwaesche", "Handtuecher", "Elektro", "Smart Home", "Beleuchtung", "Ventilatoren & Heizen", "Aufbewahrung"],
+    "MKT-FR": ["Maison", "Cuisine", "Petit electromenager", "Batterie de cuisine", "Verres et tasses", "Linge de maison",
+               "Literie", "Serviettes", "Electricite", "Maison connectee", "Eclairage", "Ventilateurs et chauffage", "Rangement"],
+}
+# master product category -> category node index
+PRODUCT_NODE = {"Cookware": 3, "Drinkware": 4, "Small Appliances": 2, "Bedding": 6, "Towels": 7, "Smart Home": 9,
+                "Lighting": 10, "Storage": 12, "Audio": 8, "Personal Care": 11}
+APPLIANCE = 2  # seeded in full (content + listing requirements)
+
+
+def cat_id(mkt_base, idx):
+    return f"MKTCAT-{mkt_base + idx:06d}"
+
+
+# rejection plan for this week: (code, text, field, fixable_in_bulk, listings, suggested fix)
+PLAN = [
+    ("MISSING_IMAGE", "Missing product images", "images", False, 66, "Needs photography or supplier images; cannot be fixed from PIM data"),
+    ("INCOMPLETE_ATTRIBUTES", "Required attributes missing", "ean", True, 48, "Fill EAN from PIM in a bulk attribute file"),
+    ("INCOMPLETE_ATTRIBUTES", "Required attributes missing", "country_of_origin", True, 34, "Fill country of origin from PIM in a bulk attribute file"),
+    ("INCOMPLETE_ATTRIBUTES", "Required attributes missing", "weight", True, 19, "Fill weight from PIM in a bulk attribute file"),
+    ("INCOMPLETE_ATTRIBUTES", "Required attributes missing", "material", True, 13, "Fill material from PIM in a bulk attribute file"),
+    ("INCOMPLETE_TITLE", "Product title incomplete or too short", "title", True, 59, "Rebuild title as brand + product type + key feature + size/colour"),
+    ("MISSING_DESCRIPTION", "Description missing or too short", "description", True, 35, "Load the PIM long description (minimum 100 characters)"),
+    ("WRONG_CATEGORY", "Category does not match product type", "category_id", False, 20, "Review category mapping listing by listing"),
+    ("BRAND_MISMATCH", "Brand name conflicts", "brand", False, 17, "Brand owner approval needed from the marketplace"),
+    ("PRICE_MISMATCH", "Price outside acceptable range", "price", False, 14, "Pricing review needed"),
+    ("DUPLICATE_LISTING", "Duplicate listing exists", "listing", False, 7, "Merge or delist the duplicate listing"),
+    ("POLICY_VIOLATION", "Violates marketplace policy", "policy", False, 3, "Check policy notice and edit content"),
+]
+# extra reasons added to listings that already have a different primary reason
+SECONDARY = [("MISSING_IMAGE", 14), ("INCOMPLETE_TITLE", 6), ("MISSING_DESCRIPTION", 9), ("INCOMPLETE_ATTRIBUTES:ean", 8)]
+
+REQ_BASE = {  # pim category -> (attribute, mandatory) for generated categories
+    "kitchen": [("brand", 1), ("ean", 1), ("weight", 1), ("dimensions", 1), ("material", 1), ("colour", 0), ("country_of_origin", 1)],
+    "bedding": [("brand", 1), ("ean", 1), ("material", 1), ("care_instructions", 1), ("dimensions", 1), ("colour", 0), ("country_of_origin", 1)],
+    "electrics": [("brand", 1), ("ean", 1), ("weight", 1), ("voltage_wattage", 1), ("warranty", 1), ("colour", 0), ("country_of_origin", 1)],
+    "home": [("brand", 1), ("ean", 1), ("dimensions", 1), ("material", 0), ("colour", 0), ("country_of_origin", 1)],
+}
+REQ_FMT = {"brand": ("Max 50 chars, no special characters", "Philips"), "ean": ("13 digits", "5012345678900"),
+           "weight": ("Number + unit in kg", "1.5 kg"), "dimensions": ("length x width x height cm", "30 x 25 x 20 cm"),
+           "material": ("Primary materials, comma separated", "Stainless steel"), "colour": ("Max 30 chars", "Black"),
+           "country_of_origin": ("ISO 3166 two-letter code", "CN"), "care_instructions": ("Free text, wash symbols", "Machine wash 40C"),
+           "voltage_wattage": ("Volts and watts, e.g. 230V 2200W", "230V 2200W"), "warranty": ("Years or months", "2 years")}
+PIM_ATTRS = {  # PIM attribute definitions per PIM category (no energy label, WEEE, repairability, UKCA, voltage ...)
+    "home": ["brand", "dimensions", "colour", "material", "country_of_origin", "warranty", "sku", "ean", "weight"],
+    "kitchen": ["brand", "weight", "dimensions", "colour", "material", "country_of_origin", "warranty", "sku", "ean"],
+    "bedding": ["brand", "dimensions", "colour", "material", "care_instructions", "country_of_origin", "sku", "ean", "weight"],
+    "electrics": ["brand", "weight", "dimensions", "colour", "country_of_origin", "warranty", "sku", "ean"],
+}
+PIM_DESC = {"brand": "Product brand name", "weight": "Product weight in kg", "dimensions": "Length x width x height in cm",
+            "colour": "Product colour", "material": "Primary material composition", "country_of_origin": "ISO country code of origin",
+            "warranty": "Warranty period and terms", "sku": "Internal SKU identifier", "ean": "European Article Number",
+            "care_instructions": "Care and washing instructions"}
 
 
 def generate(g):
     r = g.rng
-    fake = g.fake
+    as_of = g.as_of
 
-    # Marketplaces we care about
-    marketplaces = [
-        {"marketplace_id": "MKT-DE", "name": "German Marketplace", "country": "DE"},
-        {"marketplace_id": "MKT-FR", "name": "French Marketplace", "country": "FR"},
-        {"marketplace_id": "MKT-UK", "name": "UK Marketplace", "country": "GB"},
-    ]
-
-    # PIM categories and their marketplace mappings
-    pim_cats = ["home", "kitchen", "bedding", "electrics"]
-
-    # Get some real SKUs from master
-    skus = [p["sku"] for p in g.master("products")[:300]]
-
-    listings = []
-    rejections = []
+    # ---- categories
     categories = []
-    policies = []
-    fee_schedule = []
-    listing_requirements = []
-    content_requirements = []
-    pim_attributes = []
+    for mkt, base in MARKETS:
+        for idx, parent, pim, names in NODES:
+            li = LANG[mkt]
+            categories.append({
+                "category_id": cat_id(base, idx), "marketplace_id": mkt,
+                "parent_category_id": cat_id(base, parent) if parent is not None else None,
+                "name": names[li], "local_name": LOCAL[mkt][idx] if mkt in LOCAL else names[li],
+                "pim_category_match": pim,
+            })
+    base_of = dict(MARKETS)
 
-    # 1. Create marketplace categories
-    cat_count = 0
-    for mkt in marketplaces:
-        for pim_cat in pim_cats:
-            parent_id = None
-            for level in range(3):
-                cat_id = f"MKTCAT-{cat_count:06d}"
-                cat_count += 1
-                categories.append({
-                    "category_id": cat_id,
-                    "marketplace_id": mkt["marketplace_id"],
-                    "parent_category_id": parent_id,
-                    "name": f"{pim_cat.title()} - Level {level}",
-                    "local_name": f"{pim_cat.title()} (L{level})" if level > 0 else pim_cat.title(),
-                    "pim_category_match": pim_cat if level == 0 else None,
-                })
-                if level == 0:
-                    parent_id = cat_id
+    # ---- listings and rejections
+    products = [p for p in g.master("products")
+                if p["category"] in PRODUCT_NODE and p["sku"] not in ("K-1700", "PF-220")]
+    pairs = [(p, m) for p in products for m, _ in MARKETS]
+    r.shuffle(pairs)
+    n_rej = 335
+    n_old = 60
+    n_other = 120
+    listings, rejections = [], []
 
-    # 2. Create marketplace listings
-    list_id = 0
-    rejected_reason_codes = [
-        ("MISSING_IMAGE", "Missing product images", "images", False),
-        ("INCOMPLETE_TITLE", "Product title incomplete or too short", "title", True),
-        ("MISSING_DESCRIPTION", "Description missing or too short", "description", True),
-        ("WRONG_CATEGORY", "Category does not match product type", "category_id", False),
-        ("INCOMPLETE_ATTRIBUTES", "Required attributes missing", "attributes", False),
-        ("BRAND_MISMATCH", "Brand name conflicts", "brand", False),
-        ("POLICY_VIOLATION", "Violates marketplace policy", None, False),
-        ("DUPLICATE_LISTING", "Duplicate listing exists", None, False),
-        ("PRICE_MISMATCH", "Price outside acceptable range", "price", False),
-    ]
-
-    for i, sku in enumerate(skus[:400]):  # 400 listings
-        mkt = r.choice(marketplaces)
-        cat = r.choice([c for c in categories if c["marketplace_id"] == mkt["marketplace_id"]])
-
-        # Determine if rejected (340 rejections, 60 listings)
-        is_rejected = r.random() < (340 / 400)
-
-        listing_id = f"LST-{list_id:06d}"
-        list_id += 1
-
-        # Date when rejected (within last 7 days)
-        rejected_date = None
-        if is_rejected:
-            days_back = r.randint(0, 6)
-            rejected_date = g.as_of - timedelta(days=days_back, hours=r.randint(0, 23), minutes=r.randint(0, 59))
-
-        submitted_date = g.as_of - timedelta(days=r.randint(1, 30))
-
-        rej_count = 0
-        if is_rejected:
-            rej_count = r.randint(1, 4)
-
+    def new_listing(p, mkt, status, rejected_at=None, rej_count=0, has_images=True, short_title=False, short_desc=False, attrs=None):
+        lid = f"LST-{len(listings):06d}"
+        base = base_of[mkt]
+        node = PRODUCT_NODE[p["category"]]
+        title = p["name"] if not short_title else p["name"].split()[0]
+        sub = as_of - timedelta(days=r.randint(8, 120))
         listings.append({
-            "listing_id": listing_id,
-            "sku": sku,
-            "marketplace_id": mkt["marketplace_id"],
-            "category_id": cat["category_id"],
-            "status": "rejected" if is_rejected else r.choices(["active", "draft", "in_review"], [60, 20, 20])[0],
-            "title": f"Product {sku}" + (r.choice([" - Premium", " - Standard", " Set"]) if r.random() < 0.3 else ""),
-            "description_length": r.randint(50, 500) if not is_rejected else r.randint(0, 100),
-            "has_images": False if is_rejected and r.random() < 0.5 else True,
-            "has_video": r.random() < 0.2,
-            "attributes_complete": 50 if is_rejected else r.randint(80, 100),
-            "submitted_at": submitted_date,
-            "rejected_at": rejected_date,
-            "rejection_count": rej_count,
-            "updated_at": rejected_date or submitted_date,
+            "listing_id": lid, "sku": p["sku"], "marketplace_id": mkt, "category_id": cat_id(base, node),
+            "status": status, "title": title,
+            "description_length": r.randint(0, 80) if short_desc else r.randint(150, 900),
+            "has_images": has_images, "has_video": r.random() < 0.25,
+            "attributes_complete": attrs if attrs is not None else r.randint(85, 100),
+            "submitted_at": sub, "rejected_at": rejected_at, "rejection_count": rej_count,
+            "updated_at": rejected_at or sub,
         })
+        return lid
 
-        # Add rejection reasons for rejected listings
-        if is_rejected:
-            reasons_applied = set()
-            num_reasons = r.randint(1, 3)
-            for _ in range(num_reasons):
-                code, text, field, bulk_fixable = r.choice(rejected_reason_codes)
-                if code not in reasons_applied:
-                    reasons_applied.add(code)
-                    rej_id = f"REJ-{len(rejections):06d}"
-                    rejections.append({
-                        "rejection_id": rej_id,
-                        "listing_id": listing_id,
-                        "sku": sku,
-                        "reason_code": code,
-                        "reason_text": text,
-                        "field_name": field,
-                        "rejected_at": rejected_date,
-                        "is_fixable_in_bulk": bulk_fixable,
-                    })
+    # primary reason slots, shuffled
+    slots = []
+    for code, text, field, bulk, n, fix in PLAN:
+        slots += [(code, text, field, bulk, fix)] * n
+    r.shuffle(slots)
+    plan_by_key = {f"{c}:{f}": (c, t, f, b, x) for c, t, f, b, _, x in PLAN for _ in [0]}
+    reasons_of = []
+    for i in range(n_rej):
+        reasons_of.append([slots[i]])
+    for key, n in SECONDARY:
+        c = key.split(":")[0]
+        pk = key if ":" in key else [k for k in plan_by_key if k.startswith(c + ":")][0]
+        slot = plan_by_key[pk]
+        done = 0
+        while done < n:
+            lst = reasons_of[r.randrange(n_rej)]
+            if all(s[0] != c for s in lst):
+                lst.append(slot)
+                done += 1
+    for i in range(n_rej):
+        p, mkt = pairs[i]
+        rs = reasons_of[i]
+        codes = {s[0] for s in rs}
+        when = as_of - timedelta(days=r.randint(0, 5), hours=r.randint(0, 23), minutes=r.randint(0, 59))
+        lid = new_listing(p, mkt, "rejected", when, r.randint(1, 3), has_images="MISSING_IMAGE" not in codes,
+                          short_title="INCOMPLETE_TITLE" in codes, short_desc="MISSING_DESCRIPTION" in codes,
+                          attrs=r.randint(35, 70) if "INCOMPLETE_ATTRIBUTES" in codes else None)
+        for code, text, field, bulk, fix in rs:
+            rejections.append({"rejection_id": f"REJ-{len(rejections):06d}", "listing_id": lid, "sku": p["sku"],
+                               "reason_code": code, "reason_text": text, "field_name": field, "rejected_at": when,
+                               "is_fixable_in_bulk": bulk, "suggested_fix": fix})
+    # older rejections (fixed since): not part of this week
+    for i in range(n_rej, n_rej + n_old):
+        p, mkt = pairs[i]
+        when = as_of - timedelta(days=r.randint(14, 70), hours=r.randint(0, 23))
+        lid = new_listing(p, mkt, "active", when, 1)
+        code, text, field, bulk, _, fix = r.choice(PLAN[:8])
+        rejections.append({"rejection_id": f"REJ-{len(rejections):06d}", "listing_id": lid, "sku": p["sku"],
+                           "reason_code": code, "reason_text": text, "field_name": field, "rejected_at": when,
+                           "is_fixable_in_bulk": bulk, "suggested_fix": fix})
+    for i in range(n_rej + n_old, n_rej + n_old + n_other):
+        p, mkt = pairs[i]
+        new_listing(p, mkt, r.choices(["active", "draft", "in_review", "paused"], [70, 12, 12, 6])[0])
 
-    # 3. Create marketplace policies
-    policy_types = ["commission_fee", "returns", "listing_requirements", "seller_agreement", "other"]
-    for i in range(8):
-        policy_id = f"POL-{i:06d}"
-        mkt = r.choice(marketplaces)
-        policy_type = r.choice(policy_types)
-        days_ago = r.randint(1, 90)
+    # ---- requirements (appliance category is seeded in full)
+    listing_reqs, content_reqs = [], []
+    for mkt, base in MARKETS:
+        strict = {"MKT-DE": 1.0, "MKT-FR": 0.7, "MKT-UK": 0.4}[mkt]
+        for idx, parent, pim, names in NODES:
+            if idx in (0, APPLIANCE):
+                continue
+            cid = cat_id(base, idx)
+            for attr, mand in REQ_BASE[pim]:
+                m = bool(mand) and not (mkt == "MKT-UK" and attr in ("country_of_origin", "dimensions"))
+                fmt, ex = REQ_FMT[attr]
+                listing_reqs.append({
+                    "requirement_id": f"REQ-{len(listing_reqs):06d}", "marketplace_id": mkt, "category_id": cid,
+                    "attribute_name": attr, "is_mandatory": m, "description": f"{attr.replace('_', ' ').capitalize()} for this category",
+                    "format_rules": fmt, "examples": ex, "effective_date": as_of - timedelta(days=300), "policy_id": None})
+            for ctype, req, mn, mx, mand in [
+                ("title", "Brand, product type and key feature", 20 if mkt != "MKT-DE" else 30, 100 if mkt != "MKT-DE" else 150, True),
+                ("description", "Full product details and benefits", 100 if mkt != "MKT-DE" else 150, 2000, True),
+                ("images", f"At least {3 if mkt == 'MKT-UK' else 5} images, white background", 3 if mkt == "MKT-UK" else 5, 20, mkt != "MKT-UK"),
+                ("attributes", "All mandatory attributes completed", 6, 50, True)]:
+                content_reqs.append({
+                    "content_req_id": f"CONT-{len(content_reqs):06d}", "marketplace_id": mkt, "category_id": cid,
+                    "content_type": ctype, "requirement": req, "min_length": mn, "max_length": mx, "mandatory": mand,
+                    "examples": None})
 
-        if policy_type == "commission_fee":
-            desc = f"Commission changed from 10% to 12% for {r.choice(['home', 'kitchen', 'bedding'])} category"
-            impact = "Reduces margins by 2% on affected categories"
-        elif policy_type == "returns":
-            desc = "Extended return window from 30 to 60 days"
-            impact = "Increases reverse logistics costs"
-        else:
-            desc = f"New {policy_type.replace('_', ' ')} policy effective"
-            impact = "Review required for compliance"
+    # ---- fee schedule: DE 10 -> 12 from 65 days ago, FR 9 -> 11 from 51 days ago, UK flat 10.5
+    fulfil = {"home": 1.75, "kitchen": 1.50, "bedding": 1.25, "electrics": 1.60}
+    fees = []
+    for mkt, base in MARKETS:
+        old_c, new_c, new_days, old_fix, new_fix = {"MKT-DE": (10.0, 12.0, 65, 0.40, 0.50),
+                                                    "MKT-FR": (9.0, 11.0, 51, 0.40, 0.50),
+                                                    "MKT-UK": (10.5, 10.5, 200, 0.50, 0.50)}[mkt]
+        for idx, parent, pim, names in NODES:
+            cid = cat_id(base, idx)
+            ful = fulfil[pim] + (0.10 if mkt != "MKT-UK" else 0)
+            old_days = 240
+            if mkt != "MKT-UK":
+                fees.append({"fee_id": f"FEE-{len(fees):06d}", "marketplace_id": mkt,
+                             "effective_date": as_of - timedelta(days=old_days), "category_id": cid, "pim_category": pim,
+                             "commission_pct": old_c, "fixed_fee_gbp": old_fix, "fulfillment_fee_gbp": ful,
+                             "previous_commission_pct": None})
+            fees.append({"fee_id": f"FEE-{len(fees):06d}", "marketplace_id": mkt,
+                         "effective_date": as_of - timedelta(days=new_days), "category_id": cid, "pim_category": pim,
+                         "commission_pct": new_c, "fixed_fee_gbp": new_fix, "fulfillment_fee_gbp": ful,
+                         "previous_commission_pct": old_c})
 
-        policies.append({
-            "policy_id": policy_id,
-            "marketplace_id": mkt["marketplace_id"],
-            "policy_type": policy_type,
-            "effective_date": g.as_of - timedelta(days=days_ago),
-            "description": desc,
-            "impact_summary": impact,
-            "previous_policy": "See marketplace announcements" if policy_type == "commission_fee" else None,
-            "announced_at": g.as_of - timedelta(days=days_ago + r.randint(1, 14)),
-        })
-
-    # 4. Create marketplace fee schedules
-    fee_id = 0
-    for mkt in marketplaces:
-        for cat in categories:
-            if cat["marketplace_id"] == mkt["marketplace_id"]:
-                commission = r.uniform(8, 15)
-                prev_commission = commission - r.uniform(-2, 2)
-
-                for d in range(2):  # Current and historical
-                    fee_id_str = f"FEE-{fee_id:06d}"
-                    fee_id += 1
-
-                    fee_schedule.append({
-                        "fee_id": fee_id_str,
-                        "marketplace_id": mkt["marketplace_id"],
-                        "effective_date": g.as_of - timedelta(days=30*d),
-                        "category_id": cat["category_id"],
-                        "pim_category": cat["pim_category_match"],
-                        "commission_pct": round(commission, 2),
-                        "fixed_fee_gbp": 0.50 if d == 0 else 0.40,
-                        "fulfillment_fee_gbp": round(r.uniform(0.5, 2.0), 2),
-                        "previous_commission_pct": round(prev_commission, 2) if d == 0 else None,
-                    })
-
-    # 5. Create listing requirements
-    req_attrs = ["brand", "weight", "dimensions", "colour", "material", "care_instructions",
-                 "warranty", "country_of_origin", "sku", "ean"]
-    req_id = 0
-    for cat in categories[:20]:  # Sample for brevity
-        for attr in r.sample(req_attrs, r.randint(5, 8)):
-            req_id_str = f"REQ-{req_id:06d}"
-            req_id += 1
-            listing_requirements.append({
-                "requirement_id": req_id_str,
-                "marketplace_id": cat["marketplace_id"],
-                "category_id": cat["category_id"],
-                "attribute_name": attr,
-                "is_mandatory": r.random() < 0.7,
-                "description": f"Product {attr} is required for compliance",
-                "format_rules": f"Max 50 chars, alphanumeric" if attr != "weight" else "Format: number + unit",
-                "examples": "Cotton, Silk" if attr == "material" else "42 x 30 x 15 cm",
-            })
-
-    # 6. Create content requirements
-    content_types = ["title", "description", "images", "video", "attributes", "SEO"]
-    cont_id = 0
-    for cat in categories[:15]:
-        for ctype in r.sample(content_types, r.randint(3, 5)):
-            cont_id_str = f"CONT-{cont_id:06d}"
-            cont_id += 1
-
-            if ctype == "title":
-                min_len, max_len = 20, 100
-                req = "Descriptive, include brand and key features"
-            elif ctype == "description":
-                min_len, max_len = 100, 2000
-                req = "Full product details, benefits, specifications"
-            elif ctype == "images":
-                min_len, max_len = 3, 20
-                req = f"Minimum {min_len} images, white background, 1200x1200px"
-            elif ctype == "video":
-                min_len, max_len = 1, 1
-                req = "Product demonstration, max 2 minutes"
-            elif ctype == "attributes":
-                min_len, max_len = 10, 50
-                req = "All mandatory attributes completed"
-            else:  # SEO
-                min_len, max_len = 10, 160
-                req = "Include keywords, optimal length for search"
-
-            content_requirements.append({
-                "content_req_id": cont_id_str,
-                "marketplace_id": cat["marketplace_id"],
-                "category_id": cat["category_id"],
-                "content_type": ctype,
-                "requirement": req,
-                "min_length": min_len,
-                "max_length": max_len,
-                "mandatory": r.random() < 0.8,
-                "examples": "Sony WH-1000XM5 Wireless Headphones" if ctype == "title" else "Premium audio quality...",
-            })
-
-    # 7. Create PIM attributes
-    for i, attr_name in enumerate(req_attrs):
-        pim_attributes.append({
-            "attribute_id": f"ATTR-{i:06d}",
-            "attribute_name": attr_name,
-            "pim_category": r.choice(pim_cats),
-            "data_type": r.choice(["text", "number", "enum", "date", "image"]),
-            "is_mandatory": r.random() < 0.5,
-            "description": f"PIM attribute for {attr_name}",
-        })
+    # ---- PIM attribute definitions per PIM category
+    pim_attrs = []
+    for pim, attrs in PIM_ATTRS.items():
+        for a in attrs:
+            pim_attrs.append({
+                "attribute_id": f"ATTR-{len(pim_attrs):06d}", "attribute_name": a, "pim_category": pim,
+                "data_type": "number" if a == "weight" else "text",
+                "is_mandatory": a in ("brand", "sku", "ean", "country_of_origin"), "description": PIM_DESC[a]})
 
     return {
         "marketplace_listings": listings,
         "listing_rejections": rejections,
         "marketplace_categories": categories,
-        "marketplace_policies": policies,
-        "marketplace_fee_schedule": fee_schedule,
-        "marketplace_listing_requirements": listing_requirements,
-        "marketplace_content_requirements": content_requirements,
-        "pim_attributes": pim_attributes,
+        "marketplace_policies": [],
+        "marketplace_fee_schedule": fees,
+        "marketplace_listing_requirements": listing_reqs,
+        "marketplace_content_requirements": content_reqs,
+        "pim_attributes": pim_attrs,
     }
