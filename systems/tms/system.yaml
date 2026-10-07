@@ -29,7 +29,7 @@ tables:
       units: {type: int, desc: Total units}
       fill_rate_pct: {type: float, desc: "Vehicle utilisation percentage"}
       freight_cost_gbp: {type: float, desc: Transport cost in GBP}
-      delay_minutes: {type: int, desc: Minutes late vs planned arrival (null if on time)"}
+      delay_minutes: {type: int, desc: "Minutes late vs planned arrival (null if on time)"}
       is_split: {type: bool, desc: "True if order was split across shipments"}
       created_at: {type: timestamp, desc: Created timestamp}
       updated_at: {type: timestamp, desc: Last updated}
@@ -43,9 +43,9 @@ tables:
       status: {type: enum, values: [active, paused, blocked, trial], desc: Allocation status}
       weekly_capacity_trips: {type: int, desc: Weekly trips contracted}
       weekly_capacity_pallets: {type: int, desc: Weekly pallets contracted}
-      rate_per_trip_gbp: {type: float, desc: Contracted rate per trip"}
-      rate_per_pallet_gbp: {type: float, desc: Contracted rate per pallet"}
-      min_pieces: {type: int, desc: Minimum pieces per shipment"}
+      rate_per_trip_gbp: {type: float, desc: "Contracted rate per trip"}
+      rate_per_pallet_gbp: {type: float, desc: "Contracted rate per pallet"}
+      min_pieces: {type: int, desc: "Minimum pieces per shipment"}
       cutoff_hour: {type: int, desc: "Booking cutoff hour (24-hour format)"}
       cutoff_day_offset: {type: int, desc: "Days in advance to book"}
       pct_allocation: {type: float, desc: "Percentage of lane volume allocated"}
@@ -129,8 +129,9 @@ tables:
       created_at: {type: timestamp, desc: Created}
 
   planned_stops:
-    key: [lane, customer_or_store]
+    key: stop_id
     cols:
+      stop_id: {type: str, desc: "Stop record, e.g. STP-000123"}
       lane: {type: str, desc: Lane}
       customer_or_store: {type: str, desc: "Customer/store id or name"}
       stop_time_minutes: {type: int, desc: "Planned unload time in minutes"}
@@ -169,8 +170,9 @@ tables:
       created_at: {type: timestamp, desc: Created}
 
   postcodes:
-    key: postcode
+    key: postcode_id
     cols:
+      postcode_id: {type: str, desc: "Postcode record, e.g. PC-000001"}
       postcode: {type: str, desc: "UK postcode, e.g. M1 1AA"}
       region: {type: str, desc: "Region, e.g. North West"}
       carrier_id: {type: str, desc: "Carrier offering next-day"}
@@ -194,7 +196,7 @@ tables:
       updated_at: {type: timestamp, desc: Last updated}
 
 tools:
-  # Stage 1 tools: 21 tools
+  # Stage 1: 21 read-only tools for analysis
 
   - name: list_late_outbound_departures
     desc: Late outbound departures by lane, showing plan vs actual and delay impact.
@@ -217,7 +219,7 @@ tools:
         AND CAST(s.actual_departure AS DATE) > CAST(s.planned_departure AS DATE)
       ORDER BY s.actual_departure DESC
     limit: 50
-    example: {lane: "DC1-ST214"}
+    example: {}
 
   - name: get_lane_performance_summary
     desc: Lane-level on-time, fill rate and cost summary for a period. One row per lane.
@@ -244,8 +246,8 @@ tools:
     desc: "Lists delayed, failed or exception shipments grouped by lane."
     kind: sql
     args:
-      status: {type: enum, values: [delayed, failed, split], default: delayed}
-      date_from: {type: date, default: "-21d", desc: "Since"}
+      status: {type: enum, values: [delayed, failed, split], default: delayed, desc: "Exception type"}
+      date_from: {type: date, default: "-21d", desc: "Since this date"}
     sql: |
       SELECT s.lane, COUNT(*) AS exception_count,
              STRING_AGG(s.shipment_id, '; ') AS shipment_ids,
@@ -259,14 +261,14 @@ tools:
       GROUP BY s.lane
       ORDER BY exception_count DESC
     limit: 50
-    example: {status: delayed}
+    example: {}
 
   - name: get_lane_fill_rate_trend
     desc: Fill-rate trend by lane over time, weekly granularity.
     kind: sql
     args:
-      lane: {}
-      weeks_back: {type: int, default: 12}
+      lane: {desc: "Lane code, e.g. DC1-ST001"}
+      weeks_back: {type: int, default: 12, desc: "Number of weeks to analyse"}
     sql: |
       SELECT cp.period_start,
              ROUND(AVG(cp.fill_rate_avg_pct), 1) AS fill_rate_pct,
@@ -274,29 +276,19 @@ tools:
              ROUND(SUM(cp.total_cost_gbp), 2) AS weekly_cost_gbp
       FROM carrier_performance cp
       WHERE cp.lane = $lane
-        AND cp.period_start >= CAST($as_of AS DATE) - INTERVAL (CAST($weeks_back AS INT) * 7) DAY
+        AND cp.period_start >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK)
       GROUP BY cp.period_start
       ORDER BY cp.period_start
     limit: 52
-    example: {lane: "DC1-ST214"}
-
-  - name: reassign_shipment_to_carrier
-    desc: "Changes the assigned carrier on a planned or open shipment. Returns old and new carrier."
-    kind: update
-    table: shipments
-    set: {carrier_id: "{carrier_id}", updated_at: "$as_of"}
-    args:
-      carrier_id: {required: true}
-      reason: {required: true, desc: "Reason for change, e.g. backup carrier"}
-    example: {shipment_id: "SHP-900001", carrier_id: "CAR-008", reason: "Primary carrier unavailable"}
+    example: {}
 
   - name: get_carrier_on_time_performance
-    desc: "On-time delivery performance by carrier, lane and period. Best and worst carriers first by request."
+    desc: "On-time delivery performance by carrier, lane and period."
     kind: sql
     args:
-      carrier_id: {desc: "Blank for all carriers"}
-      lane: {desc: "Blank for all lanes"}
-      period_start: {type: date, default: "-90d", desc: Start of period}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {desc: "Lane code, blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Start of analysis period"}
     sql: |
       SELECT cp.carrier_id, c.name AS carrier_name, cp.lane,
              cp.period_start, cp.period_end,
@@ -311,37 +303,25 @@ tools:
         AND cp.period_start >= CAST($period_start AS DATE)
       ORDER BY cp.on_time_pct DESC, cp.period_start DESC
     limit: 100
-    example: {lane: "DC1-ST214"}
-
-  - name: create_carrier_trial_allocation
-    desc: "Creates a trial allocation sending a share of selected lanes' volume to a named carrier."
-    kind: insert
-    table: allocation_scenarios
-    id_prefix: "TRL-"
-    defaults: {scenario_type: trial_allocation, status: draft}
-    args:
-      lanes_affected: {required: true, desc: "Comma-separated lane codes"}
-      carrier_id: {required: true}
-      volume_pct: {required: true, type: float, desc: "% of lane volume to allocate"}
-    example: {lanes_affected: "DC1-ST214,DC1-ST215", carrier_id: "CAR-012", volume_pct: 40}
+    example: {}
 
   - name: get_carrier_cutoff_schedule
     desc: "Carrier collection times and order cut-offs per lane."
     kind: select
     from: carriers_lanes
     filters:
-      carrier_id: {}
-      lane: {}
+      carrier_id: {desc: "Carrier id"}
+      lane: {desc: "Lane code"}
     columns: [carrier_id, lane, cutoff_hour, cutoff_day_offset, mode]
     order: lane
     limit: 100
-    example: {carrier_id: "CAR-007"}
+    example: {}
 
   - name: get_carrier_for_inbound_shipment
     desc: "Carrier, trailer and delivery details for an inbound shipment."
     kind: sql
     args:
-      po_id: {}
+      po_id: {desc: "Purchase order id"}
     sql: |
       SELECT s.shipment_id, s.po_id, s.carrier_id, c.name AS carrier_name,
              s.mode, s.planned_arrival, s.actual_arrival,
@@ -351,28 +331,28 @@ tools:
       WHERE s.po_id = $po_id AND s.status IN ('in_transit', 'delivered')
       ORDER BY s.actual_arrival DESC NULLS LAST
     limit: 5
-    example: {po_id: "PO-2026-004512"}
+    example: {}
 
   - name: get_carrier_next_day_coverage_by_postcode
     desc: "Retrieves carrier next-day delivery coverage by postcode."
     kind: select
     from: postcodes
     filters:
-      postcode: {op: like}
-      next_day_available: {default: true}
-      region: {}
+      postcode: {op: like, desc: "Postcode or prefix, e.g. M1"}
+      next_day_available: {default: true, desc: "Filter for next-day available"}
+      region: {desc: "Region, blank for all"}
     columns: [postcode, region, carrier_id, next_day_available, next_day_cost_gbp]
     order: postcode
     limit: 100
-    example: {postcode: "M1", region: "North West"}
+    example: {}
 
   - name: get_carrier_claims_history
     desc: "Damage and loss claims history by carrier, worst first."
     kind: sql
     args:
-      carrier_id: {}
-      incident_type: {type: enum, values: [damage_claim, loss_claim], default: damage_claim}
-      period_start: {type: date, default: "-365d", desc: "Claims from"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_type: {type: enum, values: [damage_claim, loss_claim], default: damage_claim, desc: "Type of claim"}
+      period_start: {type: date, default: "-365d", desc: "Claims from this date onwards"}
     sql: |
       SELECT ci.incident_id, ci.carrier_id, c.name AS carrier_name,
              ci.lane, ci.incident_type, ci.incident_date,
@@ -385,13 +365,13 @@ tools:
         AND ci.incident_date >= CAST($period_start AS DATE)
       ORDER BY ci.claim_value_gbp DESC
     limit: 50
-    example: {carrier_id: "CAR-007"}
+    example: {}
 
   - name: get_carrier_concentration_risk
     desc: "Share of volume by carrier and dependency risk assessment."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d", desc: "Analysis period"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT ci.carrier_id, c.name AS carrier_name,
              COUNT(DISTINCT ci.lane) AS lanes_served,
@@ -410,9 +390,9 @@ tools:
     desc: "Costs a lane or carrier mix scenario from volumes and rate cards."
     kind: sql
     args:
-      lane: {required: true}
-      volume_units: {type: int, required: true, desc: "Shipment units to cost"}
-      carrier_id: {desc: "Specific carrier, or blank for all allocated carriers"}
+      lane: {required: true, desc: "Lane code, e.g. DC1-ST001"}
+      volume_units: {type: int, required: true, desc: "Number of shipment units to cost"}
+      carrier_id: {desc: "Specific carrier id, or blank for all allocated carriers"}
     sql: |
       SELECT $lane AS lane,
              COALESCE($carrier_id, 'mixed') AS carrier_scenario,
@@ -424,13 +404,13 @@ tools:
         AND ($carrier_id IS NULL OR cl.carrier_id = $carrier_id)
         AND cl.status = 'active'
     limit: 1
-    example: {lane: "DC1-ST214", volume_units: 500, carrier_id: "CAR-007"}
+    example: {}
 
   - name: calculate_scenario_cost_and_service
     desc: "Calculates cost and service outcome of an allocation scenario."
     kind: sql
     args:
-      scenario_id: {}
+      scenario_id: {desc: "Scenario id, e.g. SCN-000001"}
     sql: |
       SELECT sce.scenario_id, sce.scenario_type, sce.lanes_affected,
              sce.volume_units, ROUND(sce.total_cost_gbp, 2) AS total_cost_gbp,
@@ -441,29 +421,33 @@ tools:
       FROM allocation_scenarios sce
       WHERE sce.scenario_id = $scenario_id
     limit: 1
-    example: {scenario_id: "SCN-900001"}
+    example: {}
 
   - name: calculate_transfer_cost
     desc: "Calculate transfer cost between DCs for a stock rebalance."
-    kind: insert
-    table: transfer_scenarios
-    id_prefix: "TRN-"
-    defaults: {is_benefit_calculated: false, status: planned}
+    kind: sql
     args:
       from_site_id: {required: true, desc: "Source DC"}
       to_site_id: {required: true, desc: "Destination DC"}
       sku: {required: true}
-      units: {required: true, type: int}
-      transport_cost_gbp: {required: true, type: float}
-    example: {from_site_id: "DC1", to_site_id: "DC2", sku: "STY-5520", units: 200, transport_cost_gbp: 450}
+      units: {type: int, required: true, desc: "Units to transfer"}
+    sql: |
+      SELECT $from_site_id AS from_site,
+             $to_site_id AS to_site,
+             $sku AS sku,
+             $units AS units,
+             ROUND($units * 1.5, 2) AS transport_cost_gbp,
+             'Cost estimated at 1.5 per unit' AS formula
+      LIMIT 1
+    example: {}
 
   - name: calculate_transport_cost_impact
     desc: "Calculate transport cost impact of changing sourcing strategy or network design."
     kind: sql
     args:
-      scenario_description: {required: true, desc: "What-if scenario text"}
-      base_volume_units: {type: int, required: true}
-      mode_change: {type: enum, values: [centralise, distribute, outsource, insource, air_to_ground]}
+      scenario_description: {required: true, desc: "What-if scenario description"}
+      base_volume_units: {type: int, required: true, desc: "Number of base units"}
+      mode_change: {type: enum, values: [centralise, distribute, outsource, insource, air_to_ground], desc: "Type of change"}
     sql: |
       SELECT $scenario_description AS scenario,
              $base_volume_units AS base_volume,
@@ -473,18 +457,17 @@ tools:
              ROUND(150 * $base_volume_units / 1000, 2) AS base_transport_cost_gbp,
              ROUND(150 * (CASE WHEN $mode_change = 'centralise' THEN ROUND($base_volume_units * 0.85, 0)
                                WHEN $mode_change = 'distribute' THEN ROUND($base_volume_units * 1.15, 0)
-                               ELSE $base_volume_units END) / 1000 *
-                        (CASE WHEN $mode_change = 'air_to_ground' THEN 0.6 ELSE 1.0 END), 2) AS adjusted_transport_cost_gbp,
-             'Transport cost varies by volume and mode; air 60% of ground' AS formula
+                               ELSE $base_volume_units END) / 1000, 2) AS adjusted_transport_cost_gbp,
+             'Transport cost varies by volume; air is premium' AS formula
       LIMIT 1
-    example: {scenario_description: "Move online from wave to continuous batching", base_volume_units: 50000, mode_change: centralise}
+    example: {}
 
   - name: compare_freight_ledger_to_tms
     desc: "Reconcile freight ledger cost to TMS shipment cost, highlighting variances."
     kind: sql
     args:
-      period_start: {type: date, default: "-30d"}
-      period_end: {type: date, default: "+0d"}
+      period_start: {type: date, default: "-30d", desc: "Reconciliation period start"}
+      period_end: {type: date, default: "+0d", desc: "Reconciliation period end"}
     sql: |
       SELECT COUNT(*) AS shipments,
              ROUND(SUM(s.freight_cost_gbp), 2) AS tms_total_gbp,
@@ -500,8 +483,8 @@ tools:
     desc: "Calculates bottleneck by day for a forecast period, showing constrained capacity."
     kind: sql
     args:
-      from_date: {type: date, default: "-7d"}
-      to_date: {type: date, default: "+14d"}
+      from_date: {type: date, default: "-7d", desc: "Start of analysis period"}
+      to_date: {type: date, default: "+14d", desc: "End of analysis period"}
     sql: |
       SELECT DATE(s.planned_departure) AS day,
              COUNT(*) AS planned_shipments,
@@ -523,7 +506,7 @@ tools:
     kind: sql
     args:
       period_start: {type: date, default: "+0d", desc: "Forecast period start"}
-      weeks_ahead: {type: int, default: 4}
+      weeks_ahead: {type: int, default: 4, desc: "Number of weeks to forecast"}
     sql: |
       SELECT cl.lane,
              SUM(cl.weekly_capacity_pallets * $weeks_ahead) AS contracted_pallets,
@@ -561,15 +544,15 @@ tools:
         AND cl.status = 'active'
       ORDER BY cl.lane
     limit: 100
-    example: {origin_site_id: "DC1", delivery_target_date: "2026-11-15"}
+    example: {}
 
   - name: calculate_delivery_time_by_scenario
     desc: "Calculate delivery time (days) by scenario (e.g., different network or mode)."
     kind: sql
     args:
-      origin_site_id: {required: true}
-      destination_site_id: {required: true}
-      scenario: {type: enum, values: [current, single_dc, regional_dc, overseas], default: current}
+      origin_site_id: {required: true, desc: "DC origin, e.g. DC1"}
+      destination_site_id: {required: true, desc: "Store destination, e.g. ST001"}
+      scenario: {type: enum, values: [current, single_dc, regional_dc, overseas], default: current, desc: "Network scenario"}
     sql: |
       SELECT $origin_site_id AS origin,
              $destination_site_id AS destination,
@@ -579,14 +562,14 @@ tools:
                   WHEN $scenario = 'overseas' THEN 14
                   ELSE 1 END AS transit_days
       LIMIT 1
-    example: {origin_site_id: "DC1", destination_site_id: "ST214", scenario: current}
+    example: {}
 
   - name: calculate_extra_shipping_cost_of_splits
     desc: "Calculates extra shipping cost of splits."
     kind: sql
     args:
-      date_from: {type: date, default: "-30d"}
-      date_to: {type: date, default: "+0d"}
+      date_from: {type: date, default: "-30d", desc: "Analysis period start"}
+      date_to: {type: date, default: "+0d", desc: "Analysis period end"}
     sql: |
       SELECT COUNT(DISTINCT s.order_id) AS split_orders,
              SUM(s.lines_count) AS total_lines,
@@ -605,14 +588,14 @@ tools:
     desc: "Observed delay and extra cost from a disruption."
     kind: sql
     args:
-      carrier_id: {}
-      incident_id: {}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_id: {desc: "Incident id, blank for all"}
     sql: |
       SELECT ci.incident_id, ci.carrier_id, c.name AS carrier,
              ci.incident_type, ci.lane, ci.incident_date,
              COUNT(DISTINCT s.shipment_id) AS affected_shipments,
-             ROUND(AVG(s.delay_minutes), 0) AS avg_delay_minutes,
-             ROUND(SUM(ci.extra_cost_gbp), 2) AS extra_cost_gbp,
+             ROUND(AVG(COALESCE(s.delay_minutes, 0)), 0) AS avg_delay_minutes,
+             ROUND(SUM(COALESCE(ci.extra_cost_gbp, 0)), 2) AS extra_cost_gbp,
              ci.description
       FROM carrier_incidents ci
       LEFT JOIN master.carriers c ON c.carrier_id = ci.carrier_id
@@ -622,13 +605,13 @@ tools:
       GROUP BY ci.incident_id, ci.carrier_id, c.name, ci.incident_type,
                ci.lane, ci.incident_date, ci.description
     limit: 50
-    example: {carrier_id: "CAR-007"}
+    example: {}
 
   - name: get_air_freight_cost_for_rolled_bookings
     desc: "Air freight cost incurred recovering rolled bookings."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT COUNT(*) AS air_recovery_shipments,
              SUM(af.units) AS units_airfreighted,
@@ -644,7 +627,7 @@ tools:
     desc: "Air freight volumes and emissions by lane."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT af.origin_site_id, af.dest_site_id,
              CONCAT(af.origin_site_id, '-', af.dest_site_id) AS lane,
@@ -665,18 +648,18 @@ tools:
     kind: select
     from: air_freight
     filters:
-      reason_code: {}
-      period_start: {col: created_at, op: ">=", type: date, default: "-90d"}
+      reason_code: {desc: "Reason category, blank for all"}
+      created_at: {col: created_at, op: ">=", type: date, default: "-90d", desc: "Air freight from this date"}
     columns: [air_shipment_id, reason_code, reason_detail, units, cost_gbp, created_at]
     order: created_at DESC
     limit: 100
-    example: {reason_code: "stockout_recovery"}
+    example: {}
 
   - name: get_split_shipment_rate_trend
     desc: "Retrieves split shipment rate trend."
     kind: sql
     args:
-      weeks_back: {type: int, default: 12}
+      weeks_back: {type: int, default: 12, desc: "Number of weeks to analyse"}
     sql: |
       SELECT DATE_TRUNC('week', CAST(s.actual_departure AS TIMESTAMP)) AS week_start,
              COUNT(DISTINCT s.order_id) AS orders,
@@ -695,19 +678,19 @@ tools:
     kind: select
     from: shipments
     filters:
-      status: {default: in_transit}
-      carrier_id: {}
-      lane: {}
+      status: {default: in_transit, desc: "Shipment status"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {desc: "Lane code, blank for all"}
     columns: [shipment_id, carrier_id, lane, planned_arrival, units, weight_kg, status]
     order: planned_arrival
     limit: 100
-    example: {status: in_transit}
+    example: {}
 
   - name: list_open_shipments_by_lane
     desc: "Open shipments grouped by lane."
     kind: sql
     args:
-      status: {type: enum, values: [planned, booked], default: planned}
+      status: {type: enum, values: [planned, booked], default: planned, desc: "Shipment status"}
     sql: |
       SELECT s.lane,
              COUNT(*) AS open_shipments,
@@ -718,16 +701,16 @@ tools:
       GROUP BY s.lane
       ORDER BY total_units DESC
     limit: 100
-    example: {status: planned}
+    example: {}
 
   - name: list_planned_shipments_by_date_window
     desc: "Planned shipments with dates falling in a window."
     kind: select
     from: shipments
     filters:
-      planned_departure: {col: planned_departure, op: ">=", type: date, default: "+0d"}
-      planned_arrival_to: {col: planned_arrival, op: "<=", type: date, default: "+7d"}
-      status: {default: planned}
+      planned_departure: {col: planned_departure, op: ">=", type: date, default: "+0d", desc: "Departing on or after"}
+      planned_arrival_to: {col: planned_arrival, op: "<=", type: date, default: "+7d", desc: "Arriving on or before"}
+      status: {default: planned, desc: "Shipment status"}
     columns: [shipment_id, carrier_id, lane, planned_departure, planned_arrival, units]
     order: planned_departure
     limit: 200
@@ -738,9 +721,9 @@ tools:
     kind: select
     from: route_hours_breaches
     filters:
-      route_id: {}
-      breach_type: {}
-      status: {default: reported}
+      route_id: {desc: "Route id, blank for all"}
+      breach_type: {desc: "Type of breach, blank for all"}
+      status: {default: reported, desc: "Status filter"}
     columns: [breach_id, route_id, driver_id, breach_type, hours_breached, status]
     order: hours_breached DESC
     limit: 100
@@ -751,9 +734,9 @@ tools:
     kind: select
     from: route_plans
     filters:
-      date: {type: date, default: "+0d"}
-      lane: {}
-      status: {}
+      date: {type: date, default: "+0d", desc: "Route execution date"}
+      lane: {desc: "Lane code, blank for all"}
+      status: {desc: "Route status, blank for all"}
     columns: [route_id, date, lane, vehicle_type, stops_count, planned_hours, planned_utilisation_pct, status]
     order: date
     limit: 100
@@ -764,11 +747,11 @@ tools:
     kind: select
     from: planned_stops
     filters:
-      lane: {}
-    columns: [lane, customer_or_store, stop_time_minutes, frequency_per_week]
+      lane: {desc: "Lane code, blank for all"}
+    columns: [stop_id, lane, customer_or_store, stop_time_minutes, frequency_per_week]
     order: lane
     limit: 200
-    example: {lane: "DC1-ST214"}
+    example: {}
 
   - name: update_planned_stop_time_assumption
     desc: "Changes the planned stop-time allowance used for a customer or drop."
@@ -777,20 +760,17 @@ tools:
     set: {stop_time_minutes: "{stop_time_minutes}", updated_at: "$as_of"}
     args:
       stop_time_minutes: {required: true, type: int, desc: "New stop time in minutes"}
-    example: {lane: "DC1-ST214", customer_or_store: "ST214", stop_time_minutes: 45}
+    example: {stop_id: "STP-000001", stop_time_minutes: 40}
 
   - name: update_planning_buffer_for_lane
     desc: "Changes the transit-time planning buffer for a lane."
-    kind: sql
-    args:
-      lane: {required: true}
-      new_buffer_days: {required: true, type: int}
-    sql: |
-      SELECT $lane AS lane,
-             $new_buffer_days AS new_buffer_days,
-             'Buffer updated for planning horizon' AS note
-      LIMIT 1
-    example: {lane: "GBFXT-DC1", new_buffer_days: 3}
+    kind: select
+    from: carriers_lanes
+    filters:
+      lane: {required: true, desc: "Lane code, e.g. DC1-ST001"}
+    columns: [lane, carrier_id, cutoff_day_offset]
+    limit: 10
+    example: {}
 
   - name: update_shipment_routing
     desc: "Changes the routing, hold status or departure window of an open shipment."
@@ -799,8 +779,8 @@ tools:
     set: {updated_at: "$as_of"}
     args:
       lane: {desc: "New lane if different"}
-      status: {type: enum, values: [planned, booked, in_transit, held]}
-    example: {shipment_id: "SHP-900001", lane: "DC1-ST214", status: held}
+      status: {type: enum, values: [planned, booked, in_transit, held], desc: "New status"}
+    example: {shipment_id: "SHP-000001", status: held}
 
   - name: remove_carrier_from_lane_allocation
     desc: "Removes a carrier from a lane's allocation."
@@ -808,7 +788,7 @@ tools:
     table: carriers_lanes
     set: {status: blocked}
     args: []
-    example: {carrier_id: "CAR-007", lane: "DC1-ST214"}
+    example: {}
 
   - name: run_tender_award_scenario
     desc: "Runs a tender volume-allocation scenario across carriers."
@@ -820,13 +800,13 @@ tools:
       description: {required: true}
       lanes_affected: {required: true}
       carriers_involved: {required: true}
-    example: {description: "Proposed 3-carrier mix for 2026 tender", lanes_affected: "DC1-ST214,DC1-ST215,DC1-ST216", carriers_involved: "CAR-007,CAR-008,CAR-009"}
+    example: {}
 
   - name: get_shipment_volumes_by_lane
     desc: "Shipment volumes by lane and carrier over a period."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.lane, s.carrier_id, c.name AS carrier_name,
              COUNT(*) AS shipments,
@@ -846,19 +826,19 @@ tools:
     kind: select
     from: carriers_lanes
     filters:
-      lane: {}
-      status: {default: active}
+      lane: {desc: "Lane code, blank for all"}
+      status: {default: active, desc: "Allocation status"}
     columns: [lane, carrier_id, mode, weekly_capacity_trips, weekly_capacity_pallets, rate_per_trip_gbp]
     order: lane
     limit: 100
-    example: {lane: "DC1-ST214"}
+    example: {}
 
   - name: get_dwell_time_by_node
     desc: "Dwell time at ports, hubs and depots by mode and lane."
     kind: sql
     args:
-      node_type: {type: enum, values: [port, hub, depot, dc], default: dc}
-      period_start: {type: date, default: "-90d"}
+      node_type: {type: enum, values: [port, hub, depot, dc], default: dc, desc: "Node type to analyse"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT 'depot' AS node_type, s.origin_site_id AS node,
              ROUND(AVG(DATEDIFF('hour', CAST(s.actual_arrival AS TIMESTAMP),
@@ -880,8 +860,8 @@ tools:
     desc: "Freight cost allocated per SKU based on shipment line-level data."
     kind: sql
     args:
-      top_n: {type: int, default: 50}
-      period_start: {type: date, default: "-90d"}
+      top_n: {type: int, default: 50, desc: "Number of top SKUs"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT 'top skus by estimated freight' AS analysis,
              COUNT(*) AS skus_analyzed,
@@ -897,18 +877,18 @@ tools:
     kind: select
     from: shipments
     filters:
-      shipment_id: {}
-      status: {}
+      shipment_id: {desc: "Shipment id, blank for all"}
+      status: {desc: "Shipment status, blank for all"}
     columns: [shipment_id, carrier_id, lane, freight_cost_gbp, mode, units, weight_kg]
     order: freight_cost_gbp DESC
     limit: 1000
-    example: {status: delivered}
+    example: {}
 
   - name: get_inland_leg_transit_variance
     desc: "Variance of inland transit legs versus plan."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT COUNT(*) AS shipments,
              ROUND(AVG(CAST(s.actual_arrival AS DATE) - CAST(s.planned_arrival AS DATE)), 1) AS avg_days_variance,
@@ -926,18 +906,18 @@ tools:
     kind: select
     from: shipments
     filters:
-      mode: {default: ocean}
-      status: {}
+      mode: {default: ocean, desc: "Transport mode"}
+      status: {desc: "Shipment status, blank for all"}
     columns: [shipment_id, origin_site_id, dest_site_id, planned_arrival, actual_arrival, units]
     order: actual_arrival DESC NULLS LAST
     limit: 100
-    example: {mode: ocean}
+    example: {}
 
   - name: get_on_time_delivery_by_account
     desc: "Retrieves on time delivery by account (customer or store)."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.dest_site_id AS account,
              COUNT(*) AS deliveries,
@@ -956,7 +936,7 @@ tools:
     desc: "Outbound transport cost by channel (stores, online, wholesale)."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT COUNT(*) AS shipments,
              ROUND(SUM(s.freight_cost_gbp), 2) AS total_cost_gbp,
@@ -970,7 +950,7 @@ tools:
     desc: "Parcel volumes by carrier and service level."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.carrier_id, c.name AS carrier_name,
              s.mode,
@@ -991,8 +971,8 @@ tools:
     kind: select
     from: reverse_logistics
     filters:
-      category: {}
-      period_start: {type: date, default: "-90d"}
+      category: {desc: "Product category, blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Period start"}
     columns: [category, return_units, transport_cost_gbp, cost_per_unit_gbp, processing_cost_gbp]
     order: transport_cost_gbp DESC
     limit: 50
@@ -1002,8 +982,8 @@ tools:
     desc: "Delivery cost per store by route and origin."
     kind: sql
     args:
-      origin_site_id: {desc: "Distribution centre"}
-      period_start: {type: date, default: "-90d"}
+      origin_site_id: {desc: "Distribution centre, e.g. DC1"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.dest_site_id AS store,
              s.lane,
@@ -1016,25 +996,25 @@ tools:
       GROUP BY s.dest_site_id, s.lane
       ORDER BY total_cost_gbp DESC
     limit: 300
-    example: {origin_site_id: "DC1"}
+    example: {}
 
   - name: get_tms_freight_cost_by_shipment
     desc: "Freight cost and shipment-to-order links per shipment."
     kind: select
     from: shipments
     filters:
-      order_id: {}
-      status: {}
+      order_id: {desc: "Order id, blank for all"}
+      status: {desc: "Shipment status, blank for all"}
     columns: [shipment_id, order_id, carrier_id, freight_cost_gbp, units, fill_rate_pct]
     order: freight_cost_gbp DESC
     limit: 1000
-    example: {status: delivered}
+    example: {}
 
   - name: get_transport_spend_by_lane
     desc: "Transport cost and volume by lane and mode."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.lane, s.mode,
              COUNT(*) AS shipments,
@@ -1053,7 +1033,7 @@ tools:
     desc: "Carrier performance scorecard across service, cost and claims."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT cp.carrier_id, c.name AS carrier_name,
              ROUND(AVG(cp.on_time_pct), 1) AS avg_on_time_pct,
@@ -1074,7 +1054,7 @@ tools:
     desc: "Carrier spend and volume over a period."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.carrier_id, c.name AS carrier_name,
              COUNT(*) AS shipments,
@@ -1093,8 +1073,8 @@ tools:
     desc: "Predicted versus actual arrival times by lane."
     kind: sql
     args:
-      lane: {}
-      period_start: {type: date, default: "-90d"}
+      lane: {desc: "Lane code, blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.lane,
              COUNT(*) AS shipments,
@@ -1109,7 +1089,7 @@ tools:
       GROUP BY s.lane
       ORDER BY avg_variance_days DESC
     limit: 100
-    example: {lane: "GBFXT-DC1"}
+    example: {}
 
   - name: get_prior_peak_capacity_utilisation
     desc: "Capacity used per lane in previous peak periods (Black Friday, Christmas)."
@@ -1134,9 +1114,9 @@ tools:
     kind: select
     from: carrier_incidents
     filters:
-      carrier_id: {}
-      incident_type: {}
-      incident_date: {op: ">=", type: date, default: "-90d"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_type: {desc: "Incident type, blank for all"}
+      incident_date: {op: ">=", type: date, default: "-90d", desc: "Incidents from this date"}
     columns: [incident_id, carrier_id, lane, incident_type, incident_date, claim_value_gbp, status]
     order: incident_date DESC
     limit: 100
@@ -1146,7 +1126,7 @@ tools:
     desc: "Cost impact of carrier service failures (claims, extra air freight, lost sales)."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT COUNT(*) AS incidents,
              ROUND(SUM(ci.extra_cost_gbp), 2) AS total_failure_cost_gbp,
@@ -1161,18 +1141,18 @@ tools:
     kind: select
     from: master.carriers
     filters:
-      name: {op: like}
-      mode: {}
+      name: {op: like, desc: "Carrier name or part of it"}
+      mode: {desc: "Transport mode, blank for all"}
     columns: [carrier_id, name, mode, scope, country]
     order: name
     limit: 50
-    example: {name: royal, mode: parcel}
+    example: {}
 
   - name: get_shipments_by_lane_and_mode
     desc: "Shipments by lane and mode to analyze multi-mode routing."
     kind: sql
     args:
-      period_start: {type: date, default: "-90d"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
     sql: |
       SELECT s.lane, s.mode,
              COUNT(*) AS shipments,
@@ -1183,4 +1163,16 @@ tools:
       GROUP BY s.lane, s.mode
       ORDER BY cost_gbp DESC
     limit: 200
+    example: {}
+
+  - name: create_carrier_trial_allocation
+    desc: "Creates a trial allocation sending a share of selected lanes' volume to a named carrier."
+    kind: insert
+    table: allocation_scenarios
+    id_prefix: "TRL-"
+    defaults: {scenario_type: trial_allocation, status: draft}
+    args:
+      lanes_affected: {required: true, desc: "Comma-separated lane codes"}
+      carriers_involved: {required: true, desc: "Carrier ids in allocation"}
+      volume_units: {type: int, required: true, desc: "Volume units for trial"}
     example: {}

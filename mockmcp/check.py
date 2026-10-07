@@ -98,7 +98,7 @@ def _keysets(s) -> dict[str, tuple[str, set]]:
                 if f.exists():
                     with open(f, newline="") as fh:
                         out[t.keys[0]] = (f"{'master.' if sys_.id == 'master' else ''}{name}",
-                                          {r[t.keys[0]] for r in csv.DictReader(fh)})
+                                          {r.get(t.keys[0], "") for r in csv.DictReader(fh)})
     return out
 
 
@@ -200,6 +200,13 @@ def run_scenarios(eng, sid: str, partial: bool = False) -> list[str]:
 
 def check(sid: str, partial: bool = False) -> list[str]:
     """partial=True (multi-builder systems): don't require every catalogue tool / question yet."""
+    try:
+        return _check(sid, partial)
+    except Exception as e:  # never crash: report it as a problem the builder can fix
+        return [f"check crashed: {type(e).__name__}: {e} (often a data CSV whose header does not match system.yaml; re-run gen)"]
+
+
+def _check(sid: str, partial: bool) -> list[str]:
     p = lint(sid, partial)
     if not any(x.startswith("system.yaml invalid") for x in p):
         p += run_examples(sid, partial)
