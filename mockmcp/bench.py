@@ -251,3 +251,20 @@ def report(results: list[dict], model: str) -> str:
                 r.get("missing_facts") and f"missing facts {r['missing_facts']}"] if x)
             lines.append(f"- `{r['id']}`: {why}. Called: {', '.join(c['tool'] for c in r['calls']) or 'nothing'}")
     return "\n".join(lines) + "\n"
+
+
+def coverage() -> dict[str, tuple[set, set]]:
+    """system -> (questions that use it, questions with a case). The data-exists bar: every slice has a validated case."""
+    need: dict[str, set] = {}
+    for r in _catalog_rows():
+        for q in r["used_by"].split(";"):
+            if q:
+                need.setdefault(r["system"], set()).add(q)
+    return {sid: (qs, {str(c.get("question")) for c in load(sid)} & qs) for sid, qs in need.items()}
+
+
+def _catalog_rows():
+    import csv
+    with open(ROOT / "catalog" / "tools.csv", newline="") as fh:
+        return list(csv.DictReader(fh))
+

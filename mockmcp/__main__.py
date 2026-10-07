@@ -31,6 +31,7 @@ def main():
     b.add_argument("--validate", action="store_true", help="only check cases against the data (no model)")
     b.add_argument("--model", default="haiku"), b.add_argument("--workers", type=int, default=6)
     b.add_argument("--only", help="run cases whose id contains this")
+    b.add_argument("--coverage", action="store_true", help="which question slices have a case (no model)")
     a = ap.parse_args()
 
     if a.cmd == "serve":
@@ -85,6 +86,15 @@ def main():
     elif a.cmd == "bench":
         from . import bench
         ids = a.ids or sorted(f.stem for f in bench.CASES.glob("*.yaml"))
+        if a.coverage:
+            cov = bench.coverage()
+            rows = [(s, *cov[s]) for s in (a.ids or sorted(cov))]
+            for s, need, have in rows:
+                missing = sorted(need - have)
+                print(f"{s:18} {len(have):3}/{len(need):<3}" + (f"  missing: {' '.join(missing[:12])}{' …' if len(missing) > 12 else ''}" if missing else ""))
+            n, h = sum(len(r[1]) for r in rows), sum(len(r[2]) for r in rows)
+            print(f"\n{h}/{n} question slices have a case ({100 * h / max(n, 1):.0f}%)")
+            sys.exit(0)
         if a.validate:
             bad = 0
             for sid in ids:
