@@ -97,6 +97,7 @@ def generate(g):
                 "error_code": error_code,
                 "error_reason": error_reason,
                 "retry_count": retry_count,
+                "retry_reason": None,
                 "updated_at": sent_at + timedelta(hours=r.randint(0, 48)),
             })
 

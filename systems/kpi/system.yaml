@@ -172,10 +172,10 @@ tools:
              quality_first_pass_pct, stock_accuracy_pct, oh_es
       FROM site_metrics
       WHERE ($site_id IS NULL OR site_id = $site_id)
-        AND measured_date = CAST($measured_date AS DATE)
-      ORDER BY service_score DESC
+        AND measured_date <= CAST($measured_date AS DATE)
+      ORDER BY measured_date DESC, service_score DESC
     limit: 50
-    example: {}
+    example: {site_id: DC1}
 
   - name: get_site_quality_metrics
     desc: Quality metrics by site including first-pass rate and stock accuracy. Use to identify quality improvement opportunities.
@@ -208,14 +208,14 @@ tools:
       kpi_id: {required: true}
       period_end: {type: date, default: "+0d", desc: "Period end date"}
     sql: |
-      SELECT kpi_id,
-             (SELECT COALESCE(SUM(actual_value), 0) FROM kpi_actuals WHERE kpi_id = $kpi_id
+      SELECT $kpi_id AS kpi_id,
+             COALESCE((SELECT SUM(actual_value) FROM kpi_actuals WHERE kpi_id = $kpi_id
               AND measured_date < CAST($period_end AS DATE) - INTERVAL 365 DAY
-              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 730 DAY) AS prior_year_value,
-             (SELECT COALESCE(SUM(actual_value), 0) FROM kpi_actuals WHERE kpi_id = $kpi_id
+              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 730 DAY), 0) AS prior_year_value,
+             COALESCE((SELECT SUM(actual_value) FROM kpi_actuals WHERE kpi_id = $kpi_id
               AND measured_date <= CAST($period_end AS DATE)
-              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 365 DAY) AS current_year_value,
-             (SELECT target_value FROM kpi_targets WHERE kpi_id = $kpi_id LIMIT 1) AS target_value,
+              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 365 DAY), 0) AS current_year_value,
+             COALESCE((SELECT target_value FROM kpi_targets WHERE kpi_id = $kpi_id LIMIT 1), 0) AS target_value,
              'yoy_change = (current - prior) / prior * 100' AS formula
     limit: 1
     example: {kpi_id: KPI-0001}

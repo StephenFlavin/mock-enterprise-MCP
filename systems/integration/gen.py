@@ -17,7 +17,7 @@ def generate(g):
 
     for i, (iface_name, src, dst) in enumerate(error_interfaces):
         for j in range(r.randint(2, 8)):
-            occurred = g.date_between(g.days_ago(45), g.days_ago(1))
+            occurred = g.date_between(45, 1)
             is_active = r.random() < 0.15
             error_errors = [
                 "Timeout connecting to destination",
@@ -51,7 +51,7 @@ def generate(g):
 
     for i in range(r.randint(100, 200)):
         msg_type = r.choice(edi_types)
-        sent_time = g.date_between(g.days_ago(30), g.days_ago(0))
+        sent_time = g.date_between(30, 0)
         status = r.choices(["sent", "received", "processed", "failed", "retrying"], [20, 30, 35, 10, 5])[0]
         edi_messages.append({
             "message_id": f"EDI-{len(edi_messages) + 1:06d}",
@@ -86,7 +86,7 @@ def generate(g):
     config_changes = []
     change_types_list = ["mapping", "certificate", "endpoint", "schedule", "other"]
     for i in range(r.randint(20, 40)):
-        changed_when = g.date_between(g.days_ago(60), g.days_ago(0))
+        changed_when = g.date_between(60, 0)
         config_changes.append({
             "change_id": f"CFG-{len(config_changes) + 1:06d}",
             "change_type": r.choice(change_types_list),

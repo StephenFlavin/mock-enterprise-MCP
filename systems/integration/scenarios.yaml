@@ -1,0 +1,99 @@
+# Integration system scenarios - one entry per question using this system's tools
+- question: "01:8:Q1"
+  story: >
+    140 orders got stuck in allocation failed status at 06:00 this morning (2026-10-06).
+    The WMS_to_OMS interface error ERR-900001 shows the order queue filled up and backlog is building.
+    list_interface_errors should show this active error with 140 messages and a queue depth of 140.
+  checks:
+    - tool: list_interface_errors
+      args: {interface_name: WMS_to_OMS}
+      expect: ["ERR-900001", "active", "140"]
+
+- question: "01:8:Q2"
+  story: >
+    ERP and WMS stock balances don't match. compare_erp_and_wms_stock shows several SKUs with
+    discrepancies: K-1700 is 150 units short, PF-220 is 150 units short, and STY-5520 is
+    250 units over. These need investigating to determine if it's timing or a real problem.
+  checks:
+    - tool: compare_erp_and_wms_stock
+      args: {min_difference: 100}
+      expect: ["REC-900001", "REC-900002", "-150"]
+
+- question: "01:8:Q4"
+  story: >
+    Finance reports a £1.2m gap between ERP and WMS stock. Stock reconciliation records show
+    multiple large discrepancies: STY-5520 is 250 units different, STY-7731 is 650 units short
+    (18% difference), and SKU-100234 is 1700 units short (20% difference). These large swings
+    suggest data quality issues or interface problems, not just timing differences.
+  checks:
+    - tool: compare_erp_and_wms_stock
+      args: {}
+      expect: ["REC-900005", "-1700", "investigating"]
+
+- question: "09:81:Q1"
+  story: >
+    OTIF dropped from 94% to 89%. The ASN feed had data quality issues in early October (metrics
+    show 86-94% completeness on Oct 3-4) but improved to 99% on Oct 6 after the mapping update.
+    This timing suggests the feed quality issue contributed to the OTIF drop, and the recent
+    pallet data mapping addition (CFG-900001 deployed Oct 1) improved feed stability.
+  checks:
+    - tool: get_asn_feed_change_log
+      args: {days: 60}
+      expect: ["MET-900003", "degraded", "89.5", "pallet-level"]
+
+- question: "09:83:Q1"
+  story: >
+    200 EDI PO acknowledgements failed overnight (around 02:15-03:15 on 2026-10-06). Seed records show
+    5 sample PO_ACK failures with different error causes: mapping error, XML validation, database timeout,
+    duplicate message ids, and endpoint errors. get_edi_error_log_summary should show these failures
+    aggregated by message type showing PO_ACK as the affected type.
+  checks:
+    - tool: get_edi_error_log_summary
+      args: {message_type: PO_ACK}
+      expect: ["PO_ACK", "5", "failed", "Mapping error"]
+
+- question: "09:83:Q2"
+  story: >
+    The supplier's new ASN EDI spec (v2.pdf) adds pallet-level packing data. get_edi_map_for_message_type
+    shows that the ASN map was updated to version 2.0 on 2026-10-01 with the change log showing
+    "Added pallet-level packing data segment (PAC)" which directly maps to the new spec requirement.
+  checks:
+    - tool: get_edi_map_for_message_type
+      args: {message_type: ASN}
+      expect: ["MAP-900001", "2.0", "pallet-level", "PAC"]
+
+- question: "09:83:Q3"
+  story: >
+    Comparing integration patterns for 3PL: EDI costs £5000/month (setup + run + support),
+    REST API costs £2750/month, file transfer costs £1400/month. get_integration_run_cost_by_pattern
+    returns cost data broken down by pattern type showing these costs and active connection counts.
+  checks:
+    - tool: get_integration_run_cost_by_pattern
+      args: {}
+      expect: ["EDI", "5000", "REST_API", "2750", "FILE_TRANSFER"]
+
+- question: "09:83:Q5"
+  story: >
+    Stock feed to website runs every 4 hours. get_stock_feed_latency shows recent runs with delays:
+    one run (RUN-900004) took 13 minutes delay, suggesting the feed is now running 20 minutes behind
+    schedule on peak hours. Changing the schedule from 4-hourly to hourly would help but would increase
+    load. get_stock_feed_schedule shows the current setting is 4-hourly with batch size 10000.
+  checks:
+    - tool: get_stock_feed_latency
+      args: {days: 7}
+      expect: ["stock_feed", "RUN-900003", "420"]
+    - tool: update_stock_feed_schedule
+      args: {schedule_id: SCH-900001, run_frequency: "hourly", batch_size: 5000}
+      expect: ["SCH-900001"]
+
+- question: "09:85:Q3"
+  story: >
+    Supplier and partner connections have varying security risks. The top three highest-risk
+    connections are: Logistics 3PL Pro (critical, has privileged direct system access),
+    Global Distribution Partners (high, has privileged access), and NextDay Courier (high, API connection).
+    list_third_party_connections filters by risk rating and shows these connections with their
+    protocols and access levels for remediation planning.
+  checks:
+    - tool: list_third_party_connections
+      args: {security_risk_rating: critical}
+      expect: ["Logistics 3PL Pro", "critical", "privileged_access"]

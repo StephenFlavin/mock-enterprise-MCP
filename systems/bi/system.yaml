@@ -1,0 +1,261 @@
+id: bi
+name: BI & Dashboards Platform
+instructions: >
+  Analytics and dashboards for stores and products, with performance tracking vs plan.
+  Report ids look like RPT-000123. Use it for store performance, product performance,
+  variance analysis and data quality impact reporting.
+
+tables:
+  store_performance:
+    key: [site_id, period]
+    cols:
+      site_id: {type: str, desc: "Store site id, e.g. ST001"}
+      period: {type: str, desc: "Period, e.g. 2026-10"}
+      sales_units: {type: int, desc: Units sold in period}
+      sales_gbp: {type: float, desc: Sales revenue in GBP}
+      margin_pct: {type: float, desc: Gross margin percentage}
+      availability_pct: {type: float, desc: Shelf availability percentage}
+      shrink_pct: {type: float, desc: Stock shrinkage percentage}
+      labour_cost_pct: {type: float, desc: Labour cost as percentage of sales}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  product_performance:
+    key: [sku, period]
+    cols:
+      sku: {type: str, desc: "Product SKU"}
+      period: {type: str, desc: "Period, e.g. 2026-10"}
+      sales_units: {type: int, desc: Units sold in period}
+      sales_gbp: {type: float, desc: Sales revenue in GBP}
+      margin_pct: {type: float, desc: Gross margin percentage}
+      returns_pct: {type: float, desc: Return rate percentage}
+      avg_rating: {type: float, desc: Customer rating 0-5}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  performance_targets:
+    key: [target_type, entity_id, period]
+    cols:
+      target_type: {type: enum, values: [store, product], desc: Type of target}
+      entity_id: {type: str, desc: "Store site id or SKU"}
+      period: {type: str, desc: "Period"}
+      sales_units_target: {type: int, desc: Target units}
+      sales_gbp_target: {type: float, desc: Target sales revenue}
+      margin_pct_target: {type: float, desc: Target margin percentage}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  data_quality_issues:
+    key: dq_issue_id
+    cols:
+      dq_issue_id: {type: str, desc: "Data quality issue id, e.g. DQ-000123"}
+      dataset: {type: str, desc: "Affected dataset or table"}
+      issue_type: {type: enum, values: [missing_data, duplicate, incorrect_value, late_update, schema_mismatch], desc: Issue type}
+      description: {type: str, desc: Issue description}
+      owner_id: {type: str, desc: "Employee responsible for fix"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: Business impact}
+      affected_reports: {type: str, desc: "Comma-separated report ids"}
+      created_at: {type: timestamp, desc: When issue was discovered}
+      resolved_at: {type: timestamp, desc: When issue was resolved}
+
+  scheduled_reports:
+    key: report_id
+    cols:
+      report_id: {type: str, desc: "Scheduled report id, e.g. RPT-000123"}
+      report_type: {type: str, desc: "Report name"}
+      recipient_emails: {type: str, desc: "Semicolon-separated email addresses"}
+      frequency: {type: enum, values: [daily, weekly, monthly, quarterly], desc: Delivery frequency}
+      active: {type: bool, desc: Whether report is active}
+      created_at: {type: timestamp, desc: When report was created}
+
+tools:
+  - name: get_store_performance_summary_for_region
+    desc: Store performance by sales, margin, availability, shrink and labour cost for a region, best performing first.
+    kind: sql
+    args:
+      region: {type: str, required: true, desc: "Trading region, e.g. UK North"}
+      period: {type: str, default: "last month", desc: "Period to report"}
+    sql: |
+      SELECT p.site_id, s.name, s.cluster,
+             p.sales_units, p.sales_gbp, p.margin_pct, p.availability_pct,
+             p.shrink_pct, p.labour_cost_pct
+      FROM store_performance p
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE s.region = $region
+        AND p.period = CAST($period AS VARCHAR)
+      ORDER BY p.sales_gbp DESC
+    limit: 50
+    example: {region: "UK North"}
+
+  - name: list_stores_below_target
+    desc: Stores missing sales or margin targets ranked by shortfall. Shows target vs actual for the period.
+    kind: sql
+    args:
+      period: {type: str, default: "last month", desc: "Period to check"}
+      region: {type: str, desc: "Filter to region (default all)"}
+    sql: |
+      SELECT p.site_id, s.name, p.sales_gbp, t.sales_gbp_target,
+             (t.sales_gbp_target - p.sales_gbp) AS shortfall_gbp,
+             p.margin_pct, t.margin_pct_target
+      FROM store_performance p
+      JOIN performance_targets t ON t.entity_id = p.site_id AND t.period = p.period AND t.target_type = 'store'
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND (p.sales_gbp < t.sales_gbp_target OR p.margin_pct < t.margin_pct_target)
+        AND ($region IS NULL OR s.region = $region)
+      ORDER BY shortfall_gbp DESC
+    limit: 30
+    example: {period: "2026-10"}
+
+  - name: get_margin_by_store
+    desc: Gross margin by store for a period ranked highest to lowest. Shows actual margin percentage and pounds.
+    kind: sql
+    args:
+      period: {type: str, default: "last month", desc: "Period"}
+      region: {type: str, desc: "Filter to region (default all)"}
+      min_margin_pct: {type: float, desc: "Only stores with margin above this (default 0)"}
+    sql: |
+      SELECT p.site_id, s.name, p.sales_gbp, p.margin_pct,
+             ROUND(p.sales_gbp * p.margin_pct / 100.0, 2) AS margin_gbp
+      FROM store_performance p
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND ($region IS NULL OR s.region = $region)
+        AND ($min_margin_pct IS NULL OR p.margin_pct >= $min_margin_pct)
+      ORDER BY p.margin_pct DESC
+    limit: 50
+    example: {period: "2026-10"}
+
+  - name: get_range_performance_vs_plan
+    desc: Product range performance (sales, margin, returns, ratings) vs plan. Shows the top movers and plan variance.
+    kind: sql
+    args:
+      period: {type: str, default: "last month", desc: "Period"}
+      department: {type: str, desc: "Filter to department (default all)"}
+    sql: |
+      SELECT p.sku, pr.name, pr.style_id, pr.department,
+             p.sales_units, p.sales_gbp, p.margin_pct,
+             p.returns_pct, p.avg_rating,
+             t.sales_gbp_target, (p.sales_gbp - t.sales_gbp_target) AS sales_variance,
+             t.margin_pct_target, (p.margin_pct - t.margin_pct_target) AS margin_variance
+      FROM product_performance p
+      JOIN performance_targets t ON t.entity_id = p.sku AND t.period = p.period AND t.target_type = 'product'
+      JOIN master.products pr ON pr.sku = p.sku
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND ($department IS NULL OR pr.department = $department)
+      ORDER BY p.sales_gbp DESC
+    limit: 100
+    example: {period: "2026-10"}
+
+  - name: get_margin_vs_plan_by_product
+    desc: Margin performance vs plan by product, showing variance. Ranked by biggest variance (positive or negative).
+    kind: sql
+    args:
+      period: {type: str, default: "last month", desc: "Period"}
+      min_variance: {type: float, desc: "Only products with variance greater than this % (default -100)"}
+    sql: |
+      SELECT p.sku, pr.name, p.margin_pct, t.margin_pct_target,
+             (p.margin_pct - t.margin_pct_target) AS margin_variance_pct,
+             p.sales_gbp
+      FROM product_performance p
+      JOIN performance_targets t ON t.entity_id = p.sku AND t.period = p.period AND t.target_type = 'product'
+      JOIN master.products pr ON pr.sku = p.sku
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND (p.margin_pct - t.margin_pct_target) >= COALESCE($min_variance, -100.0)
+      ORDER BY ABS(p.margin_pct - t.margin_pct_target) DESC
+    limit: 50
+    example: {period: "2026-10"}
+
+  - name: list_outliers_vs_plan
+    desc: Products and stores with unusual performance vs plan (high variance). Flag for investigation.
+    kind: sql
+    args:
+      period: {type: str, default: "last month", desc: "Period"}
+      variance_threshold_pct: {type: float, default: 10, desc: "Variance threshold in % to flag as outlier"}
+    sql: |
+      SELECT 'product' AS type, p.sku AS entity_id, pr.name AS name,
+             p.sales_gbp, p.margin_pct,
+             (p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0) * 100.0 AS variance_pct
+      FROM product_performance p
+      JOIN performance_targets t ON t.entity_id = p.sku AND t.period = p.period AND t.target_type = 'product'
+      JOIN master.products pr ON pr.sku = p.sku
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND ABS((p.sales_gbp - t.sales_gbp_target) / NULLIF(t.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
+      UNION ALL
+      SELECT 'store' AS type, s.site_id AS entity_id, s.name AS name,
+             sp.sales_gbp, sp.margin_pct,
+             (sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0) * 100.0 AS variance_pct
+      FROM store_performance sp
+      JOIN performance_targets st ON st.entity_id = sp.site_id AND st.period = sp.period AND st.target_type = 'store'
+      JOIN master.sites s ON s.site_id = sp.site_id
+      WHERE sp.period = CAST($period AS VARCHAR)
+        AND ABS((sp.sales_gbp - st.sales_gbp_target) / NULLIF(st.sales_gbp_target, 0)) * 100.0 >= $variance_threshold_pct
+      ORDER BY ABS(variance_pct) DESC
+    limit: 50
+    example: {period: "2026-10", variance_threshold_pct: 15}
+
+  - name: calculate_store_priority_score
+    desc: Ranks stores by priority using sales, margin, and trend. Higher score = higher priority for investment.
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to region (default all)"}
+      period: {type: str, default: "last month", desc: "Current period for scoring"}
+    sql: |
+      SELECT p.site_id, s.name, s.cluster,
+             p.sales_gbp, p.margin_pct,
+             ROUND(p.sales_gbp * 0.6 + p.margin_pct * 100 * 0.4, 1) AS priority_score,
+             'priority_score = (sales * 0.6) + (margin% * 100 * 0.4)' AS formula
+      FROM store_performance p
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND ($region IS NULL OR s.region = $region)
+      ORDER BY priority_score DESC
+    limit: 50
+    example: {region: "UK North"}
+
+  - name: calculate_variance_drivers_by_store
+    desc: "Variance by store: sales shortfall or margin pressure. Ranks stores by total variance impact."
+    kind: sql
+    args:
+      region: {type: str, desc: "Filter to region (default all)"}
+      period: {type: str, default: "last month", desc: "Period"}
+    sql: |
+      SELECT p.site_id, s.name,
+             (p.sales_gbp - t.sales_gbp_target) AS sales_variance_gbp,
+             (p.margin_pct - t.margin_pct_target) AS margin_variance_pct,
+             ABS(p.sales_gbp - t.sales_gbp_target) + ABS((p.margin_pct - t.margin_pct_target) * 100) AS total_variance
+      FROM store_performance p
+      JOIN performance_targets t ON t.entity_id = p.site_id AND t.period = p.period AND t.target_type = 'store'
+      JOIN master.sites s ON s.site_id = p.site_id
+      WHERE p.period = CAST($period AS VARCHAR)
+        AND ($region IS NULL OR s.region = $region)
+      ORDER BY total_variance DESC
+    limit: 50
+    example: {region: "UK North"}
+
+  - name: get_data_quality_issue_impact
+    desc: Data quality issues affecting reports and KPIs, with owner and severity. Shows which reports are impacted.
+    kind: sql
+    args:
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Filter by severity (default all)"}
+      resolved: {type: bool, desc: "Show only unresolved (default) or all issues"}
+    sql: |
+      SELECT dq_issue_id, dataset, issue_type, description, severity,
+             owner_id, affected_reports, created_at, resolved_at
+      FROM data_quality_issues
+      WHERE ($severity IS NULL OR severity = $severity)
+        AND ($resolved IS NULL OR ($resolved = false AND resolved_at IS NULL) OR ($resolved = true AND resolved_at IS NOT NULL))
+      ORDER BY
+        CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+        created_at DESC
+    limit: 50
+    example: {severity: "high"}
+
+  - name: create_scheduled_report
+    desc: Schedule a recurring report to be sent to named recipients (daily, weekly, monthly or quarterly).
+    kind: insert
+    table: scheduled_reports
+    id_prefix: RPT-
+    defaults: {active: true}
+    args:
+      report_type: {required: true, desc: "Report name, e.g. Store Performance Summary"}
+      recipient_emails: {required: true, desc: "Email addresses separated by semicolon"}
+      frequency: {required: true, desc: "daily, weekly, monthly or quarterly"}
+    example: {report_type: "Store Performance Summary", recipient_emails: "manager@company.com;director@company.com", frequency: "weekly"}
