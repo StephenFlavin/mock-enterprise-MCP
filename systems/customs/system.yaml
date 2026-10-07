@@ -440,7 +440,7 @@ tools:
       {% endif %}
 
       Actions:
-      1. Supplier: provide the missing proof (origin declaration or supplier statements for the inputs) for every open hold within 14 days.
+      1. Supplier: provide the documents and corrections that resolve each open hold (main cause above) within 14 days.
       2. Broker: amend the open declarations and answer the customs queries once the proof is in.
       3. Supplier: hold shipments until documents are checked before dispatch.
       4. Compliance: review past declarations of this supplier for the same issue and quantify reassessment exposure.
@@ -507,7 +507,7 @@ tools:
     args:
       declaration_id: {required: true}
     sql: |
-      SELECT declaration_id, shipment_id, po_id, hs_code, product_description, quantity,
+      SELECT declaration_id, shipment_id, po_id, hs_code, product_description, quantity, claimed_preference,
              declared_value_gbp, duty_amount_gbp, status, declared_at, cleared_at
       FROM customs_declarations
       WHERE declaration_id = $declaration_id
@@ -565,7 +565,7 @@ tools:
     desc: Import volumes and value by HS code (prefix, e.g. 61 or 6109) and origin over a period, totalled per code and origin. Set monthly for months.
     kind: sql
     args:
-      hs_code: {desc: "HS code or prefix, e.g. 6109 or 61. Blank returns all"}
+      hs_prefix: {type: str, desc: "HS code or prefix, e.g. 6109 or 61. Blank returns all"}
       origin_country: {desc: "Country name, e.g. China"}
       period_from: {type: date, default: "-12m", desc: "From this period"}
       monthly: {type: bool, desc: "True for one row per month"}
@@ -574,13 +574,13 @@ tools:
              CASE WHEN $monthly IS TRUE THEN period_month ELSE 'total' END AS period,
              sum(quantity_units) AS quantity_units, round(sum(value_gbp), 0) AS value_gbp, round(sum(duty_paid_gbp), 0) AS duty_paid_gbp
       FROM import_volumes
-      WHERE ($hs_code IS NULL OR hs_code LIKE $hs_code || '%')
+      WHERE ($hs_prefix IS NULL OR hs_code LIKE $hs_prefix || '%')
         AND ($origin_country IS NULL OR origin_country = $origin_country)
         AND period_month >= strftime(CAST($period_from AS DATE), '%Y-%m')
       GROUP BY ALL
       ORDER BY value_gbp DESC, period DESC
     limit: 100
-    example: {hs_code: "61"}
+    example: {hs_prefix: "61"}
 
   - name: get_lead_time_to_destination
     desc: Retrieves lead time to destination by origin, mode and lane. Use for urgency decisions.
@@ -839,7 +839,7 @@ tools:
       status: {}
       date_from: {type: date, default: "-12m", desc: "From this date"}
     sql: |
-      SELECT declaration_id, shipment_id, po_id, hs_code, product_description,
+      SELECT declaration_id, shipment_id, po_id, hs_code, product_description, claimed_preference,
              quantity, declared_value_gbp, duty_amount_gbp, status, declared_at, cleared_at
       FROM customs_declarations
       WHERE supplier_id = $supplier_id
@@ -885,7 +885,7 @@ tools:
     kind: insert
     table: broker_amendment_requests
     id_prefix: BAR-
-    defaults: {status: sent}
+    defaults: {status: sent, sent_date: "$as_of"}
     args:
       declaration_id: {required: true}
       supplier_id: {required: true}

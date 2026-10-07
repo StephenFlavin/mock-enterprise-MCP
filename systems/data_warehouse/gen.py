@@ -56,11 +56,13 @@ def generate(g):
            "Towels": -0.02, "Kitchenware": 0.0, "Outerwear": 0.42, "Knitwear": 0.06, "Tops": 0.03,
            "T-Shirts": 0.04, "Shirts": 0.0, "Trousers": 0.05, "Small Appliances": 0.0}
     MKT_ADJ = {"UK": 0.0, "DE": -0.08, "US": -0.16}
-    PREMIUM_SHARE = {"Knitwear": (0.36, 0.17), "Tops": (0.34, 0.18), "T-Shirts": (0.33, 0.20), "Shirts": (0.30, 0.20)}
-    SA_COST_LY = {"SUP-0013": 0.80, "SUP-0062": 0.94}   # last year's landed cost vs today's, small appliances
+    PREMIUM_SHARE = {"Knitwear": (0.32, 0.19), "Tops": (0.31, 0.19), "T-Shirts": (0.30, 0.20), "Shirts": (0.28, 0.20)}
+    SA_COST_LY = {"SUP-0013": 0.875, "SUP-0062": 0.93}   # last year's landed cost vs today's, small appliances
 
     plan = []   # (product, markets)
+    est_cut = (g.as_of - _td(days=90)).isoformat()
     for cat, plist in by_cat.items():
+        plist = [p for p in plist if p["launch_date"] <= est_cut] or plist   # established lines carry a year of history
         if cat in FASHION or cat == "Small Appliances":
             chosen = plist
             mk = ["UK"]
@@ -80,6 +82,16 @@ def generate(g):
     sales_fact = []
     seen_keys = set()
 
+    BUDGET_SLOPE = {"UK": 0.16, "DE": 0.03, "US": 0.09}   # cost pressure: budget shoppers' share grows fastest in the UK
+
+    def _segment(d, market):
+        age_y = min(1.0, max(0.0, (g.as_of - d).days / 365.0))
+        b = 0.20 + BUDGET_SLOPE.get(market, 0.06) * (1 - age_y)
+        r = g.rng.random()
+        if r < b:
+            return "Budget"
+        return g.rng.choices(["Standard", "Premium", "VIP"], [62, 28, 10])[0]
+
     def add_row(p, d, market, units, md, cost_f=1.0, seg=None, size=None):
         price = float(p["retail_price_gbp"])
         site = g.pick(stores[market])
@@ -93,7 +105,7 @@ def generate(g):
             "site_id": site, "size": size or p["size"], "units_sold": units,
             "sales_gbp": round(gross * (1 - md), 2), "cost_gbp": round(units * float(p["unit_cost_gbp"]) * cost_f, 2),
             "markdown_gbp": round(gross * md, 2),
-            "customer_segment": seg or g.rng.choices(["Standard", "Budget", "Premium", "VIP"], [50, 22, 20, 8])[0]})
+            "customer_segment": seg or _segment(d, market)})
 
     hero_n = defaultdict(int)
     for p, mk in plan:
@@ -111,11 +123,7 @@ def generate(g):
         if cat in HOME:
             base *= 2
         base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
-        if launch > g.as_of:
-            continue   # not launched yet
         for d in fort:
-            if launch > g.as_of - _td(days=90) and d < launch:
-                continue   # recent launches only sell from launch; older lines carry history (re-colour/carry-over)
             age_y = (g.as_of - d).days / 365.0
             for market in mk:
                 gr = YOY.get(cat, round((_h(cat) - 0.5) * 0.12, 3)) + MKT_ADJ[market]
@@ -139,8 +147,6 @@ def generate(g):
     for p in sorted([x for x in products if x["style_id"] == "STY-T-4410"], key=lambda x: x["sku"]):
         size_w = {"10": 80, "12": 100, "14": 70}.get(p["size"], 60)
         for d in mondays:
-            if d < _date.fromisoformat(p["launch_date"]):
-                continue
             for market, mult in (("UK", 1.0), ("DE", 0.35)):
                 add_row(p, d, market, round(size_w * mult * g.rng.uniform(0.9, 1.1)), 0.14 + g.rng.uniform(-0.02, 0.02))
 
@@ -222,11 +228,11 @@ def generate(g):
     months.reverse()
     for cat in FASHION + ["Small Appliances"]:
         for p in by_cat[cat]:
+            if p["launch_date"] > est_cut:
+                continue
             lead = int(p["lead_time_days"])
             base_md = min(0.45, 0.08 + 0.0022 * lead) + (0.18 if p["status"] == "clearance" else 0)
             for mo in months:
-                if _date.fromisoformat(p["launch_date"]) > g.as_of - _td(days=90) and mo < _date.fromisoformat(p["launch_date"]):
-                    continue
                 season_bump = 0.07 if mo.month in (1, 7) else 0.0
                 rate = min(0.8, max(0.02, base_md + season_bump + g.rng.uniform(-0.03, 0.03)))
                 units = int(60 * (2.718 ** g.rng.gauss(0, 0.5)))

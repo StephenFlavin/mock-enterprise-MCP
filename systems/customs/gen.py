@@ -271,50 +271,44 @@ def generate(g):
             })
             dg_id += 1
 
-    # Generate binding rulings
+    # Generate binding rulings (background rulings on non-story goods)
     binding_rulings = []
-    for i in range(8):
-        ruling_id = f"BRG-{i+1:06d}"
-        hs_applied = g.pick(list(hs_codes_data.keys()))
-        hs_alt = g.pick([k for k in hs_codes_data.keys() if k != hs_applied])
-
-        status = g.rng.choices(["draft", "submitted", "approved"], [0.3, 0.4, 0.3])[0]
-
+    bg = [("Industrial ethanol 96% in drums", "2207", "2710", "UK", "GBBTI-2025-0150"),
+          ("Steel storage racking components", "7326", "8407", "UK", "GBBTI-2025-0721"),
+          ("Liquid paracetamol oral suspension", "3004", "2207", "EU", "EBTI-2025-NL-3302"),
+          ("Aluminium-coated steel shelving brackets", "7326", "2710", "EU", "EBTI-2026-DE-0088")]
+    for i, (prod, hs_applied, hs_alt, jur, ref) in enumerate(bg):
         binding_rulings.append({
-            "ruling_id": ruling_id,
-            "status": status,
-            "product_description": f"Test product for HS code comparison",
+            "ruling_id": f"BRG-{i+1:06d}",
+            "jurisdiction": jur,
+            "ruling_reference": ref,
+            "status": "approved",
+            "product_description": prod,
             "hs_code_applied": hs_applied,
             "hs_code_alternative": hs_alt,
-            "duty_difference_pct": round(abs(hs_codes_data[hs_applied]["duty"] - hs_codes_data[hs_alt]["duty"]), 2),
-            "argument_for_applied": f"Goods fall under classification criteria of {hs_applied}",
-            "argument_for_alternative": f"Could alternatively be classified as {hs_alt}",
-            "created_date": g.days_ago(g.rng.randint(30, 180)),
-            "submitted_date": g.days_ago(g.rng.randint(0, 120)) if status in ["submitted", "approved"] else None,
-            "decided_date": g.days_ago(g.rng.randint(0, 60)) if status == "approved" else None,
-            "ruling_decision": "Applied code confirmed" if status == "approved" else None,
-            "effective_from": g.days_ago(-30) if status == "approved" else None,
+            "duty_difference_pct": round(hs_codes_data[hs_applied]["duty"] - hs_codes_data[hs_alt]["duty"], 2),
+            "argument_for_applied": f"Goods fall under the terms of heading {hs_applied}",
+            "argument_for_alternative": f"Could alternatively be argued under heading {hs_alt}",
+            "created_date": g.days_ago(300 + 20 * i),
+            "submitted_date": g.days_ago(300 + 20 * i),
+            "decided_date": g.days_ago(260 + 20 * i),
+            "ruling_decision": f"Classified {hs_applied}",
+            "effective_from": g.days_ago(260 + 20 * i),
         })
 
     # Generate customs authorisations
-    auths_data = []
-    for i in range(5):
-        auth_id = f"AUTH-{i+1:06d}"
-        status = g.rng.choices(["draft", "submitted", "approved"], [0.2, 0.3, 0.5])[0]
-
-        auths_data.append({
-            "auth_id": auth_id,
-            "status": status,
-            "auth_type": g.pick(["inward_processing", "bonded_warehouse", "temporary_admission"]),
-            "supplier_id": g.pick([s["supplier_id"] for s in suppliers[:10]]),
-            "description": "Application for customs authorisation",
-            "created_date": g.days_ago(g.rng.randint(30, 180)),
-            "submitted_date": g.days_ago(g.rng.randint(0, 120)) if status in ["submitted", "approved"] else None,
-            "decided_date": g.days_ago(g.rng.randint(0, 60)) if status == "approved" else None,
-            "conditions_text": "Standard conditions apply",
-            "valid_from": g.days_ago(0) if status == "approved" else None,
-            "valid_to": g.days_ago(-365) if status == "approved" else None,
-        })
+    auths_data = [
+        {"auth_id": "AUTH-000001", "status": "approved", "auth_type": "temporary_admission", "supplier_id": None,
+         "description": "Temporary admission of trade show and photography samples", "created_date": g.days_ago(400),
+         "submitted_date": g.days_ago(390), "decided_date": g.days_ago(360),
+         "conditions_text": "Goods re-exported within 12 months; samples register kept; guarantee 20,000 GBP",
+         "valid_from": g.days_ago(360), "valid_to": g.days_ago(-370)},
+        {"auth_id": "AUTH-000002", "status": "rejected", "auth_type": "inward_processing", "supplier_id": None,
+         "description": "IPR for fabric finishing, application withdrawn after records review", "created_date": g.days_ago(330),
+         "submitted_date": g.days_ago(320), "decided_date": g.days_ago(270),
+         "conditions_text": "Rejected: stock and processing records could not show goods identity",
+         "valid_from": None, "valid_to": None},
+    ]
 
     # Generate duty drawback claims
     drawback_claims = []
@@ -406,46 +400,57 @@ def generate(g):
             })
             route_id += 1
 
-    # Generate required origin documents
+    # Generate required origin documents (background lanes; Vietnam, Bangladesh and Turkey are seeded)
     required_docs = []
     doc_id = 1
-    for origin in ["Vietnam", "Bangladesh", "China"]:
-        for dest in ["GB", "US"]:
+    for origin in ["China", "India"]:
+        for dest in ["GB", "EU"]:
             for doc_type in ["certificate_of_origin", "invoice", "packing_list"]:
                 required_docs.append({
                     "doc_id": f"DOC-{doc_id:06d}",
                     "origin_country": origin,
                     "destination_country": dest,
-                    "trade_agreement": "UK-Vietnam" if origin == "Vietnam" else "GSP",
+                    "trade_agreement": "MFN",
                     "document_type": doc_type,
-                    "required": g.rng.random() > 0.2,
-                    "issuing_body": "Chamber of Commerce" if doc_type == "certificate_of_origin" else "Exporter",
+                    "required": doc_type != "packing_list",
+                    "issuing_body": "China Council for Promotion of International Trade" if doc_type == "certificate_of_origin" and origin == "China" else "Exporter",
                     "validity_period_months": 12 if doc_type == "certificate_of_origin" else 3,
                 })
                 doc_id += 1
 
-    # Generate import volumes
+    # Generate import volumes: cotton apparel and linen (story) by origin with a stable mix, plus background codes
     import_volumes = []
     volume_id = 1
-    for hs_code in hs_codes_data.keys():
-        for origin in origin_countries[:5]:
+    cotton = {  # hs: (monthly units, value per unit, {origin: share})
+        "6109": (180000, 3.8, {"China": 0.38, "Bangladesh": 0.27, "India": 0.12, "Vietnam": 0.14, "Turkey": 0.09}),
+        "6110": (95000, 9.0, {"China": 0.30, "Bangladesh": 0.28, "Vietnam": 0.22, "Turkey": 0.12, "India": 0.08}),
+        "6203": (60000, 11.0, {"China": 0.22, "Bangladesh": 0.30, "Vietnam": 0.20, "Turkey": 0.18, "India": 0.10}),
+        "6302": (70000, 8.0, {"China": 0.20, "India": 0.35, "Turkey": 0.30, "Bangladesh": 0.10, "Vietnam": 0.05}),
+    }
+    eff = {"China": 12.0, "Bangladesh": 0.0, "Vietnam": 8.0, "Turkey": 9.0, "India": 10.0}
+    for hs_code, (units_m, unit_val, shares) in cotton.items():
+        for origin, share in shares.items():
             for i in range(12):
-                month_date = g.days_ago(30 * (12 - i))
-                month_str = month_date.strftime("%Y-%m")
-
+                month_str = g.days_ago(30 * (12 - i)).strftime("%Y-%m")
+                season = 1.0 + 0.15 * ((i % 12) in (3, 4, 8, 9)) - 0.1 * ((i % 12) in (0, 1))
+                units = int(units_m * share * season * g.rng.uniform(0.95, 1.05))
+                value = units * unit_val
+                import_volumes.append({
+                    "volume_id": f"VOL-{volume_id:06d}", "hs_code": hs_code, "origin_country": origin,
+                    "destination_country": "GB", "period_month": month_str, "quantity_units": units,
+                    "value_gbp": round(value, 2), "duty_paid_gbp": round(value * eff[origin] / 100, 2),
+                })
+                volume_id += 1
+    for hs_code in ["3004", "2710", "2207", "7326"]:
+        for origin in origin_countries[:3]:
+            for i in range(12):
+                month_str = g.days_ago(30 * (12 - i)).strftime("%Y-%m")
                 volume = g.rng.randint(100, 2000)
                 value = volume * g.rng.uniform(5, 100)
-                duty = value * (hs_codes_data[hs_code]["duty"] / 100)
-
                 import_volumes.append({
-                    "volume_id": f"VOL-{volume_id:06d}",
-                    "hs_code": hs_code,
-                    "origin_country": origin,
-                    "destination_country": "GB",
-                    "period_month": month_str,
-                    "quantity_units": volume,
-                    "value_gbp": round(value, 2),
-                    "duty_paid_gbp": round(duty, 2),
+                    "volume_id": f"VOL-{volume_id:06d}", "hs_code": hs_code, "origin_country": origin,
+                    "destination_country": "GB", "period_month": month_str, "quantity_units": volume,
+                    "value_gbp": round(value, 2), "duty_paid_gbp": round(value * hs_codes_data[hs_code]["duty"] / 100, 2),
                 })
                 volume_id += 1
 

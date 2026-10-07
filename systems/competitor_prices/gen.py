@@ -21,6 +21,7 @@ TOASTER = "SKU-101309"      # Small Appliances style STY-4789, 79.99
 COFFEE = "SKU-100532"       # Small Appliances style STY-4301, 99.99
 BOTTLE = "SKU-102590"       # Drinkware style STY-5905, 55.99 (our 750ml insulated bottle)
 JACKET = "SKU-100161"       # Menswear Outerwear style STY-4102, 66.99 (the jacket on 30% markdown)
+LUNCH = "SKU-106314"      # Kitchenware, new insulated lunch box (13.99), the launch in question
 ATH_TOP = "SKU-100070"      # Womenswear Tops style STY-4056 (athleisure), 63.99
 
 # Promotion tuple: (first_week_ago, last_week_ago, type, pct, description); last_week_ago 0 = still running.
@@ -103,12 +104,12 @@ add(1, "AT2", None, AT, "Leggings", "Womenswear", "HomeShop Performance Leggings
 
 # ---- Insulated lunch boxes ----
 LB = "Lunch boxes"
-add(1, "L01", None, LB, "Insulated lunch boxes", "Home", "HomeShop Insulated Lunch Bag 5L", "HomeShop Value", "Compact portable design; foil lined; zip closure", 14.99)
-add(2, "L01", None, LB, "Insulated lunch boxes", "Home", "John Lewis Premium Insulated Lunch Box", "John Lewis", "Leakproof compartments; stainless steel inner; BPA-free", 34.00)
-add(3, "L01", None, LB, "Insulated lunch boxes", "Home", "Boite isotherme dejeuner", "Carrefour", "Lightweight and durable; single compartment", 11.99, dq="estimated")
-add(5, "L01", None, LB, "Insulated lunch boxes", "Home", "Argos Thermal Lunch Box", "Argos Brand", "Space-saving design; two compartments; cutlery included", 16.50,
+add(1, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "HomeShop Insulated Lunch Bag 5L", "HomeShop Value", "Compact portable design; foil lined; zip closure", 14.99)
+add(2, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "John Lewis Premium Insulated Lunch Box", "John Lewis", "Leakproof compartments; stainless steel inner; BPA-free", 34.00)
+add(3, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "Boite isotherme dejeuner", "Carrefour", "Lightweight and durable; single compartment", 11.99, dq="estimated")
+add(5, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "Argos Thermal Lunch Box", "Argos Brand", "Space-saving design; two compartments; cutlery included", 16.50,
     promos=[(2, 0, "percentage", 20, "Back to School Lunch Deal")])
-add(6, "L01", None, LB, "Insulated lunch boxes", "Home", "JD Gym Meal Prep Insulated Bag", "JD Sports", "Multiple containers; ice pack included; shoulder strap", 24.99)
+add(6, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "JD Gym Meal Prep Insulated Bag", "JD Sports", "Multiple containers; ice pack included; shoulder strap", 24.99)
 
 # ---- Women's outerwear (AW27 trend: oversized silhouettes, recycled materials) ----
 WO = "Women's outerwear"
@@ -145,6 +146,35 @@ add(4, "R01", None, WR, "Sauna blankets", "Home", "Currys Infrared Sauna Blanket
 add(5, "R01", None, WR, "Foam rollers", "Home", "Argos Foam Roller 33cm", "Argos Brand", "High density EVA foam", 12.99, status="active", launch=50)
 add(5, "R02", None, WR, "Massage guns", "Home", "Argos Mini Massage Gun", "Argos Brand", "Pocket size; 3 speeds", 49.99, status="active", launch=12)
 
+# ---- Home & kitchen, matched to our Home SKUs (price-gap story): pans overpriced, storage overpriced, bedding cheap ----
+PP = "Pots and pans"
+add(5, "P01", "SKU-103787", PP, "Frying pans", "Home", "Argos Home Non-stick Pan Set", "Argos Brand", "Three non-stick pans; induction ready", 36.99)
+add(1, "P01", "SKU-103787", PP, "Frying pans", "Home", "HomeShop Ceramic Pan Set", "HomeShop Value", "Ceramic coating; stay-cool handles", 38.99)
+add(2, "P01", "SKU-103787", PP, "Frying pans", "Home", "John Lewis Essentials Pan Set", "John Lewis", "Aluminium; PFOA-free coating", 44.99)
+ST = "Storage boxes"
+add(5, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "Argos Home Stackable Storage Set", "Argos Brand", "Set of 3 stackable boxes with lids", 36.99)
+add(2, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "John Lewis Stackable Storage Boxes", "John Lewis", "Set of 3; recycled plastic", 41.99)
+add(1, "ST1", "SKU-104564", ST, "Storage boxes", "Home", "HomeShop Lidded Storage Set", "HomeShop Value", "Set of 4 lidded boxes", 34.99)
+BD = "Bed linen"
+add(2, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "John Lewis Cotton Duvet Set Double", "John Lewis", "Percale cotton; 200 thread count", 46.00)
+add(5, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "Argos Home Cotton Duvet Set Double", "Argos Brand", "Easy care poly-cotton", 39.99)
+add(1, "BD1", "SKU-105866", BD, "Duvet sets", "Home", "HomeShop Soft Touch Duvet Set Double", "HomeShop Value", "Brushed microfibre", 41.99)
+
+# ---- Sage green in home ranges (colour trend for next year's home range) ----
+HT = "Home textiles"
+add(2, "HT1", None, HT, "Duvet sets", "Home", "John Lewis Washed Linen Duvet Set King", "John Lewis", "Stonewashed linen; breathable", 149.00,
+    colour="Sage green", material="Washed linen", launch=10)
+add(5, "HT1", None, HT, "Duvet sets", "Home", "Argos Home Sage Cotton Duvet Set King", "Argos Brand", "Soft cotton; reversible", 34.00,
+    colour="Sage green", material="Cotton", launch=8)
+add(1, "HT2", None, HT, "Towels", "Home", "HomeShop Sage Bath Towel Bundle", "HomeShop Value", "Six piece cotton towel bundle", 42.00,
+    colour="Sage green", material="Cotton", launch=6)
+add(2, "HT3", None, HT, "Throws", "Home", "John Lewis Chunky Knit Throw", "John Lewis", "Chunky knit; recycled yarn", 79.00,
+    colour="Terracotta", material="Recycled cotton", launch=12)
+add(5, "HT3", None, HT, "Throws", "Home", "Argos Home Faux Fur Throw", "Argos Brand", "Soft faux fur", 24.99,
+    colour="Cream", material="Polyester", launch=30)
+add(1, "HT4", None, HT, "Cushions", "Home", "HomeShop Velvet Cushion Pair", "HomeShop Value", "Velvet; feather-effect pads", 29.00,
+    colour="Chocolate brown", material="Velvet", launch=14)
+
 BACKGROUND = {
     "Cookware": ("Home", ["Non-stick Frying Pan 28cm", "Cast Iron Casserole 24cm", "Stainless Steel Saucepan Set"], (20, 110)),
     "Bedding": ("Home", ["Cotton Duvet Cover Set King", "Memory Foam Pillow", "Microfibre Duvet 10.5 tog"], (18, 90)),
@@ -166,7 +196,7 @@ def generate(g):
         for n in names:
             for comp in r.sample([1, 2, 3, 4, 5, 6], 3):
                 promos = []
-                if r.random() < 0.35:
+                if r.random() < 0.08:
                     k0 = r.randint(2, 11)
                     promos = [(k0, max(0, k0 - r.randint(1, 3)), r.choice(["percentage", "clearance"]), r.choice([10, 20, 30, 40]), "Seasonal offer")]
                 add(comp, "N%02d" % len(S), None, cat, cat, dept, n, "Own brand", "Everyday range", round(r.uniform(lo, hi), 2), promos=promos)
