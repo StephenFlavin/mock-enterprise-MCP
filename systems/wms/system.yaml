@@ -1059,3 +1059,391 @@ tools:
       SELECT 'Receipt', 'dock_location', 'string', 'Optional', 'Receiving dock number'
     limit: 50
     example: {}
+
+  - name: get_wms_labour_and_handling_cost_by_order
+    desc: Pick, pack and handling cost drivers per order. Returns labour costs and cost allocation.
+    kind: sql
+    args:
+      reference_id: {required: true, desc: "Order reference id, e.g. ORD-2026-000001"}
+    sql: |
+      WITH order_movements AS (
+        SELECT m.reference_id,
+               COUNT(DISTINCT m.sku) AS lines_in_order,
+               SUM(ABS(m.qty)) AS units_in_order,
+               COUNT(DISTINCT m.location_id) AS locations_from,
+               MAX(m.moved_at) AS pick_complete_time,
+               MIN(m.moved_at) AS pick_start_time
+        FROM stock_movements m
+        WHERE m.reference_id = $reference_id
+          AND m.movement_type = 'pick'
+        GROUP BY m.reference_id
+      )
+      SELECT om.reference_id AS order_id,
+             om.lines_in_order,
+             om.units_in_order,
+             om.locations_from,
+             DATEDIFF('minute', om.pick_start_time, om.pick_complete_time) AS pick_time_minutes,
+             ROUND(DATEDIFF('minute', om.pick_start_time, om.pick_complete_time) * 0.25, 2) AS pick_labour_gbp,
+             ROUND(om.units_in_order * 0.15, 2) AS pack_labour_gbp,
+             ROUND((om.lines_in_order * 0.50) + (om.locations_from * 0.75), 2) AS handling_cost_gbp,
+             ROUND(DATEDIFF('minute', om.pick_start_time, om.pick_complete_time) * 0.25 + om.units_in_order * 0.15 + (om.lines_in_order * 0.50) + (om.locations_from * 0.75), 2) AS total_cost_gbp,
+             'cost = (pick_time * 0.25) + (units * 0.15) + (lines * 0.50) + (locations * 0.75)' AS formula
+      FROM order_movements om
+    limit: 10
+    example: {reference_id: "ORD-2026-191217"}
+
+  - name: get_wms_stock_by_sku
+    desc: WMS stock balances by SKU, status and location. Returns current holdings by lot and condition.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      site_id: {desc: "Filter by DC"}
+    sql: |
+      SELECT m.sku, p.name AS product_name, p.category,
+             m.site_id,
+             COUNT(DISTINCT m.location_id) AS locations_holding,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) AS total_on_hand,
+             m.batch_number AS lot_number,
+             'status' AS inventory_status,
+             COUNT(DISTINCT m.location_id) AS location_count,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) * ANY_VALUE(p.unit_cost_gbp), 0) AS value_gbp
+      FROM stock_movements m
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE m.sku = $sku
+        AND ($site_id IS NULL OR m.site_id = $site_id)
+      GROUP BY m.sku, p.name, p.category, m.site_id, m.batch_number
+      HAVING SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) > 0
+      ORDER BY total_on_hand DESC
+    limit: 100
+    example: {sku: PF-220}
+
+  - name: get_wms_stock_valuation
+    desc: WMS stock quantity and value by SKU. Returns total holdings valued at cost.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      date_as_of: {type: date, desc: "Stock valuation as at this date"}
+    sql: |
+      SELECT m.sku, p.name AS product_name,
+             COUNT(DISTINCT m.location_id) AS locations,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) AS total_units,
+             ROUND(COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) * ANY_VALUE(p.unit_cost_gbp), 2) AS valuation_gbp,
+             ROUND(ANY_VALUE(p.unit_cost_gbp), 2) AS unit_cost_gbp,
+             'valuation_gbp = total_units * unit_cost' AS formula
+      FROM stock_movements m
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE ($site_id IS NULL OR m.site_id = $site_id)
+        AND CAST(m.moved_at AS DATE) <= COALESCE(CAST($date_as_of AS DATE), CAST($as_of AS DATE))
+      GROUP BY m.sku, p.name
+      HAVING SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) > 0
+      ORDER BY valuation_gbp DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_wms_version_and_patches
+    desc: Installed WMS version and applied patches. Returns version info and patch history.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT '9.2' AS wms_version,
+             'Northampton DC' AS site,
+             'v9.2-20261001' AS build,
+             'Stable' AS status,
+             'Q3 2026 Release' AS release_name,
+             3 AS patches_applied
+      UNION ALL
+      SELECT '9.2', 'Daventry DC', 'v9.2-20261001', 'Stable', 'Q3 2026 Release', 3
+      UNION ALL
+      SELECT '9.2', 'Leeds DC', 'v9.2-20261001', 'Stable', 'Q3 2026 Release', 3
+      UNION ALL
+      SELECT '9.2', 'Manchester DC', 'v9.2-20261001', 'Stable', 'Q3 2026 Release', 3
+      UNION ALL
+      SELECT '9.2', 'Southampton DC', 'v9.2-20261001', 'Stable', 'Q3 2026 Release', 3
+    limit: 10
+    example: {}
+
+  - name: list_allocation_failure_reasons
+    desc: Allocation failure reason codes for orders. Returns failure codes and their frequency.
+    kind: sql
+    args:
+      status: {type: enum, values: [allocation_failed, insufficient_stock, location_unavailable, configuration_error], default: allocation_failed, desc: "Failure reason"}
+      date_from: {type: date, default: "-30d", desc: "From date"}
+    sql: |
+      SELECT CASE
+               WHEN COUNT(*) OVER (PARTITION BY m.reference_id) > COUNT(DISTINCT m.location_id) THEN 'insufficient_stock'
+               WHEN m.location_id IS NULL THEN 'location_unavailable'
+               ELSE 'configuration_error'
+             END AS failure_reason,
+             COUNT(DISTINCT m.reference_id) AS order_count,
+             'Allocation failed' AS description
+      FROM stock_movements m
+      WHERE m.movement_type = 'pick'
+        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+      GROUP BY failure_reason
+      ORDER BY order_count DESC
+    limit: 20
+    example: {}
+
+  - name: list_cycle_count_corrections
+    desc: Cycle count corrections including reversal records and timestamps. Returns adjustments made.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-90d", desc: "Corrections from or after"}
+    sql: |
+      SELECT cr.result_id,
+             cr.task_id,
+             cr.location_id,
+             cr.sku,
+             cr.system_qty,
+             cr.counted_qty,
+             cr.variance,
+             cr.counted_at,
+             cr.reversed_within_48h,
+             CASE WHEN cr.reversed_within_48h THEN 'Reversed' ELSE 'Corrected' END AS correction_status,
+             l.zone
+      FROM cycle_count_results cr
+      JOIN master.locations l ON cr.location_id = l.location_id
+      WHERE l.site_id = $site_id
+        AND cr.variance != 0
+        AND cr.counted_at >= CAST($date_from AS DATE)
+      ORDER BY cr.counted_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_cycle_count_results_for_location
+    desc: Past cycle count results and variances for a location. Returns history with accuracy.
+    kind: sql
+    args:
+      location_id: {required: true, desc: "DC bin location"}
+      date_from: {type: date, default: "-90d", desc: "Results from or after"}
+    sql: |
+      SELECT cr.result_id,
+             cr.task_id,
+             cr.location_id,
+             cr.sku,
+             cr.system_qty,
+             cr.counted_qty,
+             cr.variance,
+             cr.variance_pct,
+             cr.counted_at,
+             cr.accuracy_issue,
+             cr.lot_number,
+             cr.condition
+      FROM cycle_count_results cr
+      WHERE cr.location_id = $location_id
+        AND cr.counted_at >= CAST($date_from AS DATE)
+      ORDER BY cr.counted_at DESC
+    limit: 100
+    example: {location_id: DC1-C-14-02}
+
+  - name: list_goods_receipts
+    desc: Goods receipts with received quantities, dock, user and carrier. Returns recent inbound.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC receiving"}
+      date_from: {type: date, default: "-30d", desc: "Receipts from or after"}
+      date_to: {type: date, desc: "Receipts up to (default today)"}
+    sql: |
+      SELECT gr.receipt_id,
+             gr.po_id,
+             gr.sku,
+             p.name AS product_name,
+             gr.qty_ordered,
+             gr.qty_received,
+             gr.qty_accepted,
+             gr.damage_qty,
+             gr.short_qty,
+             gr.dock,
+             gr.received_by,
+             c.name AS carrier_name,
+             gr.received_at,
+             gr.site_id
+      FROM goods_receipts gr
+      LEFT JOIN master.products p ON gr.sku = p.sku
+      LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
+      WHERE ($site_id IS NULL OR gr.site_id = $site_id)
+        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(gr.received_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ORDER BY gr.received_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_locations_by_last_count_date
+    desc: Locations with date of last cycle count. Use to prioritise counting.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      days_since_count: {type: int, desc: "Filter to locations not counted in last N days"}
+    sql: |
+      SELECT l.location_id,
+             l.site_id,
+             l.zone,
+             l.aisle,
+             MAX(cr.counted_at) AS last_count_date,
+             DATEDIFF('day', MAX(cr.counted_at), CAST($as_of AS DATE)) AS days_since_count,
+             COUNT(DISTINCT cr.task_id) AS count_history,
+             ROUND(COUNT(*) FILTER (WHERE cr.accuracy_issue) * 100.0 / NULLIF(COUNT(*), 0), 1) AS accuracy_issue_pct
+      FROM master.locations l
+      LEFT JOIN cycle_count_results cr ON l.location_id = cr.location_id
+      WHERE l.site_id = $site_id
+        AND l.status = 'active'
+      GROUP BY l.location_id, l.site_id, l.zone, l.aisle
+      HAVING ($days_since_count IS NULL OR DATEDIFF('day', MAX(cr.counted_at), CAST($as_of AS DATE)) >= $days_since_count)
+      ORDER BY last_count_date ASC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_orders_by_status
+    desc: Orders and lines in a given status with timestamps. Shows order progress.
+    kind: sql
+    args:
+      status: {type: enum, values: [allocated, picking, packed, shipped], default: picking, desc: "Order status"}
+      site_id: {desc: "Filter by DC"}
+      date_from: {type: date, default: "-7d", desc: "Orders from or after"}
+    sql: |
+      SELECT m.reference_id AS order_id,
+             m.site_id,
+             CASE
+               WHEN COUNT(*) FILTER (WHERE m.movement_type = 'pick') > 0 THEN 'picking'
+               WHEN COUNT(*) FILTER (WHERE m.movement_type = 'pick') = COUNT(*) THEN 'packed'
+               ELSE 'allocated'
+             END AS order_status,
+             COUNT(DISTINCT m.sku) AS lines,
+             SUM(ABS(m.qty)) AS units,
+             MIN(m.moved_at) AS first_activity,
+             MAX(m.moved_at) AS last_activity
+      FROM stock_movements m
+      WHERE CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        AND ($site_id IS NULL OR m.site_id = $site_id)
+        AND m.movement_type IN ('pick', 'transfer', 'adjustment')
+      GROUP BY m.reference_id, m.site_id
+      ORDER BY last_activity DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_recent_configuration_changes
+    desc: Configuration, release and parameter changes with dates. Returns system changes.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Changes from or after"}
+    sql: |
+      SELECT 'Wave Cutoff' AS change_type,
+             'E-commerce wave cutoff moved from 14:00 to 15:00' AS description,
+             CAST($as_of AS DATE) - INTERVAL 30 DAY AS change_date,
+             'System Admin' AS changed_by
+      UNION ALL
+      SELECT 'Picking Method', 'Batch picking enabled for zones A and B', CAST($as_of AS DATE) - INTERVAL 45 DAY, 'Warehouse Manager'
+      UNION ALL
+      SELECT 'Cycle Count', 'Count frequency increased to weekly for high-variance zones', CAST($as_of AS DATE) - INTERVAL 60 DAY, 'Inventory Control'
+      UNION ALL
+      SELECT 'Capacity', 'Receiving dock capacity adjusted from 30 to 25 inbound per day', CAST($as_of AS DATE) - INTERVAL 14 DAY, 'DC Manager'
+      UNION ALL
+      SELECT 'Integration', 'ASN interface updated to include pallet-level data', CAST($as_of AS DATE) - INTERVAL 7 DAY, 'IT Team'
+      ORDER BY change_date DESC
+    limit: 20
+    example: {}
+
+  - name: list_replenishment_task_duplicates
+    desc: Duplicate replenishment tasks and their creation context. Shows process failures.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "From date"}
+      site_id: {desc: "Filter by DC"}
+    sql: |
+      WITH putaway_moves AS (
+        SELECT m.location_id,
+               m.sku,
+               CAST(m.moved_at AS DATE) AS move_date,
+               COUNT(*) AS putaway_count,
+               m.reference_id
+        FROM stock_movements m
+        WHERE m.movement_type = 'receipt'
+          AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+          AND ($site_id IS NULL OR m.site_id = $site_id)
+        GROUP BY m.location_id, m.sku, CAST(m.moved_at AS DATE), m.reference_id
+      )
+      SELECT location_id,
+             sku,
+             move_date,
+             putaway_count,
+             CASE WHEN putaway_count > 1 THEN 'Duplicate' ELSE 'Single' END AS task_status,
+             reference_id
+      FROM putaway_moves
+      WHERE putaway_count > 1
+      ORDER BY move_date DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: list_short_picks_by_stage
+    desc: Short picks, late waves and loading exceptions by process stage. Shows fulfillment issues.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-30d", desc: "From date"}
+    sql: |
+      SELECT m.reference_id AS order_id,
+             m.sku,
+             m.location_id,
+             l.zone,
+             'Short Pick' AS exception_type,
+             ABS(m.qty) AS expected_qty,
+             ROUND(ABS(m.qty) * 0.85, 0) AS actual_qty,
+             m.moved_at,
+             'Loading' AS process_stage
+      FROM stock_movements m
+      LEFT JOIN master.locations l ON m.location_id = l.location_id
+      WHERE m.site_id = $site_id
+        AND m.movement_type = 'pick'
+        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        AND m.qty < 0
+      ORDER BY m.moved_at DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: reassign_cycle_count_task
+    desc: Reassign a count task to a different operative. Returns updated task and operative.
+    kind: update
+    table: cycle_count_tasks
+    set: {assigned_to: "{assigned_to}", updated_at: "$as_of"}
+    args:
+      assigned_to: {required: true, desc: "Employee id to reassign to"}
+    example: {task_id: CCT-900001, assigned_to: "EMP-2001"}
+
+  - name: release_cycle_count_tasks
+    desc: Release planned count tasks to operatives handheld devices. Returns tasks released.
+    kind: update
+    table: cycle_count_tasks
+    set: {status: released, released_at: "$as_of"}
+    args:
+      task_id: {required: false, desc: "Specific task to release (release all planned if omitted)"}
+    example: {task_id: CCT-900001}
+
+  - name: retry_order_allocation
+    desc: Re-run allocation for orders stuck in allocation failed. Returns updated order status.
+    kind: sql
+    args:
+      reference_id: {required: true, desc: "Order id stuck in allocation failed"}
+    sql: |
+      SELECT $reference_id AS order_id,
+             'allocation_failed' AS previous_status,
+             'allocated' AS new_status,
+             'Allocation retry successful' AS result,
+             CAST($as_of AS TIMESTAMP) AS retry_timestamp,
+             'Retry completed - stock availability confirmed' AS notes
+    limit: 1
+    example: {reference_id: "ORD-2026-191217"}
+
+  - name: search_locations
+    desc: Find DC bin locations by DC, zone, aisle or status. Returns location ids to use with other tools.
+    kind: select
+    from: master.locations
+    filters:
+      site_id: {}
+      zone: {}
+      aisle: {op: like}
+      status: {default: active}
+    columns: [location_id, site_id, zone, aisle, bay, level, status]
+    order: site_id, zone, aisle
+    limit: 100
+    example: {site_id: DC1, zone: "C"}

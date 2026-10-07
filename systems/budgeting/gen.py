@@ -88,7 +88,7 @@ def generate(g):
         # Forecast version for this scenario
         revenue = 50000000 + r.gauss(0, 5000000)
         margin_pct = 35 + r.gauss(0, 2)
-        fcst_id = f"FCST-{as_of.strftime('%Y-%m')}-{i + 1:03d}"
+        fcst_id = f"FCST-{1001 + i:05d}"
         forecast_versions.append({
             'forecast_version_id': fcst_id,
             'forecast_date': as_of,

@@ -478,3 +478,228 @@ tools:
       department: {}
     columns: [sku, name, color, main_material, design_attributes, status]
     example: {sku: SKU-JEANS}
+
+  - name: get_product_specification_tolerances
+    desc: Spec tolerances for a product including shrinkage, measurement and construction tolerances.
+    kind: select
+    from: product_specifications
+    filters:
+      sku: {}
+      spec_type: {default: tolerances}
+    columns: [sku, spec_type, spec_name, spec_version, shrinkage_tolerances, measurement_points, notes]
+    example: {sku: "STY-T-4410", spec_type: "tolerances"}
+
+  - name: get_product_specifications
+    desc: Product specification and materials including tech pack details and composition.
+    kind: select
+    from: product_specifications
+    filters:
+      sku: {}
+      spec_type: {}
+    columns: [sku, spec_type, spec_name, spec_version, content, applicable_sizes, applicable_fits]
+    order: spec_type, spec_version DESC
+    example: {sku: "K-1700"}
+
+  - name: get_size_chart_for_range
+    desc: Return size chart for range including measurement specifications and grade curves.
+    kind: select
+    from: product_specifications
+    filters:
+      sku: {}
+      spec_type: {default: size_chart}
+    columns: [sku, spec_name, spec_version, applicable_sizes, measurement_points, notes]
+    example: {sku: "STY-5520", spec_type: "size_chart"}
+
+  - name: get_size_spec_and_grade_rules_for_style
+    desc: Return size spec and grade rules for style including measurement points and grade definitions.
+    kind: sql
+    args:
+      style_id: {required: true}
+    sql: |
+      SELECT p.sku, p.spec_type, p.spec_name, p.spec_version,
+             p.applicable_sizes, p.measurement_points, p.grade_definitions, p.notes
+      FROM product_specifications p
+      JOIN product_tech_pack t ON t.sku = p.sku
+      WHERE t.style_id = $style_id
+        AND p.spec_type IN ('size_chart', 'grade_rules')
+      ORDER BY p.spec_type, p.spec_version DESC
+    limit: 20
+    example: {style_id: "STY-T-4410"}
+
+  - name: get_yarn_and_construction_details
+    desc: Return yarn and construction details including fiber content and fabric properties.
+    kind: select
+    from: fabric_specs
+    filters:
+      fabric_spec_id: {}
+      material_id: {}
+      style_id: {}
+    columns: [fabric_name, fiber_content, weave, gsm, width_cm, abrasion_cycles, tensile_strength, tear_strength, pilling_resistance]
+    order: fabric_name
+    example: {style_id: "STY-5520"}
+
+  - name: list_candidate_materials
+    desc: List candidate materials in pilot or experimental phase with test status and readiness.
+    kind: select
+    from: candidate_materials
+    filters:
+      readiness_level: {desc: "Pilot, experimental, or proven (optional)"}
+      test_status: {desc: "Test status: planned, in_progress, completed, passed, failed (optional)"}
+      supplier_id: {desc: "Supplier id (optional)"}
+    columns: [candidate_id, material_name, material_type, readiness_level, test_status, cost_savings_pct, weight_reduction_pct, pilot_date_start, notes]
+    order: readiness_level, test_status
+    limit: 50
+    example: {}
+
+  - name: list_co_development_projects
+    desc: Co-development projects with suppliers showing scope, status and investment terms.
+    kind: select
+    from: co_development_projects
+    filters:
+      supplier_id: {desc: "Supplier partner (optional)"}
+      status: {desc: "Project status: planning, active, completed, terminated (optional)"}
+      category: {desc: "Product category (optional)"}
+    columns: [project_id, project_name, supplier_id, status, start_date, target_date, investment_gbp, cost_savings_gbp, materials_developed, ip_ownership]
+    order: start_date DESC
+    limit: 50
+    example: {}
+
+  - name: list_products_by_material
+    desc: Products using a material showing SKUs, styles and quantities.
+    kind: sql
+    args:
+      material_id: {required: true}
+    sql: |
+      SELECT DISTINCT b.sku, t.style_id, t.name, t.category, t.supplier_id, t.status,
+             COUNT(*) OVER (PARTITION BY b.sku) AS component_count
+      FROM bill_of_materials b
+      JOIN product_tech_pack t ON t.sku = b.sku
+      WHERE b.component_id = $material_id OR b.material_name ILIKE '%' || (SELECT name FROM material_library WHERE material_id = $material_id) || '%'
+      ORDER BY t.name
+    limit: 100
+    example: {material_id: "MAT-POL-100"}
+
+  - name: list_products_by_origin_country_and_material
+    desc: Products by material and origin country showing sourcing and composition details.
+    kind: sql
+    args:
+      material_id: {required: true}
+      origin_country: {required: true, desc: "Country code, e.g. CN, VN, IN"}
+    sql: |
+      SELECT DISTINCT b.sku, t.style_id, t.name, t.department, t.category,
+             f.origin_country, f.mill_country, f.supplier_id, t.supplier_id,
+             b.material_name, b.quantity, b.unit
+      FROM bill_of_materials b
+      JOIN product_tech_pack t ON t.sku = b.sku
+      LEFT JOIN fabric_specs f ON f.material_id = b.component_id
+      WHERE (b.component_id = $material_id OR b.material_name ILIKE '%' || (SELECT name FROM material_library WHERE material_id = $material_id) || '%')
+        AND ($origin_country IS NULL OR f.origin_country = $origin_country OR CAST(t.created_at AS DATE) >= CAST($as_of AS DATE) - INTERVAL 365 DAY)
+      ORDER BY t.name
+    limit: 100
+    example: {material_id: "MAT-POL-100", origin_country: "CN"}
+
+  - name: list_products_by_regulated_category
+    desc: Products by regulated category showing compliance status and audit history.
+    kind: select
+    from: product_regulated_categories
+    filters:
+      category_name: {desc: "Regulated category, e.g. kids_sleepwear, toys, electronics (optional)"}
+      region: {desc: "Region: UK, EU, US, AU (optional)"}
+      compliance_status: {desc: "Compliance status: compliant, review, non_compliant (optional)"}
+    columns: [sku, category_name, region, regulations, compliance_status, test_required, last_audit_date]
+    order: category_name, compliance_status
+    limit: 100
+    example: {category_name: "kids_sleepwear"}
+
+  - name: list_products_using_component
+    desc: Products using the same component showing BOM details and suppliers.
+    kind: sql
+    args:
+      component_id: {required: true, desc: "Component id or part number"}
+    sql: |
+      SELECT DISTINCT b.sku, t.style_id, t.name, t.category, b.component_type, b.component_name,
+             b.quantity, b.unit, b.supplier_id, s.name AS supplier_name, b.unit_cost_gbp
+      FROM bill_of_materials b
+      JOIN product_tech_pack t ON t.sku = b.sku
+      LEFT JOIN master.suppliers s ON s.supplier_id = b.supplier_id
+      WHERE b.component_id = $component_id
+      ORDER BY t.name, b.line_no
+    limit: 100
+    example: {component_id: "BUTTON-STAINLESS-10MM"}
+
+  - name: list_products_using_material
+    desc: Products using a material or supplier lot showing SKUs and composition details.
+    kind: sql
+    args:
+      material_id: {type: str, desc: "Material id (optional)"}
+      batch_id: {type: str, desc: "Material batch id (optional)"}
+    sql: |
+      SELECT DISTINCT b.sku, t.style_id, t.name, t.category, t.status,
+             CASE WHEN mb.batch_id IS NOT NULL THEN mb.batch_id ELSE 'Various' END AS batch_id,
+             mb.batch_date, b.quantity, b.unit, b.material_name
+      FROM bill_of_materials b
+      JOIN product_tech_pack t ON t.sku = b.sku
+      LEFT JOIN material_batches mb ON mb.used_in_skus LIKE '%' || b.sku || '%'
+      WHERE ($material_id IS NULL OR b.component_id = $material_id OR b.material_name ILIKE '%' || (SELECT name FROM material_library WHERE material_id = $material_id LIMIT 1) || '%')
+        AND ($batch_id IS NULL OR mb.batch_id = $batch_id)
+      ORDER BY t.name
+    limit: 100
+    example: {material_id: "MAT-POL-100"}
+
+  - name: list_products_using_substance
+    desc: Products containing a substance showing SKUs, concentration and compliance status.
+    kind: select
+    from: product_substances
+    filters:
+      substance_id: {desc: "Substance id (CAS number or similar) (optional)"}
+      substance_name: {op: like, desc: "Substance name (optional)"}
+      list_type: {desc: "Restriction type: restricted, candidate, banned, monitored (optional)"}
+    columns: [sku, substance_name, concentration_pct, component, regulation, list_type, status]
+    order: sku, substance_name
+    limit: 100
+    example: {}
+
+  - name: search_alternative_specifications_for_product
+    desc: Searches for alternative specifications for product from the library by comparing properties.
+    kind: sql
+    args:
+      sku: {required: true}
+      spec_type: {type: str, desc: "Specification type to search: size_chart, tolerances, grade_rules (optional)"}
+    sql: |
+      SELECT p.sku, p.spec_type, p.spec_name, p.spec_version, p.content,
+             p.applicable_sizes, p.measurement_points, p.notes,
+             t.style_id, t.name, t.category
+      FROM product_specifications p
+      JOIN product_tech_pack t ON t.sku = p.sku
+      WHERE t.sku = $sku
+        AND ($spec_type IS NULL OR p.spec_type = $spec_type)
+      ORDER BY p.spec_type, p.spec_version DESC
+    limit: 20
+    example: {sku: "STY-T-4410"}
+
+  - name: update_grade_rules_for_style
+    desc: Updates the grading rules for a style in the tech pack including grade definitions.
+    kind: update
+    table: product_specifications
+    set: {grade_definitions: "{grade_definitions}", spec_version: "spec_version + 1", updated_at: "$as_of"}
+    args:
+      grade_definitions: {required: true, type: text, desc: "New grade definitions as JSON, e.g. [{\"grade\": \"A\", \"measurements\": {...}}]"}
+    example: {sku: "STY-T-4410", spec_type: "grade_rules", grade_definitions: "[{\"grade\": \"A\", \"tolerance_cm\": 0.5}]"}
+
+  - name: update_material_compliance_status
+    desc: Flag a material as under review or restricted based on compliance findings.
+    kind: update
+    table: material_library
+    set: {compliance_status: "{compliance_status}", updated_at: "$as_of"}
+    args:
+      compliance_status: {required: true, type: enum, values: [approved, restricted, under_review, banned], desc: "New compliance status"}
+    example: {material_id: "MAT-POL-100", compliance_status: "under_review"}
+
+  - name: update_tolerance_in_tech_pack
+    desc: Updates a measurement or shrinkage tolerance in the tech pack for a style.
+    kind: update
+    table: product_specifications
+    set: {shrinkage_tolerances: "{shrinkage_tolerances}", spec_version: "spec_version + 1", updated_at: "$as_of"}
+    args:
+      shrinkage_tolerances: {required: true, type: text, desc: "New shrinkage tolerance limits as JSON, e.g. {\"wash\": \"-2%\", \"dry_clean\": \"-1%\"}"}
+    example: {sku: "STY-T-4410", spec_type: "tolerances", shrinkage_tolerances: "{\"wash\": \"-2%\", \"dry_clean\": \"-1%\"}"}

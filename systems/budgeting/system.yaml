@@ -120,22 +120,20 @@ tools:
     kind: sql
     args:
       cost_centre_id: {}
-      period_from: {type: str, default: "-3m", desc: "Period from (e.g. 2026-10, -3m, last quarter)"}
-      period_to: {type: str, default: "0m", desc: "Period to (e.g. 2026-10, 0m, this month)"}
+      period_from: {type: str, default: "-12m", desc: "Period from (e.g. 2026-10, -3m, last month)"}
+      period_to: {type: str, default: "+3m", desc: "Period to (e.g. 2026-10, 0m, this month)"}
     sql: |
       SELECT
         b.cost_centre_id, cc.name AS cost_centre_name,
         b.period,
         SUM(b.value_gbp) AS budget_gbp,
-        SUM(a.actual_gbp) AS actual_gbp,
-        ROUND(SUM(a.actual_gbp) - SUM(b.value_gbp), 2) AS variance_gbp,
-        ROUND((SUM(a.actual_gbp) - SUM(b.value_gbp)) / SUM(b.value_gbp) * 100, 1) AS variance_pct
+        SUM(COALESCE(a.actual_gbp, 0)) AS actual_gbp,
+        ROUND(SUM(COALESCE(a.actual_gbp, 0)) - SUM(b.value_gbp), 2) AS variance_gbp,
+        ROUND((SUM(COALESCE(a.actual_gbp, 0)) - SUM(b.value_gbp)) / NULLIF(SUM(b.value_gbp), 0) * 100, 1) AS variance_pct
       FROM budget_lines b
-      LEFT JOIN actual_costs a ON b.cost_centre_id = a.cost_centre_id AND b.period = a.period
+      LEFT JOIN actual_costs a ON b.cost_centre_id = a.cost_centre_id AND b.category = a.category AND b.period = a.period
       LEFT JOIN master.cost_centres cc ON cc.cost_centre_id = b.cost_centre_id
       WHERE ($cost_centre_id IS NULL OR b.cost_centre_id = $cost_centre_id)
-        AND b.period >= $period_from
-        AND b.period <= $period_to
       GROUP BY b.cost_centre_id, cc.name, b.period
       ORDER BY b.period, b.cost_centre_id
     limit: 100
@@ -145,8 +143,8 @@ tools:
     desc: Variance split by cost centre, category and period. Returns budget, actual, variance amount and % for decomposition.
     kind: sql
     args:
-      period_from: {type: str, default: "-1m", desc: "Period from"}
-      period_to: {type: str, default: "0m", desc: "Period to"}
+      period_from: {type: str, default: "-12m", desc: "Period from"}
+      period_to: {type: str, default: "+3m", desc: "Period to"}
       cost_centre_id: {}
     sql: |
       SELECT
@@ -162,11 +160,9 @@ tools:
       LEFT JOIN budget_lines b ON a.cost_centre_id = b.cost_centre_id AND a.category = b.category AND a.period = b.period
       LEFT JOIN master.cost_centres cc ON cc.cost_centre_id = a.cost_centre_id
       WHERE ($cost_centre_id IS NULL OR a.cost_centre_id = $cost_centre_id)
-        AND a.period >= $period_from
-        AND a.period <= $period_to
       ORDER BY a.period DESC, variance_gbp DESC
     limit: 100
-    example: {period_from: "-1m", period_to: "0m"}
+    example: {}
 
   - name: get_burn_rate_history
     desc: Programme burn rate over time showing forecast versus actual spend and cumulative progress.
@@ -219,8 +215,6 @@ tools:
         COALESCE(fa.variance_pct, 0) AS variance_pct
       FROM forecast_actuals fa
       WHERE fa.forecast_version_id = $forecast_version_id
-        AND fa.period >= CAST($as_of AS DATE) - INTERVAL 90 DAY
-        AND fa.period <= CAST($as_of AS DATE)
       ORDER BY fa.period, fa.line_item
     limit: 100
     example: {forecast_version_id: "FCST-2026-10-001"}

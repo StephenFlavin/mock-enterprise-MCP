@@ -847,3 +847,245 @@ tools:
     product_category: apparel
     risk_level: medium
     evidence_path: files/polyester_cert.pdf
+- name: get_emissions_data_quality_flags
+  desc: Measured versus estimated flags for each emission record. Shows data quality
+    by scope.
+  kind: sql
+  args:
+    scope:
+      type: int
+      desc: GHG scope (1, 2 or 3, default all)
+  sql: "SELECT emission_id, scope, category, is_measured, measurement_date, tonnes_co2e,\n\
+    \       CASE WHEN is_measured THEN 'Measured' ELSE 'Estimated' END AS quality_flag\n\
+    FROM emissions\nWHERE ($scope IS NULL OR scope = $scope)\nORDER BY measurement_date\
+    \ DESC\n"
+  limit: 50
+  example: {}
+- name: get_emissions_history_by_year
+  desc: Emissions by year against baseline. Shows year-on-year progression toward targets.
+  kind: sql
+  args:
+    scope:
+      type: int
+      desc: GHG scope
+  sql: "SELECT\n  CAST(strftime('%Y', measurement_date) AS INTEGER) AS year,\n  scope,\n\
+    \  round(sum(tonnes_co2e), 2) AS annual_emissions_tonnes,\n  count(*) AS record_count\n\
+    FROM emissions\nWHERE ($scope IS NULL OR scope = $scope)\nGROUP BY CAST(strftime('%Y',\
+    \ measurement_date) AS INTEGER), scope\nORDER BY year DESC\n"
+  limit: 20
+  example: {}
+- name: get_emissions_reduction_targets
+  desc: Emissions reduction targets and baselines by scope. Shows commitments and target
+    years.
+  kind: sql
+  sql: "SELECT target_id, scope, baseline_year, baseline_tonnes_co2e, target_year,\
+    \ target_tonnes_co2e,\n       reduction_pct, pathway, status\nFROM reduction_targets\n\
+    ORDER BY target_year DESC\n"
+  limit: 20
+  example: {}
+- name: get_emissions_vs_target
+  desc: Current emissions compared to reduction targets. Shows progress and variance.
+  kind: sql
+  args:
+    scope:
+      type: int
+      desc: GHG scope
+  sql: "WITH latest AS (\n  SELECT scope, round(sum(tonnes_co2e), 2) AS latest_tonnes\n\
+    \  FROM emissions\n  WHERE measurement_date = (SELECT max(measurement_date) FROM\
+    \ emissions WHERE ($scope IS NULL OR scope = $scope))\n    AND ($scope IS NULL\
+    \ OR scope = $scope)\n  GROUP BY scope\n)\nSELECT t.target_id, t.scope, t.target_year,\
+    \ t.target_tonnes_co2e,\n       l.latest_tonnes,\n       round(l.latest_tonnes\
+    \ - t.target_tonnes_co2e, 2) AS variance_tonnes,\n       CASE WHEN l.latest_tonnes\
+    \ <= t.target_tonnes_co2e THEN 'ON TRACK' ELSE 'OFF TRACK' END AS status\nFROM\
+    \ reduction_targets t\nLEFT JOIN latest l ON l.scope = t.scope\nWHERE ($scope\
+    \ IS NULL OR t.scope = $scope)\nORDER BY t.target_year\n"
+  limit: 20
+  example: {}
+- name: get_esg_data_coverage_by_metric
+  desc: Data completeness by ESG metric. Shows which ESG metrics are well-covered.
+  kind: sql
+  sql: "SELECT metric, coverage_pct, materiality_score, regulatory_impact, status\n\
+    FROM esg_data_gaps\nORDER BY coverage_pct ASC\n"
+  limit: 20
+  example: {}
+- name: get_esg_platform_capabilities
+  desc: Modules and reporting frameworks the platform supports. Shows current capabilities.
+  kind: sql
+  sql: "SELECT DISTINCT 'Carbon Emissions Tracking' AS module, 'Scope 1, 2, 3' AS\
+    \ scopes_supported, 'TCFD, CSRD, SBTi' AS frameworks UNION ALL\n SELECT 'Supplier\
+    \ ESG Data' AS module, 'Scope 1, 2, 3' AS scopes_supported, 'SBTi, CDP' AS frameworks\
+    \ UNION ALL\n SELECT 'Claims Substantiation' AS module, 'All' AS scopes_supported,\
+    \ 'ASA, CMA, FCA' AS frameworks UNION ALL\n SELECT 'Reduction Initiatives' AS\
+    \ module, 'Scope 1, 2, 3' AS scopes_supported, 'Science Based' AS frameworks\n\
+    "
+  limit: 10
+  example: {}
+- name: get_planned_reduction_initiatives
+  desc: Planned initiatives and expected savings. Shows portfolio of emissions reduction
+    projects.
+  kind: sql
+  args:
+    status:
+      desc: Filter by status (planned, in_progress, completed)
+  sql: "SELECT initiative_id, name, scope, category, expected_savings_tonnes, cost_gbp,\n\
+    \       start_date, completion_date, status, feasibility_rating\nFROM reduction_initiatives\n\
+    WHERE ($status IS NULL OR status = $status)\nORDER BY expected_savings_tonnes DESC\n"
+  limit: 50
+  example: {}
+- name: get_scope2_emissions_by_period
+  desc: Scope 2 emissions by period and method (location-based, market-based). Shows
+    electricity footprint.
+  kind: sql
+  args:
+    year:
+      type: int
+      desc: Filter by year
+  sql: "SELECT year, site_id, kwh_consumed, emissions_tonnes_co2e, method, boundary,\
+    \ factor_kg_per_kwh,\n       factor_source\nFROM scope2_history\nWHERE ($year\
+    \ IS NULL OR year = $year)\nORDER BY year DESC, site_id\n"
+  limit: 50
+  example: {}
+- name: get_scope2_method_and_boundary_changes
+  desc: Scope 2 methodology and boundary change log. Shows what changed and when.
+  kind: sql
+  sql: "SELECT year, site_id, method, boundary, factor_source,\n       LAG(method)\
+    \ OVER (PARTITION BY site_id ORDER BY year) AS prior_method,\n       LAG(boundary)\
+    \ OVER (PARTITION BY site_id ORDER BY year) AS prior_boundary,\n       CASE WHEN\
+    \ method != LAG(method) OVER (PARTITION BY site_id ORDER BY year) THEN 'Method\
+    \ Change' ELSE '' END AS method_change_flag,\n       CASE WHEN boundary != LAG(boundary)\
+    \ OVER (PARTITION BY site_id ORDER BY year) THEN 'Boundary Change' ELSE '' END\
+    \ AS boundary_change_flag\nFROM scope2_history\nORDER BY year DESC, site_id\n"
+  limit: 50
+  example: {}
+- name: get_submission_data_quality_scores
+  desc: Data quality score of supplier submissions. Shows completeness and quality issues.
+  kind: sql
+  args:
+    supplier_id:
+      desc: Filter by supplier
+  sql: "SELECT submission_id, supplier_id, submission_date, deadline_date, data_quality_score,\n\
+    \       completeness_pct, has_scope1, has_scope2, has_scope3, status, notes\nFROM\
+    \ supplier_submissions\nWHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)\n\
+    ORDER BY data_quality_score DESC\n"
+  limit: 100
+  example: {}
+- name: get_substantiation_evidence_for_claim
+  desc: Evidence held for a sustainability claim. Shows whether claim is substantiated.
+  kind: sql
+  args:
+    claim_id:
+      required: true
+  sql: "SELECT claim_id, claim_text, product_category, substantiation_available,\n\
+    \       evidence_path, risk_level, review_status, notes\nFROM claims_register\n\
+    WHERE claim_id = $claim_id\n"
+  limit: 1
+  example:
+    claim_id: CLM-2026-0001
+- name: get_supplier_science_based_target_status
+  desc: SBTi commitment status of suppliers. Shows which have science-based targets.
+  kind: sql
+  sql: "WITH supplier_targets AS (\n  SELECT e.supplier_id, t.scope, t.status\n  FROM\
+    \ emissions e\n  JOIN reduction_targets t ON t.scope = e.scope\n  WHERE e.scope\
+    \ = 3 AND e.supplier_id IS NOT NULL\n)\nSELECT 'Supplier SBTi Status' AS metric,\n\
+    \       count(DISTINCT supplier_id) AS suppliers_tracked,\n       count(DISTINCT\
+    \ supplier_id) FILTER (WHERE status = 'active') AS active_sbt_targets,\n      \
+    \ round(100.0 * count(DISTINCT supplier_id) FILTER (WHERE status = 'active')\
+    \ / count(DISTINCT supplier_id), 1) AS sbti_adoption_pct\n FROM supplier_targets\n"
+  limit: 1
+  example: {}
+- name: get_transport_emissions_intensity_trend
+  desc: Transport emissions intensity trend by mode and lane. Shows trajectory and changes.
+  kind: sql
+  args:
+    transport_mode:
+      desc: Filter by mode (air, sea, truck, rail)
+  sql: "SELECT lane_id, transport_mode, origin, destination, period_start,\n     \
+    \  factor_kg_per_tonne_km, factor_source, version, status,\n       LAG(factor_kg_per_tonne_km)\
+    \ OVER (PARTITION BY lane_id ORDER BY period_start) AS prior_factor,\n       CASE\
+    \ WHEN LAG(factor_kg_per_tonne_km) OVER (PARTITION BY lane_id ORDER BY period_start)\
+    \ IS NOT NULL\n        THEN round((factor_kg_per_tonne_km - LAG(factor_kg_per_tonne_km)\
+    \ OVER (PARTITION BY lane_id ORDER BY period_start)) / LAG(factor_kg_per_tonne_km)\
+    \ OVER (PARTITION BY lane_id ORDER BY period_start) * 100.0, 1)\n        ELSE\
+    \ NULL END AS factor_change_pct\nFROM transport_factors\nWHERE ($transport_mode\
+    \ IS NULL OR transport_mode = $transport_mode)\nORDER BY period_start DESC, lane_id\n"
+  limit: 50
+  example: {}
+- name: list_in_scope_reporting_regulations
+  desc: Reporting rules applicable to Harbour & Vale. Shows obligations and timelines.
+  kind: sql
+  sql: "SELECT regulation_id, name, jurisdiction, requirement_type, effective_date,\n\
+    \       scopes_covered, applies_to_us, description\nFROM regulations\nWHERE applies_to_us\
+    \ = TRUE\nORDER BY effective_date ASC\n"
+  limit: 50
+  example: {}
+- name: search_emission_factors_by_material
+  desc: Emission factors by material (cotton, polyester, etc.). Returns ids for use in
+    calculations.
+  kind: select
+  from: emission_factors
+  filters:
+    material:
+      op: like
+      desc: Material name or part of it (e.g. polyester, cotton)
+    region:
+      desc: Region if applicable (UK, EU, Asia)
+    data_quality_rating:
+      desc: Quality rating (A, B, C, D)
+  columns: [factor_id, factor_name, material, kg_co2e_per_unit, unit, source, version,
+    data_quality_rating, valid_from, valid_to, region]
+  order: material
+  limit: 50
+  example:
+    material: polyester
+- name: update_claim_review_status
+  desc: Mark a claim as approved, amend or drop. Track claim review outcomes.
+  kind: update
+  table: claims_register
+  set:
+    review_status: "{review_status}"
+    reviewed_by: "{reviewed_by}"
+    reviewed_date: "$as_of"
+    notes: "{notes}"
+  args:
+    claim_id:
+      required: true
+    review_status:
+      required: true
+      type: str
+      desc: approved, amend or drop
+    reviewed_by:
+      type: str
+      desc: Employee ID or name
+    notes:
+      type: str
+      desc: Review findings or comments
+  example:
+    claim_id: CLM-2026-0001
+    review_status: approved
+    reviewed_by: EMP-0001
+    notes: Substantiation provided and verified
+- name: update_transport_emission_factor_for_lane
+  desc: Correct the emission factor applied to a transport lane or mode. Updates methodology.
+  kind: update
+  table: transport_factors
+  set:
+    factor_kg_per_tonne_km: "{factor_kg_per_tonne_km}"
+    status: "{status}"
+    updated_at: "$as_of"
+  args:
+    lane_id:
+      required: true
+    period_start:
+      required: true
+      type: date
+    factor_kg_per_tonne_km:
+      type: float
+      desc: Corrected emission factor (kg CO2e per tonne-km)
+    status:
+      type: str
+      desc: active or superseded
+  example:
+    lane_id: Europe-Asia-sea
+    period_start: -90d
+    factor_kg_per_tonne_km: 0.008
+    status: active
