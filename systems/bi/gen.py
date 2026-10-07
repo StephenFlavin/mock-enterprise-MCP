@@ -1,180 +1,105 @@
-"""BI & Dashboards analytics data: store and product performance vs plan."""
-from datetime import datetime, timedelta
+"""BI & Dashboards analytics data: monthly store and product performance vs plan.
+
+Product actuals are rolled up from master sales_weekly (units and revenue per calendar month of week_start), so BI
+sales agree with the sales history other systems read. Store units are the master store-channel units for the
+month shared out across all open stores by size and cluster, so store totals add up to the master total.
+The story stores/products (see seed/*.csv) are not generated here: their rows come from the seed files.
+"""
+from collections import defaultdict
+from datetime import date, timedelta
+
+STORY_STORES = {"ST141", "ST142", "ST143", "ST144", "ST145", "ST150"}
+STORY_SKUS = {"SKU-100007", "SKU-100014", "SKU-100021", "K-1700", "PF-220"}
+CLUSTER_FACTOR = {"A": 1.25, "B": 1.0, "C": 0.85, "D": 0.6}
+
+
+def _month_end(y, m):
+    return (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1))
+
+
+def _clip(x, lo, hi):
+    return max(lo, min(hi, x))
 
 
 def generate(g):
     r = g.rng
+    today = g.as_of
 
-    # Get stores and products from master
-    sites = [s for s in g.master("sites") if s["type"] == "store"]
-    products = [p for p in g.master("products") if p["status"] in ("active", "new")][:100]
-    employees = g.master("employees")
+    # last four complete calendar months
+    months = []
+    y, m = today.year, today.month
+    for _ in range(4):
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        months.append((y, m))
+    months.reverse()
 
-    store_perf = []
-    product_perf = []
-    store_targets = []
-    product_targets = []
-    dq_issues = []
-    reports = []
+    # master weekly sales rolled up per sku and month, and in total
+    sku_m = defaultdict(lambda: [0, 0.0])
+    tot_m = defaultdict(lambda: [0, 0.0, 0])  # store units, revenue, all units
+    for w in g.master("sales_weekly"):
+        key = w["week_start"][:7]
+        sku_m[(w["sku"], key)][0] += int(w["store_units"]) + int(w["online_units"])
+        sku_m[(w["sku"], key)][1] += float(w["revenue_gbp"])
+        tot_m[key][0] += int(w["store_units"])
+        tot_m[key][1] += float(w["revenue_gbp"])
+        tot_m[key][2] += int(w["store_units"]) + int(w["online_units"])
 
-    # Generate store performance for last 4 months
-    for months_back in range(4, 0, -1):
-        # Calculate period end date (last day of the month)
-        today = g.as_of
-        current_year = today.year
-        current_month = today.month
+    stores = [s for s in g.master("sites") if s["type"] == "store" and s["status"] == "open"]
+    weights = {s["site_id"]: float(s["sqft"]) ** 0.8 * CLUSTER_FACTOR.get(s["cluster"], 1.0) for s in stores}
+    wsum = sum(weights.values())
 
-        # Go back months_back months
-        target_month = current_month - months_back
-        target_year = current_year
-        while target_month <= 0:
-            target_month += 12
-            target_year -= 1
+    store_perf, store_targets, product_perf, product_targets = [], [], [], []
 
-        # Get last day of that month
-        if target_month == 12:
-            period_end = datetime(target_year + 1, 1, 1) - timedelta(days=1)
-        else:
-            period_end = datetime(target_year, target_month + 1, 1) - timedelta(days=1)
-        period_end = period_end.date()
-
-        for site in sites[:50]:  # Top 50 stores
-            cluster = site["cluster"]
-
-            # More sales for cluster A, less for D
-            cluster_factor = {"A": 1.2, "B": 1.0, "C": 0.85, "D": 0.6}.get(cluster, 1.0)
-
-            # Base sales
-            base_sales_units = int(r.gauss(500 * cluster_factor, 100 * cluster_factor))
-            sales_gbp = base_sales_units * r.gauss(45, 5)
-
-            # Margin varies by store
-            margin_pct = r.gauss(32, 4)
-
-            # Availability typically 95-98%
-            availability_pct = r.gauss(96, 2)
-
-            # Shrink 1-3%
-            shrink_pct = r.gauss(1.5, 0.5)
-
-            # Labour cost 8-12% of sales
-            labour_cost_pct = r.gauss(10, 1)
-
+    for (y, m) in months:
+        pe = _month_end(y, m)
+        key = f"{y}-{m:02d}"
+        units_total, rev_total, all_units = tot_m[key]
+        avg_price = rev_total / max(all_units, 1)
+        for s in stores:
+            sid = s["site_id"]
+            if sid in STORY_STORES:
+                continue
+            units = int(units_total * weights[sid] / wsum * r.uniform(0.94, 1.06))
+            sales = round(units * avg_price * r.uniform(0.97, 1.03), 2)
+            margin = round(_clip(r.gauss(34, 2.0), 27, 41), 1)
             store_perf.append({
-                "site_id": site["site_id"],
-                "period_end": period_end,
-                "sales_units": max(100, base_sales_units),
-                "sales_gbp": max(4500, sales_gbp),
-                "margin_pct": max(18, margin_pct),
-                "availability_pct": min(99, max(92, availability_pct)),
-                "shrink_pct": max(0.5, min(3, shrink_pct)),
-                "labour_cost_pct": max(7, min(14, labour_cost_pct)),
-                "updated_at": period_end
-            })
-
-            # Add target
+                "site_id": sid, "period_end": pe, "sales_units": units, "sales_gbp": sales,
+                "margin_pct": margin,
+                "availability_pct": round(_clip(r.gauss(96.6, 0.8), 95, 99), 1),
+                "shrink_pct": round(_clip(r.gauss(1.2, 0.2), 0.7, 1.7), 1),
+                "labour_cost_pct": round(_clip(r.gauss(10.2, 0.7), 8.5, 11.8), 1),
+                "updated_at": pe})
+            # targets: most stores meet plan; a few miss it by under 1.5%
+            f = r.uniform(0.985, 1.04)
             store_targets.append({
-                "site_id": site["site_id"],
-                "period_end": period_end,
-                "sales_units_target": int(store_perf[-1]["sales_units"] * r.uniform(0.95, 1.05)),
-                "sales_gbp_target": store_perf[-1]["sales_gbp"] * r.uniform(0.95, 1.05),
-                "margin_pct_target": store_perf[-1]["margin_pct"] * r.uniform(0.95, 1.0),
-                "updated_at": period_end
-            })
+                "site_id": sid, "period_end": pe,
+                "sales_units_target": int(units / f), "sales_gbp_target": round(sales / f, 2),
+                "margin_pct_target": round(margin - r.uniform(-0.2, 1.2), 1), "updated_at": pe})
 
-    # Generate product performance for last 4 months
-    for months_back in range(4, 0, -1):
-        today = g.as_of
-        current_year = today.year
-        current_month = today.month
-
-        target_month = current_month - months_back
-        target_year = current_year
-        while target_month <= 0:
-            target_month += 12
-            target_year -= 1
-
-        if target_month == 12:
-            period_end = datetime(target_year + 1, 1, 1) - timedelta(days=1)
-        else:
-            period_end = datetime(target_year, target_month + 1, 1) - timedelta(days=1)
-        period_end = period_end.date()
-
-        for prod in products[:40]:  # Top 40 products
-            # ABC velocity
-            velocity_factor = {"A": 1.3, "B": 1.0, "C": 0.6}.get(prod.get("abc_class", "B"), 1.0)
-
-            sales_units = int(r.gauss(300 * velocity_factor, 60 * velocity_factor))
-            sales_gbp = sales_units * float(prod["retail_price_gbp"]) * r.uniform(0.7, 0.95)  # Net of markdown
-
-            margin_pct = r.gauss(35, 5)
-            returns_pct = r.gauss(2, 1)
-            avg_rating = r.gauss(4.2, 0.4)
-
+        for sku in sorted({k[0] for k in sku_m if k[1] == key} - STORY_SKUS):
+            units, rev = sku_m[(sku, key)]
+            if units <= 0:
+                continue
+            margin = round(_clip(r.gauss(36, 3.0), 26, 50), 1)
+            returns = round(_clip(r.gauss(2.2, 0.5), 0.8, 3.6), 1)
+            rating = round(_clip(r.gauss(4.2, 0.25), 3.6, 4.8), 1)
+            f = r.uniform(0.97, 1.03)
             product_perf.append({
-                "sku": prod["sku"],
-                "period_end": period_end,
-                "sales_units": max(10, sales_units),
-                "sales_gbp": max(500, sales_gbp),
-                "margin_pct": max(15, margin_pct),
-                "returns_pct": max(0.5, min(5, returns_pct)),
-                "avg_rating": max(2, min(5, avg_rating)),
-                "updated_at": period_end
-            })
-
-            # Add target
+                "sku": sku, "period_end": pe, "sales_units": units, "sales_gbp": round(rev, 2),
+                "margin_pct": margin, "returns_pct": returns, "avg_rating": rating, "updated_at": pe})
             product_targets.append({
-                "sku": prod["sku"],
-                "period_end": period_end,
-                "sales_units_target": int(product_perf[-1]["sales_units"] * r.uniform(0.90, 1.10)),
-                "sales_gbp_target": product_perf[-1]["sales_gbp"] * r.uniform(0.90, 1.10),
-                "margin_pct_target": product_perf[-1]["margin_pct"] * r.uniform(0.95, 1.0),
-                "updated_at": period_end
-            })
-
-    # Data quality issues
-    dq_datasets = ["store_performance", "product_performance", "sales_weekly", "dc_stock"]
-    dq_types = ["missing_data", "duplicate", "incorrect_value", "late_update", "schema_mismatch"]
-
-    for i in range(8):
-        created_days_ago = r.randint(5, 45)
-        resolved = r.choice([True, False, False, False])  # 25% resolved
-        dq_issues.append({
-            "dq_issue_id": f"DQ-{900000 + i + 1:06d}",
-            "dataset": r.choice(dq_datasets),
-            "issue_type": r.choice(dq_types),
-            "description": f"Data inconsistency in {r.choice(dq_datasets)} affecting reporting",
-            "owner_id": r.choice(employees)["employee_id"],
-            "severity": r.choices(["critical", "high", "medium", "low"], [0.2, 0.3, 0.3, 0.2])[0],
-            "affected_reports": "store_performance_summary;regional_analysis",
-            "created_at": g.days_ago(created_days_ago),
-            "resolved_at": g.days_ago(created_days_ago - 3) if resolved else None
-        })
-
-    # Scheduled reports
-    report_types = [
-        "Store Performance Summary",
-        "Range Review Report",
-        "Regional Analysis",
-        "Product Performance",
-        "Data Quality Dashboard"
-    ]
-
-    for i, rtype in enumerate(report_types):
-        reports.append({
-            "report_id": f"RPT-{900000 + i + 1:06d}",
-            "report_type": rtype,
-            "recipient_emails": "manager@company.com;director@company.com",
-            "frequency": r.choice(["daily", "weekly", "monthly", "quarterly"]),
-            "active": True,
-            "created_at": g.days_ago(60)
-        })
+                "sku": sku, "period_end": pe,
+                "sales_units_target": int(units * f), "sales_gbp_target": round(rev * f, 2),
+                "margin_pct_target": round(margin + r.uniform(-1, 1), 1),
+                "returns_pct_target": 2.5, "avg_rating_target": 4.2, "updated_at": pe})
 
     return {
         "store_performance": store_perf,
         "product_performance": product_perf,
         "store_targets": store_targets,
         "product_targets": product_targets,
-        "data_quality_issues": dq_issues,
-        "scheduled_reports": reports
+        "data_quality_issues": [],   # seed/data_quality_issues.csv
+        "scheduled_reports": [],     # seed/scheduled_reports.csv
     }
