@@ -297,7 +297,8 @@ def get_margin_phasing_forecast(ctx, starting_margin_pct=35.0, cost_change_gbp=0
         # Gradual recovery: month 1 = full impact, gradually phases out
         phase_factor = 1.0 - (month - 1) / recovery_months
         month_margin_impact = cost_change_gbp * phase_factor
-        month_margin_pct = starting_margin_pct - (abs(cost_change_gbp) / 1000000 * month_margin_pct) * phase_factor if cost_change_gbp < 0 else starting_margin_pct
+        # Calculate margin impact in percentage points
+        margin_impact_pct = (abs(cost_change_gbp) / 1000000) * phase_factor if cost_change_gbp < 0 else 0
 
         monthly_data.append({
             'month': month,

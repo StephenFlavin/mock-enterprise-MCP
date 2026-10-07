@@ -868,3 +868,392 @@ tools:
     ORDER BY c.cost_centre_id\n"
   limit: 10
   example: {}
+- name: get_inventory_value_movement
+  desc: Inventory value movement by month. Returns gross value changes, cost updates,
+    FX impact and adjustments.
+  kind: sql
+  args:
+    site_id:
+      desc: Site or DC (default all)
+    period_start:
+      type: date
+      default: -90d
+      desc: Period start
+    period_end:
+      type: date
+      default: $as_of
+      desc: Period end
+  sql: "SELECT i.site_id, i.as_of_date,\n       count(DISTINCT i.sku) AS sku_count,\n\
+    \       round(sum(i.total_value_gbp), 2) AS gross_value_gbp,\n       round(sum(i.provision_gbp),\
+    \ 2) AS provision_gbp,\n       round(sum(i.net_value_gbp), 2) AS net_value_gbp\n\
+    FROM inventory_by_site i\nWHERE i.as_of_date >= CAST($period_start AS DATE)\n \
+    \ AND i.as_of_date <= CAST($period_end AS DATE)\n  AND ($site_id IS NULL OR i.site_id\
+    \ = $site_id)\nGROUP BY i.site_id, i.as_of_date\nORDER BY i.site_id, i.as_of_date\
+    \ DESC\n"
+  limit: 50
+  example: {site_id: DC1}
+- name: get_ledger_inventory_balance
+  desc: Inventory ledger balance by account. Returns inventory asset accounts with
+    balances.
+  kind: sql
+  args:
+    account_code:
+      desc: GL inventory account (default all)
+    period:
+      required: true
+      type: str
+      desc: Financial period, e.g. FY27-09
+  sql: "SELECT jl.account_code, jl.account_desc,\n       round(sum(jl.debit_gbp),\
+    \ 2) AS total_debit_gbp,\n       round(sum(jl.credit_gbp), 2) AS total_credit_gbp,\n\
+    \       round(sum(jl.debit_gbp) - sum(jl.credit_gbp), 2) AS balance_gbp,\n    \
+    \   count(DISTINCT jl.je_id) AS entry_count\nFROM journal_lines jl\nJOIN journal_entries\
+    \ je ON jl.je_id = je.je_id\nWHERE je.status = 'posted'\n  AND jl.account_code\
+    \ LIKE '1%'\n  AND ($account_code IS NULL OR jl.account_code = $account_code)\n\
+    GROUP BY jl.account_code, jl.account_desc\nORDER BY jl.account_code\n"
+  limit: 50
+  example: {period: "FY27-09"}
+- name: get_payment_history_by_supplier
+  desc: Payment terms and actual payment timing by supplier. Returns supplier payment
+    performance.
+  kind: sql
+  args:
+    supplier_id:
+      desc: Supplier (default all)
+    period_start:
+      type: date
+      default: -180d
+      desc: Payments on or after
+    period_end:
+      type: date
+      default: $as_of
+      desc: Payments on or before
+  sql: "SELECT f.supplier_id, sup.name AS supplier_name,\n       round(sum(f.cost_gbp),\
+    \ 2) AS total_paid_gbp,\n       count(DISTINCT f.freight_id) AS payment_count,\n\
+    \       round(avg(f.cost_gbp), 2) AS avg_payment_gbp\nFROM freight_costs f\nLEFT\
+    \ JOIN master.suppliers sup ON sup.supplier_id = f.supplier_id\nWHERE f.posting_date\
+    \ >= CAST($period_start AS DATE)\n  AND f.posting_date <= CAST($period_end AS\
+    \ DATE)\n  AND ($supplier_id IS NULL OR f.supplier_id = $supplier_id)\nGROUP BY\
+    \ f.supplier_id, sup.name\nORDER BY total_paid_gbp DESC\n"
+  limit: 50
+  example: {}
+- name: get_realised_vs_unrealised_fx
+  desc: Realised and unrealised FX split. Returns FX gains and losses separated by
+    realization.
+  kind: sql
+  args:
+    currency:
+      desc: Currency (default all)
+    period_start:
+      type: date
+      default: -90d
+      desc: Postings on or after
+    period_end:
+      type: date
+      default: $as_of
+      desc: Postings on or before
+  sql: "SELECT f.currency, f.fx_type,\n       round(sum(f.gain_loss_gbp), 2) AS gain_loss_gbp,\n\
+    \       count(*) AS transaction_count,\n       round(sum(CASE WHEN f.gain_loss_gbp\
+    \ > 0 THEN f.gain_loss_gbp ELSE 0 END), 2) AS gains_gbp,\n       round(sum(CASE\
+    \ WHEN f.gain_loss_gbp < 0 THEN abs(f.gain_loss_gbp) ELSE 0 END), 2) AS losses_gbp\n\
+    FROM fx_gains_losses f\nWHERE f.posting_date >= CAST($period_start AS DATE)\n \
+    \ AND f.posting_date <= CAST($period_end AS DATE)\n  AND ($currency IS NULL OR\
+    \ f.currency = $currency)\nGROUP BY f.currency, f.fx_type\nORDER BY f.currency,\
+    \ f.fx_type\n"
+  limit: 20
+  example: {}
+- name: get_recovered_value_by_channel
+  desc: Value recovered by channel. Returns handling costs and recovered value by
+    channel (web, store, warehouse).
+  kind: sql
+  args:
+    channel:
+      type: enum
+      values:
+      - web
+      - app
+      - click_collect
+      - marketplace
+      - store
+      - warehouse
+      desc: Channel (default all)
+    period_start:
+      type: date
+      default: -90d
+      desc: Period start
+    period_end:
+      type: date
+      default: $as_of
+      desc: Period end
+  sql: "SELECT h.channel,\n       round(sum(h.cost_gbp), 2) AS cost_gbp,\n       sum(h.units_handled)\
+    \ AS units_recovered,\n       round(sum(h.cost_gbp) / NULLIF(sum(h.units_handled),\
+    \ 0), 4) AS cost_per_unit_gbp,\n       round(sum(h.cost_gbp) * 1.5, 2) AS estimated_recovered_value_gbp\n\
+    FROM handling_costs h\nWHERE h.posting_date >= CAST($period_start AS DATE)\n  AND\
+    \ h.posting_date <= CAST($period_end AS DATE)\n  AND ($channel IS NULL OR h.channel\
+    \ = $channel)\nGROUP BY h.channel\nORDER BY h.channel\n"
+  limit: 10
+  example: {}
+- name: get_shrink_and_writeoff_history
+  desc: Shrink and write-off trend with prior-year pattern. Returns write-offs and
+    shrink by period and category.
+  kind: sql
+  args:
+    site_id:
+      desc: Site or DC (default all)
+    period_start:
+      type: date
+      default: -365d
+      desc: History start
+    period_end:
+      type: date
+      default: $as_of
+      desc: History end
+  sql: "SELECT i.site_id, i.as_of_date,\n       count(CASE WHEN i.status = 'written_off'\
+    \ THEN 1 END) AS written_off_count,\n       round(sum(CASE WHEN i.status = 'written_off'\
+    \ THEN i.total_value_gbp ELSE 0 END), 2) AS written_off_value_gbp,\n       count(CASE\
+    \ WHEN i.status = 'slow_moving' THEN 1 END) AS slow_moving_count,\n       round(sum(CASE\
+    \ WHEN i.status = 'slow_moving' THEN i.provision_gbp ELSE 0 END), 2) AS provision_for_shrink_gbp\n\
+    FROM inventory_by_site i\nWHERE i.as_of_date >= CAST($period_start AS DATE)\n \
+    \ AND i.as_of_date <= CAST($period_end AS DATE)\n  AND ($site_id IS NULL OR i.site_id\
+    \ = $site_id)\nGROUP BY i.site_id, i.as_of_date\nORDER BY i.site_id, i.as_of_date\
+    \ DESC\n"
+  limit: 50
+  example: {site_id: DC1}
+- name: get_slow_moving_provision
+  desc: Provision balance and prior-year comparison. Returns slow-moving and obsolete
+    stock provisions.
+  kind: sql
+  args:
+    site_id:
+      desc: Site or DC (default all)
+    as_of_date:
+      type: date
+      default: $as_of
+      desc: As of date
+  sql: "SELECT i.site_id, i.status,\n       count(DISTINCT i.sku) AS sku_count,\n\
+    \       round(sum(i.total_value_gbp), 2) AS gross_value_gbp,\n       round(sum(i.provision_gbp),\
+    \ 2) AS provision_gbp,\n       round(sum(i.provision_gbp) / NULLIF(sum(i.total_value_gbp),\
+    \ 0) * 100, 1) AS provision_pct\nFROM inventory_by_site i\nWHERE i.as_of_date =\
+    \ (SELECT max(as_of_date) FROM inventory_by_site)\n  AND i.status IN ('slow_moving',\
+    \ 'obsolete')\n  AND ($site_id IS NULL OR i.site_id = $site_id)\nGROUP BY i.site_id,\
+    \ i.status\nORDER BY i.site_id, provision_gbp DESC\n"
+  limit: 20
+  example: {}
+- name: get_usd_cogs_exposure
+  desc: USD-denominated cost of goods exposure. Returns USD currency exposure in COGS.
+  kind: sql
+  args:
+    period_start:
+      type: date
+      default: -90d
+      desc: Period start
+    period_end:
+      type: date
+      default: $as_of
+      desc: Period end
+  sql: "SELECT f.currency,\n       count(*) AS transaction_count,\n       round(sum(f.local_amount),\
+    \ 2) AS total_local_amount,\n       round(sum(f.gbp_amount), 2) AS total_gbp_exposure,\n\
+    \       round(avg(f.opening_rate), 4) AS avg_rate,\n       round(sum(f.gain_loss_gbp),\
+    \ 2) AS unrealised_gain_loss_gbp\nFROM fx_gains_losses f\nWHERE f.currency = 'USD'\n\
+    \  AND f.posting_date >= CAST($period_start AS DATE)\n  AND f.posting_date <=\
+    \ CAST($period_end AS DATE)\nGROUP BY f.currency\n"
+  limit: 1
+  example: {}
+- name: list_in_transit_documents
+  desc: Goods movements posted in one system and pending in the other. Returns unmatched
+    shipments and status mapping issues.
+  kind: sql
+  args:
+    from_site_id:
+      desc: From site (default all)
+    to_site_id:
+      desc: To site (default all)
+    period_start:
+      type: date
+      default: -30d
+      desc: Shipments on or after
+    period_end:
+      type: date
+      default: $as_of
+      desc: Shipments on or before
+  sql: "SELECT i.ic_txn_id, i.from_entity_id, i.to_entity_id,\n       i.posting_date,\n\
+    \       i.status, i.amount_gbp, i.description\nFROM intercompany_transactions\
+    \ i\nWHERE i.status IN ('unmatched', 'disputed')\n  AND i.posting_date >= CAST($period_start\
+    \ AS DATE)\n  AND i.posting_date <= CAST($period_end AS DATE)\nORDER BY i.posting_date\
+    \ ASC\n"
+  limit: 50
+  example: {}
+- name: list_intercompany_transactions
+  desc: Intercompany postings by currency and posting date. Returns all intercompany
+    transactions with status.
+  kind: select
+  from: intercompany_transactions
+  filters:
+    from_entity_id:
+      desc: Sending entity (default all)
+    to_entity_id:
+      desc: Receiving entity (default all)
+    status:
+      values:
+      - unmatched
+      - matched
+      - disputed
+      desc: Status (default all)
+    posting_date_from:
+      col: posting_date
+      op: ">="
+      default: -90d
+      desc: Postings on or after
+  columns:
+  - ic_txn_id
+  - from_entity_id
+  - to_entity_id
+  - posting_date
+  - currency
+  - amount_gbp
+  - status
+  order: posting_date DESC
+  limit: 50
+  example: {from_entity_id: LE-UK}
+- name: list_one_off_journals
+  desc: Non-recurring and manual journals in a period. Returns journals not linked
+    to standard processes.
+  kind: select
+  from: journal_entries
+  filters:
+    je_type:
+      values:
+      - manual
+      - reclassification
+      default: manual
+      desc: Manual or reclassification only
+    period:
+      col: posting_date
+      op: ">="
+      default: -30d
+      type: date
+      desc: Journals on or after
+    entity_id: {}
+  columns:
+  - je_id
+  - entity_id
+  - posting_date
+  - description
+  - je_type
+  - status
+  - created_by
+  order: posting_date DESC
+  limit: 50
+  example: {}
+- name: list_open_accruals
+  desc: Open accrual balances with age. Returns accruals awaiting reversal with period
+    and amount.
+  kind: select
+  from: accruals
+  filters:
+    status:
+      values:
+      - open
+      default: open
+      desc: Open only
+    period:
+      desc: Period, e.g. FY27-09
+    accrual_date_from:
+      col: accrual_date
+      op: ">="
+      default: -90d
+      type: date
+      desc: Accrued on or after
+  columns:
+  - accrual_id
+  - period
+  - description
+  - amount_gbp
+  - accrual_date
+  - reversal_date
+  - status
+  order: reversal_date ASC
+  limit: 50
+  example: {}
+- name: list_timing_items
+  desc: Accruals, prepayments and phasing items that reverse in later periods. Returns
+    reversing items by reversal date.
+  kind: select
+  from: accruals
+  filters:
+    status:
+      values:
+      - open
+      default: open
+      desc: Open reversals
+    reversal_date_from:
+      col: reversal_date
+      op: ">="
+      default: $as_of
+      type: date
+      desc: Reversals on or after
+  columns:
+  - accrual_id
+  - period
+  - description
+  - amount_gbp
+  - accrual_date
+  - reversal_date
+  order: reversal_date ASC
+  limit: 50
+  example: {}
+- name: list_unreconciled_accounts
+  desc: Balance sheet reconciliations not signed off, with age. Returns open and disputed
+    reconciliations.
+  kind: select
+  from: reconciliations
+  filters:
+    status:
+      values:
+      - open
+      - disputed
+      default: open
+      desc: Open or disputed
+    opened_date_from:
+      col: opened_date
+      op: ">="
+      default: -90d
+      type: date
+      desc: Opened on or after
+    entity_id: {}
+  columns:
+  - recon_id
+  - account_code
+  - period
+  - entity_id
+  - status
+  - assigned_to
+  - opened_date
+  order: opened_date ASC
+  limit: 50
+  example: {}
+- name: reassign_reconciliation
+  desc: Changes the preparer or reviewer of a balance sheet reconciliation. Returns
+    the updated reconciliation.
+  kind: update
+  table: reconciliations
+  set: {assigned_to: "{assigned_to}"}
+  args:
+    assigned_to:
+      required: true
+      desc: Employee to assign to
+  example:
+    recon_id: R-000001
+    assigned_to: EMP-00200
+- name: submit_journal_for_approval
+  desc: Sends a draft journal into the approval workflow for posting. Returns the journal
+    with updated status.
+  kind: update
+  table: journal_entries
+  set: {status: submitted}
+  args:
+    submitted_by:
+      required: true
+      desc: Employee submitting
+  example:
+    je_id: JE-000001
+    submitted_by: EMP-00100

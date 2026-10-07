@@ -171,9 +171,122 @@ def generate(g):
                 "status": "completed" if promo_end < g.as_of else ("active" if promo_start <= g.as_of else "planned"),
             })
 
+    # Generate competitor stores (UK stores only for simplicity)
+    competitor_stores = []
+    store_counter = 0
+
+    # Define UK regions and major stores
+    uk_stores_per_competitor = {
+        "CMPD-001": 0,  # HomeShop Direct - online only
+        "CMPD-002": 8,  # John Lewis
+        "CMPD-003": 0,  # Carrefour - EU
+        "CMPD-004": 0,  # Mitre10 - Asia-Pacific
+        "CMPD-005": 15,  # Argos
+        "CMPD-006": 12,  # Currys
+    }
+
+    uk_store_locations = ["ST001", "ST214", "ST002", "ST003", "ST004", "ST005", "ST010", "ST050",
+                          "ST100", "ST150", "ST200", "ST210", "ST212", "ST215", "ST220"]
+
+    for comp in competitors:
+        comp_id = comp["competitor_id"]
+        num_stores = uk_stores_per_competitor.get(comp_id, 0)
+
+        for i in range(num_stores):
+            store_counter += 1
+            site_id = uk_store_locations[i % len(uk_store_locations)]
+
+            # Some stores opened/closed recently
+            opening_date = g.as_of - timedelta(days=r.randint(30, 1000))
+            closed_date = None
+            status = "open"
+
+            if r.random() < 0.1:  # 10% of stores closed
+                closed_date = g.as_of - timedelta(days=r.randint(1, 100))
+                status = "closed"
+
+            competitor_stores.append({
+                "store_id": f"CSTD-{comp_id.split('-')[1]}-{store_counter:04d}",
+                "competitor_id": comp_id,
+                "site_id": site_id,  # Our store location
+                "opening_date": opening_date,
+                "closing_date": closed_date,
+                "status": status,
+                "store_format": comp["format"],
+            })
+
+    # Generate competitor returns policies
+    competitor_returns_policies = []
+    for comp in competitors:
+        comp_id = comp["competitor_id"]
+
+        # Different policies for different competitors
+        if comp["name"] in ["John Lewis", "Carrefour"]:
+            returns_free = True
+            restocking_fee_pct = 0
+            return_window_days = 90
+        elif comp["name"] == "Argos":
+            returns_free = False
+            restocking_fee_pct = 3
+            return_window_days = 60
+        elif comp["name"] in ["HomeShop Direct", "Currys"]:
+            returns_free = False
+            restocking_fee_pct = 5
+            return_window_days = 30
+        else:
+            returns_free = r.choice([True, False])
+            restocking_fee_pct = r.choice([0, 3, 5, 8])
+            return_window_days = r.choice([30, 60, 90])
+
+        competitor_returns_policies.append({
+            "policy_id": f"RPOL-{len(competitor_returns_policies) + 1:02d}",
+            "competitor_id": comp_id,
+            "competitor_name": comp["name"],
+            "returns_free": returns_free,
+            "restocking_fee_gbp": 0 if returns_free else r.choice([2.99, 3.99, 4.99, 5.99]),
+            "restocking_fee_pct": restocking_fee_pct,
+            "return_window_days": return_window_days,
+            "policy_description": f"{'Free' if returns_free else 'Charged'} returns within {return_window_days} days",
+            "last_updated": g.as_of,
+        })
+
+    # Generate competitor delivery practices
+    competitor_delivery_practices = []
+    for comp in competitors:
+        comp_id = comp["competitor_id"]
+
+        # Delivery zones and practices vary
+        delivery_zones = r.choice([
+            "UK mainland only",
+            "UK + Scotland",
+            "UK + EU",
+            "Worldwide",
+        ])
+
+        min_order_gbp = r.choice([0, 5, 10, 20, 25])
+        free_delivery_threshold = r.choice([15, 20, 25, 30, 40, 50])
+
+        competitor_delivery_practices.append({
+            "practice_id": f"DLVR-{len(competitor_delivery_practices) + 1:02d}",
+            "competitor_id": comp_id,
+            "competitor_name": comp["name"],
+            "delivery_zones": delivery_zones,
+            "min_order_gbp": min_order_gbp,
+            "free_delivery_threshold_gbp": free_delivery_threshold,
+            "standard_delivery_days": r.choice([3, 5, 7]),
+            "express_delivery_available": r.choice([True, False]),
+            "saturday_delivery": r.choice([True, False]),
+            "de_minimis_threshold_eur": r.choice([150, 200, 250, 300]),
+            "vat_reverse_charge": r.choice([True, False]),
+            "last_updated": g.as_of,
+        })
+
     return {
         "competitors": competitors,
         "competitor_products": competitor_products,
         "competitor_prices": competitor_prices,
         "competitor_promotions": competitor_promotions,
+        "competitor_stores": competitor_stores,
+        "competitor_returns_policies": competitor_returns_policies,
+        "competitor_delivery_practices": competitor_delivery_practices,
     }

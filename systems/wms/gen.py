@@ -87,7 +87,7 @@ def generate(g):
                 'qty_received': qty_received,
                 'qty_accepted': int(qty_received * r.uniform(0.95, 1.0)),
                 'received_at': received_at,
-                'received_by': f"EMP-{r.randint(1000, 9999):05d}",
+                'received_by': f"EMP-{r.randint(1, 577):05d}",
                 'dock': f"D{r.randint(1, 24):02d}",
                 'carrier_id': carrier_id,
                 'batch_number': f"BTH-{g.fake.year()}-{r.randint(1000, 9999)}" if r.random() > 0.5 else '',
@@ -123,7 +123,7 @@ def generate(g):
                 'site_id': loc['site_id'],
                 'zone': loc['zone'],
                 'status': status,
-                'assigned_to': f"EMP-{r.randint(1000, 9999):05d}",
+                'assigned_to': f"EMP-{r.randint(1, 577):05d}",
                 'created_at': counted_at - timedelta(days=r.randint(1, 7)),
                 'released_at': counted_at - timedelta(days=r.randint(0, 5)) if status != 'planned' else None,
                 'completed_at': counted_at if status == 'completed' else None,
@@ -196,7 +196,7 @@ def generate(g):
                         'qty': -pick_qty,
                         'reference_id': f"ORD-2026-{r.randint(100000, 999999)}",
                         'moved_at': gr['received_at'] + timedelta(days=r.randint(1, 60)),
-                        'moved_by': f"EMP-{r.randint(1000, 9999):05d}",
+                        'moved_by': f"EMP-{r.randint(1, 577):05d}",
                         'batch_number': gr['batch_number'],
                         'status': 'completed',
                         'updated_at': gr['received_at'] + timedelta(days=r.randint(1, 60))
@@ -215,7 +215,7 @@ def generate(g):
                     'qty': -transfer_qty,
                     'reference_id': f"STR-{r.randint(100000, 999999)}",
                     'moved_at': gr['received_at'] + timedelta(days=r.randint(5, 45)),
-                    'moved_by': f"EMP-{r.randint(1000, 9999):05d}",
+                    'moved_by': f"EMP-{r.randint(1, 577):05d}",
                     'batch_number': gr['batch_number'],
                     'status': 'completed',
                     'updated_at': gr['received_at'] + timedelta(days=r.randint(5, 45))
@@ -254,26 +254,29 @@ def generate(g):
             'received_at': created_at + timedelta(days=r.randint(2, 21)) if status == 'received' else None,
             'status': status,
             'reason': r.choice(['rebalance', 'stockout', 'clearance', 'disposal', 'outlet']),
-            'created_by': f"EMP-{r.randint(1000, 9999):05d}",
+            'created_by': f"EMP-{r.randint(1, 577):05d}",
             'updated_at': created_at
         })
 
-    # Allocation retries - log of retry events
+    # Allocation retries - log of retry events (use only existing order IDs from master)
     allocation_retries = []
-    for i in range(r.randint(10, 30)):
-        retry_id = f'RETRY-{i+1:06d}'
-        retried_at = g.as_of - timedelta(days=r.randint(1, 30))
-        allocation_retries.append({
-            'retry_id': retry_id,
-            'order_id': f"ORD-2026-{r.randint(100000, 999999)}",
-            'previous_status': 'allocation_failed',
-            'new_status': r.choice(['allocated', 'allocated', 'partial', 'failed']),
-            'result': r.choice(['success', 'success', 'success', 'partial', 'failed']),
-            'retried_at': retried_at,
-            'created_by': f"EMP-{r.randint(1000, 9999):05d}",
-            'notes': r.choice(['Stock became available', 'Configuration updated', 'Manual override', 'System recovery']),
-            'updated_at': retried_at
-        })
+    orders = g.master('orders')
+    if orders:
+        for i in range(min(r.randint(10, 30), len(orders))):
+            retry_id = f'RETRY-{i+1:06d}'
+            retried_at = g.as_of - timedelta(days=r.randint(1, 30))
+            order = orders[i]
+            allocation_retries.append({
+                'retry_id': retry_id,
+                'order_id': order['order_id'],
+                'previous_status': 'allocation_failed',
+                'new_status': r.choice(['allocated', 'allocated', 'partial', 'failed']),
+                'result': r.choice(['success', 'success', 'success', 'partial', 'failed']),
+                'retried_at': retried_at,
+                'created_by': f"EMP-{r.randint(1, 577):05d}",
+                'notes': r.choice(['Stock became available', 'Configuration updated', 'Manual override', 'System recovery']),
+                'updated_at': retried_at
+            })
 
     return {
         'cause_codes': cause_codes,

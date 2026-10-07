@@ -1,0 +1,658 @@
+id: due_diligence
+name: Supply Chain Due Diligence Platform
+instructions: >
+  Ethical trade, forced-labour and supply chain compliance for suppliers and factories.
+  Case ids look like CASE-000001. Task ids look like TASK-000001. Use it for supplier risk
+  ratings, due diligence cases, ownership and sub-tier mapping, compliance gaps, and
+  worker grievance tracking.
+
+tables:
+  due_diligence_cases:
+    key: case_id
+    cols:
+      case_id: {type: str, desc: "Due diligence case, e.g. CASE-000001"}
+      case_type: {type: enum, values: [allegation, onboarding, audit_finding, periodic_review, escalation], desc: Case type}
+      supplier_id: {type: str, desc: "Supplier, e.g. SUP-0042"}
+      factory_id: {type: str, desc: "Factory, e.g. FAC-0107"}
+      description: {type: str, desc: "Allegation or issue summary"}
+      status: {type: enum, values: [open, investigating, remediation, closed], desc: Case status}
+      risk_rating: {type: enum, values: [low, medium, high, critical], desc: Overall risk rating}
+      created_at: {type: timestamp, desc: When case was created}
+      assigned_to: {type: str, desc: "Employee id"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  due_diligence_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Task, e.g. TASK-000001"}
+      case_id: {type: str, desc: "Due diligence case"}
+      description: {type: str, desc: "Task description"}
+      task_type: {type: enum, values: [mapping, audit, evidence_collection, legal_review, remediation_plan], desc: Task type}
+      status: {type: enum, values: [open, in_progress, completed, blocked], desc: Task status}
+      assigned_to: {type: str, desc: "Employee id"}
+      due_date: {type: date, desc: "Task due date"}
+      created_at: {type: timestamp, desc: When created}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  supplier_risk_ratings:
+    key: supplier_id
+    cols:
+      supplier_id: {type: str, desc: "Supplier, e.g. SUP-0042"}
+      forced_labour_risk: {type: enum, values: [low, medium, high, critical], desc: Forced labour risk}
+      compliance_risk: {type: enum, values: [low, medium, high, critical], desc: Regulatory compliance risk}
+      financial_risk: {type: enum, values: [low, medium, high, critical], desc: Financial/viability risk}
+      overall_risk: {type: enum, values: [low, medium, high, critical], desc: Overall risk rating}
+      due_diligence_status: {type: enum, values: [not_started, in_progress, complete, escalated], desc: DD status}
+      last_assessed_at: {type: date, desc: Date of last full assessment}
+      next_review_date: {type: date, desc: When next review is due}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  risk_evidence:
+    key: [supplier_id, evidence_id]
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      evidence_id: {type: str, desc: "Evidence record id"}
+      risk_category: {type: enum, values: [forced_labour, child_labour, health_safety, wages_hours, freedom_association, grievance_mechanism, environmental, sanctions, adverse_media, litigation], desc: Risk category}
+      evidence_type: {type: enum, values: [audit_finding, worker_interview, grievance_record, media_report, ngo_report, certification, test_result, document], desc: Evidence type}
+      description: {type: str, desc: "What the evidence shows"}
+      risk_level: {type: enum, values: [low, medium, high, critical], desc: Risk level implied}
+      credibility: {type: enum, values: [unverified, partially_verified, verified, highly_verified], desc: How credible is it}
+      source: {type: str, desc: "Source of evidence"}
+      found_at: {type: date, desc: "When this evidence was found"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  factory_profiles:
+    key: factory_id
+    cols:
+      factory_id: {type: str, desc: "Factory, e.g. FAC-0107"}
+      name: {type: str, desc: Factory name}
+      supplier_id: {type: str, desc: "Supplier that owns/operates it"}
+      country: {type: str, desc: ISO country code}
+      city: {type: str, desc: City}
+      latitude: {type: float, desc: "Latitude for mapping"}
+      longitude: {type: float, desc: "Longitude for mapping"}
+      product_types: {type: str, desc: "Products made, semicolon-separated"}
+      capacity_units_month: {type: int, desc: Monthly capacity in units}
+      workers: {type: int, desc: Headcount}
+      certifications: {type: str, desc: "Certifications held; semicolon-separated"}
+      last_audit_date: {type: date, desc: Last social/quality audit"}
+      audit_rating: {type: enum, values: [A, B, C, D], desc: Last audit rating}
+      remediation_status: {type: enum, values: [compliant, in_remediation, non_compliant], desc: Remediation status}
+      grievance_mechanism: {type: bool, desc: Does factory have worker grievance channel}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  supply_chain_mapping:
+    key: [product_sku, tier, factory_id]
+    cols:
+      product_sku: {type: str, desc: "Product sku"}
+      tier: {type: int, desc: "Supply tier (1=direct, 2=sub-tier, etc)"}
+      factory_id: {type: str, desc: "Factory at this tier"}
+      supplier_id: {type: str, desc: "Supplier at this tier"}
+      mapped_at: {type: date, desc: "When mapping was confirmed"}
+      mapping_status: {type: enum, values: [mapped, partially_mapped, unmapped], desc: Mapping status}
+      material_flow: {type: str, desc: "What material flows through this tier"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  compliance_requirements:
+    key: requirement_id
+    cols:
+      requirement_id: {type: str, desc: "Requirement id"}
+      jurisdiction: {type: str, desc: "Jurisdiction (UK, EU, US, CA, AU, etc)"}
+      regulation: {type: str, desc: "Regulation name"}
+      topic: {type: enum, values: [forced_labour, due_diligence, supply_chain_transparency, recycled_content, conflict_minerals, environmental], desc: Topic}
+      requirement_text: {type: text, desc: "What must be done"}
+      applicability: {type: str, desc: "Which companies/products affected"}
+      effective_date: {type: date, desc: "When it takes effect"}
+      penalties: {type: text, desc: "Penalties for non-compliance"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  compliance_evidence_inventory:
+    key: [supplier_id, requirement_id]
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      requirement_id: {type: str, desc: "Compliance requirement"}
+      evidence_held: {type: bool, desc: "Do we have evidence"}
+      evidence_type: {type: str, desc: "Type of evidence (policy, audit, cert, test, etc)"}
+      evidence_date: {type: date, desc: "Date of evidence"}
+      gap_description: {type: str, desc: "If no evidence, what gap exists"}
+      priority: {type: enum, values: [high, medium, low], desc: Priority to close gap}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  chain_of_custody_certificates:
+    key: cert_id
+    cols:
+      cert_id: {type: str, desc: "Certificate id"}
+      supplier_id: {type: str, desc: "Supplier holding cert"}
+      cert_type: {type: enum, values: [recycled_content, organic, fair_trade, sustainable, conflict_mineral_free, forced_labour_free], desc: Certificate type}
+      issued_by: {type: str, desc: "Certifying body"}
+      scope: {type: str, desc: "What it covers (materials, regions, etc)"}
+      issued_date: {type: date, desc: "Issue date"}
+      expiry_date: {type: date, desc: "Expiry date"}
+      status: {type: enum, values: [valid, expired, revoked, suspended], desc: Certificate status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  worker_grievances:
+    key: grievance_id
+    cols:
+      grievance_id: {type: str, desc: "Grievance record id"}
+      factory_id: {type: str, desc: "Factory where grievance raised"}
+      supplier_id: {type: str, desc: "Supplier"}
+      grievance_date: {type: date, desc: "When grievance was raised"}
+      category: {type: enum, values: [wages, hours, safety, discrimination, harassment, freedom_association, child_labour, forced_labour, other], desc: Grievance category}
+      description: {type: text, desc: "Description of issue"}
+      remediation_status: {type: enum, values: [open, investigating, resolved, closed], desc: Status"}
+      resolution_notes: {type: text, desc: "How it was resolved"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  country_risk_indices:
+    key: country
+    cols:
+      country: {type: str, desc: "ISO country code"}
+      country_name: {type: str, desc: "Country name"}
+      forced_labour_index: {type: float, desc: "Forced labour risk index (0-1)"}
+      human_rights_score: {type: float, desc: "Human rights score (0-100)"}
+      legal_environment: {type: float, desc: "Labour law strength (0-100)"}
+      enforcement_level: {type: float, desc: "Labour law enforcement (0-100)"}
+      corruption_index: {type: float, desc: "Corruption perception index (0-100, lower is better)"}
+      sourcing_volume_units: {type: int, desc: "Annual units we source from here"}
+      updated_at: {type: timestamp, desc: "When index last updated"}
+
+  supplier_sub_tier_relationships:
+    key: [supplier_id, sub_tier_supplier_id]
+    cols:
+      supplier_id: {type: str, desc: "Tier 1 supplier"}
+      sub_tier_supplier_id: {type: str, desc: "Sub-tier supplier"}
+      factory_id: {type: str, desc: "Sub-tier factory"}
+      material_flow: {type: str, desc: "Material that flows through"}
+      relationship_type: {type: enum, values: [raw_material, component, contract_manufacturing, outsourced_process], desc: Type of relationship}
+      mapped_date: {type: date, desc: "When relationship was confirmed"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  ownership_structures:
+    key: entity_id
+    cols:
+      entity_id: {type: str, desc: "Entity id (supplier or factory)"}
+      entity_type: {type: enum, values: [supplier, factory], desc: Type of entity}
+      entity_name: {type: str, desc: "Entity name"}
+      country: {type: str, desc: "Registered country"}
+      parent_entity_id: {type: str, desc: "Immediate parent, if known"}
+      beneficial_owner_name: {type: str, desc: "Ultimate beneficial owner name"}
+      beneficial_owner_country: {type: str, desc: "UBO country"}
+      ownership_structure_description: {type: text, desc: "Description of ownership chain"}
+      verified: {type: bool, desc: "Has ownership been verified"}
+      verification_source: {type: str, desc: "How verified (registry, audit, disclosure, etc)"}
+      verified_date: {type: date, desc: "When verified"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  supplier_traceability_evidence:
+    key: [supplier_id, evidence_id]
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      evidence_id: {type: str, desc: "Evidence id"}
+      evidence_type: {type: enum, values: [blockchain_record, batch_tracking, lot_code, document_trail, inspection_cert, test_result, audit_finding], desc: Evidence type}
+      material_or_product: {type: str, desc: "What is being traced"}
+      origin: {type: str, desc: "Origin (country, region, mill)"}
+      confidence_level: {type: enum, values: [low, medium, high, very_high], desc: Confidence in traceability}
+      evidence_date: {type: date, desc: "When evidence was collected"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  tier_mapping_by_country:
+    key: [supplier_id, country, tier]
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      country: {type: str, desc: "Country where tier operates"}
+      tier: {type: int, desc: "Supply tier (1 = direct)"}
+      factory_count: {type: int, desc: "Number of factories at this tier in country"}
+      worker_count: {type: int, desc: "Estimated workers in tier"}
+      mapped_pct: {type: float, desc: "% of suppliers mapped at this tier"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  supply_chain_mapping_gaps:
+    key: gap_id
+    cols:
+      gap_id: {type: str, desc: "Gap id"}
+      product_category: {type: str, desc: "Product category with gap"}
+      tier_level: {type: int, desc: "Which tier is unmapped"}
+      country: {type: str, desc: "Country of unmapped tier"}
+      unit_volume_annual: {type: int, desc: "Annual units affected"}
+      gap_reason: {type: str, desc: "Why gap exists"}
+      remediation_plan: {type: text, desc: "Plan to close gap"}
+      priority: {type: enum, values: [high, medium, low], desc: Priority to close"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  audit_findings:
+    key: finding_id
+    cols:
+      finding_id: {type: str, desc: "Finding id"}
+      factory_id: {type: str, desc: "Factory audited"}
+      supplier_id: {type: str, desc: "Supplier"}
+      audit_date: {type: date, desc: "When audit occurred"}
+      category: {type: enum, values: [forced_labour, child_labour, wages, hours, safety, health, environmental, management_systems], desc: Finding category}
+      severity: {type: enum, values: [observation, minor, major, critical], desc: Severity level}
+      description: {type: text, desc: "Finding details"}
+      remediation_required: {type: bool, desc: "Does it require remediation"}
+      corrective_action_id: {type: str, desc: "Related corrective action if any"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  corrective_action_plans:
+    key: action_id
+    cols:
+      action_id: {type: str, desc: "Action id"}
+      factory_id: {type: str, desc: "Factory"}
+      audit_finding_id: {type: str, desc: "Related audit finding"}
+      issue_description: {type: text, desc: "Issue to be corrected"}
+      action_plan: {type: text, desc: "Corrective action plan"}
+      responsible_party: {type: str, desc: "Person responsible"}
+      target_date: {type: date, desc: "Target completion date"}
+      status: {type: enum, values: [not_started, in_progress, completed, verification_pending, verified, failed], desc: Status}
+      verification_date: {type: date, desc: "When verified complete"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  regulatory_database:
+    key: regulation_id
+    cols:
+      regulation_id: {type: str, desc: "Regulation id"}
+      jurisdiction: {type: str, desc: "Jurisdiction"}
+      regulation_name: {type: str, desc: "Name of regulation"}
+      topic: {type: enum, values: [forced_labour, due_diligence, transparency, conflict_minerals, environmental], desc: Topic}
+      description: {type: text, desc: "What the regulation requires"}
+      effective_date: {type: date, desc: "When it becomes/became effective"}
+      affected_scope: {type: str, desc: "Company size/type/product affected"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  adverse_media_records:
+    key: [entity_id, record_id]
+    cols:
+      entity_id: {type: str, desc: "Supplier or factory id"}
+      record_id: {type: str, desc: "Adverse media record id"}
+      entity_type: {type: enum, values: [supplier, factory], desc: Entity type}
+      headline: {type: str, desc: "News headline or summary"}
+      source: {type: str, desc: "News source"}
+      content: {type: text, desc: "Article content or summary"}
+      published_date: {type: date, desc: "Publication date"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: Severity of allegation}
+      verified: {type: bool, desc: "Has allegation been independently verified"}
+      found_at: {type: timestamp, desc: "When record was found"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  sanctions_screening_records:
+    key: [entity_id, screening_id]
+    cols:
+      entity_id: {type: str, desc: "Entity screened"}
+      screening_id: {type: str, desc: "Screening record id"}
+      entity_name: {type: str, desc: "Name screened"}
+      screening_date: {type: date, desc: "When screened"}
+      sanctions_list: {type: str, desc: "Which sanctions list (OFAC, UN, UK, etc)"}
+      match_status: {type: enum, values: [no_match, possible_match, confirmed_match], desc: Match status}
+      description: {type: text, desc: "Details if match found"}
+      action_taken: {type: str, desc: "Action taken (if any)"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  litigation_records:
+    key: [entity_id, case_id]
+    cols:
+      entity_id: {type: str, desc: "Supplier or factory"}
+      case_id: {type: str, desc: "Case id"}
+      entity_name: {type: str, desc: "Name in case"}
+      case_type: {type: enum, values: [employment, labour, environmental, criminal, commercial, other], desc: Type of case}
+      jurisdiction: {type: str, desc: "Court jurisdiction"}
+      case_status: {type: enum, values: [active, settled, dismissed, appealed, concluded], desc: Case status}
+      description: {type: text, desc: "Case summary"}
+      outcome: {type: str, desc: "How it was resolved"}
+      case_date: {type: date, desc: "When case filed"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: calculate_supplier_share_of_factory_capacity
+    desc: Our share of a factory's capacity, as a leverage indicator to influence remediation.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      factory_id: {required: true}
+    sql: |
+      SELECT
+        $supplier_id AS supplier_id,
+        $factory_id AS factory_id,
+        f.name AS factory_name,
+        f.capacity_units_month,
+        SUM(m.total_units) / 30.0 AS our_monthly_units,
+        ROUND((SUM(m.total_units) / 30.0) * 100.0 / NULLIF(f.capacity_units_month, 0), 1) AS our_share_pct,
+        'our_share_pct = (our_monthly_units * 100) / factory_capacity' AS formula
+      FROM master.factories f
+      LEFT JOIN master.purchase_orders m ON m.factory_id = f.factory_id AND m.supplier_id = $supplier_id
+      WHERE f.factory_id = $factory_id AND f.supplier_id = $supplier_id
+      GROUP BY f.factory_id, f.name, f.capacity_units_month
+    limit: 1
+    example: {supplier_id: SUP-0042, factory_id: FAC-0107}
+
+  - name: create_due_diligence_case
+    desc: Open an ethical trade case for an allegation, incident, or periodic review.
+    kind: insert
+    table: due_diligence_cases
+    id_prefix: CASE-
+    defaults: {status: open, risk_rating: high}
+    args:
+      case_type: {required: true, desc: "Case type: allegation, onboarding, audit_finding, periodic_review, escalation"}
+      supplier_id: {required: true}
+      factory_id: {}
+      description: {required: true, desc: "Allegation or issue summary"}
+      assigned_to: {}
+    example: {case_type: allegation, supplier_id: SUP-0042, description: "Debt bondage allegation at Tamil Nadu mill"}
+
+  - name: create_due_diligence_task
+    desc: Create and assign a due diligence or mapping task.
+    kind: insert
+    table: due_diligence_tasks
+    id_prefix: TASK-
+    defaults: {status: open}
+    args:
+      case_id: {}
+      description: {required: true}
+      task_type: {required: true, desc: "Task type: mapping, audit, evidence_collection, legal_review, remediation_plan"}
+      assigned_to: {}
+      due_date: {type: date}
+    example: {task_type: mapping, description: "Map cotton suppliers for Vietnam region", due_date: "+14d"}
+
+  - name: draft_compliance_gap_list
+    desc: Draft gap list of evidence versus forced-labour and due-diligence legal requirements by jurisdiction.
+    kind: draft
+    args:
+      supplier_id: {required: true}
+      jurisdiction: {type: str, default: UK}
+    sql:
+      supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+      requirements: SELECT * FROM compliance_requirements WHERE jurisdiction = $jurisdiction
+      evidence: SELECT r.*, COUNT(CASE WHEN e.evidence_held THEN 1 END) AS have_evidence FROM compliance_requirements r
+                 LEFT JOIN compliance_evidence_inventory e ON e.requirement_id = r.requirement_id AND e.supplier_id = $supplier_id
+                 WHERE r.jurisdiction = $jurisdiction
+                 GROUP BY r.requirement_id
+    template: |
+      COMPLIANCE GAP ANALYSIS: {{ supplier[0].name }}
+      Jurisdiction: {{ jurisdiction }}
+      Generated: {{ 'now'|date }}
+
+      {% for req in requirements %}
+      ### {{ req.regulation }}
+
+      **Requirement:** {{ req.requirement_text }}
+      **Effective:** {{ req.effective_date }}
+
+      {% if req.evidence_held %}
+      **Status:** EVIDENCE HELD
+      - Type: {{ req.evidence_type }}
+      - Date: {{ req.evidence_date }}
+      {% else %}
+      **Status:** GAP - NO EVIDENCE
+      - Gap: {{ req.gap_description }}
+      - Priority: {{ req.priority }}
+      {% endif %}
+
+      **Penalties:** {{ req.penalties }}
+
+      {% endfor %}
+    example: {supplier_id: SUP-0042, jurisdiction: EU}
+
+  - name: draft_escalation_note
+    desc: Draft internal escalation note for an ethical trade allegation with actions and obligations.
+    kind: draft
+    args:
+      case_id: {required: true}
+    sql:
+      case_info: SELECT c.*, s.name AS supplier_name, f.name AS factory_name FROM due_diligence_cases c
+                  LEFT JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+                  LEFT JOIN master.factories f ON f.factory_id = c.factory_id
+                  WHERE c.case_id = $case_id
+      evidence: SELECT * FROM risk_evidence WHERE supplier_id = (SELECT supplier_id FROM due_diligence_cases WHERE case_id = $case_id)
+                 AND risk_level IN ('high', 'critical') ORDER BY found_at DESC
+      obligations: SELECT * FROM compliance_requirements WHERE topic = 'forced_labour' LIMIT 5
+    template: |
+      INTERNAL ESCALATION NOTE
+      Case: {{ case_info[0].case_id }} | {{ case_info[0].case_type|upper }}
+
+      **ISSUE:** {{ case_info[0].description }}
+      **Supplier:** {{ case_info[0].supplier_name }}
+      {% if case_info[0].factory_name %}**Factory:** {{ case_info[0].factory_name }}{% endif %}
+
+      **RISK LEVEL:** {{ case_info[0].risk_rating|upper }}
+
+      **EVIDENCE:**
+      {% for ev in evidence %}
+      - {{ ev.evidence_type }}: {{ ev.description }} ({{ ev.credibility }}, {{ ev.found_at }})
+      {% endfor %}
+
+      **LEGAL OBLIGATIONS:**
+      {% for obl in obligations %}
+      - {{ obl.regulation }} ({{ obl.jurisdiction }}): {{ obl.requirement_text }}
+      {% endfor %}
+
+      **RECOMMENDED ACTIONS:**
+      1. Immediate engagement with supplier for facts
+      2. Review current PO status and payment holds if needed
+      3. Commission urgent audit if forced labour suspected
+      4. Engage legal and compliance teams
+      5. Consider media and stakeholder communication plan
+
+      **NEXT REVIEW:** Within 5 business days
+    example: {case_id: CASE-900001}
+
+  - name: get_company_ownership_structure
+    desc: Ultimate beneficial ownership structure of a supplier or factory with verification status.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT
+        o.entity_id,
+        o.entity_name,
+        o.country,
+        o.parent_entity_id,
+        o.beneficial_owner_name,
+        o.beneficial_owner_country,
+        o.ownership_structure_description,
+        o.verified,
+        o.verification_source,
+        o.verified_date
+      FROM ownership_structures o
+      WHERE o.entity_id = $supplier_id
+      ORDER BY o.verified_date DESC
+    limit: 10
+    example: {supplier_id: SUP-0042}
+
+  - name: get_country_risk_indices
+    desc: Forced labour and human rights risk indices by country with governance and enforcement scores.
+    kind: select
+    from: country_risk_indices
+    filters:
+      country: {}
+      forced_labour_index: {op: ">=", type: float, desc: "Minimum risk index"}
+    columns: [country, country_name, forced_labour_index, human_rights_score, legal_environment, enforcement_level, corruption_index, sourcing_volume_units, updated_at]
+    order: forced_labour_index DESC
+    limit: 50
+    example: {country: IN}
+
+  - name: get_evidence_inventory_for_due_diligence
+    desc: Evidence held per due diligence requirement, gaps and priorities by jurisdiction.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      jurisdiction: {type: str, default: UK}
+    sql: |
+      SELECT
+        e.requirement_id,
+        r.regulation,
+        r.requirement_text,
+        e.evidence_held,
+        e.evidence_type,
+        e.evidence_date,
+        CASE WHEN e.evidence_held THEN 'COVERED' ELSE 'GAP: ' || COALESCE(e.gap_description, 'Unknown') END AS status,
+        e.priority,
+        r.effective_date
+      FROM compliance_requirements r
+      LEFT JOIN compliance_evidence_inventory e ON e.requirement_id = r.requirement_id AND e.supplier_id = $supplier_id
+      WHERE r.jurisdiction = $jurisdiction
+      ORDER BY CASE WHEN NOT e.evidence_held THEN 0 ELSE 1 END, e.priority, r.regulation
+    limit: 100
+    example: {supplier_id: SUP-0042, jurisdiction: UK}
+
+  - name: get_factory_profile
+    desc: Factory ownership, location, workforce, products, certifications and audit history.
+    kind: sql
+    args:
+      factory_id: {required: true}
+    sql: |
+      SELECT
+        f.factory_id,
+        f.name,
+        f.supplier_id,
+        s.name AS supplier_name,
+        f.country,
+        f.city,
+        f.latitude,
+        f.longitude,
+        f.product_types,
+        f.capacity_units_month,
+        f.workers,
+        f.certifications,
+        f.last_audit_date,
+        f.audit_rating,
+        f.remediation_status,
+        f.grievance_mechanism,
+        f.updated_at
+      FROM factory_profiles f
+      LEFT JOIN master.suppliers s ON s.supplier_id = f.supplier_id
+      WHERE f.factory_id = $factory_id
+    limit: 1
+    example: {factory_id: FAC-0107}
+
+  - name: get_forced_labour_risk_by_supplier
+    desc: Forced-labour risk rating and indicators by supplier; ranked by risk level.
+    kind: sql
+    args:
+      supplier_id: {}
+      min_risk_level: {type: enum, values: [low, medium, high, critical], default: medium}
+    sql: |
+      SELECT
+        r.supplier_id,
+        s.name AS supplier_name,
+        s.country,
+        r.forced_labour_risk,
+        r.compliance_risk,
+        r.financial_risk,
+        r.overall_risk,
+        r.due_diligence_status,
+        r.last_assessed_at,
+        r.next_review_date,
+        COUNT(DISTINCT e.evidence_id) AS evidence_count
+      FROM supplier_risk_ratings r
+      JOIN master.suppliers s ON s.supplier_id = r.supplier_id
+      LEFT JOIN risk_evidence e ON e.supplier_id = r.supplier_id AND e.risk_category = 'forced_labour'
+      WHERE ($supplier_id IS NULL OR r.supplier_id = $supplier_id)
+        AND r.forced_labour_risk IN ('high', 'critical')
+      GROUP BY r.supplier_id, s.name, s.country, r.forced_labour_risk, r.compliance_risk, r.financial_risk, r.overall_risk, r.due_diligence_status, r.last_assessed_at, r.next_review_date
+      ORDER BY CASE r.forced_labour_risk WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, r.supplier_id
+    limit: 50
+    example: {}
+
+  - name: get_supplier_chain_of_custody_certificates
+    desc: Supplier chain of custody certificates by type with validity and coverage.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      cert_type: {}
+    sql: |
+      SELECT
+        c.cert_id,
+        c.supplier_id,
+        c.cert_type,
+        c.issued_by,
+        c.scope,
+        c.issued_date,
+        c.expiry_date,
+        c.status,
+        CASE WHEN c.expiry_date >= CAST($as_of AS DATE) THEN 'VALID' ELSE 'EXPIRED' END AS validity,
+        c.updated_at
+      FROM chain_of_custody_certificates c
+      WHERE c.supplier_id = $supplier_id
+        AND ($cert_type IS NULL OR c.cert_type = $cert_type)
+      ORDER BY c.expiry_date DESC
+    limit: 50
+    example: {supplier_id: SUP-0042, cert_type: recycled_content}
+
+  - name: get_supplier_due_diligence_status
+    desc: Due-diligence completion status for a supplier (not_started, in_progress, complete, escalated).
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT
+        r.supplier_id,
+        s.name AS supplier_name,
+        r.due_diligence_status,
+        r.overall_risk,
+        r.forced_labour_risk,
+        r.last_assessed_at,
+        r.next_review_date,
+        COUNT(DISTINCT c.case_id) AS case_count,
+        COUNT(DISTINCT t.task_id) AS open_task_count
+      FROM supplier_risk_ratings r
+      JOIN master.suppliers s ON s.supplier_id = r.supplier_id
+      LEFT JOIN due_diligence_cases c ON c.supplier_id = r.supplier_id AND c.status IN ('open', 'investigating')
+      LEFT JOIN due_diligence_tasks t ON t.status = 'open'
+      WHERE r.supplier_id = $supplier_id
+      GROUP BY r.supplier_id, s.name, r.due_diligence_status, r.overall_risk, r.forced_labour_risk, r.last_assessed_at, r.next_review_date
+    limit: 1
+    example: {supplier_id: SUP-0042}
+
+  - name: get_supplier_risk_evidence
+    desc: Evidence behind each risk rating (forced labour, compliance, financial) with credibility.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      risk_category: {}
+    sql: |
+      SELECT
+        e.supplier_id,
+        e.evidence_id,
+        e.risk_category,
+        e.evidence_type,
+        e.description,
+        e.risk_level,
+        e.credibility,
+        e.source,
+        e.found_at,
+        e.updated_at
+      FROM risk_evidence e
+      WHERE e.supplier_id = $supplier_id
+        AND ($risk_category IS NULL OR e.risk_category = $risk_category)
+      ORDER BY CASE e.risk_level WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               CASE e.credibility WHEN 'highly_verified' THEN 0 WHEN 'verified' THEN 1 WHEN 'partially_verified' THEN 2 ELSE 3 END,
+               e.found_at DESC
+    limit: 100
+    example: {supplier_id: SUP-0042}
+
+  - name: get_supplier_sub_tier_relationships
+    desc: Mill and sub-tier links to our suppliers with material flow and relationship type.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+    sql: |
+      SELECT
+        s.supplier_id,
+        sup.name AS supplier_name,
+        s.sub_tier_supplier_id,
+        st.name AS sub_tier_supplier_name,
+        s.factory_id,
+        f.name AS factory_name,
+        f.country,
+        s.material_flow,
+        s.relationship_type,
+        s.mapped_date,
+        s.updated_at
+      FROM supplier_sub_tier_relationships s
+      JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      JOIN master.suppliers st ON st.supplier_id = s.sub_tier_supplier_id
+      LEFT JOIN master.factories f ON f.factory_id = s.factory_id
+      WHERE s.supplier_id = $supplier_id
+      ORDER BY s.mapped_date DESC
+    limit: 100
+    example: {supplier_id: SUP-0042}

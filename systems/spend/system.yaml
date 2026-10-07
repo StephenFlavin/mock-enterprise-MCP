@@ -1,0 +1,409 @@
+id: spend
+name: Spend Analytics Platform
+instructions: >
+  Supplier spending, price benchmarks, savings initiatives and negotiations.
+  Initiative ids look like INIT-000123. Use for consolidation opportunities,
+  savings tracking, price variance analysis and supplier performance.
+
+tables:
+  supplier_spend:
+    key: [supplier_id, category, period]
+    cols:
+      supplier_id: {type: str, desc: "Supplier, e.g. SUP-0042"}
+      category: {type: str, desc: "Product category, e.g. Womenswear, Home"}
+      period: {type: str, desc: "Year-month, e.g. 2026-09"}
+      spend_gbp: {type: float, desc: "Spend in GBP"}
+      units: {type: int, desc: "Units purchased"}
+      invoice_count: {type: int, desc: "Number of invoices"}
+      avg_unit_cost_gbp: {type: float, desc: "Average unit cost"}
+      is_preferred: {type: bool, desc: "Preferred supplier at this period"}
+
+  savings_initiatives:
+    key: initiative_id
+    cols:
+      initiative_id: {type: str, desc: "Savings initiative, e.g. INIT-000123"}
+      name: {type: str, desc: "Initiative name"}
+      category: {type: str, desc: "Category targeted"}
+      supplier_id: {type: str, desc: "Primary supplier (if any)"}
+      initiative_type: {type: enum, values: [consolidation, renegotiation, spec_change, nearshore, other], desc: "Type of lever"}
+      reported_saving_gbp: {type: float, desc: "Reported saving target"}
+      realised_saving_gbp: {type: float, desc: "Actual saving achieved"}
+      status: {type: enum, values: [planned, in_progress, completed, abandoned], desc: "Initiative status"}
+      start_date: {type: date, desc: "Start date"}
+      target_completion_date: {type: date, desc: "Target completion"}
+      actual_completion_date: {type: date, desc: "Actual completion date"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  savings_realisation_rates:
+    key: [initiative_type, period]
+    cols:
+      initiative_type: {type: str, desc: "Type of savings lever"}
+      period: {type: str, desc: "Year-month when initiatives completed"}
+      realisation_rate_pct: {type: float, desc: "Actual/reported savings %"}
+      initiatives_count: {type: int, desc: "Number of initiatives in this cohort"}
+      reported_total_gbp: {type: float, desc: "Total reported"}
+      realised_total_gbp: {type: float, desc: "Total realised"}
+
+  payment_terms_benchmark:
+    key: [category, supplier_country]
+    cols:
+      category: {type: str, desc: "Product category"}
+      supplier_country: {type: str, desc: "ISO country code"}
+      market_standard_days: {type: int, desc: "Market standard payment terms in days"}
+      typical_min_days: {type: int, desc: "Typical minimum days"}
+      typical_max_days: {type: int, desc: "Typical maximum days"}
+      observations_count: {type: int, desc: "Sample size"}
+
+  preferred_supplier_tracking:
+    key: [category, period]
+    cols:
+      category: {type: str, desc: "Product category"}
+      period: {type: str, desc: "Year-month"}
+      total_category_spend_gbp: {type: float, desc: "Total category spend"}
+      preferred_spend_gbp: {type: float, desc: "Spend with preferred suppliers"}
+      preferred_share_pct: {type: float, desc: "Preferred supplier share %"}
+      preferred_supplier_count: {type: int, desc: "Number of preferred suppliers"}
+
+  nearshore_forecast:
+    key: [supplier_id, period]
+    cols:
+      supplier_id: {type: str, desc: "Nearshore supplier"}
+      period: {type: str, desc: "Year-month"}
+      actual_spend_gbp: {type: float, desc: "Actual spend in GBP"}
+      forecasted_volume_units: {type: int, desc: "Forecasted volume in units"}
+      actual_volume_units: {type: int, desc: "Actual volume received"}
+      commitment_level_pct: {type: float, desc: "Commitment level % of forecast"}
+
+  price_variance_data:
+    key: [po_id, line_no]
+    cols:
+      po_id: {type: str, desc: "Purchase order"}
+      line_no: {type: int, desc: "Line number"}
+      sku: {type: str, desc: "SKU"}
+      supplier_id: {type: str, desc: "Supplier"}
+      category: {type: str, desc: "Category"}
+      contract_price_gbp: {type: float, desc: "Contract or benchmark price"}
+      actual_price_gbp: {type: float, desc: "Actual price paid"}
+      volume_units: {type: int, desc: "Quantity purchased"}
+      variance_pct: {type: float, desc: "Variance % above/below"}
+      variance_gbp: {type: float, desc: "Variance in GBP"}
+      source: {type: enum, values: [contract, benchmark, market], desc: "Type of comparison"}
+
+  supplier_input_costs:
+    key: [supplier_id, cost_component, period]
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      cost_component: {type: str, desc: "Cost component (e.g. raw materials, labour, shipping)"}
+      period: {type: str, desc: "Year-month"}
+      index_value: {type: float, desc: "Cost index value"}
+      pct_of_total: {type: float, desc: "% of supplier's total cost"}
+
+tools:
+  - name: get_spend_by_supplier
+    desc: Total spend by supplier and category, latest 12 months. Use to identify top suppliers.
+    kind: sql
+    args:
+      category: {desc: "Product category (optional filter)"}
+      supplier_id: {desc: "Supplier (optional filter)"}
+      periods: {type: int, default: 12, desc: "Number of recent months"}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.category, sum(s.spend_gbp) AS total_spend_gbp,
+             sum(s.units) AS total_units, count(distinct s.period) AS periods_with_spend,
+             round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE ($category IS NULL OR s.category = $category)
+        AND ($supplier_id IS NULL OR s.supplier_id = $supplier_id)
+        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
+      GROUP BY ALL
+      ORDER BY total_spend_gbp DESC
+    limit: 50
+    example: {category: "Home"}
+
+  - name: list_spend_by_supplier_and_category
+    desc: Spend by supplier and category for a period. Use for variance and consolidation analysis.
+    kind: select
+    from: supplier_spend
+    filters:
+      category: {}
+      supplier_id: {}
+      period: {type: str, desc: "Year-month, e.g. 2026-09"}
+    columns: [supplier_id, category, period, spend_gbp, units, avg_unit_cost_gbp, is_preferred]
+    order: spend_gbp DESC
+    limit: 100
+    example: {category: "Home"}
+
+  - name: get_preferred_supplier_share_trend
+    desc: Preferred supplier share of category spend over time. Use to track consolidation progress.
+    kind: sql
+    args:
+      category: {required: true}
+      periods: {type: int, default: 12, desc: "Number of months to return"}
+    sql: |
+      SELECT period, category, total_category_spend_gbp, preferred_spend_gbp,
+             round(preferred_share_pct, 1) AS preferred_share_pct, preferred_supplier_count
+      FROM preferred_supplier_tracking
+      WHERE category = $category
+        AND period >= date_format(date_add(CAST($as_of AS DATE), INTERVAL -$periods MONTH), '%Y-%m')
+      ORDER BY period
+    limit: 24
+    example: {category: "Home"}
+
+  - name: get_supplier_spend_by_category
+    desc: Spend by product category for one supplier, latest 12 months. For supplier review.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      periods: {type: int, default: 12, desc: "Number of recent months"}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.category, sum(s.spend_gbp) AS spend_gbp,
+             sum(s.units) AS units, round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
+      GROUP BY ALL
+      ORDER BY spend_gbp DESC
+    limit: 50
+    example: {supplier_id: "SUP-0001"}
+
+  - name: compare_price_paid_to_benchmark
+    desc: Prices paid versus market benchmark. Shows overpay by item. Use for renegotiation prep.
+    kind: sql
+    args:
+      category: {required: true}
+      periods: {type: int, default: 6, desc: "Last N months"}
+    sql: |
+      SELECT p.sku, pr.name, p.category, p.supplier_id, sup.name AS supplier_name,
+             round(p.contract_price_gbp, 2) AS benchmark_price_gbp, round(p.actual_price_gbp, 2) AS paid_price_gbp,
+             round((p.actual_price_gbp - p.contract_price_gbp) / p.contract_price_gbp * 100, 1) AS overpay_pct,
+             round(p.variance_gbp * p.volume_units, 0) AS total_overpay_gbp, p.volume_units
+      FROM price_variance_data p
+      LEFT JOIN master.products pr ON pr.sku = p.sku
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = p.supplier_id
+      WHERE p.category = $category
+        AND p.source = 'benchmark'
+      ORDER BY total_overpay_gbp DESC
+    limit: 50
+    example: {category: "Home"}
+
+  - name: calculate_price_variance_vs_contract
+    desc: Price paid versus contract price. Returns variance amount and %.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      category: {}
+      periods: {type: int, default: 6, desc: "Last N months"}
+    sql: |
+      SELECT p.supplier_id, sup.name, p.category, count(*) AS lines,
+             round(sum(p.volume_units), 0) AS total_units,
+             round(avg(p.contract_price_gbp), 2) AS avg_contract_price_gbp,
+             round(avg(p.actual_price_gbp), 2) AS avg_actual_price_gbp,
+             round(sum(case when p.actual_price_gbp > p.contract_price_gbp then (p.actual_price_gbp - p.contract_price_gbp) * p.volume_units else 0 end), 0) AS total_overpay_gbp,
+             round(sum(case when p.actual_price_gbp < p.contract_price_gbp then (p.contract_price_gbp - p.actual_price_gbp) * p.volume_units else 0 end), 0) AS total_underpay_gbp,
+             'variance = (actual - contract) * volume' AS formula
+      FROM price_variance_data p
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = p.supplier_id
+      WHERE p.supplier_id = $supplier_id
+        AND ($category IS NULL OR p.category = $category)
+      GROUP BY ALL
+    limit: 10
+    example: {supplier_id: "SUP-0001", category: "Home"}
+
+  - name: calculate_consolidation_savings
+    desc: Estimate savings from consolidating suppliers or reducing tail spend. Returns savings range.
+    kind: sql
+    args:
+      category: {required: true}
+      consolidation_target_pct: {type: float, default: 80, desc: "Target % of spend to consolidate"}
+    sql: |
+      SELECT $category AS category, $consolidation_target_pct AS target_consolidation_pct,
+             round(sum(s.spend_gbp), 0) AS total_category_spend_gbp,
+             round(sum(case when s.is_preferred then s.spend_gbp else 0 end), 0) AS preferred_spend_gbp,
+             round(count(distinct s.supplier_id), 0) AS current_suppliers,
+             round((100.0 - $consolidation_target_pct) * sum(s.spend_gbp) / 100, 0) AS addressable_tail_spend_gbp,
+             round(0.05 * sum(s.spend_gbp), 0) AS conservative_saving_gbp,
+             round(0.12 * sum(s.spend_gbp), 0) AS optimistic_saving_gbp,
+             'savings = tail_spend * (5-12% discount from consolidation)' AS formula
+      FROM supplier_spend s
+      WHERE s.category = $category
+        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL 6 MONTH, '%Y-%m')
+    example: {category: "Home", consolidation_target_pct: 80}
+
+  - name: calculate_renegotiation_recovery
+    desc: Recoverable value by renegotiating with top suppliers. Based on price variance and volume.
+    kind: sql
+    args:
+      category: {}
+      supplier_id: {}
+      periods: {type: int, default: 12, desc: "Analysis period in months"}
+    sql: |
+      SELECT ($supplier_id IS NOT NULL AND $category IS NOT NULL) AS filtered,
+             round(sum(ss.spend_gbp), 0) AS annual_spend_gbp,
+             round(sum(ss.units), 0) AS annual_units,
+             round(count(distinct ss.supplier_id), 0) AS supplier_count,
+             round(0.03 * sum(ss.spend_gbp), 0) AS conservative_recovery_gbp,
+             round(0.08 * sum(ss.spend_gbp), 0) AS aggressive_recovery_gbp,
+             'recovery = spend * (3-8% from renegotiation)' AS formula
+      FROM supplier_spend ss
+      WHERE ($category IS NULL OR ss.category = $category)
+        AND ($supplier_id IS NULL OR ss.supplier_id = $supplier_id)
+        AND ss.period >= date_format(date_add(CAST($as_of AS DATE), INTERVAL -$periods MONTH), '%Y-%m')
+    example: {category: "Home"}
+
+  - name: classify_spend_one_off_vs_recurring
+    desc: Classify supplier spend as one-off or recurring based on transaction frequency and pattern.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      category: {}
+      periods: {type: int, default: 12, desc: "Look-back period in months"}
+    sql: |
+      SELECT s.supplier_id, sup.name, s.category,
+             round(sum(s.spend_gbp), 0) AS total_spend_gbp,
+             round(sum(case when s.invoice_count >= 3 then s.spend_gbp else 0 end), 0) AS recurring_spend_gbp,
+             round(sum(case when s.invoice_count < 3 then s.spend_gbp else 0 end), 0) AS one_off_spend_gbp,
+             round(100.0 * sum(case when s.invoice_count >= 3 then s.spend_gbp else 0 end) / sum(s.spend_gbp), 1) AS recurring_pct,
+             'recurring: >= 3 invoices/period; one-off: < 3' AS classification_rule
+      FROM supplier_spend s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+        AND ($category IS NULL OR s.category = $category)
+        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
+      GROUP BY ALL
+    limit: 20
+    example: {supplier_id: "SUP-0001"}
+
+  - name: get_payment_terms_benchmark
+    desc: Market standard payment terms by category and supplier country. Use for negotiation prep.
+    kind: select
+    from: payment_terms_benchmark
+    filters:
+      category: {}
+      supplier_country: {desc: "ISO country code, e.g. CN"}
+    columns: [category, supplier_country, market_standard_days, typical_min_days, typical_max_days]
+    order: market_standard_days DESC
+    limit: 50
+    example: {category: "Home"}
+
+  - name: get_nearshore_spend_and_forecast_volume
+    desc: Nearshore supplier spend and volume forecasts to assess capacity commitment. Use for negotiation.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      periods: {type: int, default: 12, desc: "Number of months"}
+    sql: |
+      SELECT n.supplier_id, sup.name, n.period,
+             round(n.actual_spend_gbp, 0) AS actual_spend_gbp,
+             n.actual_volume_units, n.forecasted_volume_units,
+             round(100.0 * n.actual_volume_units / nullif(n.forecasted_volume_units, 0), 1) AS forecast_accuracy_pct,
+             round(100.0 * n.commitment_level_pct, 1) AS commitment_level_pct
+      FROM nearshore_forecast n
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = n.supplier_id
+      WHERE n.supplier_id = $supplier_id
+        AND n.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
+      ORDER BY n.period DESC
+    limit: 24
+    example: {supplier_id: "SUP-0010"}
+
+  - name: get_historic_savings_realisation_rates
+    desc: Historical realisation rates by savings lever type. Shows how reliable each lever is.
+    kind: select
+    from: savings_realisation_rates
+    filters:
+      initiative_type: {}
+    columns: [initiative_type, period, realisation_rate_pct, initiatives_count, reported_total_gbp, realised_total_gbp]
+    order: period DESC
+    limit: 50
+    example: {initiative_type: "consolidation"}
+
+  - name: calculate_expected_price_increase_by_supplier
+    desc: Expected price increase by supplier based on input cost indices. For planning negotiations.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      periods: {type: int, default: 3, desc: "Months of cost data to analyse"}
+    sql: |
+      SELECT s.supplier_id, sup.name, count(distinct s.cost_component) AS cost_components,
+             round(avg(case when s.cost_component = 'raw materials' then s.index_value end), 2) AS raw_materials_index,
+             round(avg(case when s.cost_component = 'labour' then s.index_value end), 2) AS labour_index,
+             round(avg(case when s.cost_component = 'shipping' then s.index_value end), 2) AS shipping_index,
+             round((avg(index_value) - lag(avg(index_value)) over (partition by supplier_id order by period)) / lag(avg(index_value)) over (partition by supplier_id order by period) * 100, 1) AS implied_increase_pct,
+             'increase = (current_index - prior_index) / prior_index' AS formula
+      FROM supplier_input_costs s
+      LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
+      WHERE s.supplier_id = $supplier_id
+        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
+      GROUP BY s.supplier_id, sup.name
+      ORDER BY s.period DESC
+    example: {supplier_id: "SUP-0001"}
+
+  - name: list_reported_savings_initiatives
+    desc: Logged savings initiatives showing reported vs realised by status. Use for tracking.
+    kind: select
+    from: savings_initiatives
+    filters:
+      category: {}
+      supplier_id: {}
+      status: {default: "in_progress"}
+      initiative_type: {}
+    columns: [initiative_id, name, category, supplier_id, initiative_type, reported_saving_gbp, realised_saving_gbp, status, start_date, target_completion_date]
+    order: target_completion_date
+    limit: 50
+    example: {status: "completed"}
+
+  - name: calculate_realised_savings
+    desc: Compare reported vs realised savings on completed initiatives. Returns the gap.
+    kind: sql
+    args:
+      category: {}
+      initiative_type: {}
+    sql: |
+      SELECT ($category IS NOT NULL) AS filtered,
+             count(*) AS initiatives_count,
+             round(sum(reported_saving_gbp), 0) AS reported_total_gbp,
+             round(sum(realised_saving_gbp), 0) AS realised_total_gbp,
+             round(sum(realised_saving_gbp - reported_saving_gbp), 0) AS variance_gbp,
+             round(100.0 * sum(realised_saving_gbp) / nullif(sum(reported_saving_gbp), 0), 1) AS realisation_rate_pct,
+             'realisation_rate = realised / reported' AS formula
+      FROM savings_initiatives
+      WHERE status = 'completed'
+        AND ($category IS NULL OR category = $category)
+        AND ($initiative_type IS NULL OR initiative_type = $initiative_type)
+    example: {category: "Home"}
+
+  - name: compare_reported_vs_realised_savings
+    desc: Reported versus realised by initiative. Use to identify which programs work and which don't.
+    kind: sql
+    args:
+      status: {default: "completed"}
+    sql: |
+      SELECT initiative_id, name, category, initiative_type,
+             reported_saving_gbp, realised_saving_gbp,
+             round(realised_saving_gbp - reported_saving_gbp, 0) AS variance_gbp,
+             round(100.0 * realised_saving_gbp / nullif(reported_saving_gbp, 0), 1) AS realisation_pct,
+             case when realised_saving_gbp >= reported_saving_gbp then 'beat'
+                  when realised_saving_gbp >= 0.8 * reported_saving_gbp then 'on_track'
+                  else 'missed' end AS performance_rating,
+             status, target_completion_date
+      FROM savings_initiatives
+      WHERE status = $status
+      ORDER BY variance_gbp DESC
+    limit: 50
+    example: {status: "completed"}
+
+  - name: create_savings_initiative
+    desc: Add a new savings initiative to the tracker. Returns the new initiative record.
+    kind: insert
+    table: savings_initiatives
+    id_prefix: INIT-
+    defaults: {status: planned}
+    args:
+      name: {required: true, desc: "Initiative name"}
+      category: {required: true, desc: "Product category"}
+      supplier_id: {}
+      initiative_type: {required: true, desc: "Type: consolidation, renegotiation, spec_change, nearshore, other"}
+      reported_saving_gbp: {required: true, type: float, desc: "Reported saving target"}
+      target_completion_date: {required: true, type: date}
+    example: {name: "Housewares consolidation", category: "Home", initiative_type: "consolidation", reported_saving_gbp: 150000, target_completion_date: "2026-12-31"}
