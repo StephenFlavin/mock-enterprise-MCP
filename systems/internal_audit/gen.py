@@ -32,10 +32,11 @@ def generate(g):
 
     # Generate audit_actions (open and completed)
     audit_actions = []
+    r = g.rng
     for i in range(1, 31):
         action_date = g.date_between(540, 90)
         due_date = g.date_between(90, 0) if action_date < g.as_of else g.date_between(0, -60)
-        status = g.pick(["open", "completed", "reopened"], [0.5, 0.35, 0.15])
+        status = r.choices(["open", "completed", "reopened"], [0.5, 0.35, 0.15])[0]
         audit_actions.append({
             "action_id": f"ACT-{i:06d}",
             "description": f"{g.pick(audit_areas)} - {g.fake.sentence(nb_words=4)}",
@@ -55,14 +56,14 @@ def generate(g):
         opened_date = g.date_between(180, 30)
         audit_cases.append({
             "case_id": f"CASE-{i:06d}",
-            "finding_area": g.pick(["Purchase orders", "Vendor payments", "Inventory", "Cash", "Expenses"]),
+            "finding_area": r.choice(["Purchase orders", "Vendor payments", "Inventory", "Cash", "Expenses"]),
             "description": g.fake.paragraph(),
-            "risk_score": g.rng.randint(20, 95),
+            "risk_score": r.randint(20, 95),
             "opened_at": g.fake.date_time(tzinfo=None),
-            "status": g.pick(["open", "in_progress", "closed", "escalated"]),
-            "assigned_to": g.pick([e["employee_id"] for e in employees[:20]]) if g.rng.random() > 0.3 else None,
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if g.rng.random() > 0.4 else None,
-            "estimated_impact_gbp": g.rng.uniform(1000, 150000) if g.rng.random() > 0.5 else None,
+            "status": r.choice(["open", "in_progress", "closed", "escalated"]),
+            "assigned_to": g.pick([e["employee_id"] for e in employees[:20]]) if r.random() > 0.3 else None,
+            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
+            "estimated_impact_gbp": r.uniform(1000, 150000) if r.random() > 0.5 else None,
             "updated_at": g.fake.date_time_this_year(),
         })
 
@@ -72,18 +73,18 @@ def generate(g):
     from datetime import timedelta
     for i in range(1, 16):
         start_date = g.date_between(180, -90)
-        end_date = start_date + timedelta(days=g.rng.randint(14, 45))
+        end_date = start_date + timedelta(days=r.randint(14, 45))
         engagement_ids.append(f"ENG-{i:06d}")
         audit_engagements.append({
             "engagement_id": f"ENG-{i:06d}",
             "audit_area": g.pick(audit_areas),
             "scope": g.fake.paragraph(nb_sentences=2),
-            "site_id": g.pick([s["site_id"] for s in dc_sites]) if g.rng.random() > 0.4 else None,
+            "site_id": g.pick([s["site_id"] for s in dc_sites]) if r.random() > 0.4 else None,
             "planned_start": start_date,
             "planned_end": end_date,
-            "status": g.pick(["planned", "in_progress", "completed", "cancelled"]),
+            "status": r.choice(["planned", "in_progress", "completed", "cancelled"]),
             "lead_auditor": g.pick([e["employee_id"] for e in employees[:20]]),
-            "estimated_hours": g.rng.randint(40, 200),
+            "estimated_hours": r.randint(40, 200),
             "created_at": g.fake.date_time_this_year(),
             "updated_at": g.fake.date_time_this_year(),
         })
