@@ -5,7 +5,12 @@ from datetime import date, datetime, timedelta, time
 
 def generate(g):
     r = g.rng
-    
+    rts = g.rng_for("timestamps")
+
+    def ts():
+        # audit timestamp somewhere in the 300 days before the as-of date (never the wall clock)
+        return (datetime.combine(g.as_of, time(0, 0)) - timedelta(days=rts.randint(0, 300), seconds=rts.randint(0, 86399)))
+
     # Master data lookups
     sites = g.master("sites")
     carriers = g.master("carriers")
@@ -124,8 +129,8 @@ def generate(g):
             "freight_cost_gbp": cost,
             "delay_minutes": (delay * 1440) if is_past and delay > 0 else None,
             "is_split": is_split,
-            "created_at": g.fake.date_time_this_year(),
-            "updated_at": g.fake.date_time_this_year()
+            "created_at": ts(),
+            "updated_at": ts()
         })
 
     # Parcel shipments for a quarter of the last 8 weeks of online orders; split orders rise sharply over the last 4 weeks.
@@ -217,8 +222,8 @@ def generate(g):
             "freight_cost_gbp": cost,
             "delay_minutes": (delay * 1440) if delay > 0 else None,
             "is_split": False,
-            "created_at": g.fake.date_time_this_year(),
-            "updated_at": g.fake.date_time_this_year()
+            "created_at": ts(),
+            "updated_at": ts()
         })
     
     lane_fill = {}
@@ -245,7 +250,7 @@ def generate(g):
                     "fill_rate_avg_pct": float(round(lane_fill.setdefault(lane, r.randint(76, 90)) + r.randint(-2, 2))),
                     "total_cost_gbp": float(shipments_count * lane_base(*lane.split("-"))),
                     "cost_per_shipment_gbp": float(lane_base(*lane.split("-"))),
-                    "updated_at": g.fake.date_time_this_year()
+                    "updated_at": ts()
                 })
     
     # Story: Midshires (CAR-002) service slips on Glasgow/Dundee lanes in the last 2 weeks; Northline stays strong.
@@ -338,7 +343,7 @@ def generate(g):
             "recovery_value_gbp": claim_value * float(r.uniform(0, 0.8)),
             "status": r.choice(["open", "resolved", "disputed"]),
             "extra_cost_gbp": float(r.randint(0, 2000)),
-            "updated_at": g.fake.date_time_this_year()
+            "updated_at": ts()
         })
     
     # Inbound shipments mirror master.shipments (same PO, carrier, ports, dates); air ones also feed air_freight.
@@ -509,7 +514,7 @@ def generate(g):
             "planned_hours": float(r.randint(8, 20)),
             "planned_utilisation_pct": float(r.randint(70, 96)),
             "status": r.choice(["planned", "completed"]) if route_date < g.as_of else "planned",
-            "created_at": g.fake.date_time_this_year()
+            "created_at": ts()
         })
     
     # Generate route_hours_breaches
@@ -539,7 +544,7 @@ def generate(g):
             "stop_time_minutes": r.choice([25, 30, 30, 35, 40]),
             "frequency_per_week": float(r.randint(1, 5)),
             "source": "route planning history",
-            "updated_at": g.fake.date_time_this_year()
+            "updated_at": ts()
         })
         stop_id += 1
     
@@ -558,7 +563,7 @@ def generate(g):
             "projected_fill_rate_pct": float(r.randint(75, 95)),
             "risk_rating": r.choice(["low", "medium", "high"]),
             "status": r.choice(["draft", "approved"]),
-            "created_at": g.fake.date_time_this_year()
+            "created_at": ts()
         })
     
     # Generate transfer_scenarios
@@ -576,7 +581,7 @@ def generate(g):
             "is_benefit_calculated": r.choice([True, False]),
             "projected_benefit_gbp": float(r.randint(500, 5000)) if r.random() < 0.6 else 0.0,
             "status": r.choice(["planned", "completed"]),
-            "created_at": g.fake.date_time_this_year()
+            "created_at": ts()
         })
     
     # Next-day coverage by postcode area and parcel carrier (cost per drop rises with distance from Daventry)

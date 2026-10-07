@@ -129,6 +129,7 @@ def generate(g):
         sku, dept, cat = p["sku"], p["department"], p["category"]
         if sku in STORY_SKUS or p["style_id"] in SEEDED_STYLES or dept == "Beauty":
             continue
+        r = g.rng_for("bom", sku)
         lines = []
         if cat in APPAREL:
             fabrics, metres, trims = APPAREL[cat]
@@ -161,6 +162,8 @@ def generate(g):
                      mk(sku, 2, "packing", "MAT-GIFTBOX", 1, "pcs", p)]
         elif cat in ("Bedding", "Towels"):
             fab = _pick(r, [("MAT-COT-100", 70), ("MAT-POL-COT-50", 30)])
+            if sku in ("SKU-104466", "SKU-100910"):  # 05:46:Q4 story SKUs: poly-cotton, Chinese fabric
+                fab = "MAT-POL-COT-50"
             primary_fabric[sku] = fab
             lines = [mk(sku, 1, "fabric", fab, round(r.uniform(3.0, 6.0), 2), "m", p, "Main fabric")]
         elif cat in ("Drinkware", "Cookware"):
@@ -190,9 +193,11 @@ def generate(g):
             boms.append(ln)
 
     # ======== product_tech_pack (every master product) ========
+    r = g.rng
     tech_packs = []
     for p in products:
         sku, cat = p["sku"], p["category"]
+        r = g.rng_for("techpack", sku)
         mat = primary_fabric.get(sku)
         main = lib_name.get(mat, "Mixed materials") if mat else {"Drinkware": "Stainless steel", "Cookware": "Stainless steel",
                                                               "Jewellery": "Zinc alloy"}.get(cat, "Mixed materials")
@@ -208,6 +213,7 @@ def generate(g):
         })
     tp_by_sku = {t["sku"]: t for t in tech_packs}
 
+    r = g.rng
     # last season (SS26) apparel: best sellers share easy-care features, worst sellers share fussy ones
     units = {}
     for w in g.master("sales_weekly"):
@@ -232,14 +238,17 @@ def generate(g):
     # ======== material_library: seeded ========
     # ======== material_batches and dye_lots (noise) ========
     users = {}
-    for sku, mat in primary_fabric.items():
-        users.setdefault(mat, []).append(sku)
+    new_skus = {p["sku"] for p in products if p["status"] == "new"}
+    for sku, mat in sorted(primary_fabric.items()):
+        if sku not in new_skus:
+            users.setdefault(mat, []).append(sku)
     batches, dye_lots = [], []
     bn = dn = 0
     for mat in sorted(users):
         skus = users[mat]
         fabric = mat in FABRIC_COST
         sup = lib_sup[mat]
+        r = g.rng_for("batches", mat)
         for j in range(r.randint(4, 8)):
             bn += 1
             bid = f"BATCH-{bn:05d}"
@@ -269,12 +278,14 @@ def generate(g):
                 })
 
     # ======== fabric_specs (one per style, soft goods) ========
+    r = g.rng
     fabric_specs, seen_style = [], set()
     for p in products:
         sty, sku = p["style_id"], p["sku"]
         if sty in seen_style or sty in STORY_STYLES or sku not in primary_fabric or primary_fabric[sku] not in FABRIC_COST:
             continue
         seen_style.add(sty)
+        r = g.rng_for("fabspec", sty)
         mat = primary_fabric[sku]
         country = suppliers[lib_sup[mat]]["country"]
         fabric_specs.append({
@@ -291,6 +302,7 @@ def generate(g):
         })
 
     # ======== product_specifications (apparel: size chart, grade rules, tolerances) ========
+    r = g.rng
     zip_skus = {b["sku"] for b in boms if b["component_id"] == "MAT-ZIPPER"}
     zip_nominal = {"Outerwear": 150, "Bags": 120}
     specs = []
@@ -298,6 +310,7 @@ def generate(g):
         sku, dept, cat = p["sku"], p["department"], p["category"]
         if dept not in ("Womenswear", "Menswear", "Kids") or cat == "Footwear" or cat == "Scarves":
             continue
+        r = g.rng_for("spec", sku)
         sizes = {"Womenswear": ["8", "10", "12", "14", "16", "18"], "Menswear": ["XS", "S", "M", "L", "XL", "XXL"],
                  "Kids": ["3-4Y", "5-6Y", "7-8Y", "9-10Y"]}[dept]
         created, updated = g.days_ago(r.randint(60, 300)), g.days_ago(r.randint(0, 30))
@@ -333,6 +346,7 @@ def generate(g):
             "shrinkage_tolerances": json.dumps({"wash": "-3%", "dry_clean": "-1%"}), "grade_definitions": None})
 
     # ======== product_regulated_categories ========
+    r = g.rng
     regs = []
 
     def add(p, code, name, region, rules, status="compliant", test=False, note="", rng=None):
@@ -353,6 +367,7 @@ def generate(g):
     batt_rules = {"UK": ["UKCA marking", "UN 38.3"], "EU": ["CE marking", "EU Battery Regulation 2023/1542"], "US": ["FCC Part 15", "UL 2054"]}
     for p in products:
         cat = p["category"]
+        r = g.rng_for("reg", p["sku"])
         if cat == "Nightwear":
             for reg, rules in sleep_rules.items():
                 add(p, "KIDSSLP", "kids_sleepwear", reg, rules, status(p), reg == "US")
@@ -373,6 +388,7 @@ def generate(g):
                     rng=random.Random(p["sku"]))
 
     # ======== legacy small tables ========
+    r = g.rng
     legacy = products[:30]
     change_reqs = [{
         "change_request_id": f"CHG-{i:06d}", "sku": r.choice(legacy)["sku"],

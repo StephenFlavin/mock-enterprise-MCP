@@ -291,24 +291,27 @@ def generate(g):
     mapping = []
     mill_products = {x["supplier_id"] for x in sub_tiers if x["factory_id"] == "FAC-0035"}
     for p in products:
+        if p["status"] == "new":     # not launched: no supply chain map yet
+            continue
         sku, sid, cat = p["sku"], p["supplier_id"], p["department"]
+        pr = g.rng_for("scmap", sku)   # per-SKU stream: adding master products never shifts other rows
         mapping.append({"product_sku": sku, "tier": 1, "node_id": p["factory_id"], "entity_name": next(
             (f["name"] for f in factories if f["factory_id"] == p["factory_id"]), ""), "country": p["country_of_origin"],
             "factory_id": p["factory_id"], "supplier_id": sid, "material_flow": "Finished goods", "mapping_status": "mapped",
-            "mapped_at": d(r.randint(60, 300)), "updated_at": d(r.randint(1, 60))})
+            "mapped_at": d(pr.randint(60, 300)), "updated_at": d(pr.randint(1, 60))})
         if cat in ("Womenswear", "Menswear", "Kids", "Home"):
             if sid in mill_products:
                 mapping.append({"product_sku": sku, "tier": 2, "node_id": "FAC-0035", "entity_name": "Jackson Knitting 35",
                                 "country": "IN", "factory_id": "FAC-0035", "supplier_id": "SUP-0018", "material_flow": "Cotton yarn",
                                 "mapping_status": "mapped", "mapped_at": d(40), "updated_at": d(20)})
             else:
-                st = "partially_mapped" if r.random() < 0.35 else "unmapped"
+                st = "partially_mapped" if pr.random() < 0.35 else "unmapped"
                 mapping.append({"product_sku": sku, "tier": 2, "node_id": f"T2-{sku}", "entity_name": "Fabric or yarn mill (name not held)",
                                 "country": p["country_of_origin"], "factory_id": "", "supplier_id": "", "material_flow": "Fabric and yarn",
-                                "mapping_status": st, "mapped_at": d(r.randint(60, 300)), "updated_at": d(r.randint(1, 60))})
+                                "mapping_status": st, "mapped_at": d(pr.randint(60, 300)), "updated_at": d(pr.randint(1, 60))})
             mapping.append({"product_sku": sku, "tier": 3, "node_id": f"T3-{sku}", "entity_name": "Fibre source (ginning or farm)",
                             "country": "", "factory_id": "", "supplier_id": "", "material_flow": "Raw cotton", "mapping_status": "unmapped",
-                            "mapped_at": d(r.randint(60, 300)), "updated_at": d(r.randint(1, 60))})
+                            "mapped_at": d(pr.randint(60, 300)), "updated_at": d(pr.randint(1, 60))})
     for row in mapping:
         if row["product_sku"] == "SKU-103808":
             if row["tier"] == 2:

@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import timedelta
 
 STORY_SKUS_AT_RISK = {}  # filled below
+LONG_TAIL_UNITS = 140.0  # chain units/week; master sales are scaled x6.8, so the old 20 is now about 140
 
 
 def generate(g):
@@ -550,7 +551,7 @@ def generate(g):
         if c:
             scale_demand(sku, c / tgt)
 
-    # Long-tail / slow-moving lines: chain sales of 20 units a week or less. DC issues equal the online units, so
+    # Long-tail / slow-moving lines: chain sales of about 140 units a week or less (was 20 before the x6.8 master scaling). DC issues equal the online units, so
     # network demand equals what the chain really sells; the stock held (from master) is then many weeks of cover.
     protected = set(SUP68_COVER) | set(VN_COVER) | {k.split("|")[0] for k in AGED} | {THROW} | set(tops) | jk | set(bay_skus)
     protected |= {"SKU-103486", "SKU-103472", "K-1700", "PF-220", "SKU-101904", "SKU-103892", "SKU-103458", "SKU-104438", "SKU-104445"}
@@ -560,7 +561,7 @@ def generate(g):
     for sku in sorted(chain_store):
         if sku in protected or sku not in products or products[sku]["category"] in ("Bedding", "Towels"):
             continue
-        if chain_store[sku] + chain_online[sku] > 20:
+        if chain_store[sku] + chain_online[sku] > LONG_TAIL_UNITS:
             continue
         dcs = [p for p in pos_rows if p["sku"] == sku and p["site_id"].startswith("DC")]
         sts = [p for p in pos_rows if p["sku"] == sku and not p["site_id"].startswith("DC")]
@@ -576,20 +577,6 @@ def generate(g):
             p["weekly_demand"] = new_d
             p["safety_stock"] = int(p["safety_stock"] * f)
             p["reorder_point"] = int(p["reorder_point"] * f)
-
-    # Keep total store demand where it was before the stories above (several figures are built on that total):
-    # take the difference out of large ambient store lines, proportionally.
-    TARGET_STORE_DEMAND = 50382.0
-    ballast = [p for p in pos_rows if p["site_id"].startswith("ST") and p["sku"] not in protected
-               and p["weekly_demand"] >= 8 and products[p["sku"]]["category"] not in ("Bedding", "Towels")]
-    total_now = sum(p["weekly_demand"] for p in pos_rows if p["site_id"].startswith("ST"))
-    bsum = sum(p["weekly_demand"] for p in ballast)
-    fac = (bsum - (total_now - TARGET_STORE_DEMAND)) / bsum
-    for p in ballast:
-        p["weekly_demand"] = round(p["weekly_demand"] * fac, 1)
-    resid = TARGET_STORE_DEMAND - sum(p["weekly_demand"] for p in pos_rows if p["site_id"].startswith("ST"))
-    ballast.sort(key=lambda p: -p["weekly_demand"])
-    ballast[0]["weekly_demand"] = round(ballast[0]["weekly_demand"] + resid, 1)
 
     # (8) Stock by batch for quality holds: failed lots of three products (stores and DCs).
     def add_batch(sku, batch_id, status, age, site, qty, loc_hint=None):

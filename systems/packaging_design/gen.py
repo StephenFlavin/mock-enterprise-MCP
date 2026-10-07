@@ -44,9 +44,10 @@ def generate(g):
     suppliers = [s["supplier_id"] for s in g.master("suppliers")][:20]
     story_cats = {"Small Appliances", "Drinkware", "Personal Care", "Lighting"}
     pool = sorted((p for p in products if p["sku"] not in STORY_SKUS and p["style_id"] not in STORY_STYLES
-                   and p["category"] not in story_cats),
+                   and p["category"] not in story_cats and p["status"] != "new"),
                   key=lambda p: p["sku"])
-    noise = r.sample(pool, 60)
+    # per-SKU stream so adding master products never changes which SKUs are picked
+    noise = sorted(pool, key=lambda p: g.rng_for("pkg_noise", p["sku"]).random())[:60]
 
     pack_specs, pack_quotes, tech_packs, ecom_specs = [], [], [], []
     pack_changes, material_weights, pack_options, carton_specs, portfolio = [], [], [], [], []

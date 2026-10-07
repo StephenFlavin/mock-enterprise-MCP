@@ -38,6 +38,7 @@ STORY = {
     "ST215": dict(shrink=ramp(0.84, 0.86), avail=ramp(94.6, 93.5), labour=ramp(11.2, 11.4), spv=11.5, plan=None,
                   var=None, mplan=None),
 }
+SC = 4.1  # store sales scale: monthly store plans were sized for the old small master; stores now turn over ~GBP 780m a year
 NORTH_MU = 0.05  # mean sales variance of UK North stores outside the three weak ones
 
 AIDED_SKUS = ["SKU-100007", "K-1700", "SKU-100014"]  # ST214's three best-selling lines with shelf gaps
@@ -52,6 +53,10 @@ CTRL = [  # prog_id, name, type, description, annual cost per store, business-ca
 ]
 DEPLOYED = {"SCP-0001": 32, "SCP-0002": 37, "SCP-0003": 34, "SCP-0004": 46, "SCP-0006": 41}
 MUST_HAVE = {"SCP-0001": ["ST214", "ST001"], "SCP-0002": ["ST214"], "SCP-0003": ["ST001"]}
+
+
+def sc(x):
+    return round(x * SC, -2)
 
 
 def generate(g):
@@ -81,10 +86,11 @@ def generate(g):
     store_kpis, plan_vs_actual = [], []
     for s in stores:
         sid = s["site_id"]
+        r = g.rng_for("store_ops_kpi", sid)
         st = STORY.get(sid, {})
         prof = CLUSTER.get(s["cluster"] or "C", CLUSTER["C"])
         fmt = s["format"]
-        base_plan = st.get("plan") or round(int(s["sqft"]) * RATE.get(fmt, 3.5) * r.uniform(0.85, 1.15), -2)
+        base_plan = sc(st["plan"]) if st.get("plan") else round(int(s["sqft"]) * RATE.get(fmt, 3.5) * SC * r.uniform(0.85, 1.15), -2)
         base_sh, base_av, base_lb = r.uniform(*prof["sh"]), r.uniform(*prof["av"]), r.uniform(*prof["lb"])
         spv = st.get("spv") or r.uniform(9.5, 14.0)
         mplan = st.get("mplan") or round(BASE_MARGIN.get(fmt, 33.0) + r.uniform(-2, 2), 1)
@@ -101,7 +107,7 @@ def generate(g):
                 var = round(min(4.0, max(-3.0, r.gauss(0.5, 1.4))), 1)
             actual = round(plan * (1 + var / 100), 2)
             if i == 11 and st.get("actual"):
-                actual = st["actual"]
+                actual = sc(st["actual"])
             vgbp = round(actual - plan, 2)
             vpct = round(vgbp / plan * 100, 1)
             if st.get("mact") is not None:
@@ -118,7 +124,7 @@ def generate(g):
                 lb = round(base_lb + r.uniform(-0.2, 0.2), 1)
             if sid == "ST215":
                 sh, av, lb = st["shrink"][i], st["avail"][i], st["labour"][i]
-                plan = round(int(s["sqft"]) * RATE.get(fmt, 3.5) * 1.05 * seasonal, 2)
+                plan = round(int(s["sqft"]) * RATE.get(fmt, 3.5) * SC * 1.05 * seasonal, 2)
                 actual = round(plan * (1 + r.uniform(-0.01, 0.015)), 2)
                 vgbp = round(actual - plan, 2)
                 vpct = round(vgbp / plan * 100, 1)
@@ -130,6 +136,7 @@ def generate(g):
     # ---------------- backroom constraints ----------------
     backroom = []
     for s in [x for x in sites if x["type"] == "store"]:
+        r = g.rng_for("store_ops_backroom", s["site_id"])
         total = round(int(s["sqft"]) * 0.05 * r.uniform(0.8, 1.2))
         backroom.append({"site_id": s["site_id"], "total_backroom_sqft": total,
                          "available_sqft": round(total * r.uniform(0.3, 0.7)),
@@ -146,6 +153,7 @@ def generate(g):
     for prog_id, name, ctype, desc, cost, est, target in CTRL:
         if target is None:
             continue
+        r = g.rng_for("store_ops_ctrl", prog_id)
         chosen = list(MUST_HAVE.get(prog_id, []))
         rest = [x for x in gb_ids if x not in chosen]
         chosen += r.sample(rest, DEPLOYED[prog_id] - len(chosen))
@@ -173,6 +181,7 @@ def generate(g):
     for s in stores:
         if s["site_id"] in story_stores:
             continue
+        r = g.rng_for("store_ops_visits", s["site_id"])
         if r.random() < 0.5:
             for _ in range(r.randint(1, 2)):
                 visits.append({"visit_id": f"VIS-{vid:06d}", "site_id": s["site_id"],
@@ -188,6 +197,7 @@ def generate(g):
                 vid += 1
     aid = 1
     for s in stores:
+        r = g.rng_for("store_ops_actions", s["site_id"])
         if s["site_id"] in story_stores or r.random() > 0.6:
             continue
         for _ in range(r.randint(1, 3)):
@@ -207,6 +217,7 @@ def generate(g):
     for s in stores:
         if s["site_id"] in story_stores:
             continue
+        r = g.rng_for("store_ops_tasks", s["site_id"])
         for wk in (-7, 0, 7):
             ws = monday + timedelta(days=wk)
             for _ in range(r.randint(2, 4)):
@@ -222,6 +233,7 @@ def generate(g):
                 tid += 1
     cid = 1
     for s in stores:
+        r = g.rng_for("store_ops_counts", s["site_id"])
         if s["site_id"] in story_stores or r.random() > 0.4:
             continue
         p = r.choice(sample_skus)
@@ -237,6 +249,7 @@ def generate(g):
         cid += 1
     eid = 1
     for s in stores:
+        r = g.rng_for("store_ops_shelf", s["site_id"])
         if s["site_id"] in story_stores or r.random() > 0.35:
             continue
         p = r.choice(sample_skus)
@@ -252,6 +265,7 @@ def generate(g):
         eid += 1
     seen = set()
     for s in stores:
+        r = g.rng_for("store_ops_repl", s["site_id"])
         if s["site_id"] in story_stores or r.random() > 0.9:
             continue
         for _ in range(r.randint(1, 3)):
@@ -267,6 +281,7 @@ def generate(g):
     cc, seen = [], set()
     k1700 = {"ST001": 14, "ST006": 12, "ST150": 11, "ST214": 9, "ST209": 8, "ST008": 8, "ST202": 7, "ST206": 6}
     for sid, fc in k1700.items():
+        r = g.rng_for("store_ops_cc_k1700", sid)
         for d in range(7):  # last 7 days of data: inside the default window whatever weekday it is run
             f = max(1, fc + r.randint(-2, 2))
             a = int(round(f * r.uniform(1.15, 1.45)))
@@ -274,8 +289,10 @@ def generate(g):
                        "reserved_quantity": max(0, int(a * 0.6)), "online_allocation": fc * 3})
             seen.add((sid, "K-1700", g.days_ago(d)))
     others = [p for p in sample_skus if p["sku"] != "K-1700"]
+    gb_stores = [x for x in stores if x["country"] == "GB"]
     for d in range(3):
-        for s in r.sample(stores, 12):
+        r = g.rng_for("store_ops_cc_other", d)
+        for s in r.sample(gb_stores, 12):
             for p in r.sample(others, 8):
                 key = (s["site_id"], p["sku"], g.days_ago(d))
                 if key in seen:
@@ -292,6 +309,7 @@ def generate(g):
     bulky = {"Towels", "Bedding", "Cookware", "Storage"}
     chan = []
     for p in products:
+        r = g.rng_for("store_ops_chan", p["sku"])
         cat = p["category"]
         batt = p["hazmat"] != "none"
         for ch, (pa, pb), (sa, sb), wk in (("Retail", (0.68, 0.80), (45, 62), 10), ("Online", (0.64, 0.76), (40, 58), 12),

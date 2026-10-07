@@ -129,6 +129,7 @@ def generate(g):
         if s["mode"] not in ("sea", "air") or s["po_id"] not in pos:
             continue
         po = pos[s["po_id"]]
+        rs = g.rng_for("tracking", s["shipment_id"])
         status = s["status"]
         planned = date.fromisoformat(s["eta"])
         dep = date.fromisoformat(s["atd"] or s["etd"])
@@ -137,15 +138,15 @@ def generate(g):
         if status == "delivered":
             if actual is None or actual < as_of - timedelta(days=120):
                 continue
-            predicted = actual - timedelta(days=r.choice([0, 0, 0, 1, 1, -1]))
+            predicted = actual - timedelta(days=rs.choice([0, 0, 0, 1, 1, -1]))
             acc = (actual - predicted).days
         else:
             if status == "delayed":
-                late = r.choice([1, 2, 2, 3])
+                late = rs.choice([1, 2, 2, 3])
             elif status == "booked":
-                late = r.choice([0, 0, 0, 1])
+                late = rs.choice([0, 0, 0, 1])
             else:
-                late = r.choice([0, 0, 0, 1, 1, 2])
+                late = rs.choice([0, 0, 0, 1, 1, 2])
             late = LATE_DAYS.get(s["shipment_id"], late)
             predicted = planned + timedelta(days=late)
             if status != "booked" and predicted <= as_of:
@@ -157,7 +158,7 @@ def generate(g):
             "departure_date": dep,
             "planned_arrival": planned, "predicted_eta": predicted, "actual_arrival": actual,
             "eta_accuracy_days": acc, "priority_flag": False, "status": status,
-            "updated_at": now - timedelta(hours=r.randint(1, 60)),
+            "updated_at": now - timedelta(hours=rs.randint(1, 60)),
         })
 
     # ---------------------------------------------------------------- shipment batches
@@ -172,13 +173,14 @@ def generate(g):
         if t["status"] == "delivered" and t["actual_arrival"] < as_of - timedelta(days=45):
             continue
         po = pos[t["po_id"]]
+        rb = g.rng_for("batches", t["shipment_id"])
         for line in lines_by_po.get(t["po_id"], [])[:3]:
             sku = line["sku"]
             if sku == "PF-220":  # PF-220 batches are seeded (recall story)
                 continue
             qty = int(line["qty_ordered"])
             parts = max(1, min(3, qty // 2500))
-            mfg = t["departure_date"] - timedelta(days=r.randint(10, 25))
+            mfg = t["departure_date"] - timedelta(days=rb.randint(10, 25))
             for i in range(parts):
                 n += 1
                 units = qty // parts + (qty % parts if i == 0 else 0)
@@ -191,13 +193,14 @@ def generate(g):
     # ---------------------------------------------------------------- port congestion (weekly, 27 weeks)
     port_congestion = []
     for port, (base_dwell, base_q) in PORTS.items():
+        rp = g.rng_for("port", port)
         for k in range(26, -1, -1):
             d = g.days_ago(7 * k)
             if (port, k) in PORT_STORY:
                 dwell, queue, note = PORT_STORY[(port, k)]
             else:
-                dwell = base_dwell * (1 + r.gauss(0, 0.06))
-                queue = max(1, round(base_q * (dwell / base_dwell) + r.gauss(0, 1.2)))
+                dwell = base_dwell * (1 + rp.gauss(0, 0.06))
+                queue = max(1, round(base_q * (dwell / base_dwell) + rp.gauss(0, 1.2)))
                 note = ""
                 for did, start, end, ports, impact, etype in windows:
                     if port in ports and start - timedelta(days=3) <= d <= end and end < as_of:
@@ -213,7 +216,7 @@ def generate(g):
             level = ["low", "medium", "high", "critical"][max(lvl_d, lvl_q)]
             port_congestion.append({
                 "port_code": port, "measurement_date": d, "avg_dwell_hours": dwell,
-                "max_dwell_hours": round(dwell * r.uniform(1.3, 1.8), 1), "vessel_queue_length": int(queue),
+                "max_dwell_hours": round(dwell * rp.uniform(1.3, 1.8), 1), "vessel_queue_length": int(queue),
                 "congestion_level": level, "notes": note})
 
     # ---------------------------------------------------------------- transit history (weekly sailings, delivered)
@@ -221,19 +224,20 @@ def generate(g):
     per_lane = {}
     n_sail = 21
     for origin, dest, service, planned, m0, m1, sd in LANES:
+        rl = g.rng_for("lane", origin, dest, service)
         for i in range(n_sail):
             back = 35 + 7 * (n_sail - 1 - i)  # i=0 oldest, departure days ago
             dep = g.days_ago(back)
             carrier = OCEAN[i % 3]
             progress = i / (n_sail - 1)
-            delay = r.gauss(m0 + (m1 - m0) * progress, sd) + CAR_EXTRA.get(carrier, 0)
+            delay = rl.gauss(m0 + (m1 - m0) * progress, sd) + CAR_EXTRA.get(carrier, 0)
             delay = max(delay, -2.0)
             arrival = dep + timedelta(days=planned)
             hit = None
             for did, start, end, ports, impact, etype in windows:
                 if end < as_of and ((origin in ports and start <= dep <= end) or (dest in ports and start <= arrival <= end)):
                     hit = did
-                    delay += impact * r.uniform(1.0, 1.6)
+                    delay += impact * rl.uniform(1.0, 1.6)
                     break
             delay = round(delay, 1)
             per_lane.setdefault((origin, dest, service), []).append(delay)
@@ -245,14 +249,15 @@ def generate(g):
 
     # ---------------------------------------------------------------- planning buffers
     planning_buffers = []
-    for (origin, dest, service), delays in per_lane.items():
+    for (origin, dest, service), delays in sorted(per_lane.items()):
+        rq = g.rng_for("buffer", origin, dest, service)
         p90 = max(_quantile(delays, 0.9), 0)
         within = sum(1 for x in delays if abs(x) <= 2) / len(delays)
         planning_buffers.append({
             "origin_port": origin, "dest_port": dest, "service": service,
-            "current_buffer_days": CURRENT_BUFFER.get((origin, dest, service), r.choice([2.0, 3.0, 3.0, 4.0])),
+            "current_buffer_days": CURRENT_BUFFER.get((origin, dest, service), rq.choice([2.0, 3.0, 3.0, 4.0])),
             "recommended_buffer_days": round(p90, 1), "accuracy_score": round(within * 100, 1),
-            "last_updated": now - timedelta(days=r.randint(20, 60))})
+            "last_updated": now - timedelta(days=rq.randint(20, 60))})
 
     return {
         "disruptions": disruptions, "shipment_tracking": shipment_tracking, "port_congestion": port_congestion,

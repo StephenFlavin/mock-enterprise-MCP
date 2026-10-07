@@ -142,6 +142,7 @@ def _entries(g, rates):
         value = round(qty * float(prod["unit_cost_gbp"]), 2)   # master unit cost, already in GBP
         rate = _rate_at(rates, heading, origin, market, entry_date)
         is_story = po["supplier_id"] == STORY_SUPPLIER and entry_date >= g.as_of - timedelta(days=365)
+        r = g.rng_for("entry", ln["po_id"], ln["line_no"])   # per-line stream: master growth never shifts other entries
         claims_pref = rate["preferential_rate_pct"] is not None and (is_story or r.random() < 0.9)
         paid_rate = rate["preferential_rate_pct"] if claims_pref else rate["duty_rate_pct"]
         duty = round(value * paid_rate / 100.0, 2)

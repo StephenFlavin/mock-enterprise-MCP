@@ -60,9 +60,9 @@ def generate(g):
     seed_pos = {"PO-2026-004155", "PO-2026-004352", "PO-2026-004122", "PO-2026-004066", "PO-2026-005728", "PO-2026-005511", "PO-2026-005784", "PO-2026-005024"}
 
     def containers(po):
-        return max(1, min(6, round(int(po["total_units"]) / 3500)))
+        return max(1, min(6, round(int(po["total_units"]) / 7700)))  # PO quantities are ~2.2x the old scale
 
-    def lead_days():
+    def lead_days(r):
         x = r.random()
         return r.randint(6, 13) if x < 0.24 else r.randint(14, 27) if x < 0.62 else r.randint(28, 49)
 
@@ -80,7 +80,9 @@ def generate(g):
             continue
         po = pos[s["po_id"]]
         status = {"delivered": "delivered", "booked": "booked"}.get(s["status"], "in_transit")
-        base.append({"s": s, "po": po, "sail": sail, "status": status, "n": containers(po), "lead": lead_days()})
+        rs = g.rng_for("booking", s["shipment_id"])
+        base.append({"s": s, "po": po, "sail": sail, "status": status, "n": containers(po), "lead": lead_days(rs),
+                     "r": rs, "noise": rs.gauss(0, 0.45)})
 
     # who rolls: exactly 18% of the story window, weighted by carrier, lead time, size and port
     story = [b for b in base if b["status"] != "booked" and off(b["sail"]) >= STORY_FROM]
@@ -94,17 +96,18 @@ def generate(g):
         w *= 1.8 if b["s"]["origin_port"] in ("CNSHA", "CNYTN") else 1.0
         return w
 
-    ranked = sorted(story, key=lambda b: -(math.log(weight(b)) + r.gauss(0, 0.45)))
+    ranked = sorted(story, key=lambda b: -(math.log(weight(b)) + b["noise"]))
     rolled = {id(b) for b in ranked[:k]}
     for b in base:
         b["rolls"] = 0
+        r = b["r"]
         if id(b) in rolled:
             b["rolls"] = 2 if r.random() < 0.15 else 1
         elif b["status"] != "booked" and off(b["sail"]) < -91 and r.random() < 0.07:
             b["rolls"] = 1
 
     def reason(b):
-        s = b["s"]
+        s, r = b["s"], b["r"]
         if b["lead"] < 14:
             return ("Overbooked vessel: late booking bumped by earlier bookings" if r.random() < 0.75
                     else "Equipment shortage: no 40ft containers at origin depot")
@@ -116,7 +119,7 @@ def generate(g):
 
     bookings, charges, events = [], [], []
     for b in base:
-        s, po = b["s"], b["po"]
+        s, po, r = b["s"], b["po"], b["r"]
         n = len(bookings) + 1
         sail = b["sail"]
         orig = sail - timedelta(days=7 * b["rolls"])
@@ -170,6 +173,7 @@ def generate(g):
             continue
         country = sup[po["supplier_id"]]["country"]
         ship = _d(po["ship_date"])
+        r = g.rng_for("planned", po["po_id"])
         if country not in COUNTRY_PORTS or not 8 <= off(ship) <= 38 or r.random() > 0.55:
             continue
         sail = ship + timedelta(days=r.randint(2, 5))
@@ -193,6 +197,7 @@ def generate(g):
         if s["mode"] != "air" or s["origin_port"] not in AIRPORT or not -120 <= off(_d(s["etd"])) <= 10:
             continue
         po = pos[s["po_id"]]
+        r = g.rng_for("air", s["shipment_id"])
         etd, status = _d(s["etd"]), {"delivered": "delivered", "booked": "booked"}.get(s["status"], "departed")
         units = max(200, min(int(po["total_units"]), r.choice([300, 500, 800, 1000, 1500, 2000])))
         dest = "AMS" if s["dest_port"] == "NLRTM" else "LHR"
@@ -207,6 +212,7 @@ def generate(g):
 
     # ---------------------------------------------------------------- older air invoices (before the last quarter)
     invoices = []
+    r = g.rng_for("older_air_invoices")
     suppliers = ["SUP-0003", "SUP-0008", "SUP-0012", "SUP-0015", "SUP-0021"]
     reasons = ["supplier_late", "supplier_late", "quality_issue", "demand_spike", "store_emergency", "cancelled_order"]
     for i in range(16):

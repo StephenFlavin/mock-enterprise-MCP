@@ -13,6 +13,9 @@ Story scopes (everything else is generated background that avoids them):
 from datetime import datetime, timedelta, time
 from itertools import accumulate
 
+# Rows are hourly aggregates: scaled so a B-cluster store sells ~1,200-1,500 units a week (master store_units / ~255 stores)
+QTY_SCALE = 7.0
+QTY_SCALE_ST214 = 5.0
 N_HOME_NEW = 28        # days: Home mix shift applies to the last 28 days
 SA_PROMO = (126, 98)   # days back: Small Appliances promotion (deeper discount, higher volume) for four weeks
 FESTIVAL_DAY = 37      # ST214 festival Saturday
@@ -37,7 +40,8 @@ REASONS = {
 def generate(g):
     r = g.rng
     sites = {s["site_id"]: s for s in g.master("sites")}
-    products = g.master("products")
+    # launched products only: new master rows (launch in the future) get no sales; order is the master order
+    products = [p for p in g.master("products") if p["launch_date"] <= g.as_of.isoformat()]
     mgr = {e["site_id"]: e["employee_id"] for e in g.master("employees") if e["role"] == "Store Manager"}
 
     # ---- stores in the POS extract ----
@@ -55,14 +59,15 @@ def generate(g):
         ncat[p["category"]] = ncat.get(p["category"], 0) + 1
     avail_base, avail_mult = {}, {}
     for p in products:
-        u = r.random()
+        ra = g.rng_for("avail", p["sku"])
+        u = ra.random()
         forced_high = p["category"] == "Tops" or p["sku"] in STORY_SKUS
         if forced_high or u < 0.80:
-            avail_base[p["sku"]], avail_mult[p["sku"]] = r.randint(93, 100), 1.0
+            avail_base[p["sku"]], avail_mult[p["sku"]] = ra.randint(93, 100), 1.0
         elif u < 0.95:
-            avail_base[p["sku"]], avail_mult[p["sku"]] = r.randint(73, 87), 0.6
+            avail_base[p["sku"]], avail_mult[p["sku"]] = ra.randint(73, 87), 0.6
         else:
-            avail_base[p["sku"]], avail_mult[p["sku"]] = r.randint(46, 65), 0.35
+            avail_base[p["sku"]], avail_mult[p["sku"]] = ra.randint(46, 65), 0.35
 
     cum_cache = {}
 
@@ -124,7 +129,7 @@ def generate(g):
             for _ in range(n_rows):
                 p = r.choices(products, cum_weights=cum)[0]
                 base = (r.randint(1, 3) if st == "ST214" else r.randint(1, 7)) if recent else r.randint(4, 12)
-                qty = max(1, round(base * mult))
+                qty = max(1, round(base * mult * (QTY_SCALE_ST214 if st == "ST214" else QTY_SCALE)))
                 hour = r.choices(range(9, 21), weights=hour_w)[0]
                 when = datetime.combine(day, time(hour, r.randint(0, 59)))
                 avail = max(0, min(100, avail_base[p["sku"]] + r.randint(-3, 3)))
@@ -136,10 +141,9 @@ def generate(g):
         p = by_sku[sku]
         for d in range(35, 3, -1):
             day = g.as_of - timedelta(days=d)
-            for hour in (11, 15):
-                mult = 0.8 if d <= ROADWORKS_FROM else 1.0
-                add_sale("ST214", p, datetime.combine(day, time(hour, r.randint(0, 59))),
-                         max(1, round(r.randint(1, 2) * mult * dow_mult[day.weekday()])), r.randint(93, 99))
+            hour = 11 if d % 2 == 0 else 15   # one line a day: a strong store seller is ~8 units a week (master chain ~450/week)
+            add_sale("ST214", p, datetime.combine(day, time(hour, r.randint(0, 59))),
+                     1 if r.random() < 0.8 else 2, r.randint(93, 99))
     # (day offset, hour, qty, availability) per SKU: morning rush then gaps from lunchtime, worsening each day
     plan = {
         "SKU-100007": [(3, 10, 2, 92), (3, 11, 3, 91), (3, 12, 2, 88), (3, 14, 1, 84), (3, 16, 1, 80),
@@ -155,9 +159,11 @@ def generate(g):
     for sku, rows in plan.items():
         for d, hour, qty, av in rows:
             add_sale("ST214", by_sku[sku],
-                     datetime.combine(g.as_of - timedelta(days=d), time(hour, r.randint(0, 59))), qty, av)
+                     datetime.combine(g.as_of - timedelta(days=d), time(hour, r.randint(0, 59))), (qty + 1) // 2, av)
 
-    # ---- allocation and plan for sell-through (units bought/allocated per store and category) ----
+    # ---- allocation and plan for sell-through (own stream: independent of the sales draws) ----
+    r = g.rng_for("pos_allocation")
+    # (allocation and plan for sell-through) (units bought/allocated per store and category) ----
     cutoff = g.as_of - timedelta(days=29)
     units30 = {}
     cat_of = {p["sku"]: p["category"] for p in products}
@@ -216,7 +222,8 @@ def generate(g):
         ly.append({"region": reg, "sale_date": day - timedelta(days=364), "units": int(round(u * fu)),
                    "revenue_gbp": round(rev * fr, 2), "margin_gbp": round(mar * fr * (1.012 if reg == "UK North" else 1.0), 2)})
 
-    # ---- POS exceptions ----
+    # ---- POS exceptions (own stream) ----
+    r = g.rng_for("pos_exceptions")
     exc = []
     eid = [0]
 
@@ -270,7 +277,14 @@ def generate(g):
                 "EMP-00529", "T03", r.uniform(40, 85), r.choice(["wrong item", "wrong item", "fit issue"]),
                 r.choice(products)["sku"])
 
-    # ---- self-checkout rules and weekly scan stats ----
+    # ST150 (07:68:Q5): a handful of small routine voids by the store manager, no till pattern
+    for d, hour, till, amount, reason in [(3, 13, "T03", 12.4, "operator error"), (8, 15, "T02", 23.9, "wrong till"),
+                                          (13, 12, "T03", 9.8, "operator error"), (18, 17, "T05", 31.2, "wrong till"),
+                                          (24, 10, "T01", 18.5, "customer request")]:
+        add_exc("ST150", g.as_of - timedelta(days=d), hour, (d * 7) % 60, "void", "EMP-00472", till, amount, reason)
+
+    # ---- self-checkout rules and weekly scan stats (own stream) ----
+    r = g.rng_for("pos_selfcheckout")
     weeks = g.weeks(12)
     base = {"weight_tolerance": 2.0, "unexpected_item": 1.6, "age_verification": 0.8}
     # rule_type -> store -> function(week index 0..11) -> rate

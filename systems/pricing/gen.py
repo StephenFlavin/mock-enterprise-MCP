@@ -268,7 +268,7 @@ def generate(g):
     for cat, prods in by_cat.items():
         for prod in prods:
             if prod["style_id"] not in style_score:
-                style_score[prod["style_id"]] = round(r.uniform(3.9, 4.4), 1)
+                style_score[prod["style_id"]] = round(g.rng_for("style_quality", prod["style_id"]).uniform(3.9, 4.4), 1)
             score = style_score[prod["style_id"]]
             quality.append({"sku": prod["sku"], "quality_score": score,
                             "quality_tier": "high" if score >= 4.4 else "standard" if score >= 3.6 else "basic",

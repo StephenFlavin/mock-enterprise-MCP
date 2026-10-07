@@ -15,6 +15,7 @@ def generate(g):
     for p in products:
         if p["status"] == "discontinued":
             continue
+        r = g.rng_for("role", p["sku"])
         if p["status"] == "clearance":
             role = r.choices(["clearance", "seasonal", "core"], [80, 15, 5])[0]
         elif p["status"] == "new":
@@ -28,8 +29,11 @@ def generate(g):
                                     "experimental": "Test line; judge on sell-through",
                                     "clearance": "Being sold through; no replenishment"}[role]})
 
+    r = g.rng
     counts = {}
     for p in products:
+        if p["status"] == "new":
+            continue
         counts[p["category"]] = counts.get(p["category"], 0) + 1
     gaps = []
     cats = sorted(c for c in counts if c not in SEEDED_GAP_CATS)
@@ -49,7 +53,7 @@ def generate(g):
         })
 
     story_plan = {"K-1700", "PF-220", "SKU-101904", "SKU-103640", "SKU-101876"}
-    pool = [p for p in products if p["sku"] not in story_plan and p["status"] != "discontinued"]
+    pool = [p for p in products if p["sku"] not in story_plan and p["status"] not in ("discontinued", "new")]
     plan = []
     for i, p in enumerate(r.sample(pool, 20)):
         action = r.choices(["extend", "refresh", "reprice", "delete"], [40, 30, 20, 10])[0]
