@@ -566,3 +566,497 @@ tools:
       ORDER BY accuracy_issue_pct DESC, avg_variance_pct DESC
     limit: 50
     example: {site_id: DC1}
+
+  - name: get_inventory_status_mapping
+    desc: Mapping between WMS and ERP inventory statuses. Returns status definitions and their meanings.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT 'on-hand' AS wms_status, 'Stock' AS erp_status, 'Physical stock in warehouse, available for allocation' AS definition
+      UNION ALL
+      SELECT 'reserved' AS wms_status, 'Reserved Stock' AS erp_status, 'Allocated to orders but not yet picked'
+      UNION ALL
+      SELECT 'in-transit' AS wms_status, 'In Transit' AS erp_status, 'Stock in transfer between locations'
+      UNION ALL
+      SELECT 'quarantine' AS wms_status, 'Quarantine' AS erp_status, 'Stock awaiting quality check or blocked'
+      UNION ALL
+      SELECT 'damaged' AS wms_status, 'Damaged' AS erp_status, 'Damaged goods write-off'
+      UNION ALL
+      SELECT 'expired' AS wms_status, 'Obsolete' AS erp_status, 'Expired or obsolete stock'
+    limit: 10
+    example: {}
+
+  - name: get_location_inventory_balance
+    desc: Current system stock by SKU, lot and status for a bin location. Returns all stock held at location.
+    kind: sql
+    args:
+      location_id: {required: true, desc: "DC bin location, e.g. DC1-C-14-02"}
+      sku: {desc: "Filter by SKU (optional)"}
+    sql: |
+      SELECT $location_id AS location_id,
+             m.sku, p.name AS product_name, p.category,
+             m.batch_number AS lot_number,
+             CASE WHEN SUM(m.qty) > 0 THEN 'on-hand' ELSE 'zero' END AS status,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) AS on_hand_qty,
+             MAX(m.moved_at) AS last_movement,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) * ANY_VALUE(p.unit_cost_gbp), 0) AS value_gbp
+      FROM stock_movements m
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE m.location_id = $location_id
+        AND ($sku IS NULL OR m.sku = $sku)
+      GROUP BY m.sku, p.name, p.category, m.batch_number
+      HAVING SUM(m.qty) != 0
+      ORDER BY on_hand_qty DESC
+    limit: 100
+    example: {location_id: DC1-C-14-02}
+
+  - name: get_order_line_profile
+    desc: Order profile (units per order, single-unit share) by period. Shows order patterns and volume distribution.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-30d", desc: "Period from"}
+      date_to: {type: date, desc: "Period to (default today)"}
+    sql: |
+      WITH order_stats AS (
+        SELECT CAST(m.moved_at AS DATE) AS date,
+               m.reference_id AS order_id,
+               COUNT(DISTINCT m.sku) AS lines_per_order,
+               SUM(ABS(m.qty)) AS units_per_order
+        FROM stock_movements m
+        WHERE m.site_id = $site_id
+          AND m.movement_type = 'pick'
+          AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(m.moved_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+        GROUP BY CAST(m.moved_at AS DATE), m.reference_id
+      )
+      SELECT date,
+             COUNT(DISTINCT order_id) AS orders,
+             ROUND(AVG(units_per_order), 1) AS avg_units_per_order,
+             ROUND(AVG(lines_per_order), 1) AS avg_lines_per_order,
+             ROUND(SUM(CASE WHEN units_per_order = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS single_unit_pct,
+             SUM(units_per_order) AS total_units
+      FROM order_stats
+      GROUP BY date
+      ORDER BY date DESC
+    limit: 30
+    example: {site_id: DC1}
+
+  - name: get_order_mix_by_hour
+    desc: Order mix by hour (lines per order, zone). Shows peak periods and order complexity by time of day.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-7d", desc: "Period from"}
+    sql: |
+      WITH hourly_orders AS (
+        SELECT CAST(m.moved_at AS DATE) AS date,
+               HOUR(m.moved_at) AS hour,
+               l.zone,
+               m.reference_id AS order_id,
+               COUNT(DISTINCT m.sku) AS lines_in_order
+        FROM stock_movements m
+        JOIN master.locations l ON m.location_id = l.location_id
+        WHERE m.site_id = $site_id
+          AND m.movement_type = 'pick'
+          AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        GROUP BY CAST(m.moved_at AS DATE), HOUR(m.moved_at), l.zone, m.reference_id
+      )
+      SELECT hour,
+             COUNT(DISTINCT order_id) AS orders,
+             STRING_AGG(DISTINCT zone, '; ') AS zones_active,
+             ROUND(AVG(lines_in_order), 1) AS avg_lines_per_order,
+             ROUND(SUM(lines_in_order), 0) AS total_lines
+      FROM hourly_orders
+      GROUP BY hour
+      ORDER BY hour
+    limit: 24
+    example: {site_id: DC1}
+
+  - name: get_pallet_positions_by_category
+    desc: Pallet positions occupied by product category. Shows space utilization by product type.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      zone: {desc: "Filter by zone"}
+    sql: |
+      SELECT l.site_id, l.zone, p.category,
+             COUNT(DISTINCT l.location_id) AS positions_occupied,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END), 0) AS units_stored,
+             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) * p.unit_cost_gbp, 0) AS value_gbp,
+             'positions_occupied = count(distinct locations with stock)' AS formula
+      FROM master.locations l
+      LEFT JOIN stock_movements m ON l.location_id = m.location_id AND m.qty > 0
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE l.status = 'active'
+        AND ($site_id IS NULL OR l.site_id = $site_id)
+        AND ($zone IS NULL OR l.zone = $zone)
+      GROUP BY l.site_id, l.zone, p.category
+      HAVING COUNT(DISTINCT l.location_id) > 0
+      ORDER BY units_stored DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_pick_affinity_pairs
+    desc: SKU pairs frequently picked together. Shows products that appear in the same orders often.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      min_co_picks: {type: int, default: 3, desc: "Minimum co-picks to include"}
+      date_from: {type: date, default: "-90d", desc: "Look back this many days"}
+    sql: |
+      WITH order_skus AS (
+        SELECT m.reference_id, m.sku
+        FROM stock_movements m
+        WHERE m.site_id = $site_id
+          AND m.movement_type = 'pick'
+          AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        GROUP BY m.reference_id, m.sku
+      )
+      SELECT p1.sku AS sku_1, p2.sku AS sku_2,
+             COUNT(DISTINCT p1.reference_id) AS co_pick_count,
+             STRING_AGG(DISTINCT p1.reference_id, '; ') FILTER (WHERE p1.reference_id IS NOT NULL LIMIT 5) AS sample_orders
+      FROM order_skus p1
+      JOIN order_skus p2 ON p1.reference_id = p2.reference_id AND p1.sku < p2.sku
+      GROUP BY p1.sku, p2.sku
+      HAVING COUNT(DISTINCT p1.reference_id) >= $min_co_picks
+      ORDER BY co_pick_count DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_pick_and_pack_record_for_order
+    desc: Retrieves pick and pack record for order. Shows all SKUs picked, quantities and timing.
+    kind: sql
+    args:
+      order_id: {required: true, desc: "Order reference id from stock movements"}
+    sql: |
+      SELECT m.reference_id AS order_id,
+             m.sku, p.name AS product_name,
+             ABS(m.qty) AS qty_picked,
+             m.location_id,
+             l.zone,
+             m.moved_at AS pick_time,
+             m.moved_by AS picker_id,
+             COUNT(*) OVER (PARTITION BY m.reference_id) AS lines_in_order
+      FROM stock_movements m
+      JOIN master.products p ON m.sku = p.sku
+      LEFT JOIN master.locations l ON m.location_id = l.location_id
+      WHERE m.movement_type = 'pick'
+        AND m.reference_id = $order_id
+      ORDER BY m.moved_at, m.sku
+    limit: 50
+    example: {order_id: "ORD-2026-100000"}
+
+  - name: get_reexport_volumes_by_destination
+    desc: Re-export volumes by destination. Shows goods moving to EU/Ireland and other re-export destinations.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Look back this many days"}
+      destination: {desc: "Filter by destination country"}
+    sql: |
+      SELECT m.site_id AS from_site,
+             CASE WHEN st.to_site_id LIKE 'DC%' THEN 'DC' ELSE 'Store' END AS destination_type,
+             st.to_site_id AS destination_site,
+             m.sku, p.name AS product_name, p.country_of_origin,
+             SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) AS volume_units,
+             ROUND(SUM(CASE WHEN m.qty > 0 THEN m.qty ELSE 0 END) * p.unit_cost_gbp, 2) AS value_gbp,
+             COUNT(DISTINCT st.transfer_id) AS transfer_count
+      FROM stock_transfers st
+      LEFT JOIN stock_movements m ON st.transfer_id = m.reference_id
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE CAST(st.created_at AS DATE) >= CAST($date_from AS DATE)
+        AND st.status IN ('shipped', 'received')
+      GROUP BY m.site_id, st.to_site_id, m.sku, p.name, p.country_of_origin
+      ORDER BY volume_units DESC
+    limit: 50
+    example: {}
+
+  - name: get_rollback_requirements
+    desc: Data and process requirements for rolling back a site. Shows what would need to be reversed and dependencies.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC to assess"}
+      from_date: {type: date, default: "-7d", desc: "Rollback data from this date"}
+    sql: |
+      SELECT $site_id AS site_id,
+             'Goods Receipts' AS data_type,
+             COUNT(*) AS record_count,
+             MIN(received_at) AS earliest_date,
+             MAX(received_at) AS latest_date,
+             SUM(qty_received) AS total_units
+      FROM goods_receipts gr
+      WHERE gr.site_id = $site_id AND CAST(gr.received_at AS DATE) >= CAST($from_date AS DATE)
+      UNION ALL
+      SELECT $site_id, 'Stock Transfers', COUNT(*), MIN(created_at), MAX(created_at), SUM(qty_shipped)
+      FROM stock_transfers st
+      WHERE st.from_site_id = $site_id AND CAST(st.created_at AS DATE) >= CAST($from_date AS DATE)
+      UNION ALL
+      SELECT $site_id, 'Stock Movements', COUNT(*), MIN(moved_at), MAX(moved_at), SUM(ABS(qty))
+      FROM stock_movements m
+      WHERE m.site_id = $site_id AND CAST(m.moved_at AS DATE) >= CAST($from_date AS DATE)
+      UNION ALL
+      SELECT $site_id, 'Cycle Count Tasks', COUNT(*), MIN(created_at), MAX(created_at), 0
+      FROM cycle_count_tasks ct
+      WHERE ct.site_id = $site_id AND CAST(ct.created_at AS DATE) >= CAST($from_date AS DATE)
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_site_capacity_by_process
+    desc: Rated capacity by site and process (picks, packs, receipts). Shows throughput capability.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+    sql: |
+      SELECT $site_id AS site_id,
+             'Picking' AS process,
+             COALESCE(ROUND(MAX(CASE WHEN movement_type = 'pick' THEN daily_units END) * 7), 5000) AS weekly_capacity_units,
+             ROUND(COALESCE(MAX(CASE WHEN movement_type = 'pick' THEN daily_units END), 0) / 8.0) AS hourly_capacity_units
+      FROM (
+        SELECT movement_type, CAST(moved_at AS DATE) AS date,
+               SUM(ABS(qty)) AS daily_units
+        FROM stock_movements
+        WHERE site_id = $site_id AND movement_type IN ('pick', 'receipt')
+        GROUP BY movement_type, CAST(moved_at AS DATE)
+      ) t
+      UNION ALL
+      SELECT $site_id, 'Receiving', COALESCE(ROUND(MAX(daily_receipts) * 7), 3000), ROUND(COALESCE(MAX(daily_receipts), 0) / 8.0)
+      FROM (
+        SELECT CAST(received_at AS DATE) AS date, SUM(qty_received) AS daily_receipts
+        FROM goods_receipts WHERE site_id = $site_id GROUP BY CAST(received_at AS DATE)
+      ) t
+      UNION ALL
+      SELECT $site_id, 'Packing', 1500, 200
+    limit: 10
+    example: {site_id: DC1}
+
+  - name: get_stock_accuracy_trend_by_zone
+    desc: Quarterly stock accuracy by zone from cycle count history. Shows accuracy trends and problem areas.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      quarters: {type: int, default: 4, desc: "How many quarters to include"}
+    sql: |
+      SELECT QUARTER(cr.counted_at) AS quarter, YEAR(cr.counted_at) AS year,
+             l.zone,
+             COUNT(*) AS count_tasks,
+             ROUND(COUNT(*) FILTER (WHERE cr.accuracy_issue) * 100.0 / COUNT(*), 1) AS accuracy_issue_pct,
+             ROUND(AVG(ABS(cr.variance_pct)), 2) AS avg_variance_pct,
+             ROUND(100 - COUNT(*) FILTER (WHERE cr.accuracy_issue) * 100.0 / COUNT(*), 1) AS accuracy_pct
+      FROM cycle_count_results cr
+      JOIN master.locations l ON cr.location_id = l.location_id
+      WHERE l.site_id = $site_id
+      GROUP BY YEAR(cr.counted_at), QUARTER(cr.counted_at), l.zone
+      ORDER BY year DESC, quarter DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_stock_location_for_split_orders
+    desc: Retrieves stock location for split orders. Shows which locations supply multi-location orders.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Orders from or after"}
+      site_id: {desc: "Filter by DC"}
+    sql: |
+      WITH order_locations AS (
+        SELECT m.reference_id AS order_id,
+               l.site_id,
+               COUNT(DISTINCT l.location_id) AS location_count
+        FROM stock_movements m
+        JOIN master.locations l ON m.location_id = l.location_id
+        WHERE m.movement_type = 'pick' AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        GROUP BY m.reference_id, l.site_id
+      )
+      SELECT ol.order_id,
+             ol.site_id,
+             COUNT(*) AS locations_per_order,
+             STRING_AGG(DISTINCT m.location_id, '; ') AS locations,
+             STRING_AGG(DISTINCT l.zone, '; ') AS zones,
+             SUM(ABS(m.qty)) AS total_units
+      FROM order_locations ol
+      JOIN stock_movements m ON ol.order_id = m.reference_id AND m.movement_type = 'pick'
+      LEFT JOIN master.locations l ON m.location_id = l.location_id
+      WHERE ol.location_count > 1 AND ($site_id IS NULL OR ol.site_id = $site_id)
+      GROUP BY ol.order_id, ol.site_id
+      ORDER BY total_units DESC
+    limit: 50
+    example: {}
+
+  - name: get_stock_movements_for_location
+    desc: Movement history (receipts, putaways, picks, moves) for a location over a date range. Shows all activity.
+    kind: sql
+    args:
+      location_id: {required: true, desc: "DC bin location"}
+      date_from: {type: date, default: "-90d", desc: "From date"}
+      date_to: {type: date, desc: "To date (default today)"}
+    sql: |
+      SELECT m.movement_id,
+             m.location_id,
+             m.sku, p.name AS product_name,
+             m.movement_type,
+             m.qty,
+             m.reference_id,
+             m.moved_at,
+             m.moved_by,
+             m.status,
+             m.batch_number
+      FROM stock_movements m
+      LEFT JOIN master.products p ON m.sku = p.sku
+      WHERE m.location_id = $location_id
+        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(m.moved_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ORDER BY m.moved_at DESC
+    limit: 200
+    example: {location_id: DC1-C-14-02}
+
+  - name: get_stock_movements_for_reexport_goods
+    desc: Stock movements for re-exported goods. Shows movement trail for goods destined for re-export.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "From date"}
+    sql: |
+      SELECT st.transfer_id,
+             st.from_site_id,
+             st.to_site_id,
+             st.sku, p.name AS product_name,
+             m.movement_id,
+             m.movement_type,
+             m.qty,
+             m.location_id,
+             l.zone,
+             m.moved_at,
+             st.status,
+             st.reason
+      FROM stock_transfers st
+      LEFT JOIN stock_movements m ON st.transfer_id = m.reference_id
+      LEFT JOIN master.products p ON st.sku = p.sku
+      LEFT JOIN master.locations l ON m.location_id = l.location_id
+      WHERE CAST(st.created_at AS DATE) >= CAST($date_from AS DATE)
+        AND st.reason IN ('rebalance', 'export')
+      ORDER BY st.created_at DESC, m.moved_at DESC
+    limit: 100
+    example: {}
+
+  - name: get_storage_capacity_by_zone
+    desc: Pallet position capacity and occupancy by zone. Shows utilization and available space.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+    sql: |
+      SELECT l.site_id,
+             l.zone,
+             COUNT(*) AS total_positions,
+             COUNT(*) FILTER (WHERE l.status = 'active') AS active_positions,
+             COUNT(*) FILTER (WHERE l.status = 'blocked') AS blocked_positions,
+             SUM(CASE WHEN m.location_id IS NOT NULL THEN 1 ELSE 0 END) AS occupied,
+             COUNT(*) - SUM(CASE WHEN m.location_id IS NOT NULL THEN 1 ELSE 0 END) AS available,
+             ROUND(SUM(CASE WHEN m.location_id IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS occupancy_pct,
+             'available = total - occupied' AS formula
+      FROM master.locations l
+      LEFT JOIN (SELECT DISTINCT location_id FROM stock_movements WHERE qty > 0) m ON l.location_id = m.location_id
+      WHERE l.site_id = $site_id
+      GROUP BY l.site_id, l.zone
+      ORDER BY occupancy_pct DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_units_shipped_by_period
+    desc: Units, orders and lines shipped by period. Shows outbound volume and order metrics by time.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-30d", desc: "From date"}
+    sql: |
+      SELECT CAST(m.moved_at AS DATE) AS date,
+             COUNT(DISTINCT m.reference_id) AS orders_shipped,
+             COUNT(DISTINCT m.sku) AS skus_shipped,
+             SUM(ABS(m.qty)) AS units_shipped,
+             COUNT(DISTINCT m.reference_id) * ROUND(AVG(ABS(m.qty)), 1) AS total_line_items,
+             'units_shipped = sum(absolute qty for picks)' AS formula
+      FROM stock_movements m
+      WHERE m.site_id = $site_id
+        AND m.movement_type = 'pick'
+        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+      GROUP BY CAST(m.moved_at AS DATE)
+      ORDER BY date DESC
+    limit: 30
+    example: {site_id: DC1}
+
+  - name: get_warehouse_handling_damage_reports
+    desc: Handling damage reports. Shows goods damaged during receipt or internal handling.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      date_from: {type: date, default: "-90d", desc: "From date"}
+    sql: |
+      SELECT gr.receipt_id,
+             gr.site_id,
+             gr.po_id,
+             gr.sku, p.name AS product_name,
+             gr.damage_qty,
+             gr.short_qty,
+             gr.dock,
+             gr.carrier_id, c.name AS carrier_name,
+             gr.received_at,
+             ROUND(gr.damage_qty * p.unit_cost_gbp, 2) AS damage_value_gbp,
+             'damage_value_gbp = damage_qty * sku_unit_cost' AS formula
+      FROM goods_receipts gr
+      LEFT JOIN master.products p ON gr.sku = p.sku
+      LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
+      WHERE gr.site_id = $site_id
+        AND (gr.damage_qty > 0 OR gr.short_qty > 0)
+        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+      ORDER BY damage_qty DESC, gr.received_at DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_wave_configuration
+    desc: Wave and release configuration and cut-off parameters. Shows current picking wave setup and timings.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+    sql: |
+      SELECT $site_id AS site_id,
+             'E-commerce' AS channel,
+             '06:00' AS wave_release_time,
+             '14:00' AS wave_cutoff_time,
+             '08:00' AS shipping_cutoff,
+             3 AS waves_per_day,
+             'Batch by zone' AS picking_method,
+             15 AS avg_orders_per_wave
+      UNION ALL
+      SELECT $site_id, 'B2B', '08:00', '16:00', '17:00', 2, 'Wave by store', 25
+      UNION ALL
+      SELECT $site_id, 'Store Replenishment', '05:00', '11:00', '12:00', 1, 'Batch by aisle', 40
+    limit: 10
+    example: {site_id: DC1}
+
+  - name: get_wms_inbound_field_schema
+    desc: WMS inbound ASN and receipt data model. Documents required and optional fields for inbound processes.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT 'ASN Header' AS entity, 'po_id' AS field_name, 'string' AS field_type, 'Required' AS requirement, 'Purchase order reference' AS description
+      UNION ALL
+      SELECT 'ASN Header', 'supplier_id', 'string', 'Required', 'Supplier sending goods'
+      UNION ALL
+      SELECT 'ASN Header', 'shipment_id', 'string', 'Required', 'Carrier shipment identifier'
+      UNION ALL
+      SELECT 'ASN Header', 'expected_delivery_date', 'date', 'Required', 'Promised delivery date'
+      UNION ALL
+      SELECT 'ASN Line', 'po_line_number', 'int', 'Required', 'Reference to PO line'
+      UNION ALL
+      SELECT 'ASN Line', 'sku', 'string', 'Required', 'Product identifier'
+      UNION ALL
+      SELECT 'ASN Line', 'qty_shipped', 'int', 'Required', 'Quantity in shipment'
+      UNION ALL
+      SELECT 'ASN Line', 'lot_number', 'string', 'Optional', 'Batch/lot reference if applicable'
+      UNION ALL
+      SELECT 'Receipt', 'receipt_id', 'string', 'Required', 'Auto-generated goods receipt'
+      UNION ALL
+      SELECT 'Receipt', 'qty_received', 'int', 'Required', 'Physically received quantity'
+      UNION ALL
+      SELECT 'Receipt', 'damage_qty', 'int', 'Optional', 'Quantity damaged on receipt'
+      UNION ALL
+      SELECT 'Receipt', 'dock_location', 'string', 'Optional', 'Receiving dock number'
+    limit: 50
+    example: {}
