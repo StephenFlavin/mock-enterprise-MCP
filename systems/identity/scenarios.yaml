@@ -1,89 +1,69 @@
 # One entry per question row that uses this system's tools (see: python -m mockmcp brief identity).
-# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
 - question: "09:85:Q1"
   story: >
-    Ten open security alerts were raised in the past week: one critical data access alert (ALT-900002),
-    two high-severity alerts (ALT-900001, ALT-900005), and seven lower-severity alerts. Vulnerability scans found
-    7 findings including two critical ones (OpenSSH RCE on DC1 and DC3 externally exposed). Alert disposition history shows
-    failed_login_spike is 56% false positives, while data_exfiltration is only 15% false positives.
+    Eight open alerts this week. Real risk: ALT-900003 (data exfiltration from the DC1 conveyor, which has an exposed,
+    exploited OpenSSH flaw), ALT-900001 (privilege escalation on the DC1 sorter matching unpatched CVE-2024-9012) and
+    ALT-900002 (supplier bank detail access). Likely false positives: ALT-900004 (EICAR test, critical severity),
+    ALT-900005, ALT-900006 (failed_login_spike, 82% false positive historically), ALT-900007 (scanner port sweep).
+    VUL-900001 and VUL-900006 (CVE-2024-1234, 9.8) are exposed and exploited in the wild.
   checks:
     - tool: list_open_security_alerts
       args: {}
-      expect: ["ALT-900001", "ALT-900002", "critical", "high"]
-
+      expect: ["ALT-900003", "ALT-900001", "ALT-900004", "AST-DC1-CNV"]
     - tool: list_vulnerability_scan_findings
+      args: {is_exploited_in_wild: true}
+      expect: ["VUL-900001", "VUL-900006", "CVE-2024-1234", "9.8"]
+    - tool: get_alert_false_positive_history
       args: {}
-      expect: ["CVE-2024-1234", "9.8", "externally_exposed", "CVE-2024-5678", "8.7"]
-
-    - tool: get_alert_false_positive_history
-      args: {alert_type: "failed_login_spike"}
-      expect: ["false_positive_pct", "60"]
-
-    - tool: get_alert_false_positive_history
-      args: {alert_type: "data_exfiltration"}
-      expect: ["false_positive_pct", "20"]
-
+      expect: ["failed_login_spike", "82", "unusual_port_activity", "data_exfiltration"]
     - tool: update_security_alert_status
-      args: {alert_id: "ALT-900001", status: "false_positive", disposition_reason: "Routine batch process"}
+      args: {alert_id: ALT-900006, status: false_positive, disposition_reason: User forgot password after leave}
       expect: ["open → false_positive"]
 
 - question: "09:85:Q2"
   story: >
-    Supplier user ACME (SUPP-00001, acme-supplier) logged in from Mumbai (192.0.2.89) at 03:12 UTC on 2026-10-04,
-    accessing both edi_portal (SES-900001) and vendor_portal (SES-900002). In vendor_portal session they viewed
-    bank_details and po_lines (marked suspicious). Alert ALT-900002 detected this as suspicious data access at 03:15.
-    A security incident is raised linking this alert.
+    Supplier portal user SUPP-00001 (SUP-0001) normally logs in on weekday mornings from Shanghai (198.51.100.21).
+    On the Sunday before as-of it failed twice then logged in at 03:12 from Mumbai (192.0.2.89), opened the EDI portal
+    (SES-900001) and then the vendor portal (SES-900002), viewing bank_details. Alert ALT-900002 flags it. The account
+    has no MFA. No incident exists yet; the checks open one and lock the account.
   checks:
     - tool: search_auth_logs
-      args: {system_accessed: "edi_portal"}
-      expect: ["SUPP-00001", "192.0.2.89", "03:12", "edi_portal"]
-
-    - tool: search_auth_logs
-      args: {user_id: "SUPP-00001"}
-      expect: ["SUPP-00001", "vendor_portal", "192.0.2.89"]
-
+      args: {user_id: SUPP-00001}
+      expect: ["192.0.2.89", "Mumbai", "Invalid password", "Shanghai", "03:12"]
     - tool: get_user_session_history
-      args: {user_id: "SUPP-00001"}
-      expect: ["SES-900002", "bank_details", "suspicious"]
-
+      args: {user_id: SUPP-00001}
+      expect: ["SES-900002", "bank_details", "Mumbai"]
     - tool: create_security_incident
-      args: {alert_ids: "ALT-900002", incident_type: "data_exfil", severity: "critical", description: "Supplier account accessed from unusual location", systems_affected: "edi_portal;vendor_portal"}
-      expect: ["INC-", "open"]
-
+      args: {alert_ids: ALT-900002, incident_type: data_exfil, severity: critical, description: Supplier account accessed bank details from unusual location, user_involved: SUPP-00001, systems_affected: "edi_portal;vendor_portal"}
+      expect: ["INC-", "open", "SUPP-00001"]
     - tool: block_user_account
-      args: {user_id: "SUPP-00001", lock_reason: "Suspected compromise following suspicious access"}
-      expect: ["locked"]
+      args: {user_id: SUPP-00001, lock_reason: Suspected compromise}
+      expect: ["locked", "SUPP-00001"]
 
 - question: "09:85:Q3"
   story: >
-    Four third-party connections exist: ACME Supplies (CON-900001, high risk, no IP restrict, has privileged_access=false),
-    XYZ Logistics (CON-900002, medium risk, good controls), Global Tech Partners (CON-900003, critical risk, admin access, privileged_access=true),
-    and Customs Clearance (CON-900004, low risk). ACME has 2 MFA and TLS controls enabled but IP allowlist disabled (low effectiveness).
-    Global Tech has admin access to api_gateway with full data access. XYZ and Global Tech have highest risk.
+    Connections match integration's CON-9000xx rows. CON-900001 Logistics 3PL Pro (critical): admin on wms_api, no MFA.
+    CON-900002 Carpenter-Harper (high): admin on sftp_gateway, no IP allow-list. CON-900003 Northline Haulage (high):
+    read_write on tms_portal, API calls not logged to SIEM.
   checks:
+    - tool: get_connection_access_privileges
+      args: {privilege_level: admin}
+      expect: ["CON-900001", "wms_api", "CON-900002", "sftp_gateway"]
     - tool: list_controls_in_place_for_connection
-      args: {connection_id: "CON-900001"}
-      expect: ["mfa", "Duo MFA", "true", "ip_allowlist", "false"]
-
-    - tool: get_connection_access_privileges
-      args: {connection_id: "CON-900003"}
-      expect: ["admin", "CON-900003", "api_gateway", "data_sync"]
-
-    - tool: get_connection_access_privileges
-      args: {connection_id: "CON-900001"}
-      expect: ["edi_portal", "read_write"]
+      args: {is_enabled: false}
+      expect: ["CON-900001", "mfa", "CON-900002", "ip_allowlist", "CON-900003", "logging"]
+    - tool: list_controls_in_place_for_connection
+      args: {connection_id: CON-900001}
+      expect: ["No MFA", "logging", "ip_allowlist"]
 
 - question: "09:85:Q5"
   story: >
-    Warehouse systems have significant unpatched exposure: Conveyor System (AST-DC1-CNV) has 2 critical unpatched CVEs
-    (OpenSSH RCE 9.8 CVSS and SQL Injection 8.7 CVSS), both externally exposed. Sorter System (AST-DC1-SRT) has privilege
-    escalation CVE unpatched (8.1 CVSS). Shuttle at DC2 has critical RCE exposed. Multiple DCs have unpatched critical systems.
-    These represent high business impact if compromised.
+    Warehouse systems with unpatched CVEs: DC1 conveyor network (AST-DC1-CNV, 2 exposed, worst 9.8), WMS (SYS-WMS, 2 exposed,
+    8.7), Message Queue (SYS-MQ, 9.8 exposed), Order API, then non-exposed WMS Database and the DC1 sorter. Names match itsm.
   checks:
     - tool: get_unpatched_exposure_by_system
       args: {}
-      expect: ["AST-DC1-CNV", "2", "externally_exposed", "9.8", "critical"]
-
+      expect: ["AST-DC1-CNV", "SYS-WMS", "SYS-MQ", "9.8"]
     - tool: get_unpatched_exposure_by_system
-      args: {min_cvss: 7.0}
-      expect: ["AST-DC1-CNV", "AST-DC2-SHT", "CVE-2024-1234"]
+      args: {site_id: DC2}
+      expect: ["AST-DC2-SHT", "CVE-2024-1234"]
