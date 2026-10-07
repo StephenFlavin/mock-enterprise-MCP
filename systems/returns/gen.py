@@ -57,7 +57,7 @@ GRADE_BY_ROUTE = {"restocked": (("A", 70), ("B", 30)), "refurbished": (("B", 40)
 DAYS_TO_SALE = {"restocked": (3, 8), "refurbished": (14, 28), "liquidated": (6, 12)}
 
 # damage share of returns by category (rest of the profile is scaled around it)
-DAMAGE_W = {"Small Appliances": 10.0, "Audio": 6.0, "Smart Home": 6.5, "Personal Care": 5.5, "Lighting": 10.0,
+DAMAGE_W = {"Small Appliances": 7.0, "Audio": 6.0, "Smart Home": 6.5, "Personal Care": 5.5, "Lighting": 10.0,
             "Cookware": 9.0, "Drinkware": 12.0, "Storage": 4.5, "Towels": 1.5, "Bedding": 1.5,
             "Haircare": 5.0, "Skincare": 5.0, "Bodycare": 5.5, "Fragrance": 6.0}
 
@@ -398,18 +398,20 @@ def generate(g):
                                 "recovery_rate_pct": round(LIQ_RATE[cat_dept[cat]] * 100 * mult, 1),
                                 "payment_terms_days": terms, "effective_date": as_of - timedelta(days=30)})
 
-    # ---- pack damage: current packs from the returns above, trials hand-set ---------------------------------------
-    grp = defaultdict(lambda: [0, 0])
-    for x in rows:
-        k = (x["pack_type"], x["category"])
-        grp[k][0] += 1
-        grp[k][1] += x["return_reason_code"] == "DAMAGE"
+    # ---- pack damage: audit rates per current pack (hand-set), alternative materials from supplier pilots ----------
+    audit = {"Drinkware": 11.8, "Lighting": 9.4, "Cookware": 8.1, "Smart Home": 6.9, "Small Appliances": 6.7,
+             "Audio": 5.9, "Storage": 5.2, "Personal Care": 5.0, "Fragrance": 5.4, "Skincare": 4.6, "Haircare": 4.1,
+             "Bodycare": 4.3, "Jewellery": 3.8, "Scarves": 2.6, "Towels": 1.2, "Bedding": 1.4}
+    default_rate = {"carton": 3.5, "polybag": 1.6, "hanging": 1.2}
+    grp = Counter((x["pack_type"], x["category"]) for x in rows)
     material = {"carton": "corrugated board", "polybag": "LDPE polybag", "hanging": "garment on hanger with polybag"}
     pack = []
-    for (pt, cat), (tot, dmg) in sorted(grp.items()):
+    for (pt, cat), tot in sorted(grp.items()):
         if tot >= 30:
-            pack.append({"pack_type": pt, "category": cat, "material": material[pt], "basis": "current pack, returns data",
-                         "damage_rate_pct": round(100.0 * dmg / tot, 1), "sample_size": tot, "measured_from_date": win_start})
+            rate = audit.get(cat, default_rate[pt] * r.uniform(0.8, 1.2))
+            pack.append({"pack_type": pt, "category": cat, "material": material[pt],
+                         "basis": "damage audit of shipped orders", "damage_rate_pct": round(rate, 1),
+                         "sample_size": tot * 8, "measured_from_date": win_start})
     pack += [
         {"pack_type": "moulded_pulp", "category": "Small Appliances", "material": "moulded pulp tray and sleeve",
          "basis": "supplier pilot shipments", "damage_rate_pct": 4.6, "sample_size": 640,

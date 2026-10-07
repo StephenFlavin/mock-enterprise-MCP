@@ -173,6 +173,7 @@ def generate(g):
     # Best sellers that lack EU/Ireland compliance data (see compliance_db): make sure they sell, so their sales
     # rank can be looked up. Own random stream per row.
     planned_skus = {p["sku"] for p, _ in plan}
+    gap_rows = []
     for sku, (base_u, md0) in COMPLIANCE_GAP.items():
         p = prod_by_sku.get(sku)
         if not p or sku in planned_skus:
@@ -193,11 +194,29 @@ def generate(g):
                 continue
             seen_keys.add(key)
             gross = units * float(p["retail_price_gbp"])
-            sales_fact.append({
+            gap_rows.append({
                 "date": d, "sku": sku, "style_id": p["style_id"], "category": p["category"], "market": "UK",
                 "site_id": site, "size": p["size"], "units_sold": units, "sales_gbp": round(gross * (1 - md), 2),
                 "cost_gbp": round(units * float(p["unit_cost_gbp"]), 2), "markdown_gbp": round(gross * md, 2),
-                "customer_segment": xr.choices(["Budget", "Standard", "Premium", "VIP"], [24, 46, 22, 8])[0]})
+                "customer_segment": _segment(d, "UK", xr)})
+    # These lines take over demand inside their category (older lines are phased down), so category totals and
+    # year-on-year growth in the UK stay as designed.
+    gap_val, base_val = defaultdict(float), defaultdict(float)
+    for r in gap_rows:
+        gap_val[(r["category"], r["date"])] += r["sales_gbp"]
+    for r in sales_fact:
+        if r["market"] == "UK" and (r["category"], r["date"]) in gap_val:
+            base_val[(r["category"], r["date"])] += r["sales_gbp"]
+    for r in sales_fact:
+        k = (r["category"], r["date"])
+        if r["market"] == "UK" and k in gap_val and base_val[k] > 0:
+            f = max(0.15, 1 - gap_val[k] / base_val[k])
+            u = max(1, round(r["units_sold"] * f))
+            f = u / r["units_sold"]
+            r["units_sold"] = u
+            for c in ("sales_gbp", "cost_gbp", "markdown_gbp"):
+                r[c] = round(r[c] * f, 2)
+    sales_fact.extend(gap_rows)
 
     # OTIF by supplier / category / DC / inbound mode / arrival weekday, weekly. The OTIF definition tightened on the
     # Tuesday of the first September week (no grace day any more), which hits the road (truck) inbound flows hardest.
