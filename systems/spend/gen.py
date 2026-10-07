@@ -10,15 +10,24 @@ def generate(g):
 
     # Generate supplier_spend: monthly spend by supplier and category for last 13 months
     supplier_spend = []
+    spend_keys = set()
     for _ in range(400):
-        supplier_id = r.choice(suppliers)
-        category = r.choice(categories)
-        month_offset = r.randint(0, 12)
-        period_date = g.as_of - timedelta(days=30 * month_offset)
-        period = period_date.strftime("%Y-%m")
+        attempts = 0
+        while attempts < 10:
+            supplier_id = r.choice(suppliers)
+            category = r.choice(categories)
+            month_offset = r.randint(0, 12)
+            period_date = g.as_of - timedelta(days=30 * month_offset)
+            period = period_date.strftime("%Y-%m")
+            key = (supplier_id, category, period)
+            if key not in spend_keys:
+                spend_keys.add(key)
+                break
+            attempts += 1
+        if attempts >= 10:
+            continue
         spend = r.randint(10000, 500000)
         units = r.randint(100, 5000)
-
         supplier_spend.append({
             "supplier_id": supplier_id,
             "category": category,

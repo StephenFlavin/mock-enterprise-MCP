@@ -585,13 +585,17 @@ tools:
       category: {type: str, desc: "Filter to category, default all"}
       min_gap_pct: {type: float, default: 5, desc: "Minimum gap to show"}
     sql: |
-      WITH our_top_sellers AS (
-        SELECT mp.sku, mp.name, mp.category, mp.retail_price_gbp
+      WITH matched_skus AS (
+        SELECT DISTINCT cp.sku, cp.category
+        FROM competitor_products cp
+        WHERE cp.sku IS NOT NULL
+          AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%')
+      ),
+      our_prices AS (
+        SELECT mp.sku, mp.name, mp.retail_price_gbp, ms.category
         FROM master.products mp
+        JOIN matched_skus ms ON ms.sku = mp.sku
         WHERE mp.status = 'active'
-          AND ($category IS NULL OR mp.category ILIKE '%' || $category || '%')
-        ORDER BY sku
-        LIMIT 50
       ),
       comp_prices AS (
         SELECT cp.sku, ROUND(AVG(p.price_gbp), 2) as avg_comp_price,
@@ -605,20 +609,20 @@ tools:
           AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
         GROUP BY cp.sku
       )
-      SELECT ots.sku, ots.name, ots.category, ots.retail_price_gbp,
+      SELECT oup.sku, oup.name, oup.category, oup.retail_price_gbp,
              ROUND(cp.avg_comp_price, 2) as competitor_avg_price,
              cp.min_comp_price, cp.max_comp_price, cp.num_competitors,
-             ROUND(100.0 * (ots.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) as gap_pct,
-             CASE WHEN ROUND(100.0 * (ots.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) > 5 THEN 'Premium'
-                  WHEN ROUND(100.0 * (ots.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) < -5 THEN 'Discount'
+             ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) as gap_pct,
+             CASE WHEN ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) > 5 THEN 'Premium'
+                  WHEN ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) < -5 THEN 'Discount'
                   ELSE 'Competitive' END as position
-      FROM our_top_sellers ots
-      LEFT JOIN comp_prices cp ON cp.sku = ots.sku
+      FROM our_prices oup
+      LEFT JOIN comp_prices cp ON cp.sku = oup.sku
       WHERE cp.avg_comp_price IS NOT NULL
-        AND ABS(ROUND(100.0 * (ots.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1)) >= $min_gap_pct
+        AND ABS(ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1)) >= $min_gap_pct
       ORDER BY ABS(gap_pct) DESC
     limit: 50
-    example: {category: "Kettles"}
+    example: {}
 
   - name: get_sales_impact_of_past_competitor_openings
     desc: Competitor store openings and closures near us over past year. Helps forecast impact on our locations.

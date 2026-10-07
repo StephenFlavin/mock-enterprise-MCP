@@ -1,0 +1,506 @@
+id: network_design
+name: Network Design Tool
+instructions: >
+  Supply chain network design, scenario modeling and capacity planning. Network scenarios track
+  DCcount, location, and cost profiles. Tools compare single vs multi-DC strategies for cost,
+  service and resilience. Scenario ids look like NS-000123.
+
+tables:
+  network_scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Network scenario, e.g. NS-000123"}
+      name: {type: str, desc: "Scenario name, e.g. Two DC Strategy"}
+      description: {type: text, desc: Scenario description}
+      dc_count: {type: int, desc: Number of DCs in this scenario}
+      primary_site_id: {type: str, desc: "Primary DC site, e.g. DC1"}
+      secondary_site_id: {type: str, desc: "Secondary DC site, e.g. DC2"}
+      tertiary_site_id: {type: str, desc: "Tertiary or partner site, if any"}
+      scenario_type: {type: enum, values: [baseline, owned_dc, partner_dc, hybrid], desc: "Scenario type"}
+      annual_handling_cost_gbp: {type: float, desc: Annual handling cost per unit}
+      annual_transport_cost_gbp: {type: float, desc: Annual transport cost per unit}
+      annual_rent_gbp: {type: float, desc: Annual rent all DCs combined}
+      annual_labour_cost_gbp: {type: float, desc: Annual labour cost all DCs}
+      avg_delivery_days_stores: {type: float, desc: Average delivery time to stores}
+      avg_delivery_days_customers: {type: float, desc: Average delivery time to customers}
+      peak_capacity_units: {type: int, desc: Peak handling capacity in units}
+      redundancy_score: {type: float, desc: "Redundancy score 0-100"}
+      status: {type: enum, values: [active, archived], desc: Scenario status}
+      created_at: {type: timestamp, desc: Creation date}
+
+  dc_profiles:
+    key: profile_id
+    cols:
+      profile_id: {type: str, desc: "DC profile, e.g. DCP-000123"}
+      site_id: {type: str, desc: "DC site, e.g. DC1"}
+      scenario_id: {type: str, desc: "Network scenario this DC is in"}
+      annual_fixed_cost_gbp: {type: float, desc: Annual fixed cost}
+      annual_rent_gbp: {type: float, desc: Annual rent"}
+      annual_labour_cost_gbp: {type: float, desc: Annual labour cost}
+      handling_cost_per_unit_gbp: {type: float, desc: "Cost to handle one unit"}
+      transport_cost_per_unit_gbp: {type: float, desc: "Cost to transport one unit"}
+      peak_capacity_units_day: {type: int, desc: Peak daily capacity}
+      avg_daily_volume_units: {type: int, desc: Average daily volume}
+      utilisation_pct: {type: float, desc: "Utilisation at current volumes"}
+      region: {type: str, desc: "Region, e.g. Midlands"}
+      created_at: {type: timestamp, desc: Creation date}
+
+  site_candidates:
+    key: candidate_id
+    cols:
+      candidate_id: {type: str, desc: "Candidate site, e.g. SC-000123"}
+      site_id: {type: str, desc: "Real site if exists, e.g. DC3"}
+      name: {type: str, desc: "Candidate name"}
+      region: {type: str, desc: "Region, e.g. Midlands"}
+      status: {type: enum, values: [shortlist, removed, selected], desc: Shortlist status}
+      estimated_rent_gbp_pa: {type: float, desc: "Annual rent estimate"}
+      land_area_sqft: {type: int, desc: Land area in sqft}
+      labour_availability_score: {type: float, desc: "Labour availability 0-100"}
+      transport_connectivity_score: {type: float, desc: "Transport links score 0-100"}
+      planning_risk_score: {type: float, desc: "Planning risk score 0-100"}
+      notes: {type: text, desc: Key risks and factors}
+      removed_reason: {type: str, desc: Why removed from shortlist}
+      removed_at: {type: timestamp, desc: Removal date}
+
+  volume_history:
+    key: vol_id
+    cols:
+      vol_id: {type: str, desc: "Volume record, e.g. VH-000123"}
+      period: {type: date, desc: "Period (typically week start Monday)"}
+      region: {type: str, desc: "Region, e.g. UK South"}
+      channel: {type: enum, values: [stores, ecommerce, wholesale], desc: Distribution channel}
+      units: {type: int, desc: Units shipped}
+      created_at: {type: timestamp, desc: Record date}
+
+  growth_plans:
+    key: plan_id
+    cols:
+      plan_id: {type: str, desc: "Growth plan, e.g. GP-000123"}
+      year: {type: int, desc: "Forecast year, e.g. 2027"}
+      description: {type: str, desc: Growth scenario description}
+      assumed_total_growth_pct: {type: float, desc: "Total revenue/volume growth %"}
+      assumed_ecommerce_growth_pct: {type: float, desc: "E-commerce growth %"}
+      assumed_market_expansion: {type: str, desc: "New markets or categories"}
+      status: {type: enum, values: [active, archived], desc: Plan status}
+      created_at: {type: timestamp, desc: Creation date}
+
+  ecommerce_forecasts:
+    key: ecom_id
+    cols:
+      ecom_id: {type: str, desc: "Forecast, e.g. EF-000123"}
+      period: {type: date, desc: "Forecast start date"}
+      ecommerce_share_pct: {type: float, desc: "E-commerce as % of sales"}
+      stores_share_pct: {type: float, desc: "Store sales %"}
+      wholesale_share_pct: {type: float, desc: "Wholesale %"}
+      total_volume_units: {type: int, desc: Total network volume units}
+      created_at: {type: timestamp, desc: Creation date}
+
+  labour_cost_data:
+    key: labour_id
+    cols:
+      labour_id: {type: str, desc: "Record, e.g. LC-000123"}
+      region: {type: str, desc: "Region, e.g. Midlands"}
+      annual_cost_per_worker_gbp: {type: float, desc: "Average annual pay+costs"}
+      availability_workers: {type: int, desc: Available workers in region}
+      turnover_pct: {type: float, desc: "Annual turnover %"}
+      training_cost_gbp: {type: float, desc: "Cost to train one worker"}
+      record_date: {type: date, desc: Data as of this date}
+
+  inefficiencies:
+    key: ineff_id
+    cols:
+      ineff_id: {type: str, desc: "Inefficiency, e.g. INE-000123"}
+      ineff_type: {type: enum, values: [cross_ship, split_order, long_haul, underutilised], desc: Type}
+      origin_site: {type: str, desc: "Origin DC or site, e.g. DC1"}
+      dest_site: {type: str, desc: "Destination site, e.g. ST001"}
+      impacted_units_annually: {type: int, desc: Annual units affected}
+      current_cost_gbp: {type: float, desc: "Current cost of inefficiency"}
+      potential_saving_gbp: {type: float, desc: "Potential savings if fixed"}
+      fix_cost_gbp: {type: float, desc: "Cost to fix"}
+      fix_lead_time_days: {type: int, desc: "Days to implement fix"}
+      priority_rank: {type: int, desc: "1 = highest priority"}
+      status: {type: enum, values: [identified, analysing, scheduled, fixed], desc: Status}
+      created_at: {type: timestamp, desc: Created date}
+
+  outage_scenarios:
+    key: outage_id
+    cols:
+      outage_id: {type: str, desc: "Outage scenario, e.g. OS-000123"}
+      primary_site_down: {type: str, desc: "DC going offline, e.g. DC1"}
+      outage_days: {type: int, desc: "Duration in days"}
+      service_impact_pct: {type: float, desc: "Service level impact %"}
+      cost_of_mitigation_gbp: {type: float, desc: "Cost to mitigate"}
+      extra_inventory_units: {type: int, desc: "Buffer inventory needed"}
+      alternative_capacity_site: {type: str, desc: "Alternative DC, e.g. DC2"}
+      alternative_capacity_available: {type: int, desc: "Spare capacity at alternative"}
+      scenario_date: {type: timestamp, desc: Scenario date}
+
+tools:
+  - name: get_network_baseline_costs
+    desc: Retrieve current network total cost, split by handling, transport, rent, labour and overhead for each DC.
+    kind: sql
+    args:
+      site_id: {desc: "Optional DC to filter, e.g. DC1"}
+    sql: |
+      SELECT d.profile_id, d.site_id, s.name, d.region,
+             d.annual_fixed_cost_gbp, d.annual_rent_gbp, d.annual_labour_cost_gbp,
+             d.handling_cost_per_unit_gbp, d.transport_cost_per_unit_gbp,
+             d.peak_capacity_units_day, d.avg_daily_volume_units, d.utilisation_pct
+      FROM dc_profiles d
+      LEFT JOIN master.sites s ON d.site_id = s.site_id
+      WHERE ($site_id IS NULL OR d.site_id = $site_id)
+      ORDER BY d.site_id
+    limit: 10
+    example: {}
+
+  - name: get_store_and_customer_delivery_volumes
+    desc: Retrieve historical store and customer (ecommerce) delivery volumes by region over the last 12 months.
+    kind: sql
+    args:
+      region: {desc: "Optional region filter, e.g. UK North"}
+      channel: {desc: "Optional channel: stores, ecommerce or wholesale"}
+    sql: |
+      SELECT v.period, v.region, v.channel, SUM(v.units) AS total_units
+      FROM volume_history v
+      WHERE ($region IS NULL OR v.region = $region)
+        AND ($channel IS NULL OR v.channel = $channel)
+        AND v.period >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+      GROUP BY v.period, v.region, v.channel
+      ORDER BY v.period DESC
+    limit: 52
+    example: {}
+
+  - name: get_volume_history_by_region_and_channel
+    desc: "Retrieve volume history by region and channel. Split by stores, ecommerce, wholesale."
+    kind: sql
+    args:
+      months: {type: int, desc: "Number of months back, default last 24", default: 24}
+      region: {desc: "Optional region filter"}
+    sql: |
+      SELECT v.period, v.region, v.channel, SUM(v.units) AS units
+      FROM volume_history v
+      WHERE v.period >= CAST($as_of AS DATE) - INTERVAL CAST($months AS INTEGER) MONTH
+        AND ($region IS NULL OR v.region = $region)
+      GROUP BY v.period, v.region, v.channel
+      ORDER BY v.period DESC, v.region, v.channel
+    limit: 100
+    example: {}
+
+  - name: get_long_term_growth_plan
+    desc: "Retrieve long-term growth plan for next 5 years: assumed growth rates, market expansion, e-commerce trajectory."
+    kind: sql
+    args:
+      year: {type: int, desc: "Target year, e.g. 2030"}
+    sql: |
+      SELECT plan_id, year, description, assumed_total_growth_pct, assumed_ecommerce_growth_pct,
+             assumed_market_expansion, status
+      FROM growth_plans
+      WHERE year >= CAST(strftime('%Y', $as_of) AS INT)
+      ORDER BY year
+    limit: 10
+    example: {year: 2030}
+
+  - name: get_ecommerce_share_forecast
+    desc: "Retrieve e-commerce share forecast showing penetration % by period: current, baseline, and at 40% penetration."
+    kind: sql
+    args:
+      end_date: {type: date, desc: "Forecast to this date, default +24 months", default: "+24m"}
+    sql: |
+      SELECT ecom_id, period, ecommerce_share_pct, stores_share_pct, wholesale_share_pct, total_volume_units
+      FROM ecommerce_forecasts
+      WHERE period >= CAST($as_of AS DATE)
+        AND period <= CAST($end_date AS DATE)
+      ORDER BY period
+    limit: 24
+    example: {}
+
+  - name: run_network_volume_forecast
+    desc: "Model volume forecast for the network given growth rate and e-commerce assumptions."
+    kind: sql
+    args:
+      growth_rate_pct: {type: float, desc: "Volume CAGR %, e.g. 5.5", default: 5.0}
+      ecommerce_penetration_pct: {type: float, desc: "E-commerce share %, e.g. 40", default: 25}
+      forecast_years: {type: int, desc: "Years ahead, default 5", default: 5}
+    sql: |
+      SELECT ecom_id, period,
+             ROUND(total_volume_units * POW(1 + $growth_rate_pct / 100.0, YEAR(period) - YEAR(CAST($as_of AS DATE))), 0) AS forecast_units,
+             $ecommerce_penetration_pct AS assumed_ecom_pct
+      FROM ecommerce_forecasts
+      WHERE period >= CAST($as_of AS DATE)
+        AND YEAR(period) - YEAR(CAST($as_of AS DATE)) <= $forecast_years
+      ORDER BY period
+    limit: 60
+    example: {growth_rate_pct: 5.0, ecommerce_penetration_pct: 35}
+
+  - name: get_site_shortlist
+    desc: "Retrieve current site shortlist for network expansion: candidates with rent, labour, transport and planning scores."
+    kind: sql
+    args:
+      region: {desc: "Filter by region, e.g. Midlands"}
+      include_removed: {type: bool, desc: "Include removed sites, default false", default: false}
+    sql: |
+      SELECT candidate_id, name, region, site_id, status, estimated_rent_gbp_pa,
+             land_area_sqft, labour_availability_score, transport_connectivity_score,
+             planning_risk_score, notes
+      FROM site_candidates
+      WHERE ($region IS NULL OR region = $region)
+        AND ($include_removed = false OR status IN ('shortlist', 'removed'))
+        AND ($include_removed = true OR status IN ('shortlist', 'selected'))
+      ORDER BY CASE WHEN status = 'selected' THEN 0 WHEN status = 'shortlist' THEN 1 ELSE 2 END, region
+    limit: 20
+    example: {}
+
+  - name: remove_site_from_shortlist
+    desc: Removes a site from the network shortlist. Returns old and new status.
+    kind: update
+    table: site_candidates
+    set: {status: removed, removed_at: "$as_of"}
+    args:
+      removed_reason: {required: true, desc: "Why removed, e.g. Planning delays expected"}
+    example: {candidate_id: SC-000001, removed_reason: Planning objections likely}
+
+  - name: get_labour_cost_and_supply_by_region
+    desc: Retrieve labour cost per worker and availability (supply) by region for network planning.
+    kind: sql
+    args:
+      region: {desc: "Region filter, e.g. Midlands"}
+    sql: |
+      SELECT labour_id, region, annual_cost_per_worker_gbp, availability_workers,
+             turnover_pct, training_cost_gbp, record_date
+      FROM labour_cost_data
+      WHERE ($region IS NULL OR region = $region)
+        AND record_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      ORDER BY region
+    limit: 20
+    example: {}
+
+  - name: get_dc_cost_and_volume_profile
+    desc: Retrieve each DC's cost breakdown and current volume profile (utilisation, capacity, growth).
+    kind: sql
+    args:
+      scenario_id: {desc: "Optional scenario filter, e.g. NS-000001"}
+    sql: |
+      SELECT d.profile_id, d.site_id, s.name, d.scenario_id, d.region,
+             d.annual_fixed_cost_gbp + d.annual_rent_gbp + d.annual_labour_cost_gbp AS total_annual_cost_gbp,
+             d.handling_cost_per_unit_gbp, d.transport_cost_per_unit_gbp,
+             d.avg_daily_volume_units, d.peak_capacity_units_day, d.utilisation_pct
+      FROM dc_profiles d
+      LEFT JOIN master.sites s ON d.site_id = s.site_id
+      WHERE ($scenario_id IS NULL OR d.scenario_id = $scenario_id)
+      ORDER BY d.site_id
+    limit: 20
+    example: {}
+
+  - name: get_alternative_dc_capacity
+    desc: Retrieve spare capacity at alternative DCs that could absorb volume from a failed node.
+    kind: sql
+    args:
+      excluding_site: {desc: "Site going down, e.g. DC1"}
+      required_units: {type: int, desc: "Units to absorb"}
+    sql: |
+      SELECT d.profile_id, d.site_id, s.name, d.peak_capacity_units_day,
+             d.avg_daily_volume_units,
+             (d.peak_capacity_units_day - d.avg_daily_volume_units) AS spare_capacity_units_day
+      FROM dc_profiles d
+      LEFT JOIN master.sites s ON d.site_id = s.site_id
+      WHERE d.site_id != $excluding_site
+        AND (d.peak_capacity_units_day - d.avg_daily_volume_units) >= $required_units
+      ORDER BY spare_capacity_units_day DESC
+    limit: 10
+    example: {excluding_site: DC1, required_units: 1000}
+
+  - name: run_network_scenario
+    desc: Model a network scenario (single DC, dual owned, partner) comparing cost, service time and capacity.
+    kind: sql
+    args:
+      scenario_id: {required: true, desc: "Scenario to model, e.g. NS-000001"}
+    sql: |
+      SELECT n.scenario_id, n.name, n.dc_count, n.primary_site_id, n.secondary_site_id,
+             n.annual_handling_cost_gbp, n.annual_transport_cost_gbp, n.annual_rent_gbp,
+             n.annual_labour_cost_gbp,
+             (n.annual_handling_cost_gbp + n.annual_transport_cost_gbp + n.annual_rent_gbp + n.annual_labour_cost_gbp) AS total_cost_gbp,
+             n.avg_delivery_days_stores, n.avg_delivery_days_customers,
+             n.peak_capacity_units, n.redundancy_score
+      FROM network_scenarios n
+      WHERE n.scenario_id = $scenario_id
+    limit: 5
+    example: {scenario_id: NS-000001}
+
+  - name: calculate_network_total_cost
+    desc: "Calculate total network cost given volume and cost assumptions: handling + transport + rent + labour."
+    kind: py
+    fn: calc_network_total_cost
+    args:
+      scenario_id: {required: true, desc: "Network scenario, e.g. NS-000001"}
+      annual_volume_units: {type: int, desc: "Annual volume in units"}
+    example: {scenario_id: NS-000001, annual_volume_units: 5000000}
+
+  - name: calculate_break_even_volume
+    desc: "Calculate break-even volume (units/year) between two scenarios: threshold where lower-cost scenario wins."
+    kind: py
+    fn: calc_break_even_volume
+    args:
+      baseline_scenario_id: {required: true, desc: "Current scenario, e.g. NS-000001"}
+      alternative_scenario_id: {required: true, desc: "Alternative scenario, e.g. NS-000002"}
+    example: {baseline_scenario_id: NS-000001, alternative_scenario_id: NS-000002}
+
+  - name: run_network_design_scenario
+    desc: "Simulate a network design scenario: outputs cost, service, resilience and capacity for comparison."
+    kind: sql
+    args:
+      scenario_id: {required: true, desc: "Scenario to simulate"}
+      volume_growth_pct: {type: float, desc: "Volume growth from baseline %", default: 0}
+    sql: |
+      SELECT n.scenario_id, n.name, n.scenario_type, n.dc_count,
+             ROUND((n.annual_handling_cost_gbp + n.annual_transport_cost_gbp + n.annual_rent_gbp +
+                    n.annual_labour_cost_gbp) * (1 + $volume_growth_pct / 100.0), 2) AS total_cost_gbp,
+             n.avg_delivery_days_stores, n.avg_delivery_days_customers,
+             ROUND(n.peak_capacity_units * (1 + $volume_growth_pct / 100.0), 0) AS capacity_required,
+             n.redundancy_score, n.status
+      FROM network_scenarios n
+      WHERE n.scenario_id = $scenario_id
+    limit: 1
+    example: {scenario_id: NS-000001, volume_growth_pct: 5}
+
+  - name: calculate_service_impact
+    desc: Calculate change in service level (delivery days, fill rate) between current and proposed network.
+    kind: py
+    fn: calc_service_impact
+    args:
+      scenario_id: {required: true, desc: "Proposed scenario"}
+      current_avg_days: {type: float, desc: "Current average delivery days"}
+    example: {scenario_id: NS-000002, current_avg_days: 2.5}
+
+  - name: calculate_redundancy_cost
+    desc: Cost of adding redundancy (dual sourcing, buffer inventory, extra capacity) for resilience.
+    kind: py
+    fn: calc_redundancy_cost
+    args:
+      scenario_id: {required: true, desc: "Scenario to add redundancy to"}
+      target_redundancy_score: {type: float, desc: "Target redundancy score 0-100", default: 80}
+    example: {scenario_id: NS-000001, target_redundancy_score: 85}
+
+  - name: calculate_peak_capacity_risk
+    desc: Assess peak capacity risk: whether network can handle peak demand without investment.
+    kind: py
+    fn: calc_peak_capacity_risk
+    args:
+      scenario_id: {required: true, desc: "Network scenario to assess"}
+      peak_volume_uplift_pct: {type: float, desc: "Peak volume uplift from base %", default: 25}
+    example: {scenario_id: NS-000001, peak_volume_uplift_pct: 30}
+
+  - name: run_dc_outage_scenario
+    desc: "Model what happens when one DC goes offline for N days: service impact, backup capacity, extra inventory."
+    kind: sql
+    args:
+      down_site: {required: true, desc: "DC going down, e.g. DC1"}
+      outage_days: {type: int, desc: "Duration of outage, days", default: 14}
+    sql: |
+      SELECT o.outage_id, o.primary_site_down, o.outage_days, o.service_impact_pct,
+             o.cost_of_mitigation_gbp, o.extra_inventory_units,
+             o.alternative_capacity_site, o.alternative_capacity_available
+      FROM outage_scenarios o
+      WHERE o.primary_site_down = $down_site
+        AND o.outage_days >= $outage_days
+      ORDER BY o.outage_days
+    limit: 5
+    example: {down_site: DC1, outage_days: 14}
+
+  - name: calculate_dc_outage_service_impact
+    desc: Calculate service impact if a DC is offline (% orders at risk, delivery time impact).
+    kind: py
+    fn: calc_outage_service_impact
+    args:
+      down_site: {required: true, desc: "DC going offline, e.g. DC1"}
+      outage_days: {type: int, desc: "Outage duration days", default: 14}
+    example: {down_site: DC1, outage_days: 14}
+
+  - name: calculate_buffer_stock_requirement
+    desc: Calculate buffer inventory (units) needed at remaining DCs to cover an outage.
+    kind: py
+    fn: calc_buffer_stock
+    args:
+      down_site: {required: true, desc: "DC losing stock, e.g. DC1"}
+      outage_days: {type: int, desc: "Duration days", default: 14}
+      target_service_pct: {type: float, desc: "Target service level %", default: 95}
+    example: {down_site: DC1, outage_days: 14, target_service_pct: 95}
+
+  - name: calculate_network_cost_comparison
+    desc: Compare fulfilment cost of alternative routes (direct from DC, via cross-dock, regional hub).
+    kind: py
+    fn: calc_route_cost_comparison
+    args:
+      origin_site: {required: true, desc: "Source DC, e.g. DC1"}
+      dest_site: {required: true, desc: "Destination site, e.g. ST001"}
+    example: {origin_site: DC1, dest_site: ST001}
+
+  - name: calculate_inefficiency_fix_cost
+    desc: Estimate cost and payback period for fixing top network inefficiencies (cross-shipping, split orders).
+    kind: sql
+    args:
+      top_n: {type: int, desc: "Top N inefficiencies by savings, default 3", default: 3}
+    sql: |
+      SELECT ineff_id, ineff_type, origin_site, dest_site, impacted_units_annually,
+             current_cost_gbp, potential_saving_gbp, fix_cost_gbp, fix_lead_time_days,
+             priority_rank,
+             CASE WHEN fix_cost_gbp > 0 THEN ROUND(fix_cost_gbp / potential_saving_gbp, 1)
+                  ELSE 0 END AS payback_years
+      FROM inefficiencies
+      WHERE status NOT IN ('fixed')
+      ORDER BY priority_rank
+      LIMIT $top_n
+    example: {top_n: 3}
+
+  - name: run_network_disruption_simulation
+    desc: Simulate loss of a transport lane or node on cost and service: shows downstream impact.
+    kind: py
+    fn: run_disruption_sim
+    args:
+      failing_node: {desc: "Site losing capacity, e.g. DC1 or ST100"}
+      lane_blocked: {type: bool, desc: "If true, block one route; if false, lose node", default: true}
+    example: {failing_node: DC1, lane_blocked: false}
+
+  - name: draft_business_case
+    desc: "Draft business case for network change: executive summary, costs, benefits, risks, assumptions and recommendation."
+    kind: draft
+    args: [scenario_id]
+    sql:
+      scenario: SELECT * FROM network_scenarios WHERE scenario_id = $scenario_id
+      baseline: SELECT * FROM dc_profiles WHERE scenario_id IS NULL OR scenario_id = '' LIMIT 5
+    template: |
+      NETWORK DESIGN BUSINESS CASE
+
+      Scenario: {{ scenario[0].name }}
+      Status: {{ scenario[0].status }}
+      Date: {{ now() }}
+
+      EXECUTIVE SUMMARY
+      ─────────────────
+      This scenario proposes a {{ scenario[0].scenario_type }} network with {{ scenario[0].dc_count }} distribution centre(s).
+
+      Current State:
+      - Primary DC: {{ scenario[0].primary_site_id }}
+      {% if scenario[0].secondary_site_id %}
+      - Secondary DC: {{ scenario[0].secondary_site_id }}
+      {% endif %}
+
+      FINANCIAL IMPACT
+      ────────────────
+      Total Network Cost: £{{ scenario[0].annual_handling_cost_gbp | money }} + £{{ scenario[0].annual_transport_cost_gbp | money }} (transport) + £{{ scenario[0].annual_rent_gbp | money }} (rent) + £{{ scenario[0].annual_labour_cost_gbp | money }} (labour)
+
+      KEY METRICS
+      ───────────
+      Avg Delivery Time (Stores): {{ scenario[0].avg_delivery_days_stores }} days
+      Avg Delivery Time (Customers): {{ scenario[0].avg_delivery_days_customers }} days
+      Peak Capacity: {{ scenario[0].peak_capacity_units | num(0) }} units
+      Redundancy Score: {{ scenario[0].redundancy_score | num(1) }}/100
+
+      RECOMMENDATION
+      ──────────────
+      Proceed with {{ scenario[0].name }} scenario. Key assumptions and risks documented above.
+
+      Assumptions:
+      - Volume stable at baseline levels
+      - No major transport disruption
+      - Labour availability maintained
+    example: {scenario_id: NS-000001}

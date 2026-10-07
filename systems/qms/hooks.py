@@ -19,9 +19,12 @@ def calculate_recommended_tolerance(ctx, factory_id, material, measurement_type)
                MIN(pass_rate_pct) as min_pass_rate,
                MAX(pass_rate_pct) as max_pass_rate,
                COUNT(*) as weeks_tracked
-        FROM factory_quality_scorecards
-        WHERE factory_id = $fid
-        ORDER BY period DESC LIMIT 12
+        FROM (
+            SELECT pass_rate_pct
+            FROM factory_quality_scorecards
+            WHERE factory_id = $fid
+            ORDER BY period DESC LIMIT 12
+        )
     """, fid=factory_id)
 
     if not rows or rows[0]['avg_pass_rate'] is None:
