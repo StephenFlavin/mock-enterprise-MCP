@@ -137,6 +137,13 @@ def generate(g):
         result_choices = ["success", "success", "success", "failed", "mfa_required", "blocked"]
         result = r.choice(result_choices)
 
+        # Only assign session_id if success
+        session_id = None
+        if result == "success" and sessions:
+            # Reference an existing session or create one
+            if r.random() > 0.7:
+                session_id = r.choice(sessions)["session_id"]
+
         auth_logs.append({
             "log_id": f"LOG-{len(auth_logs) + 1:06d}",
             "timestamp": ts,
@@ -148,7 +155,7 @@ def generate(g):
             "result": result,
             "reason": "Invalid password" if result == "failed" else None,
             "system_accessed": r.choice(systems),
-            "session_id": f"SES-{r.randint(100000, 999999)}",
+            "session_id": session_id,
             "updated_at": ts,
         })
 
