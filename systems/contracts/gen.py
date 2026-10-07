@@ -184,6 +184,29 @@ EXTRA_CLAUSES = {
         topic="supply continuity", last_time_buy_months=0, supplier_safety_stock_weeks=0, second_source_licence=False,
         summary="No supply-continuity protection: no last-time-buy right, no safety stock held by the supplier and no licence to move Style 5520 tooling to a second source."))],
 }
+# --- contracts job 3 stories ---------------------------------------------------------------------------------
+# 06:58:Q6 tariff risk: SUP-0064 (China, FCA) leaves duty changes with us; SUP-0063 (Vietnam, FOB) shares large increases.
+EXTRA_CLAUSES["SUP-0064"] = [("tariff_risk_1", "other", "Tariff and Duty Risk", dict(
+    topic="tariff and duty risk", risk_bearer="buyer", supplier_share_pct=0, price_basis="FCA price excludes UK import duty and any tariff",
+    summary="We bear the full cost of any UK import duty or tariff change after the PO is placed: the FCA price excludes duty and the supplier shares none of an increase."))]
+EXTRA_CLAUSES["SUP-0063"] = [("tariff_risk_1", "other", "Tariff and Duty Risk", dict(
+    topic="tariff and duty risk", risk_bearer="shared", buyer_absorbs_first_pct_points=5, supplier_share_pct=50,
+    applies_to="orders not yet shipped when the change takes effect",
+    summary="We absorb the first 5 percentage points of any duty increase; above that the supplier and we share the extra duty 50/50 on orders not yet shipped."))]
+# 08:78:Q3 promotional funding by the suppliers behind the calendar promotions (cookware, outerwear, bedding)
+EXTRA_CLAUSES["SUP-0074"] = [("promo_funding_1", "other", "Promotional Funding", dict(
+    topic="promotional funding", funding_pct=30, applies_to="percentage-discount promotions on cookware", max_funding_gbp_per_promotion=12000,
+    claim_within_days=30, min_notice_weeks=6,
+    summary="Supplier funds 30% of the promotional discount on cookware percentage-discount promotions, up to GBP 12,000 per promotion; claim within 30 days of the promotion ending; 6 weeks' notice needed."))]
+EXTRA_CLAUSES["SUP-0079"] = [("promo_funding_1", "other", "Promotional Funding", dict(
+    topic="promotional funding", funding_pct_bundle=20, funding_pct_percentage_discount=25, applies_to="outerwear bundle and percentage-discount promotions",
+    max_funding_gbp_per_promotion=15000, claim_within_days=45, min_notice_weeks=4,
+    summary="Supplier funds 20% of outerwear bundle promotions and 25% of percentage-discount promotions, up to GBP 15,000 per promotion; claim within 45 days of the promotion ending."))]
+EXTRA_CLAUSES["SUP-0039"] = [("promo_funding_1", "other", "Promotional Funding", dict(
+    topic="promotional funding", funding_pct=25, applies_to="bedding promotions of 14 days or less", max_funding_gbp_per_promotion=6000,
+    claim_within_days=30, min_notice_weeks=4,
+    summary="Supplier funds 25% of bedding promotions that run 14 days or less, up to GBP 6,000 per promotion; claim within 30 days of the promotion ending."))]
+
 # 04:37:Q5 / 04:40:Q4: energy (SUP-0050, SUP-0071) and packaging (SUP-0077 corrugated, SUP-0073 film) service suppliers
 SUP_STORY["SUP-0050"] = {
     "price_review": dict(frequency="quarterly", max_increase_pct=None, basis="index-linked: wholesale gas and power index, reset quarterly",
@@ -533,6 +556,34 @@ def generate(g):
             "lane": site, "rate_unit": "per labour hour", "effective_from": start, "effective_to": end, "base_rate_gbp": 62.5, "currency": "GBP",
             "surcharges_json": json.dumps(dict(call_out_gbp=185, out_of_hours_uplift_pct=50, materials_markup_pct=12)),
             "notice_period_days": 90, "status": "active", "created_at": start,
+        })
+
+    # ------------------------------------------------------------------ temporary-labour agency (09:89:Q1, 09:89:Q4)
+    # The agency is not a master party, so it is held by name like the racking provider. Charge rate = pay rate + 25% mark-up
+    # (matches the GBP 16.875 per agency hour in the lms labour-hours data).
+    agency_start = as_of - timedelta(days=400)
+    agency_end = as_of + timedelta(days=700)
+    contracts.append({
+        "contract_id": "CTR-000601", "contract_type": "agency", "party_type": "service_provider", "party_id": None,
+        "party_name": "Northgate Workforce Solutions Ltd", "title": "Temporary warehouse labour agreement", "category": "Agency labour",
+        "site_id": None, "owner_id": wh_mgr["DC1"], "start_date": agency_start, "end_date": agency_end, "renewal_notice_days": 60,
+        "auto_renewal": False, "status": "active", "annual_value_gbp": 1200000.0,
+        "created_at": agency_start - timedelta(days=20), "updated_at": g.days_ago(14),
+    })
+    add_clauses("CTR-000601", agency_start, {
+        "termination": ("Termination", dict(for_convenience_notice_days=30, summary="Termination for convenience on 30 days' notice.")),
+        "renewal": ("Renewal", dict(auto_renewal=False, notice_days=60, summary="Expires at the end of the term unless renewed in writing.")),
+    })
+    for k, (site, role, pay, req_days) in enumerate([(s_, r_, p_, d_) for s_ in ("DC1", "DC2", "DC3")
+                                                      for r_, p_, d_ in (("Warehouse Operative", 13.50, 4), ("Picker/Packer", 14.00, 3))]):
+        rate_cards.append({
+            "rate_card_id": f"RTC-{6010 + k:06d}", "card_type": "agency", "party_id": None, "contract_id": "CTR-000601",
+            "service_type": role, "lane": site, "rate_unit": "per hour", "effective_from": agency_start, "effective_to": agency_end,
+            "base_rate_gbp": round(pay * 1.25, 3), "currency": "GBP",
+            "surcharges_json": json.dumps(dict(pay_rate_gbp=pay, markup_pct=25, night_shift_uplift_pct=15, overtime_uplift_pct=50,
+                                               min_assignment_weeks=2, request_notice_days=req_days, cancellation_notice_days=7,
+                                               temp_to_perm_fee_gbp=1500)),
+            "notice_period_days": 7, "status": "active", "created_at": agency_start,
         })
 
     return {

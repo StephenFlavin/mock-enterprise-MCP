@@ -283,7 +283,7 @@ def _rag_rank(s):
 # ---------------------------------------------------------------- drafts
 
 
-def draft_management_accounts_commentary(ctx, variances_summary=None, period=None, operating_profit_variance_gbp=None,
+def draft_management_accounts_commentary(ctx, period=None, operating_profit_variance_gbp=None,
                                          volume_variance_gbp=0, price_mix_variance_gbp=0, cost_variance_gbp=0,
                                          one_off_variance_gbp=0, timing_gbp=0, unexplained_gbp=0):
     ov = operating_profit_variance_gbp
@@ -295,8 +295,6 @@ def draft_management_accounts_commentary(ctx, variances_summary=None, period=Non
     unexpl = parts["Unexplained"]
     permanent = ov - timing - unexpl
     L = ["MANAGEMENT ACCOUNTS COMMENTARY", "", f"Period: {period or 'current month'}"]
-    if variances_summary:
-        L.append(f"Focus: {variances_summary}")
     L += ["", f"OPERATING PROFIT VARIANCE TO BUDGET: {_gbp_s(ov)} ({'adverse' if ov < 0 else 'favourable'})", "", "BY DRIVER"]
     for k, v in parts.items():
         L.append(f"- {k}: {_gbp_s(v)} ({100 * v / ov:.0f}% of the variance)" if ov else f"- {k}: {_gbp_s(v)}")
@@ -443,38 +441,40 @@ def draft_board_paper(ctx, topic, options=None, envelope_gbp=None, hurdle_rate_p
     return DRAFT_HEAD + "\n".join(L)
 
 
-def draft_market_entry_brief(ctx, market_country, product_category="home range", language=None, import_duty_pct=None,
-                             vat_pct=None, regulations=None, labelling_requirements=None, style_preferences=None,
-                             price_low_gbp=None, price_high_gbp=None, typical_retail_margin_pct=None,
-                             unit_cost_gbp=None, products_needing_modification=None):
+def _kv(s):
+    out = {}
+    for part in _split(s):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = _f(v, None)
+    return out
+
+
+def draft_market_entry_brief(ctx, market_country, product_category="home range", requirements=None, consumer_preferences=None,
+                             products_needing_modification=None, economics=None):
+    e = _kv(economics)
     L = ["MARKET ENTRY BRIEF", "", f"Market: {market_country}", f"Category: {product_category}", "", "REGULATORY AND COMPLIANCE"]
-    if language:
-        L.append(f"- Language: {language}")
-    if import_duty_pct is not None:
-        L.append(f"- Import duty: {_f(import_duty_pct):.1f}%")
-    if vat_pct is not None:
-        L.append(f"- VAT: {_f(vat_pct):.1f}%")
-    for t, v in (("Regulations", regulations), ("Labelling", labelling_requirements)):
-        for x in _split(v):
-            L.append(f"- {t}: {x}")
-    if style_preferences or price_low_gbp is not None:
-        L += ["", "CONSUMER PREFERENCES"]
-        for x in _split(style_preferences):
-            L.append(f"- Style: {x}")
-        if price_low_gbp is not None and price_high_gbp is not None:
-            L.append(f"- Price points: £{_f(price_low_gbp):.2f} to £{_f(price_high_gbp):.2f}")
+    L += [f"- {x}" for x in _split(requirements)] or ["- None supplied"]
+    if "import_duty_pct" in e:
+        L.append(f"- Import duty: {e['import_duty_pct']:.1f}%")
+    if "vat_pct" in e:
+        L.append(f"- VAT: {e['vat_pct']:.1f}%")
+    if _split(consumer_preferences) or "price_low_gbp" in e:
+        L += ["", "CONSUMER PREFERENCES"] + [f"- {x}" for x in _split(consumer_preferences)]
+        if "price_low_gbp" in e and "price_high_gbp" in e:
+            L.append(f"- Price points: £{e['price_low_gbp']:.2f} to £{e['price_high_gbp']:.2f}")
     mods = _split(products_needing_modification)
     if mods:
         L += ["", "PRODUCTS NEEDING MODIFICATION"] + [f"- {m}" for m in mods]
-    rec = "Provide unit cost, price points, duty and VAT to test the margin."
-    if None not in (unit_cost_gbp, price_low_gbp, price_high_gbp, typical_retail_margin_pct):
-        cost, duty = _f(unit_cost_gbp), _f(import_duty_pct, 0)
-        vat = _f(vat_pct, 0)
-        landed = cost * (1 + duty / 100)
-        mid = (_f(price_low_gbp) + _f(price_high_gbp)) / 2
+    rec = "Supply unit cost, price points, duty, VAT and the typical retail margin to test the margin."
+    need = ("unit_cost_gbp", "price_low_gbp", "price_high_gbp", "typical_retail_margin_pct")
+    if all(k in e for k in need):
+        duty, vat = e.get("import_duty_pct", 0), e.get("vat_pct", 0)
+        landed = e["unit_cost_gbp"] * (1 + duty / 100)
+        mid = (e["price_low_gbp"] + e["price_high_gbp"]) / 2
         net = mid / (1 + vat / 100)
         margin = 100 * (net - landed) / net
-        typ = _f(typical_retail_margin_pct)
+        typ = e["typical_retail_margin_pct"]
         L += ["", "MARGIN TEST",
               f"- Landed unit cost with {duty:.1f}% duty: £{landed:.2f}",
               f"- Mid price point £{mid:.2f}, or £{net:.2f} excluding {vat:.1f}% VAT",
@@ -488,24 +488,19 @@ def draft_market_entry_brief(ctx, market_country, product_category="home range",
 
 def draft_incident_summary(ctx, incident_type, site_id, what_happened="Details being confirmed", impact="Under assessment",
                            root_cause="Under investigation", next_steps="Complete root cause analysis and confirm the fix with the owning team",
-                           audience=None, severity=None, systems_affected=None, status="OPEN, under investigation",
-                           decisions_needed=None):
+                           audience=None, decisions_needed=None):
     site = ctx.q("SELECT * FROM master.sites WHERE site_id = $s", s=site_id)
     L = ["INCIDENT SUMMARY", "", f"Incident type: {str(incident_type).upper()}"]
-    if severity:
-        L.append(f"Severity: {severity}")
     if audience:
         L.append(f"Prepared for: {audience}")
     L += [f"Site: {site[0]['name'] if site else site_id} ({site_id})", f"Date: {ctx.as_of}"]
-    if systems_affected:
-        L.append(f"Systems affected: {systems_affected}")
     L += ["", "WHAT HAPPENED", what_happened, "", "IMPACT", impact, "", "ROOT CAUSE", root_cause, "", "NEXT STEPS"]
     steps = _split(next_steps)
-    L += [f"{i}. {s}" for i, s in enumerate(steps, 1)] if len(steps) > 1 else [next_steps]
+    L += [f"{i}. {x}" for i, x in enumerate(steps, 1)] if len(steps) > 1 else [next_steps]
     d = _split(decisions_needed)
     if d:
         L += ["", "DECISIONS NEEDED"] + [f"- {x}" for x in d]
-    L += ["", f"Status: {status}."]
+    L += ["", "Status: OPEN, " + ("under investigation." if root_cause.lower().startswith("under investigation") else "root cause identified, containment in progress.")]
     return DRAFT_HEAD + "\n".join(L)
 
 
@@ -624,22 +619,24 @@ def draft_sponsor_challenge_brief(ctx, project_name, total_investment_gbp=None, 
     return DRAFT_HEAD + "\n".join(L)
 
 
-def draft_highlight_report(ctx, programme_name, scope_status=None, schedule_status=None, budget_status=None, benefits_status=None,
-                           budget_gbp=None, forecast_gbp=None, go_live_date=None, schedule_slip_weeks=None,
-                           top_risks=None, decisions_needed=None):
-    dims = [("Scope", scope_status), ("Schedule", schedule_status), ("Budget", budget_status), ("Benefits", benefits_status)]
-    given = [(k, v) for k, v in dims if v]
-    overall = max((v.upper() for _, v in given), key=_rag_rank) if given else "NOT ASSESSED"
+def draft_highlight_report(ctx, programme_name, status=None, budget_gbp=None, forecast_gbp=None, go_live_date=None,
+                           schedule_slip_weeks=None, top_risks=None, decisions_needed=None):
+    st = {}
+    for part in _split(status):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            st[k.strip().lower()] = v.strip().upper()
+    overall = max(st.values(), key=_rag_rank) if st else "NOT ASSESSED"
     L = ["HIGHLIGHT REPORT", "", f"Programme: {programme_name}", f"Date: {ctx.as_of}", f"Overall status: {overall}", "", "STATUS BY DIMENSION"]
-    for k, v in given:
+    for k, v in st.items():
         extra = ""
-        if k == "Schedule" and (schedule_slip_weeks is not None or go_live_date):
+        if k == "schedule" and (schedule_slip_weeks is not None or go_live_date):
             extra = " (" + ", ".join(x for x in [f"{_f(schedule_slip_weeks):g} weeks slip" if schedule_slip_weeks is not None else "",
                                                   f"go-live {go_live_date}" if go_live_date else ""] if x) + ")"
-        if k == "Budget" and budget_gbp is not None and forecast_gbp is not None:
+        if k == "budget" and budget_gbp is not None and forecast_gbp is not None:
             b, fc = _f(budget_gbp), _f(forecast_gbp)
             extra = f" (budget {_gbp_s(b)}, forecast {_gbp_s(fc)}, {_gbp_s(fc - b)} / {100 * (fc - b) / b:+.1f}%)"
-        L.append(f"- {k}: {v.upper()}{extra}")
+        L.append(f"- {k.capitalize()}: {v}{extra}")
     r = _rows(top_risks, 3)
     if r:
         L += ["", "TOP RISKS AND ISSUES"] + [f"{i}. {t} [{s}]: {im}" for i, (t, s, im) in enumerate(r, 1)]

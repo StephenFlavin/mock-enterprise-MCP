@@ -299,23 +299,30 @@ tools:
     example: {carrier_id: CAR-011}
 
   - name: get_agency_rate_card
-    desc: Agency rates, mark-ups and notice terms from price lists. Use to quote customers or compare options.
+    desc: Temporary-labour agency charge rates per hour by site and role, with mark-up, night and overtime uplifts, assignment minimums and notice terms. Use to cost agency labour against recruitment.
     kind: sql
     args:
-      agency_id: {required: true, desc: "Agency or partner id"}
+      site_id: {type: str, desc: "Site the labour is for, e.g. DC1 (optional)"}
+      role: {type: str, desc: "Role to match, e.g. Picker/Packer or Warehouse Operative (optional)"}
+      agency_id: {type: str, desc: "Agency party id, if the agency is a master party (optional)"}
       contract_id: {}
     sql: |
-      SELECT pl.price_list_id, pl.party_id, pl.contract_id, pl.effective_from, pl.effective_to,
-             pl.list_currency, pl.terms_json, c.party_id AS agency_name
-      FROM price_lists pl
-      LEFT JOIN contracts c ON pl.contract_id = c.contract_id
-      WHERE pl.party_id = $agency_id
-        AND pl.list_type IN ('agency_rates', 'supplier_costs')
-        AND pl.status = 'active'
-        AND pl.effective_from <= $as_of
-      ORDER BY pl.effective_from DESC
+      SELECT rc.rate_card_id, rc.contract_id, c.party_name AS agency_name, rc.lane AS site_id, rc.service_type AS role,
+             rc.rate_unit, rc.base_rate_gbp AS charge_rate_gbp, rc.surcharges_json AS markup_uplifts_and_notice_terms,
+             rc.notice_period_days AS cancellation_notice_days, rc.effective_from, rc.effective_to
+      FROM rate_cards rc
+      JOIN contracts c ON c.contract_id = rc.contract_id
+      WHERE rc.card_type = 'agency'
+        AND rc.status = 'active'
+        AND ($site_id IS NULL OR rc.lane = $site_id)
+        AND ($role IS NULL OR rc.service_type ILIKE '%' || $role || '%')
+        AND ($agency_id IS NULL OR rc.party_id = $agency_id)
+        AND ($contract_id IS NULL OR rc.contract_id = $contract_id)
+        AND CAST(rc.effective_from AS DATE) <= CAST($as_of AS DATE)
+        AND CAST(rc.effective_to AS DATE) >= CAST($as_of AS DATE)
+      ORDER BY rc.lane, rc.service_type
     limit: 20
-    example: {agency_id: SUP-0001}
+    example: {site_id: DC1}
 
   - name: get_agreed_price_list
     desc: Agreed customer price list and terms from contracts. Use for quoting and checking compliance.
@@ -402,28 +409,35 @@ tools:
     example: {carrier_id: CAR-004, damage_value_gbp: 425}
 
   - name: calculate_short_shipment_penalties
-    desc: Calculates short shipment penalties under contract terms. Use to compute claims value.
+    desc: Calculates the short shipment penalty for one order or line under the contract's tolerance and per-unit penalty. Units short within the tolerance are free; only units beyond it are charged. Use to compute claims value.
     kind: sql
     args:
       contract_id: {required: true}
-      expected_units: {type: int, desc: "Expected units"}
-      received_units: {type: int, desc: "Units actually received"}
+      expected_units: {type: int, required: true, desc: "Units ordered or expected"}
+      received_units: {type: int, required: true, desc: "Units actually delivered or received"}
     sql: |
-      SELECT c.contract_id, c.party_id,
+      WITH t AS (
+        SELECT c.contract_id, c.party_id,
+               COALESCE(TRY_CAST(json_extract_string(cc.content, '$.tolerance_pct') AS DOUBLE), 0) AS tolerance_pct,
+               COALESCE(TRY_CAST(json_extract_string(cc.content, '$.penalty_gbp_per_unit') AS DOUBLE), 0) AS penalty_per_unit_gbp
+        FROM contracts c
+        JOIN contract_clauses cc ON c.contract_id = cc.contract_id
+        WHERE c.contract_id = $contract_id AND cc.clause_type = 'short_shipment'
+        LIMIT 1
+      )
+      SELECT t.contract_id, t.party_id,
              $expected_units AS expected_units,
              $received_units AS received_units,
-             ($expected_units - $received_units) AS short_units,
-             ROUND(CAST(($expected_units - $received_units) AS FLOAT) / $expected_units * 100, 2) AS short_pct,
-             COALESCE(CAST(json_extract_string(cc.content, 'penalty_gbp_per_unit') AS FLOAT), 0) AS penalty_per_unit_gbp,
-             COALESCE(CAST(json_extract_string(cc.content, 'penalty_gbp_per_unit') AS FLOAT), 0) * ($expected_units - $received_units) AS total_penalty_gbp,
-             'penalty = short_units * penalty_rate' AS formula
-      FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
-        AND cc.clause_type = 'short_shipment'
-      LIMIT 1
+             greatest($expected_units - $received_units, 0) AS short_units,
+             ROUND(greatest($expected_units - $received_units, 0) * 100.0 / nullif($expected_units, 0), 2) AS short_pct,
+             t.tolerance_pct,
+             ROUND($expected_units * t.tolerance_pct / 100.0, 2) AS tolerance_units,
+             t.penalty_per_unit_gbp,
+             ROUND(greatest(greatest($expected_units - $received_units, 0) - $expected_units * t.tolerance_pct / 100.0, 0), 2) AS chargeable_short_units,
+             ROUND(greatest(greatest($expected_units - $received_units, 0) - $expected_units * t.tolerance_pct / 100.0, 0) * t.penalty_per_unit_gbp, 2) AS total_penalty_gbp,
+             'penalty = (short_units - expected_units * tolerance_pct / 100) * penalty_per_unit' AS formula
+      FROM t
     example: {contract_id: CTR-000001, expected_units: 1000, received_units: 950}
-
   - name: calculate_fine_exposure_by_account
     desc: Calculates fine exposure by account under penalty clauses. Use to assess risk.
     kind: sql
@@ -724,10 +738,11 @@ tools:
     example: {contract_id: CTR-000042}
 
   - name: get_contract_notice_periods
-    desc: Renewal notice days, notice deadline and termination-for-convenience notice per contract. Give one contract_id or filter by type; shortest renewal notice first.
+    desc: Renewal notice days, notice deadline and termination-for-convenience notice per contract. Give one contract_id, or filter by counterparty id and/or type; shortest renewal notice first.
     kind: sql
     args:
       contract_id: {}
+      party_id: {type: str, desc: "Counterparty id to match, e.g. CAR-001 or SUP-0013 (optional)"}
       contract_type: {type: enum, values: [supplier, carrier, customer, franchise, agency, service], desc: "Contract type (optional)"}
     sql: |
       SELECT c.contract_id, c.party_id, c.contract_type, c.status, c.end_date,
@@ -737,8 +752,10 @@ tools:
              max(CASE WHEN cc.clause_type = 'price_review' THEN TRY_CAST(json_extract_string(cc.content, '$.notice_days') AS INT) END) AS price_review_notice_days
       FROM contracts c
       LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE ($contract_id IS NOT NULL AND c.contract_id = $contract_id)
-         OR ($contract_id IS NULL AND c.status IN ('active', 'draft') AND ($contract_type IS NULL OR c.contract_type = $contract_type))
+      WHERE ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND ($contract_id IS NOT NULL OR c.status IN ('active', 'draft'))
+        AND ($contract_type IS NULL OR c.contract_type = $contract_type)
+        AND ($party_id IS NULL OR c.party_id = $party_id)
       GROUP BY ALL
       ORDER BY c.renewal_notice_days, c.end_date
     limit: 100
@@ -758,17 +775,20 @@ tools:
     example: {contract_id: CTR-000101}
 
   - name: get_contract_payment_terms
-    desc: Contract payment terms and remedies clauses. Use to understand payment obligations.
+    desc: Contract payment terms and remedies clauses (late-payment interest, right to suspend deliveries, termination for non-payment). Give a contract_id, or a counterparty id such as a customer or supplier.
     kind: sql
     args:
-      contract_id: {required: true}
+      contract_id: {}
+      party_id: {type: str, desc: "Counterparty id, e.g. CUS-000016 or SUP-0013 (optional if contract_id given)"}
     sql: |
-      SELECT c.contract_id, c.party_id, cc.clause_type, cc.title, cc.content
+      SELECT c.contract_id, c.party_id, c.contract_type, c.status, cc.clause_type, cc.title, cc.content
       FROM contracts c
       LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      WHERE c.contract_id = $contract_id
+      WHERE ($contract_id IS NOT NULL OR $party_id IS NOT NULL)
+        AND ($contract_id IS NULL OR c.contract_id = $contract_id)
+        AND ($party_id IS NULL OR c.party_id = $party_id)
         AND cc.clause_type IN ('payment_terms', 'penalty', 'termination')
-      ORDER BY cc.clause_type
+      ORDER BY c.contract_id, cc.clause_type
     limit: 20
     example: {contract_id: CTR-000101}
 
@@ -890,19 +910,19 @@ tools:
     example: {contract_id: CTR-900006}
 
   - name: get_penalty_terms_for_customer
-    desc: Retrieves penalty terms for customer. Use to calculate exposure.
+    desc: Retrieves a customer's penalty terms (fill-rate, on-time and short-shipment fines, tolerances, per-unit rates and caps). Use to calculate exposure.
     kind: sql
     args:
       customer_id: {required: true}
     sql: |
       SELECT c.contract_id, c.party_id, c.status,
-             cc.clause_type, cc.title, cc.content
+             cc.clause_id, cc.clause_type, cc.title, cc.content
       FROM contracts c
       LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $customer_id
         AND c.contract_type = 'customer'
         AND cc.clause_type IN ('penalty', 'short_shipment')
-      ORDER BY c.contract_id, cc.clause_type
+      ORDER BY c.contract_id, cc.clause_type, cc.clause_id
     limit: 20
     example: {customer_id: CUS-002512}
 
@@ -968,40 +988,42 @@ tools:
     example: {supplier_id: SUP-0013}
 
   - name: get_supplier_contract_terms_on_tariff_risk
-    desc: Return supplier contract terms on tariff risk. Use to manage tariff exposure.
+    desc: Supplier contract terms on tariff and duty risk (who bears a duty change, sharing, price-review and force-majeure clauses) with the supplier's origin country and incoterm. Use to manage tariff exposure.
     kind: sql
     args:
       supplier_id: {required: true}
     sql: |
-      SELECT c.contract_id, c.party_id, c.status,
+      SELECT c.contract_id, c.party_id, c.status, s.country AS origin_country, s.incoterm,
              cc.clause_type, cc.title, cc.content
       FROM contracts c
+      JOIN master.suppliers s ON s.supplier_id = c.party_id
       LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $supplier_id
         AND c.contract_type = 'supplier'
-        AND cc.clause_type IN ('price_review', 'force_majeure', 'termination')
-      ORDER BY c.contract_id, cc.clause_type
+        AND (cc.clause_type IN ('price_review', 'force_majeure', 'termination')
+             OR (cc.clause_type = 'other' AND cc.content ILIKE '%tariff%'))
+      ORDER BY c.contract_id, CASE WHEN cc.clause_type = 'other' THEN 0 ELSE 1 END, cc.clause_type
     limit: 20
     example: {supplier_id: SUP-0001}
 
   - name: get_supplier_funding_terms_for_promotion
-    desc: Retrieves supplier funding terms for promotion. Use to calculate promotion ROI.
+    desc: A supplier's promotional funding terms (share of promotion cost it funds, caps, claim window, conditions) from its active contract. Use to calculate promotion ROI.
     kind: sql
     args:
       supplier_id: {required: true}
     sql: |
-      SELECT c.contract_id, c.party_id, c.status,
-             cc.clause_type, cc.title, cc.content,
-             pl.terms_json
+      SELECT c.contract_id, c.party_id, c.status, c.end_date,
+             cc.clause_type, cc.title, cc.content
       FROM contracts c
-      LEFT JOIN contract_clauses cc ON c.contract_id = cc.contract_id
-      LEFT JOIN price_lists pl ON c.contract_id = pl.contract_id
+      JOIN contract_clauses cc ON c.contract_id = cc.contract_id
       WHERE c.party_id = $supplier_id
         AND c.contract_type = 'supplier'
         AND c.status IN ('active', 'draft')
-      ORDER BY c.contract_id
+        AND cc.clause_type = 'other'
+        AND cc.content ILIKE '%promotional funding%'
+      ORDER BY c.contract_id, cc.clause_id
     limit: 20
-    example: {supplier_id: SUP-0001}
+    example: {supplier_id: SUP-0074}
 
   - name: list_contracts_by_supplier_spend
     desc: Active contracts ranked by annual spend with price review cap, force majeure suspension, termination notice and renewal notice per contract. Use to prioritise renegotiations.
