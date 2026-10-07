@@ -48,14 +48,14 @@ tables:
       cancel_reason: {type: str, desc: "Reason for cancellation"}
 
   supply_plans:
-    key: [sku, plan_week]
+    key: [sku, week_start]
     cols:
       sku: {type: str, desc: "SKU"}
-      plan_week: {type: str, desc: "Week identifier (YYYY-WXX)"}
+      week_start: {type: date, desc: "Monday of the plan week"}
       forecast_units: {type: int, desc: "Demand forecast for the week"}
       confirmed_supply: {type: int, desc: "Units already confirmed on POs"}
       planned_inbound: {type: int, desc: "Units on approved/draft proposals"}
-      gap: {type: int, desc: "Shortfall (negative = excess)"}
+      gap: {type: int, desc: "Unmet demand in the week after stock, confirmed supply and planned inbound (0 = covered)"}
       stock_on_hand: {type: int, desc: "Projected on-hand stock start of week"}
       stock_projected: {type: int, desc: "Projected on-hand stock end of week"}
       safety_stock: {type: int, desc: "Target safety stock"}
@@ -226,17 +226,23 @@ tools:
     example: {category: Trousers, week_from: "+0d", week_to: "+56d"}
 
   - name: get_supply_plan_for_product
-    desc: Retrieves supply plan for product showing forecast, confirmed supply, and projected stock position by week.
+    desc: Weekly supply plan for a SKU showing forecast, confirmed supply, planned inbound, unmet gap and projected stock, with a running total of unmet units. Use to see when stock runs short.
     kind: sql
     args:
       sku: {required: true}
+      week_from: {type: date, default: "-7d", desc: "First plan week to show"}
+      week_to: {type: date, default: "+182d", desc: "Last plan week to show"}
     sql: |
-      SELECT sku, plan_week, forecast_units, confirmed_supply, planned_inbound, gap, stock_on_hand, stock_projected, safety_stock
-      FROM supply_plans
-      WHERE sku = $sku
-      ORDER BY plan_week
+      SELECT sp.sku, strftime(sp.week_start, '%G-W%V') AS plan_week, sp.week_start, sp.forecast_units, sp.confirmed_supply,
+             sp.planned_inbound, sp.gap, sp.stock_on_hand, sp.stock_projected, sp.safety_stock,
+             sum(sp.gap) OVER (ORDER BY sp.week_start) AS cumulative_gap_units
+      FROM supply_plans sp
+      WHERE sp.sku = $sku
+        AND sp.week_start >= CAST($week_from AS DATE) - INTERVAL 6 DAY
+        AND sp.week_start <= CAST($week_to AS DATE)
+      ORDER BY sp.week_start
     limit: 52
-    example: {sku: "SKU-100007"}
+    example: {sku: "SKU-104599"}
 
   - name: get_order_proposal_calculation_trace
     desc: Step-by-step calculation of an order proposal (demand, lead time, safety stock, stock netted, lot and pack rounding) and the main driver of its quantity. Find by proposal id or SKU.
@@ -450,20 +456,30 @@ tools:
     example: {component_id: ZIP_METAL, quantity_units: 500000, advance_weeks: 8}
 
   - name: calculate_buffer_stock_cost
-    desc: Holding cost of a proposed safety stock buffer. Returns annual holding cost.
+    desc: Annual holding cost of a proposed safety stock buffer for a SKU, from its unit cost and demand. Give buffer units or weeks of cover.
     kind: sql
     args:
       sku: {required: true}
-      buffer_units: {type: int, required: true, desc: "Safety stock units to hold"}
+      buffer_units: {type: int, desc: "Safety stock units to hold (default: buffer_weeks of demand)"}
+      buffer_weeks: {type: float, desc: "Weeks of demand to hold as buffer, used when buffer_units is not given", default: 4}
+      holding_rate_pct: {type: float, desc: "Annual holding cost as % of stock value (capital, storage, shrink)", default: 25}
     sql: |
-      SELECT
-        $sku AS sku,
-        $buffer_units AS buffer_units,
-        ROUND($buffer_units * 8.50, 2) AS annual_holding_cost_gbp,
-        8.50 AS cost_per_unit_per_year,
-        'cost = buffer_units * 8.50 (holding cost at 25% of £34 unit cost / year)' AS formula
+      WITH b AS (
+        SELECT pp.sku, p.name, p.supplier_id, pp.weekly_demand, pp.network_stock_units, p.unit_cost_gbp,
+               coalesce($buffer_units, CAST(round(pp.weekly_demand * $buffer_weeks) AS BIGINT)) AS units
+        FROM planning_parameters pp JOIN master.products p USING (sku)
+        WHERE pp.sku = $sku
+      )
+      SELECT sku, name, supplier_id, weekly_demand, units AS buffer_units,
+             round(units / weekly_demand, 1) AS buffer_weeks_of_cover,
+             round(network_stock_units / weekly_demand, 1) AS current_weeks_of_cover,
+             unit_cost_gbp, round(units * unit_cost_gbp, 2) AS buffer_value_gbp, $holding_rate_pct AS holding_rate_pct,
+             round(units * unit_cost_gbp * $holding_rate_pct / 100.0, 2) AS annual_holding_cost_gbp,
+             round(units * unit_cost_gbp * $holding_rate_pct / 1200.0, 2) AS monthly_holding_cost_gbp,
+             'annual cost = buffer units * unit cost * holding rate %; buffer units = weekly demand * weeks if not given' AS formula
+      FROM b
     limit: 1
-    example: {sku: "SKU-100007", buffer_units: 2000}
+    example: {sku: "SKU-105075", buffer_weeks: 6}
 
   - name: calculate_lead_time_gap_inventory_impact
     desc: Extra stock, holding cost and service level at risk when a supplier's actual lead time exceeds the planning lead time, using the demand of its SKUs.
@@ -727,25 +743,36 @@ tools:
     example: {sku: "SKU-102884", gap_units: 25000, supplier_id: "SUP-0008", secondary_supplier_id: "SUP-0036"}
 
   - name: calculate_stock_shortfall_for_promotion
-    desc: Calculates stock shortfall for promotion. Returns risk and financial impact if stock runs out.
+    desc: Shortfall, stock-out risk (Low/Medium/High), lost revenue and margin when promotion volume exceeds the stock available, plus a pack-rounded top-up order size and lead time.
     kind: sql
     args:
       sku: {required: true}
-      promotion_volume: {type: int, required: true, desc: "Expected units to sell"}
-      current_stock: {type: int, required: true, desc: "Current stock on hand"}
+      promotion_volume: {type: int, required: true, desc: "Units the promotion is expected to sell"}
+      current_stock: {type: int, desc: "Stock available or confirmed for the promotion, in units (default: network stock in planning)"}
     sql: |
-      SELECT
-        $sku AS sku,
-        $promotion_volume AS promotion_volume,
-        $current_stock AS current_stock,
-        CASE WHEN $current_stock >= $promotion_volume THEN 0 ELSE $promotion_volume - $current_stock END AS shortfall_units,
-        CASE WHEN $current_stock >= $promotion_volume THEN 'Low'
-             WHEN $current_stock >= ($promotion_volume * 0.8) THEN 'Medium'
-             ELSE 'High' END AS stockout_risk,
-        ROUND(CASE WHEN $current_stock < $promotion_volume THEN CAST(($promotion_volume - $current_stock) AS FLOAT) * 28.0 ELSE 0 END, 0)::INT AS lost_revenue_gbp,
-        'risk = promotional_volume / current_stock' AS formula
+      WITH b AS (
+        SELECT pp.sku, p.name, pp.network_stock_units, pp.lead_time_days, pp.pack_size, pp.lot_size,
+               p.retail_price_gbp, p.unit_cost_gbp,
+               coalesce($current_stock, pp.network_stock_units) AS stock,
+               $promotion_volume AS vol
+        FROM planning_parameters pp JOIN master.products p USING (sku)
+        WHERE pp.sku = $sku
+      ), s AS (
+        SELECT *, greatest(vol - stock, 0) AS shortfall FROM b
+      )
+      SELECT sku, name, vol AS promotion_volume, stock AS current_stock, shortfall AS shortfall_units,
+             round(stock * 100.0 / vol, 1) AS stock_cover_pct,
+             CASE WHEN stock >= vol THEN 'Low' WHEN stock >= vol * 0.8 THEN 'Medium' ELSE 'High' END AS stockout_risk,
+             retail_price_gbp, unit_cost_gbp,
+             round(shortfall * retail_price_gbp, 0) AS lost_revenue_gbp,
+             round(shortfall * (retail_price_gbp - unit_cost_gbp), 0) AS lost_margin_gbp,
+             CASE WHEN shortfall = 0 THEN 0
+                  ELSE CAST(ceil(greatest(shortfall, lot_size) * 1.0 / pack_size) * pack_size AS BIGINT) END AS suggested_top_up_units,
+             lead_time_days AS replenishment_lead_time_days,
+             'shortfall = volume - stock; risk Low if stock >= volume, Medium if >= 80% of volume, else High; revenue at retail price' AS formula
+      FROM s
     limit: 1
-    example: {sku: "SKU-100007", promotion_volume: 8000, current_stock: 5500}
+    example: {sku: "SKU-100707", promotion_volume: 600, current_stock: 200}
 
   - name: create_supply_request_for_promotion
     desc: Raises a supply request for the stock a promotion needs. Returns new request id and status.

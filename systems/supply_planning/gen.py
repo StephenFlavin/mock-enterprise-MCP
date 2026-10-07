@@ -62,6 +62,10 @@ STOCK_OVERRIDE = {
 # Long-tail make-to-order candidates: stay stocked until the planner switches them.
 LONG_TAIL_CANDIDATES = {"SKU-101253", "SKU-105054", "SKU-101617", "SKU-102387", "SKU-103038"}
 
+# January 3 for 2 on toiletries: the demand system's biggest toiletries line and its promotion uplift.
+PROMO_STORY_SKU = "SKU-104599"
+PROMO_UPLIFT_PCT = 38.7
+
 PACKS = [6, 12, 24, 50, 100, 250, 500, 1000, 2000]
 APPAREL = ["Blouses", "Tops", "Dresses", "Knitwear", "Trousers", "Shirts", "Outerwear", "T-Shirts", "Nightwear",
            "Babywear", "Schoolwear", "Scarves"]
@@ -252,30 +256,35 @@ def generate(g):
         if row:
             order_proposals.append(row)
 
-    # ---------- supply plans (rolling forecast / confirmed / stock) ----------
+    # ---------- supply plans (weekly forecast / confirmed / stock, from this Monday) ----------
+    monday = g.as_of - timedelta(days=g.as_of.weekday())
+    rp = random.Random(20261006)
     supply_plans = []
-    for sku_row in products[:80]:
-        if sku_row["status"] == "discontinued":
-            continue
-        sku = sku_row["sku"]
-        for week_offset in range(-4, 9):
-            plan_date = g.as_of + timedelta(weeks=week_offset)
-            week_str = plan_date.strftime("%Y-W%W")
-            forecast = r.randint(300, 2500)
-            confirmed = int(forecast * r.uniform(0.6, 1.1))
-            planned = max(0, int(forecast * r.uniform(0.0, 0.5)))
-            gap = forecast - confirmed - planned
-            stock_oh = r.randint(100, 5000)
-            stock_proj = max(0, stock_oh + confirmed + planned - forecast)
-            safety = int(forecast * 0.15)
+    plan_skus = [p["sku"] for p in products[:80] if p["sku"] in pp] + [PROMO_STORY_SKU]
+    for sku in dict.fromkeys(plan_skus):
+        prm = pp[sku]
+        w = prm["weekly_demand"]
+        stock = prm["network_stock_units"]
+        for wk in range(0, 21):
+            if sku == PROMO_STORY_SKU:
+                # January 3 for 2 on toiletries: four promotion weeks lifted by the uplift; no open POs in purchasing
+                forecast = int(round(w * (1 + PROMO_UPLIFT_PCT / 100.0))) if 13 <= wk <= 16 else int(round(w))
+                confirmed, planned = 0, 0
+            else:
+                forecast = int(round(w * rp.uniform(0.95, 1.08)))
+                confirmed = int(round(forecast * rp.uniform(0.9, 1.1)))
+                planned = int(round(forecast * rp.uniform(0.0, 0.3))) if rp.random() < 0.3 else 0
+            gap = max(0, forecast - stock - confirmed - planned)
+            proj = max(0, stock + confirmed + planned - forecast)
             supply_plans.append({
-                "sku": sku, "plan_week": week_str, "forecast_units": forecast, "confirmed_supply": confirmed,
-                "planned_inbound": planned, "gap": gap, "stock_on_hand": stock_oh, "stock_projected": stock_proj,
-                "safety_stock": safety, "last_updated": g.as_of - timedelta(days=r.randint(0, 7)),
+                "sku": sku, "week_start": monday + timedelta(weeks=wk), "forecast_units": forecast,
+                "confirmed_supply": confirmed, "planned_inbound": planned, "gap": gap, "stock_on_hand": stock,
+                "stock_projected": proj, "safety_stock": int(round(forecast * prm["safety_stock_pct"] / 100.0)),
+                "last_updated": g.as_of - timedelta(days=rp.randint(0, 3)),
             })
+            stock = proj
 
     # ---------- supply / demand gaps: small ambient gaps; the question stories come from seed ----------
-    monday = g.as_of - timedelta(days=g.as_of.weekday())
     supply_demand_gaps = []
     gap_pool = [p for p in products if p["status"] in ("active", "new") and p["category"] != "Trousers"]
     for p in rd.sample(gap_pool, 60):
