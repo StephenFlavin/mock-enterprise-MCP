@@ -101,7 +101,7 @@ tools:
         COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) AS first_attempt_success,
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS success_rate_pct
       FROM delivery_attempts d
-      WHERE d.attempt_time >= $as_of - INTERVAL ($weeks * 7) DAY
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY ALL
       ORDER BY week_start DESC
     limit: 12
@@ -125,7 +125,7 @@ tools:
         COUNT(*) FILTER (WHERE d.status = 'failed') AS failures,
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'failed') / COUNT(*), 1) AS failure_rate_pct
       FROM delivery_attempts d
-      WHERE d.attempt_time >= $as_of - INTERVAL ($weeks * 7) DAY
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
         AND ($region IS NULL OR d.region = $region)
       GROUP BY ALL
@@ -143,12 +143,12 @@ tools:
       SELECT
         d.failure_reason,
         COUNT(*) AS failure_count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE status = 'failed' AND attempt_time >= $as_of - INTERVAL ($weeks * 7) DAY), 1) AS pct_of_failures,
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE status = 'failed' AND attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY), 1) AS pct_of_failures,
         COUNT(*) FILTER (WHERE d.address_issue) AS address_related,
         COUNT(*) FILTER (WHERE d.customer_availability) AS customer_related
       FROM delivery_attempts d
       WHERE d.status = 'failed'
-        AND d.attempt_time >= $as_of - INTERVAL ($weeks * 7) DAY
+        AND d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY d.failure_reason
       ORDER BY failure_count DESC
       LIMIT CAST($limit_reasons AS INT)
@@ -166,9 +166,9 @@ tools:
         a.postcode_area,
         a.issue_type,
         COUNT(*) AS validation_issues,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM address_validation_issues WHERE validation_timestamp >= $as_of - INTERVAL CAST($weeks AS INT) WEEK), 1) AS pct_of_total
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM address_validation_issues WHERE validation_timestamp >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY), 1) AS pct_of_total
       FROM address_validation_issues a
-      WHERE a.validation_timestamp >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      WHERE a.validation_timestamp >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
         AND ($postcode_area IS NULL OR a.postcode_area = $postcode_area)
       GROUP BY a.postcode_area, a.issue_type
       ORDER BY validation_issues DESC
@@ -191,7 +191,7 @@ tools:
         COUNT(*) FILTER (WHERE d.address_issue) AS address_issues,
         COUNT(*) FILTER (WHERE d.customer_availability) AS customer_unavailable
       FROM delivery_attempts d
-      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY d.postcode_area, d.region
       HAVING COUNT(*) >= CAST($min_attempts AS INT)
       ORDER BY failure_rate_pct DESC, total_attempts DESC
@@ -212,7 +212,7 @@ tools:
         'total_cost = failure_count * avg_cost_per_drop' AS formula
       FROM delivery_attempts d
       WHERE d.status = 'failed'
-        AND d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+        AND d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY d.failure_reason
       ORDER BY total_repeat_cost_gbp DESC
     limit: 20
@@ -236,7 +236,7 @@ tools:
         ROUND(AVG(d.cost_gbp), 2) AS avg_cost_per_drop_gbp
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
         AND ($region IS NULL OR d.region = $region)
       GROUP BY d.courier_id, c.name
@@ -260,7 +260,7 @@ tools:
         ROUND(MAX(d.cost_gbp), 2) AS max_cost_gbp
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
         AND d.status = 'delivered'
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
         AND ($region IS NULL OR d.region = $region)
@@ -283,7 +283,7 @@ tools:
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.damage_reported) / COUNT(*), 2) AS damage_rate_pct
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
       GROUP BY d.courier_id, c.name
       ORDER BY damage_rate_pct DESC, total_attempts DESC
@@ -304,7 +304,7 @@ tools:
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.complaint_raised) / COUNT(*), 2) AS complaint_rate_pct
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
       GROUP BY d.courier_id, c.name
       ORDER BY complaint_rate_pct DESC, total_attempts DESC
@@ -325,7 +325,7 @@ tools:
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS first_attempt_success_pct
       FROM delivery_attempts d
       JOIN master.sites s ON s.site_id = 'HQ1'
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
         AND ($country IS NULL OR s.country = $country)
       GROUP BY s.city, s.country
       ORDER BY orders DESC
@@ -346,7 +346,7 @@ tools:
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) / COUNT(*), 1) AS on_time_pct
       FROM delivery_attempts d
       WHERE d.status = 'delivered'
-        AND d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+        AND d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
         AND ($delivery_service IS NULL OR d.delivery_service = $delivery_service)
       GROUP BY d.delivery_service
       ORDER BY on_time_pct DESC
@@ -361,10 +361,14 @@ tools:
     sql: |
       SELECT
         COUNT(*) AS tracked_attempts,
-        ROUND(AVG(EXTRACT(EPOCH FROM (MAX(ds.scanned_at) - d.attempt_time)) / 3600.0), 1) AS avg_hours_to_final_update
+        ROUND(AVG(EXTRACT(EPOCH FROM (last_scan_time - d.attempt_time)) / 3600.0), 1) AS avg_hours_to_final_update
       FROM delivery_attempts d
-      LEFT JOIN delivery_scans ds ON d.attempt_id = ds.attempt_id
-      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      LEFT JOIN (
+        SELECT attempt_id, MAX(scanned_at) as last_scan_time
+        FROM delivery_scans
+        GROUP BY attempt_id
+      ) ds ON d.attempt_id = ds.attempt_id
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY ALL
     limit: 1
     example: {}
@@ -387,7 +391,7 @@ tools:
         d.attempt_time
       FROM delivery_attempts d
       LEFT JOIN delivery_scans ds ON d.attempt_id = ds.attempt_id
-      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY d.order_id, d.attempt_id, d.courier_id, d.postcode_area, d.status, d.has_tracking_scans, d.attempt_time
       HAVING COUNT(ds.scan_number) < CAST($min_expected_scans AS INT) OR d.has_tracking_scans < CAST($min_expected_scans AS INT)
       ORDER BY d.attempt_time DESC
@@ -407,7 +411,7 @@ tools:
         ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) / COUNT(*), 1) AS on_time_pct,
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS first_attempt_success_pct
       FROM delivery_attempts d
-      WHERE d.attempt_time >= $as_of - INTERVAL CAST($years_back AS INT) YEAR
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($years_back * 365) DAY
         AND EXTRACT(MONTH FROM d.attempt_time) BETWEEN 11 AND 12
       GROUP BY YEAR(d.attempt_time), EXTRACT(WEEK FROM d.attempt_time)
       ORDER BY year DESC, week_num DESC
@@ -428,7 +432,7 @@ tools:
         COUNT(*) FILTER (WHERE d.status = 'failed') AS failures,
         ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'failed') / COUNT(*), 1) AS failure_rate_pct
       FROM delivery_attempts d
-      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
       GROUP BY CAST(d.attempt_time AS DATE), DAYNAME(d.attempt_time)
       HAVING COUNT(*) >= CAST($min_attempts AS INT)
       ORDER BY failure_rate_pct DESC, total_attempts DESC
@@ -451,7 +455,7 @@ tools:
       FROM courier_allocation_rules r
       CROSS JOIN delivery_attempts d
       WHERE r.rule_id = $rule_id
-        AND d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
       GROUP BY r.rule_id, r.rule_name
     limit: 1
     example: {rule_id: "RULE-900001"}
@@ -470,7 +474,7 @@ tools:
         CAST($forecast_volume AS INT) - ROUND(SUM(c.peak_capacity_units_month) / 4.0, 0) AS capacity_gap
       FROM delivery_attempts d
       LEFT JOIN couriers c ON d.courier_id = c.courier_id
-      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      WHERE d.attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 182 DAY
       GROUP BY d.region
       ORDER BY capacity_gap DESC
     limit: 20
@@ -515,15 +519,15 @@ tools:
           ROUND(AVG(cost_gbp), 2) AS baseline_cost_gbp,
           COUNT(*) AS baseline_weekly_volume
         FROM delivery_attempts
-        WHERE attempt_time >= $as_of - INTERVAL 4 WEEK
+        WHERE attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 4 WEEK
       courier_info: |
         SELECT name, rating FROM couriers WHERE courier_id = $courier_id
       trial_region_volume: |
         SELECT
           COUNT(*) AS trial_region_volume,
-          ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE attempt_time >= $as_of - INTERVAL 4 WEEK), 1) AS pct_of_total
+          ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 4 WEEK), 1) AS pct_of_total
         FROM delivery_attempts
-        WHERE attempt_time >= $as_of - INTERVAL 4 WEEK
+        WHERE attempt_time >= CAST($as_of AS TIMESTAMP) - INTERVAL 4 WEEK
     template: |
       COURIER TRIAL PLAN
       ==================

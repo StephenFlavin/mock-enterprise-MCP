@@ -163,7 +163,7 @@ def generate(g):
                         "Enhance front-end POS monitoring",
                         "Reorganize high-shrink category layout",
                     ]),
-                    "owner": r.choice(area_managers)["employee_id"] if area_managers else "EMP-0001",
+                    "owner": r.choice(area_managers)["employee_id"] if area_managers else "EMP-00001",
                     "due_date": due_date,
                     "status": r.choice(["open", "open", "in_progress"]),
                     "priority": r.choice(["low", "medium", "high"]),
@@ -195,7 +195,7 @@ def generate(g):
                     "week_start": week_start,
                     "task_name": f"{task_type} task",
                     "task_type": task_type,
-                    "assigned_to": r.choice(employees)["employee_id"] if employees else "EMP-0001",
+                    "assigned_to": r.choice(employees)["employee_id"] if employees else "EMP-00001",
                     "scheduled_date": task_date,
                     "scheduled_start_time": f"{r.choice([6, 7, 14, 18]):02d}:00",
                     "scheduled_duration_hours": round(r.uniform(1, 4), 1),
@@ -261,10 +261,16 @@ def generate(g):
                 })
                 sae_id += 1
     
-    # Replenishment priorities
-    for _ in range(len(stores) * 3):  # ~3 per store
+    # Replenishment priorities - track keys to avoid duplicates
+    seen_replenishment_keys = set()
+    for _ in range(len(stores) * 2):  # ~2 per store, carefully
         store = r.choice(stores)
         sku = r.choice(skus)
+        key = (store["site_id"], sku["sku"])
+        if key in seen_replenishment_keys:
+            continue
+        seen_replenishment_keys.add(key)
+        
         effective_from_val = g.days_ago(r.randint(1, 30))
         if isinstance(effective_from_val, datetime):
             effective_from_val = effective_from_val.date()
@@ -277,23 +283,29 @@ def generate(g):
             "updated_at": datetime.now(),
         })
     
-    # Click & collect demand
-    for _ in range(len(stores) * 10):
-        store = r.choice(stores)
-        sku = r.choice(skus)
-        for days_offset in range(-14, 0):
-            date_val = g.days_ago(-days_offset)
-            if isinstance(date_val, datetime):
-                date_val = date_val.date()
-            click_collect_demand.append({
-                "site_id": store["site_id"],
-                "sku": sku["sku"],
-                "date": date_val,
-                "forecasted_demand": r.randint(0, 50),
-                "actual_demand": r.randint(0, 60),
-                "reserved_quantity": r.randint(0, 30),
-                "online_allocation": r.randint(0, 100),
-            })
+    # Click & collect demand - limit to recent 3 days and fewer SKUs
+    seen_c2c_keys = set()
+    for day_offset in range(-3, 0):
+        date_val = g.days_ago(-day_offset)
+        if isinstance(date_val, datetime):
+            date_val = date_val.date()
+        # Only for top 10 stores and 10 SKUs
+        for store in r.sample(stores, min(10, len(stores))):
+            for sku in r.sample(skus, min(10, len(skus))):
+                key = (store["site_id"], sku["sku"], date_val)
+                if key in seen_c2c_keys:
+                    continue
+                seen_c2c_keys.add(key)
+                
+                click_collect_demand.append({
+                    "site_id": store["site_id"],
+                    "sku": sku["sku"],
+                    "date": date_val,
+                    "forecasted_demand": r.randint(0, 50),
+                    "actual_demand": r.randint(0, 60),
+                    "reserved_quantity": r.randint(0, 30),
+                    "online_allocation": r.randint(0, 100),
+                })
     
     # Take-back pilot results
     pilot_stores = r.sample([s["site_id"] for s in stores], min(3, len(stores)))
