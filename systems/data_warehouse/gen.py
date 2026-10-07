@@ -59,7 +59,7 @@ def generate(g):
     FASHION = ["Trousers", "Tops", "T-Shirts", "Shirts", "Knitwear", "Outerwear"]
     HOME = ["Lighting", "Storage", "Towels", "Bedding", "Cookware", "Drinkware", "Kitchenware"]
     # year-on-year demand growth by category (UK); other markets move with it
-    YOY = {"Lighting": 0.38, "Storage": 0.24, "Cookware": 0.15, "Bedding": 0.08, "Drinkware": 0.05,
+    YOY = {"Lighting": 0.38, "Storage": 0.24, "Cookware": 0.07, "Bedding": 0.13, "Drinkware": 0.05,
            "Towels": -0.02, "Kitchenware": 0.0, "Outerwear": 0.42, "Knitwear": 0.06, "Tops": 0.03,
            "T-Shirts": 0.04, "Shirts": 0.0, "Trousers": 0.05, "Small Appliances": 0.0}
     MKT_ADJ = {"UK": 0.0, "DE": -0.08, "US": -0.16}

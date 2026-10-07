@@ -156,56 +156,73 @@ tables:
 tools:
   # List and search tools for test results
   - name: get_fabric_test_results
-    desc: Fabric test results (shrinkage, abrasion, DWR) by SKU, ordered by test date. For comparing fabric quality.
-    kind: select
-    from: test_results
-    filters:
-      sku: {desc: "Product SKU"}
-      test_method_id: {desc: "Specific test method"}
-      pass_fail: {}
-      test_date: {col: test_date, op: ">=", type: date, default: "-90d", desc: "Tests on or after"}
-    columns: [test_result_id, sku, test_method_name, test_value, spec_min, spec_max, pass_fail, failure_mode, test_date, tested_by]
-    order: test_date DESC
-    limit: 50
-    example: {sku: "SKU-100070"}
-
-  - name: get_material_test_results
-    desc: Material test results for raw materials or trial materials by name. For evaluating material quality and fit.
-    kind: select
-    from: test_results
-    filters:
-      material_name: {desc: "Material name"}
-      failure_mode: {desc: "Filter by failure type, e.g. brittleness"}
-      pass_fail: {}
-    columns: [test_result_id, material_name, test_method_name, test_value, spec_min, spec_max, pass_fail, failure_mode, test_date, notes]
-    order: test_date DESC
-    limit: 50
-    example: {material_name: "recycled nylon"}
-
-  - name: get_lot_test_results
-    desc: Test results for a specific manufacturing lot with pass/fail status. For lot acceptance decisions.
+    desc: Fabric lab results (abrasion, shrinkage, pilling, tear, tensile, colourfastness) by fabric id or SKU, with spec and pass/fail. For comparing fabrics.
     kind: sql
     args:
-      lot_id: {required: true, desc: "Lot/batch id"}
+      fabric_id: {}
+      sku: {}
+      test_method_id: {}
+      pass_fail: {}
+      test_date: {type: date, desc: "Tests on or after", default: "-90d"}
     sql: |
-      SELECT test_result_id, test_method_name, test_value, spec_min, spec_max, pass_fail,
-             failure_mode, test_date, tested_by, notes
-      FROM test_results
-      WHERE lot_id = $lot_id
-      ORDER BY test_date DESC
-    limit: 30
-    example: {lot_id: "LOT-000123"}
+      SELECT t.test_result_id, t.fabric_id, t.sku, t.material_name, t.test_method_id, t.test_method_name,
+             t.test_value, t.spec_value, t.pass_fail, t.failure_mode, t.test_date, t.tested_by
+      FROM test_results t JOIN test_methods tm ON t.test_method_id = tm.test_method_id
+      WHERE tm.category IN ('fabric', 'finish')
+        AND ($fabric_id IS NULL OR t.fabric_id = $fabric_id)
+        AND ($sku IS NULL OR t.sku = $sku)
+        AND ($test_method_id IS NULL OR t.test_method_id = $test_method_id)
+        AND ($pass_fail IS NULL OR t.pass_fail = $pass_fail)
+        AND t.test_date >= CAST($test_date AS DATE)
+      ORDER BY t.fabric_id, t.test_method_id, t.test_date DESC
+    limit: 50
+    example: {fabric_id: "FAB-900010"}
 
-  - name: get_sample_test_results
-    desc: Test results for a sample round showing pass/fail and any issues found. For sample evaluation.
+  - name: get_material_test_results
+    desc: Lab test results for raw or trial materials, matched by words in the material name (e.g. recycled polyester). For comparing material quality.
     kind: select
     from: test_results
     filters:
-      sample_id: {required: true, desc: "Sample id"}
-    columns: [test_result_id, test_method_name, test_value, spec_min, spec_max, pass_fail, failure_mode, test_date, notes]
-    order: test_date DESC
+      material_name: {op: like, desc: "Words in the material name, e.g. recycled polyester"}
+      failure_mode: {op: like, desc: "Failure type, e.g. abrasion damage"}
+      pass_fail: {}
+      test_date: {col: test_date, op: ">=", type: date, default: "-180d", desc: "Tests on or after"}
+    columns: [test_result_id, material_name, test_method_name, test_value, spec_min, spec_max, pass_fail, failure_mode, test_date, notes]
+    order: material_name, test_method_name, test_date DESC
+    limit: 50
+    example: {material_name: "recycled polyester"}
+
+  - name: get_lot_test_results
+    desc: Test results for one lot or batch id with spec, pass/fail and lab notes, newest first. For lot acceptance decisions.
+    kind: sql
+    args:
+      lot_id: {required: true}
+    sql: |
+      SELECT test_result_id, sku, test_method_id, test_method_name, test_value, spec_min, spec_max, spec_value, pass_fail,
+             failure_mode, test_date, report_id, tested_by, notes
+      FROM test_results
+      WHERE lot_id = $lot_id
+      ORDER BY test_date DESC, test_method_id
     limit: 30
-    example: {sample_id: "SMU-000001"}
+    example: {lot_id: "LOT-900016"}
+
+  - name: get_sample_test_results
+    desc: Lab results for a sample, or for a style's sample round (e.g. round 1), with spec and pass/fail. Use to see which tests a sample missed.
+    kind: sql
+    args:
+      sample_id: {}
+      style_id: {}
+      round_number: {type: int, desc: "Sample round, 1 for the first sample"}
+    sql: |
+      SELECT t.sample_id, s.style_id, s.round_number, t.test_result_id, t.test_method_id, t.test_method_name,
+             t.test_value, t.spec_value, t.pass_fail, t.failure_mode, t.test_date, t.notes
+      FROM test_results t JOIN sample_submissions s ON t.sample_id = s.sample_id
+      WHERE ($sample_id IS NULL OR t.sample_id = $sample_id)
+        AND ($style_id IS NULL OR s.style_id = $style_id)
+        AND ($round_number IS NULL OR s.round_number = $round_number)
+      ORDER BY s.round_number, t.sample_id, t.test_method_id
+    limit: 60
+    example: {style_id: "STY-7731", round_number: 1}
 
   - name: get_test_results_for_material
     desc: All test results for a material across sample rounds showing trends and failures. For R&D evaluation.
@@ -224,51 +241,61 @@ tools:
     example: {material_name: "recycled nylon"}
 
   - name: get_test_results_for_sample
-    desc: All tests run on a sample submission. For reviewing sample performance across multiple tests.
+    desc: All tests run on one sample id, newest first, with spec and notes. For reviewing a sample across multiple tests.
     kind: select
     from: test_results
     filters:
-      sample_id: {required: true, desc: "Sample id"}
-    columns: [test_result_id, test_method_name, test_value, pass_fail, failure_mode, test_date, tested_by]
+      sample_id: {required: true}
+    columns: [test_result_id, test_method_id, test_method_name, test_value, spec_value, pass_fail, failure_mode, test_date, tested_by, notes]
     order: test_date DESC
     limit: 50
-    example: {sample_id: "SMU-000001"}
+    example: {sample_id: "SMU-900011"}
 
   - name: get_drop_test_results
-    desc: Drop test results for packs by SKU. Returns pass/fail and failure details.
+    desc: Drop-test results (1.2m drop, drop and crush) for a SKU or pack spec showing pass/fail and breakage details. For packaging investigations.
     kind: sql
     args:
-      sku: {required: true, desc: "Product SKU"}
-      test_date: {type: date, desc: "Filter to tests on or after", default: "-180d", col: test_date, op: ">="}
+      sku: {}
+      pack_spec_id: {}
+      test_date: {type: date, desc: "Tests on or after", default: "-180d"}
     sql: |
-      SELECT test_result_id, sku, test_method_name, test_value, pass_fail,
+      SELECT test_result_id, sku, pack_spec_id, test_method_name, test_value, pass_fail,
              failure_mode, test_date, notes
       FROM test_results
-      WHERE sku = $sku
-        AND test_method_id IN ('TMT-0010', 'TMT-0011')
+      WHERE test_method_id IN ('TMT-0010', 'TMT-0012')
+        AND ($sku IS NULL OR sku = $sku)
+        AND ($pack_spec_id IS NULL OR pack_spec_id = $pack_spec_id)
         AND test_date >= CAST($test_date AS DATE)
       ORDER BY test_date DESC
     limit: 30
-    example: {sku: "PF-220"}
+    example: {sku: "K-1700"}
 
   - name: get_drop_test_reports_for_pack
-    desc: Drop test reports for pack designs showing pass/fail and fracture patterns. For packaging design optimization.
-    kind: select
-    from: test_results
-    filters:
-      test_method_name: {op: like, desc: "drop test"}
-      pass_fail: {}
-      test_date: {col: test_date, op: ">=", type: date, default: "-90d"}
-    columns: [test_result_id, sku, test_value, pass_fail, failure_mode, test_date, notes]
-    order: test_date DESC
-    limit: 50
-    example: {}
-
-  - name: get_drop_and_crush_test_results_for_carton
-    desc: Drop and crush test results for cartons showing pass/fail by dimension. For carton design changes.
+    desc: Drop test reports for a pack spec or SKU with pass/fail, material and fracture pattern. For packaging design changes.
     kind: sql
     args:
-      sku: {required: true, desc: "Product SKU"}
+      pack_spec_id: {}
+      sku: {}
+      pass_fail: {}
+      test_date: {type: date, desc: "Tests on or after", default: "-90d"}
+    sql: |
+      SELECT test_result_id, pack_spec_id, sku, material_name, test_method_name, test_value, pass_fail,
+             failure_mode, test_date, report_id, notes
+      FROM test_results
+      WHERE test_method_id IN ('TMT-0010', 'TMT-0012')
+        AND ($pack_spec_id IS NULL OR pack_spec_id = $pack_spec_id)
+        AND ($sku IS NULL OR sku = $sku)
+        AND ($pass_fail IS NULL OR pass_fail = $pass_fail)
+        AND test_date >= CAST($test_date AS DATE)
+      ORDER BY test_date DESC, test_result_id
+    limit: 50
+    example: {pack_spec_id: "PKS-900011"}
+
+  - name: get_drop_and_crush_test_results_for_carton
+    desc: Drop, crush and combined drop-and-crush results for a SKU's carton, with pass/fail and notes. For carton design changes.
+    kind: sql
+    args:
+      sku: {required: true}
     sql: |
       SELECT test_result_id, sku, test_method_name, test_value, pass_fail,
              failure_mode, test_date, notes
@@ -280,16 +307,28 @@ tools:
     example: {sku: "K-1700"}
 
   - name: get_shrinkage_test_results_for_fabric
-    desc: Shrinkage test results for fabrics by SKU showing percentage shrinkage. For tolerance setting.
-    kind: select
-    from: test_results
-    filters:
-      sku: {desc: "Product SKU"}
-      test_method_id: {desc: "Filter to shrinkage test"}
-    columns: [test_result_id, sku, test_value, spec_min, spec_max, pass_fail, test_date]
-    order: test_date DESC
+    desc: Shrinkage test results for a fabric or SKU as percentages, with the average, maximum and count across tests. For setting tolerances.
+    kind: sql
+    args:
+      sku: {}
+      fabric_id: {}
+      test_date: {type: date, desc: "Tests on or after", default: "-180d"}
+    sql: |
+      WITH r AS (
+        SELECT test_result_id, sku, fabric_id, material_name, test_value, spec_value, pass_fail, test_date, notes,
+               TRY_CAST(regexp_extract(test_value, '-?[0-9.]+', 0) AS DOUBLE) AS shrinkage_pct
+        FROM test_results
+        WHERE test_method_id = 'TMT-0002'
+          AND ($sku IS NULL OR sku = $sku)
+          AND ($fabric_id IS NULL OR fabric_id = $fabric_id)
+          AND test_date >= CAST($test_date AS DATE)
+      )
+      SELECT test_result_id, sku, fabric_id, material_name, shrinkage_pct, spec_value, pass_fail, test_date, notes,
+             count(*) OVER () AS tests_run, round(avg(shrinkage_pct) OVER (), 2) AS avg_shrinkage_pct,
+             max(shrinkage_pct) OVER () AS max_shrinkage_pct, min(shrinkage_pct) OVER () AS min_shrinkage_pct
+      FROM r ORDER BY test_date DESC
     limit: 30
-    example: {sku: "K-1700"}
+    example: {sku: "SKU-103808"}
 
   - name: get_dwr_alternative_test_data
     desc: Test data for PFAS-free DWR alternatives showing performance ratings and durability. For material evaluation.
@@ -304,14 +343,15 @@ tools:
     example: {pfas_free: true}
 
   - name: get_test_method_details
-    desc: Description, standards and procedures for a specific test method. For understanding test requirements.
+    desc: Description, standard, specimen, duration, lead time and cost of a test method, by id or name words. For choosing which test to re-run.
     kind: select
     from: test_methods
     filters:
-      test_method_id: {required: true}
-    columns: [test_method_id, name, category, standard, description, specimen_size, duration_minutes, lead_time_days, cost_gbp]
+      test_method_id: {}
+      name: {op: like, desc: "Words in the test method name, e.g. seam strength"}
+    columns: [test_method_id, name, category, standard, description, specimen_size, duration_minutes, lead_time_days, cost_gbp, markets]
     order: test_method_id
-    limit: 1
+    limit: 10
     example: {test_method_id: "TMT-0006"}
 
   - name: get_lab_test_method_for_finish
@@ -352,86 +392,104 @@ tools:
     example: {material_type: "polyester"}
 
   - name: get_test_report_details
-    desc: Full test report with methodology, results and conclusions for a test. For compliance and traceability.
+    desc: Full test report (every result in it, with method, standard, spec, pass/fail and conclusions), by report id, SKU or lot/batch id.
     kind: sql
     args:
-      report_id: {required: true, desc: "Report id"}
+      report_id: {}
+      sku: {}
+      lot_id: {}
     sql: |
-      SELECT t.test_result_id, t.test_method_name, t.sku, t.lot_id, t.sample_id,
+      SELECT t.report_id, t.test_result_id, t.test_method_name, t.sku, t.lot_id, t.sample_id, t.material_name,
              t.test_value, t.spec_min, t.spec_max, t.pass_fail, t.failure_mode,
              t.test_date, t.tested_by, t.notes, tm.standard, tm.description
       FROM test_results t
       LEFT JOIN test_methods tm ON t.test_method_id = tm.test_method_id
-      WHERE t.report_id = $report_id
-      ORDER BY t.test_date DESC
+      WHERE ($report_id IS NULL OR t.report_id = $report_id)
+        AND ($sku IS NULL OR t.sku = $sku)
+        AND ($lot_id IS NULL OR t.lot_id = $lot_id)
+        AND t.report_id IS NOT NULL
+      ORDER BY t.report_id, t.test_date DESC
     limit: 50
-    example: {report_id: "RPT-000010"}
+    example: {report_id: "RPT-900021"}
 
   - name: get_testing_cost_and_lead_time
-    desc: Cost and lead time for test methods. For budget planning and timeline estimation.
-    kind: sql
-    args:
-      test_method_id: {desc: "Specific test method, or leave blank for all"}
-      test_category: {type: enum, values: [fabric, material, sample, lot, pack, product, finish, safety, performance], desc: "Test category"}
-    sql: |
-      SELECT test_method_id, name, category, standard, cost_gbp, lead_time_days
-      FROM test_methods
-      WHERE ($test_method_id IS NULL OR test_method_id = $test_method_id)
-        AND ($test_category IS NULL OR category = $test_category)
-      ORDER BY category, cost_gbp DESC
-    limit: 50
-    example: {test_category: "fabric"}
+    desc: Cost, lead time and standard of test methods, filterable by category, market or what they cover (e.g. children's bottle, battery). For budgeting and timelines.
+    kind: select
+    from: test_methods
+    filters:
+      test_method_id: {}
+      category: {}
+      markets: {op: like, desc: "Market codes, e.g. UK EU"}
+      applies_to: {op: like, desc: "Product or requirement words, e.g. children's bottle, battery, food contact"}
+      name: {op: like, desc: "Words in the test method name"}
+    columns: [test_method_id, name, category, standard, markets, applies_to, cost_gbp, lead_time_days]
+    order: category, cost_gbp DESC
+    limit: 30
+    example: {applies_to: "battery"}
 
   - name: search_test_results_by_failure_mode
-    desc: Test results by failure type (e.g. colourfastness, brittleness) across all tests. For root cause analysis.
+    desc: Failed test results matching a failure type (e.g. colourfastness, brittleness), by SKU, lot and report. For root cause analysis.
     kind: sql
     args:
-      failure_mode: {required: true, desc: "Failure type, e.g. colourfastness, brittleness"}
-      test_date: {type: date, desc: "Tests on or after", default: "-180d", col: test_date, op: ">="}
+      failure_mode: {required: true, desc: "Failure type words, e.g. colourfastness, brittleness"}
+      sku: {}
+      test_date: {type: date, desc: "Tests on or after", default: "-180d"}
     sql: |
-      SELECT test_result_id, sku, sample_id, lot_id, test_method_name,
-             test_value, pass_fail, failure_mode, test_date, tested_by, notes
+      SELECT test_result_id, sku, lot_id, sample_id, material_name, test_method_name,
+             test_value, spec_min, pass_fail, failure_mode, test_date, report_id, tested_by, notes
       FROM test_results
       WHERE pass_fail = 'fail'
-        AND failure_mode LIKE '%' || $failure_mode || '%'
+        AND failure_mode ILIKE '%' || $failure_mode || '%'
+        AND ($sku IS NULL OR sku = $sku)
         AND test_date >= CAST($test_date AS DATE)
-      ORDER BY test_date DESC, sku
+      ORDER BY test_date, sku
     limit: 100
     example: {failure_mode: "colourfastness"}
 
   # Comparison and analysis tools
   - name: compare_test_results_across_sample_rounds
-    desc: Test results progression across sample rounds showing improvements or persistent issues. For sample evaluation.
+    desc: Test results for a style's sample rounds side by side per test, with the change since the previous round. For spotting persistent failures.
     kind: sql
     args:
-      style_id: {required: true, desc: "Style id"}
-      test_method_id: {desc: "Specific test method to compare"}
+      style_id: {required: true}
+      test_method_id: {}
     sql: |
-      SELECT s.round_number, t.test_method_name, t.test_value, t.pass_fail,
-             t.failure_mode, t.test_date, t.tested_by, count(*) AS tests_in_round
-      FROM test_results t
-      JOIN sample_submissions s ON t.sample_id = s.sample_id
-      WHERE s.style_id = $style_id
-        AND ($test_method_id IS NULL OR t.test_method_id = $test_method_id)
-      GROUP BY s.round_number, t.test_method_name, t.test_value, t.pass_fail, t.failure_mode, t.test_date, t.tested_by
-      ORDER BY s.round_number ASC, t.test_date DESC
-    limit: 50
-    example: {style_id: "STY-5520"}
+      WITH r AS (
+        SELECT s.round_number, s.sample_id, s.submission_date, s.status AS sample_status, t.test_method_id,
+               t.test_method_name, t.test_value, t.spec_value, t.pass_fail, t.failure_mode, t.test_date, t.notes,
+               TRY_CAST(regexp_extract(t.test_value, '-?[0-9.]+', 0) AS DOUBLE) AS num_value
+        FROM test_results t JOIN sample_submissions s ON t.sample_id = s.sample_id
+        WHERE s.style_id = $style_id
+          AND ($test_method_id IS NULL OR t.test_method_id = $test_method_id)
+      )
+      SELECT test_method_name, round_number, sample_id, submission_date, sample_status, test_value, spec_value, pass_fail,
+             failure_mode, round(num_value - lag(num_value) OVER (PARTITION BY test_method_id ORDER BY round_number), 2) AS change_vs_previous_round,
+             test_date, notes
+      FROM r ORDER BY test_method_name, round_number
+    limit: 60
+    example: {style_id: "STY-4012"}
 
   - name: compare_construction_to_test_requirements
-    desc: Compare sample construction notes to test spec requirements and actual results. For identifying design gaps.
+    desc: Sample construction notes beside each test requirement, actual result and percentage gap to the limit. For finding design gaps behind a failure.
     kind: sql
     args:
-      sample_id: {required: true, desc: "Sample id"}
+      sample_id: {required: true}
     sql: |
-      SELECT t.test_result_id, t.test_method_name, t.spec_value, t.test_value,
-             t.pass_fail, t.failure_mode, tm.description, t.notes
+      SELECT s.sample_id, s.style_id, s.round_number, s.construction_notes, t.test_method_id, t.test_method_name,
+             tm.standard, t.spec_value AS requirement, t.test_value AS actual, t.pass_fail,
+             CASE WHEN TRY_CAST(regexp_extract(t.spec_min, '-?[0-9.]+', 0) AS DOUBLE) IS NOT NULL THEN 'min'
+                  WHEN TRY_CAST(regexp_extract(t.spec_max, '-?[0-9.]+', 0) AS DOUBLE) IS NOT NULL THEN 'max' END AS limit_type,
+             round(100 * (TRY_CAST(regexp_extract(t.test_value, '-?[0-9.]+', 0) AS DOUBLE)
+                   - COALESCE(TRY_CAST(regexp_extract(t.spec_min, '-?[0-9.]+', 0) AS DOUBLE), TRY_CAST(regexp_extract(t.spec_max, '-?[0-9.]+', 0) AS DOUBLE)))
+                   / COALESCE(TRY_CAST(regexp_extract(t.spec_min, '-?[0-9.]+', 0) AS DOUBLE), TRY_CAST(regexp_extract(t.spec_max, '-?[0-9.]+', 0) AS DOUBLE)), 1) AS gap_to_limit_pct,
+             t.failure_mode, t.notes AS lab_notes
       FROM test_results t
+      JOIN sample_submissions s ON t.sample_id = s.sample_id
       JOIN test_methods tm ON t.test_method_id = tm.test_method_id
       WHERE t.sample_id = $sample_id
-      ORDER BY t.test_date DESC
+      ORDER BY (t.pass_fail = 'fail') DESC, t.test_method_id
     limit: 30
-    example: {sample_id: "SMU-000001"}
+    example: {sample_id: "SMU-900021"}
 
   - name: compare_material_test_data_to_reference_fabrics
     desc: Compare material test data to reference fabric benchmarks. For durability and sustainability assessment.
@@ -472,21 +530,21 @@ tools:
 
   # Write tools
   - name: create_test_request
-    desc: Book a test with the lab for a sample, material, lot or product. Returns new test request.
+    desc: Book a test with the lab for a SKU, lot, sample or material, listing the test method ids. Returns the new test request.
     kind: insert
     table: test_requests
     id_prefix: TST-
     defaults: {status: submitted, priority: standard}
     args:
       test_type: {required: true, desc: "What to test: fabric, material, sample, lot, pack, product"}
-      sku: {desc: "Product SKU if testing a product"}
-      lot_id: {desc: "Lot id if testing a lot"}
-      material_name: {desc: "Material name if testing raw material"}
-      test_methods: {required: true, desc: "Comma-separated test method ids, e.g. TMT-0001,TMT-0003"}
-      requested_by: {desc: "Employee requesting test"}
+      sku: {}
+      lot_id: {}
+      material_name: {desc: "Material name if testing a raw material"}
+      test_methods: {required: true, desc: "Comma-separated test method ids, e.g. TMT-0014,TMT-0015"}
+      requested_by: {}
       target_completion: {type: date, desc: "Desired completion date"}
-      priority: {type: enum, values: [standard, expedited], desc: "Standard or expedited"}
-    example: {test_type: "lot", lot_id: "LOT-000010", test_methods: "TMT-0001", requested_by: "EMP-000001"}
+      notes: {desc: "Special requirements, e.g. markets or conditions"}
+    example: {test_type: "product", sku: "SKU-104123", test_methods: "TMT-0014,TMT-0015", requested_by: "EMP-00063"}
 
   - name: create_retest_request
     desc: Request retesting of a lot due to failure. Tracks retest reason and status.
