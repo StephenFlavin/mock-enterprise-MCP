@@ -18,6 +18,16 @@ def generate(g):
         ("CNSHA", "LHR"), ("DXB", "LHR"),
     ]
 
+    road_lanes = [
+        ("DC1", "ST214"), ("DC2", "ST101"), ("DC3", "ST255"),
+        ("DC1", "ST050"), ("DC2", "ST200"),
+    ]
+
+    parcel_postcodes = [
+        ("DC1", "SW1A"), ("DC1", "E1C"), ("DC1", "N1C"),
+        ("DC2", "B1A"), ("DC2", "C5A"), ("DC3", "LS1"),
+    ]
+
     carriers_sea = [c["carrier_id"] for c in g.master("carriers") if c["mode"] == "ocean"]
     carriers_air = [c["carrier_id"] for c in g.master("carriers") if c["mode"] == "air"]
 
@@ -70,6 +80,57 @@ def generate(g):
                 "transit_days": r.randint(3, 7),
                 "source": "carrier quote"
             })
+
+    # Generate road rates
+    for origin, dest in road_lanes:
+        lane_id = f"{origin}-{dest}"
+        for weeks_back in range(-1, 5):
+            rate_date = g.as_of + timedelta(weeks=weeks_back)
+            rate = r.uniform(150, 500)
+            spot_rates.append({
+                "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
+                "lane_id": lane_id,
+                "mode": "road",
+                "rate_date": rate_date,
+                "rate_gbp": round(rate, 2),
+                "unit": "per drop",
+                "origin": origin,
+                "destination": dest,
+                "min_weight_kg": None,
+                "max_weight_kg": None,
+                "transit_days": 1,
+                "source": "carrier quote"
+            })
+
+    # Generate parcel rates
+    for origin, postcode in parcel_postcodes:
+        lane_id = f"{origin}-{postcode}"
+        for service in ["standard", "express", "next-day"]:
+            for weight_band in [(0, 1), (1, 5), (5, 20)]:
+                rate_date = g.as_of
+                if service == "standard":
+                    rate = r.uniform(5, 15)
+                    transit_days = 3
+                elif service == "express":
+                    rate = r.uniform(12, 25)
+                    transit_days = 2
+                else:  # next-day
+                    rate = r.uniform(20, 40)
+                    transit_days = 1
+                spot_rates.append({
+                    "rate_id": f"RAT-{len(spot_rates) + 1:06d}",
+                    "lane_id": lane_id,
+                    "mode": "parcel",
+                    "rate_date": rate_date,
+                    "rate_gbp": round(rate, 2),
+                    "unit": f"{service}",
+                    "origin": origin,
+                    "destination": postcode,
+                    "min_weight_kg": weight_band[0],
+                    "max_weight_kg": weight_band[1],
+                    "transit_days": transit_days,
+                    "source": "carrier quote"
+                })
 
     # Generate contract rates
     contract_rates = []
