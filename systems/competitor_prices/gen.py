@@ -57,11 +57,13 @@ def generate(g):
                     "category": category,
                     "brand": r.choice(["Own brand", "Premium", "Value"]),
                     "features": r.choice([
-                        "Durable, keeps drinks cold for 24 hours",
+                        "Durable, keeps drinks cold for 24 hours, double-walled insulated",
                         "Lightweight and portable",
-                        "BPA-free materials",
-                        "Easy to clean",
-                        "Eco-friendly design",
+                        "BPA-free materials, food-grade, insulated",
+                        "Easy to clean, ergonomic handle",
+                        "Eco-friendly design, sustainable materials",
+                        "Thermal insulation technology",
+                        "Premium insulation, leak-proof design",
                     ]),
                     "matched_product": matched,
                 })
