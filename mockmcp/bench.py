@@ -59,6 +59,19 @@ def _forms(fact) -> list[str]:
     return [f]
 
 
+SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "bn": 1e9, "billion": 1e9}
+
+
+def _numbers(t: str) -> list[tuple[float, float]]:
+    """(value, rounding tolerance) for each number; '22.5m' -> (22500000, 50000), '1,270' was already de-comma'd."""
+    out = []
+    for m in re.finditer(r"(?<![\w.])(-?\d+(?:\.(\d+))?)\s?(k|thousand|mn|m|million|bn|billion)?\b", t):
+        mult = SCALE.get(m.group(3) or "", 1)
+        dp = len(m.group(2) or "")
+        out.append((float(m.group(1)) * mult, 0.5 * 10 ** -dp * mult if mult > 1 else 0))
+    return out
+
+
 def _has(fact, text: str, table: bool = False) -> bool:
     opts = [x for o in (fact if isinstance(fact, list) else [fact]) for x in _forms(o)]
     t = _norm(text, table)
@@ -69,10 +82,10 @@ def _has(fact, text: str, table: bool = False) -> bool:
             if o in t:
                 return True
         else:  # numbers match within the fact's own rounding or 0.5%
-            nums = nums if nums is not None else [float(n) for n in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", t)]
+            nums = nums if nums is not None else _numbers(t)
             f, dp = float(o), len(o.split(".")[1]) if "." in o else 0
             tol = max(0.5 * 10 ** -dp, abs(f) * 0.005)
-            if any(abs(abs(n) - abs(f)) <= tol for n in nums):
+            if any(abs(abs(n) - abs(f)) <= max(tol, ntol) for n, ntol in nums):
                 return True
     return False
 
