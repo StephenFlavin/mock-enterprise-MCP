@@ -62,7 +62,7 @@ def generate(g):
             carriers_lanes.append({
                 "carrier_id": cid, "lane": lane, "mode": "road",
                 "status": "active", "weekly_capacity_trips": int((6 if big else 2) * pct / 25) + 1,
-                "weekly_capacity_pallets": int((85 if big else 60) * pct / 25) + 10,
+                "weekly_capacity_pallets": int((85 if big else 20) * pct / 25) + (10 if big else 5),
                 "rate_per_trip_gbp": trip, "rate_per_pallet_gbp": round(trip / 26 * 1.15, 1),
                 "min_pieces": 5, "cutoff_hour": {"CAR-001": 17, "CAR-002": 16, "CAR-003": 15}[cid],
                 "cutoff_day_offset": 1, "pct_allocation": pct, "updated_at": g.as_of})
@@ -270,6 +270,14 @@ def generate(g):
                         "fill_rate_pct": f, "freight_cost_gbp": float(lane_base("DC1", lane.split("-")[1])), "delay_minutes": dly or None, "is_split": False,
                         "created_at": g.as_of, "updated_at": g.as_of})
 
+    # Story (warehouse service level): Midshires (CAR-002) trailers left DC1 a day late on 4 in 10 loads over the last 3 weeks.
+    for sh in shipments:
+        if (sh["origin_site_id"] == "DC1" and sh["carrier_id"] == "CAR-002" and sh["mode"] == "road" and sh["status"] == "delivered"
+                and sh["dest_site_id"] and sh["dest_site_id"].startswith("ST")
+                and g.as_of - timedelta(days=21) <= sh["planned_departure"] < g.as_of and r.random() < 0.4):
+            sh["actual_departure"] = sh["planned_departure"] + timedelta(days=1)
+            sh["actual_arrival"] = sh["planned_arrival"] + timedelta(days=1)
+            sh["delay_minutes"] = 1440
     for sh in shipments:
         if sh["status"] in ("planned", "booked"):
             sh["actual_departure"] = sh["actual_arrival"] = sh["delay_minutes"] = None

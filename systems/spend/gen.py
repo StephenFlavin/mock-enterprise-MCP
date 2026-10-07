@@ -183,20 +183,30 @@ def generate(g):
     po = {p["po_id"]: p for p in g.master("purchase_orders")}
     pmap = {p["sku"]: p for p in prods}
     pv = []
+    lines = []
     for l in g.master("po_lines"):
         p = po.get(l["po_id"])
         if not p or p["status"] not in ("closed", "received") or int(l["qty_received"] or 0) <= 0:
             continue
+        lines.append((p["order_date"], l["po_id"], int(l["line_no"]), l, p))
+    lines.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    used = defaultdict(float)
+    for _, _, _, l, p in lines:
         prod = pmap[l["sku"]]
         actual = float(prod["unit_cost_gbp"])
         sid = p["supplier_id"]
+        vol = int(l["qty_received"])
+        # keep the sampled PO lines within the supplier's master annual spend
+        if used[sid] + actual * vol > 0.95 * float(sup[sid]["annual_spend_gbp"]):
+            continue
+        used[sid] += actual * vol
         cv = SUP_CONTRACT_VAR.get(sid, r.uniform(-0.01, 0.02))
         contract = actual / (1 + cv + r.uniform(-0.01, 0.01))
         bv = OVERPAY_BENCH.get(prod["category"], r.uniform(-0.01, 0.03)) + r.uniform(-0.015, 0.015)
         bench = actual / (1 + bv)
         pv.append({"po_id": l["po_id"], "line_no": int(l["line_no"]), "po_date": p["order_date"], "sku": l["sku"], "supplier_id": sid,
                    "category": prod["category"], "contract_price_gbp": round(contract, 2), "benchmark_price_gbp": round(bench, 2),
-                   "actual_price_gbp": actual, "volume_units": int(l["qty_received"])})
+                   "actual_price_gbp": actual, "volume_units": vol})
 
     # input costs
     ic = []
@@ -205,7 +215,7 @@ def generate(g):
             continue
         dept = s["category_focus"]
         mix = list(MIX[dept])
-        k = r.choice([-2, 0, 2])
+        k = 0 if sid == "SUP-0074" else r.choice([-2, 0, 2])
         mix[0] += k
         mix[1] -= k
         rates = {"raw materials": r.uniform(0.01, 0.05), "labour": LABOUR.get(s["country"], 0.05) + r.uniform(-0.01, 0.01),
@@ -214,7 +224,7 @@ def generate(g):
             rates = {"raw materials": 0.12, "labour": 0.07, "energy": 0.15, "shipping": 0.04, "packaging": 0.05}
         for comp, pct in zip(COMPONENTS, mix):
             for i, d in enumerate(months):
-                idx = 100 * (1 + rates[comp]) ** ((i - 11) / 12.0) + r.uniform(-0.4, 0.4)
+                idx = 100 * (1 + rates[comp]) ** ((i - 11) / 12.0) + (0 if sid == "SUP-0074" else r.uniform(-0.4, 0.4))
                 ic.append({"supplier_id": sid, "cost_component": comp, "period": d, "index_value": round(idx, 1), "pct_of_total": float(pct)})
 
     # price increase history

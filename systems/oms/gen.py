@@ -33,7 +33,7 @@ ACCOUNTS = {
 }
 
 # weekly late rate of store orders by due-week (0 = current week). Falls from 98.5% to 95%.
-LATE_RATE = {0: 5.0, 1: 5.0, 2: 3.6, 3: 2.4}
+LATE_RATE = {0: 3.7, 1: 3.5, 2: 3.4, 3: 2.3}
 LATE_BASE = 1.5
 
 
@@ -449,8 +449,8 @@ def plant_stories(b):
             ("BATCH-POL-PINK-007", "SKU-100007", 500, 0, 6)]
     for batch, sku, alloc_total, shipped, ago in lots:
         w_ship = int(shipped * 0.6)
-        parts = [("wholesale", "CUS-000022", w_ship, True), ("store", stores[1], shipped - w_ship, True),
-                 ("wholesale", "CUS-000022", alloc_total - shipped, False)]
+        parts = [("wholesale", "CUS-000039", w_ship, True), ("store", stores[1], shipped - w_ship, True),
+                 ("wholesale", "CUS-000039", alloc_total - shipped, False)]
         for ch, who, qty, is_shipped in parts:
             if qty <= 0:
                 continue
@@ -484,8 +484,8 @@ def plant_stories(b):
           lines=[b.line("SKU-100469", 200, 50.0, "wholesale")], shipments=[ship(D(66), D(64), {0: 200})])
 
     # --- 08:75:Q2 8,000 scarves, three wholesale customers ordered 15,000
-    for oid, cust, qty, ago in [("ORD-900060", "CUS-000010", 6000, 21), ("ORD-900061", "CUS-000022", 5000, 14),
-                                ("ORD-900062", "CUS-000026", 4000, 7)]:
+    for oid, cust, qty, ago in [("ORD-900060", "CUS-000036", 6000, 21), ("ORD-900061", "CUS-000037", 5000, 14),
+                                ("ORD-900062", "CUS-000038", 4000, 7)]:
         b.add(oid=oid, channel="wholesale", customer=cust, odt=T(ago, 10), dc="DC1", due=D(ago - 21),
               lines=[b.line("SKU-100035", qty, 54.5, "wholesale", alloc=0)], status="open")
 

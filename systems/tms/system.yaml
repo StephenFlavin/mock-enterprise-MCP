@@ -572,7 +572,7 @@ tools:
     example: {}
 
   - name: calculate_bottleneck_by_day
-    desc: "Forecast pallets per day (same weekday last year plus growth) against daily contracted capacity; shows the first day over capacity."
+    desc: "Per day, forecast pallets (same weekday last year plus growth) against contracted capacity by lane; shows lanes over capacity."
     kind: sql
     args:
       from_date: {type: date, default: "+53d", desc: "First day, e.g. Black Friday"}
@@ -580,19 +580,17 @@ tools:
       growth_pct: {type: int, default: 10, desc: "Growth over last year, percent"}
     sql: |
       WITH d AS (SELECT CAST(x AS DATE) AS day FROM generate_series(CAST($from_date AS DATE), CAST($to_date AS DATE), INTERVAL 1 DAY) t(x)),
-      py AS (SELECT CAST(s.actual_departure AS DATE) AS pday, SUM(s.pallets) AS pallets FROM shipments s
-             WHERE s.actual_departure >= CAST($from_date AS DATE) - INTERVAL 365 DAY AND s.actual_departure < CAST($to_date AS DATE) - INTERVAL 363 DAY GROUP BY 1),
-      lanes AS (SELECT DISTINCT lane FROM shipments WHERE actual_departure >= CAST($from_date AS DATE) - INTERVAL 364 DAY AND actual_departure < CAST($to_date AS DATE) - INTERVAL 363 DAY),
-      cap AS (SELECT SUM(weekly_capacity_pallets) / 6.0 AS daily FROM carriers_lanes WHERE status = 'active' AND lane IN (SELECT lane FROM lanes))
-      SELECT d.day, dayname(d.day) AS weekday, ROUND(COALESCE(py.pallets, 0) * (1 + $growth_pct / 100.0), 0) AS forecast_pallets,
-             ROUND(cap.daily, 0) AS contracted_pallets_per_day,
-             ROUND(100.0 * COALESCE(py.pallets, 0) * (1 + $growth_pct / 100.0) / cap.daily, 0) AS utilisation_pct,
-             CASE WHEN COALESCE(py.pallets, 0) * (1 + $growth_pct / 100.0) > cap.daily THEN 'OVER_CAPACITY' ELSE 'OK' END AS congestion
-      FROM d LEFT JOIN py ON py.pday = CAST(d.day - INTERVAL 364 DAY AS DATE), cap
-      WHERE dayofweek(d.day) <> 0 ORDER BY d.day
+      py AS (SELECT s.lane, CAST(s.actual_departure AS DATE) AS pday, SUM(s.pallets) AS pallets FROM shipments s
+             WHERE s.actual_departure >= CAST($from_date AS DATE) - INTERVAL 365 DAY AND s.actual_departure < CAST($to_date AS DATE) - INTERVAL 363 DAY GROUP BY 1, 2),
+      cap AS (SELECT lane, SUM(weekly_capacity_pallets) / 6.0 AS daily FROM carriers_lanes WHERE status = 'active' GROUP BY 1),
+      ld AS (SELECT d.day, py.lane, py.pallets * (1 + $growth_pct / 100.0) AS fc, cap.daily
+             FROM d JOIN py ON py.pday = CAST(d.day - INTERVAL 364 DAY AS DATE) JOIN cap ON cap.lane = py.lane)
+      SELECT ld.day, dayname(ld.day) AS weekday, ROUND(SUM(fc), 0) AS forecast_pallets, ROUND(SUM(daily), 0) AS contracted_pallets_per_day,
+             COUNT(*) FILTER (WHERE fc > daily) AS lanes_over_capacity, ROUND(SUM(GREATEST(fc - daily, 0)), 0) AS pallets_over_capacity,
+             CASE WHEN SUM(GREATEST(fc - daily, 0)) > 0 THEN 'BOTTLENECK' ELSE 'OK' END AS congestion
+      FROM ld WHERE dayofweek(ld.day) <> 0 GROUP BY ld.day ORDER BY ld.day
     limit: 40
     example: {}
-
   - name: calculate_capacity_gap_by_lane
     desc: "Compares last year's peak weekly pallets plus growth with contracted weekly capacity per lane, largest gap first."
     kind: sql
@@ -792,7 +790,7 @@ tools:
       SELECT s.shipment_id, s.po_id, s.carrier_id, s.lane, s.mode, s.planned_arrival, s.units, s.status,
              GREATEST(0, CAST($as_of AS DATE) - CAST(s.planned_arrival AS DATE)) AS days_past_planned_arrival
       FROM shipments s
-      WHERE s.status = 'in_transit' AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id) AND ($lane IS NULL OR s.lane = $lane)
+      WHERE s.status = 'in_transit' AND s.mode <> 'parcel' AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id) AND ($lane IS NULL OR s.lane = $lane)
         AND ($mode IS NULL OR s.mode = $mode)
       ORDER BY days_past_planned_arrival DESC, s.planned_arrival
     limit: 100
