@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+
+
 def generate(g):
     """Generate CCTV exception events and incident logs."""
 

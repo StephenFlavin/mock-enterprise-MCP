@@ -11,7 +11,13 @@ def generate(g):
 
     # Create references for lookups
     sku_to_product = {p["sku"]: p for p in products}
+    all_skus = [p["sku"] for p in products]
     glass_skus = [p["sku"] for p in products if p.get("category", "").lower() in ["glassware", "tableware"] or "glass" in p.get("name", "").lower()]
+    # If no glass SKUs found by category, use kettle and small appliances
+    if not glass_skus:
+        glass_skus = [p["sku"] for p in products if "kettle" in p.get("name", "").lower() or "glass" in p.get("name", "").lower()]
+    if not glass_skus:
+        glass_skus = [p["sku"] for p in products if p.get("category", "").lower() == "small appliances"][:5]
 
     # All tables
     contacts = []
