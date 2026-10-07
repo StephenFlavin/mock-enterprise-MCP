@@ -2,12 +2,14 @@
 import importlib.util
 import json
 import re
+from datetime import date, timedelta
 
 import jinja2
 
 from .args import ArgError
 from .db import DUCK_TYPES
 from .fmt import cell
+from . import spec
 from .spec import WORLD
 
 AUTO_STAMP = ("created_at", "created_date", "created_on", "raised_at", "raised_date", "requested_at",
@@ -95,8 +97,16 @@ def run_update(eng, system, tool, args, vals):
     sid, t = eng.db.table(system.id, tool.table)
     tname = tool.table.split(".")[-1]
     keyvals = {k: vals[tool.key_arg] for k in t.keys} if tool.key_arg else {k: vals[k] for k in t.keys}
-    cond = " AND ".join(f"CAST({_q(k)} AS VARCHAR) IS NOT DISTINCT FROM CAST(${k} AS VARCHAR)" for k in keyvals)
-    cur = eng.db.rows(system.id, f'SELECT * FROM "{sid}"."{tname}" WHERE {cond}', keyvals)
+    dated = [k for k in keyvals if t.cols[k].type in ("date", "timestamp")]
+    cond = " AND ".join(f"CAST({_q(k)} AS DATE) = CAST(${k} AS DATE)" if k in dated else
+                        f"CAST({_q(k)} AS VARCHAR) IS NOT DISTINCT FROM CAST(${k} AS VARCHAR)" for k in keyvals)
+    sql = f'SELECT * FROM "{sid}"."{tname}" WHERE {cond}'
+    cur = eng.db.rows(system.id, sql, keyvals)
+    if not cur and dated and spec.SHIFT_DAYS:  # a date given in data time (e.g. a builder's example): move it to today's frame
+        moved = keyvals | {k: (date.fromisoformat(str(keyvals[k])[:10]) + timedelta(spec.SHIFT_DAYS)).isoformat()
+                           for k in dated if keyvals[k]}
+        cur = eng.db.rows(system.id, sql, moved)
+        keyvals = moved if cur else keyvals
     if not cur:
         raise ArgError(f"No {tname} with {', '.join(f'{k}={v}' for k, v in keyvals.items())}.")
     old, new = cur[0], dict(cur[0])
