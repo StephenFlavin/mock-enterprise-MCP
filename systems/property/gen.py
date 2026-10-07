@@ -5,9 +5,9 @@ from datetime import time, timedelta
 def generate(g):
     r = g.rng
 
-    # Get stores from master data
+    # Get stores from master data - include enough stores to cover ST214
     all_stores = [s for s in g.master("sites") if s["type"] == "store"]
-    stores = all_stores[:220]  # Include stores up to ST220 for better coverage
+    stores = all_stores[:220]  # Include stores up to ST220 for coverage
     sites = [s for s in g.master("sites") if s["type"] in ("store", "dc")]  # All stores and DCs for energy
 
     energy = []
@@ -88,7 +88,7 @@ def generate(g):
                     "hour": hour,
                     "footfall_count": footfall_count,
                     "sales_gbp": round(sales_gbp, 2),
-                    "recorded_at": date  # Store as date, will be converted
+                    "recorded_at": date
                 })
 
         # Footfall forecast for next 7 days
@@ -127,7 +127,7 @@ def generate(g):
                 })
 
     # Store catchment areas
-    for i, store in enumerate(stores[:40]):  # Catchment for first 40 stores
+    for i, store in enumerate(stores[:100]):  # Catchment for first 100 stores
         site_id = store["site_id"]
 
         # Each store has a catchment
@@ -140,7 +140,7 @@ def generate(g):
 
         # Competitor stores within catchment (if any)
         competitors = []
-        for other_store in stores[:40]:
+        for other_store in stores[:100]:
             if other_store["site_id"] != site_id:
                 # Random chance of overlap
                 if r.random() < 0.3:  # 30% chance of competitor in catchment
