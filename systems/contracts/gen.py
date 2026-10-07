@@ -390,6 +390,9 @@ def generate(g):
 
     for s in suppliers:
         sid = s["supplier_id"]
+        # The product suppliers share the generator's stream (the stories were built on it); indirect suppliers, which were added to
+        # master later, draw from their own streams so they never shift the draws of the suppliers and carriers after them.
+        r = g.rng if s.get("supplier_type", "product") == "product" else g.rng_for("supplier-contract", sid)
         n = int(sid[4:])
         cid = f"CTR-{n:06d}"
         pay = int(s["payment_terms_days"])
@@ -489,6 +492,7 @@ def generate(g):
     # ------------------------------------------------------------------ carrier contracts
     for i, c in enumerate(carriers):
         cid_ = c["carrier_id"]
+        r = g.rng
         n = int(cid_[4:])
         cid = f"CTR-{n + 99:06d}"
         mode = c["mode"]

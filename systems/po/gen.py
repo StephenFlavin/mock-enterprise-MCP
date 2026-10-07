@@ -14,7 +14,7 @@ STORY_FACTORIES = {"FAC-0104", "FAC-0021"}
 # at the end of the loop rather than in the sets above, so the random stream (and every other generated row) is unchanged.
 SEEDED_ONLY_SUPPLIERS = {"SUP-0053"}
 SEEDED_ONLY_FACTORIES = {"FAC-0121"}
-STORY_POS = {"PO-2026-004072", "PO-2026-004312", "PO-2026-004062", "PO-2026-005784", "PO-2026-004663"}
+STORY_POS = {"PO-2026-004072", "PO-2026-004312", "PO-2026-004062", "PO-2026-005784", "PO-2026-004663", "PO-2026-006150"}
 NEARSHORE = ["SUP-0044", "SUP-0058", "SUP-0079", "SUP-0040", "SUP-0039"]
 OPEN = ("open", "confirmed", "shipped")
 DONE = ("received", "closed")
@@ -29,7 +29,10 @@ def ts(day, rng, lo=8, hi=17):
 
 
 def generate(g):
-    r = g.rng
+    rf = g.rng_for          # every generated row draws from its own stream, so master growth never shifts other rows
+
+    def pick(cands, k, tag, key):
+        return sorted(cands, key=lambda c: (rf(tag, c[key]).random(), c[key]))[:k]
     as_of = g.as_of
     sites = [s for s in g.master("sites") if s["type"] in ("dc", "store")]
     employees = g.master("employees")
@@ -56,6 +59,7 @@ def generate(g):
     }
     reqs = []
     for i in range(48):
+        r = rf("req", i)
         cat = r.choice(list(items))
         site = r.choice(sites)
         status = r.choices(["draft", "submitted", "approved", "rejected", "ordered", "received"], [1, 2, 4, 1, 1.5, 1])[0]
@@ -83,7 +87,8 @@ def generate(g):
     }
     pool = [p for p in pos if p["status"] in OPEN + DONE and p["supplier_id"] not in STORY_SUPPLIERS
             and p["factory_id"] not in STORY_FACTORIES and p["po_id"] not in STORY_POS]
-    for po in r.sample(pool, 90):
+    for po in pick(pool, 90, "amd-pick", "po_id"):
+        r = rf("amd", po["po_id"])
         atype = r.choices(["delivery_date", "ship_date", "quantity", "price"], [4, 2, 2, 1])[0]
         order_d, ship_d, due_d = d(po["order_date"]), d(po["ship_date"]), d(po["due_date"])
         asked = order_d + timedelta(days=r.randint(3, max(4, (ship_d - order_d).days - 2)))
@@ -126,7 +131,8 @@ def generate(g):
     blocks = []
     candidates = [p for p in pos if p["status"] in ("open", "confirmed") and p["supplier_id"] not in STORY_SUPPLIERS
                   and p["factory_id"] not in STORY_FACTORIES and suppliers[p["supplier_id"]]["status"] == "active"]
-    for po in r.sample(candidates, 4):
+    for po in pick(candidates, 4, "blk-pick", "po_id"):
+        r = rf("blk", po["po_id"])
         when = as_of - timedelta(days=r.randint(5, 40))
         released = r.random() < 0.4
         blocks.append({
@@ -167,6 +173,7 @@ def generate(g):
     for sku, items_ in rows_by_sku.items():
         items_.sort(key=lambda x: (x[0]["order_date"], x[0]["po_id"]))
         for occ, (po, ln) in enumerate(items_, 1):
+            r = rf("ph", po["po_id"], ln["line_no"])
             quoted = float(ln["unit_cost"])
             age = (as_of - d(po["order_date"])).days
             var = r.gauss(0, 0.004)
@@ -196,6 +203,7 @@ def generate(g):
     for po in pos:
         if po["status"] not in OPEN or po["supplier_id"] in STORY_SUPPLIERS or po["po_id"] in STORY_POS:
             continue
+        r = rf("cnf", po["po_id"])
         if r.random() > 0.55:
             continue
         due_d, ship_d, order_d = d(po["due_date"]), d(po["ship_date"]), d(po["order_date"])
@@ -222,7 +230,8 @@ def generate(g):
     base_price = {"Cotton": 1650, "Polyester": 1050, "Steel": 640, "Plastic": 1180, "Leather": 3900, "Copper": 7600, "Cardboard": 520}
     commitments = []
     sup_list = sorted(suppliers.values(), key=lambda s: s["supplier_id"])
-    for sup in r.sample([s for s in sup_list if s["status"] == "active" and s["category_focus"] in commodity_for], 22):
+    for sup in pick([s for s in sup_list if s["status"] == "active" and s["category_focus"] in commodity_for], 22, "com-pick", "supplier_id"):
+        r = rf("com", sup["supplier_id"])
         commodity = r.choice(commodity_for[sup["category_focus"]])
         start = as_of - timedelta(days=r.randint(30, 300))
         end = start + timedelta(days=r.choice([180, 270, 365]))
@@ -256,6 +265,7 @@ def generate(g):
         recent_done = po["status"] in DONE and arrived and (as_of - arrived).days <= 84
         if not (recent_done or po["status"] == "shipped"):
             continue
+        r = rf("asn", po["po_id"])
         sh = ship.get(po["po_id"])
         shipped_on = d(sh["atd"]) if sh and sh["atd"] else d(po["ship_date"])
         asn_id = f"ASN-{len(asns) + 1:06d}"
@@ -287,6 +297,7 @@ def generate(g):
     for sid in NEARSHORE:
         mine = sorted((p for p in pos if p["supplier_id"] == sid and p["status"] in OPEN + DONE), key=lambda p: p["order_date"])[-3:]
         for po in mine:
+            r = rf("mrk", po["po_id"])
             started = d(po["order_date"])
             markers.append({
                 "marker_id": f"MRK-{len(markers) + 1:06d}", "po_id": po["po_id"], "supplier_id": sid,
@@ -297,6 +308,7 @@ def generate(g):
     # ---------------------------------------------------------------- approvals for some draft POs
     approvals = []
     for po in [p for p in pos if p["status"] == "draft"][:20]:
+        r = rf("apr", po["po_id"])
         if r.random() < 0.35:
             when = max(d(po["order_date"]) - timedelta(days=r.randint(0, 3)), as_of - timedelta(days=20))
             approvals.append({

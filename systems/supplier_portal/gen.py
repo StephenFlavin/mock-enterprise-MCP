@@ -9,8 +9,12 @@ ADDED_STYLES = {f"STY-95{n:02d}" for n in range(1, 11)}
 
 def generate(g):
     """Generate supplier portal data."""
-    r = g.rng
+    rf = g.rng_for        # every generated row draws from its own stream, so master growth never shifts other rows
     now_ts = datetime.combine(g.as_of, time(9, 0))
+
+    def days_back(rr, lo, hi):
+        """A date between lo and hi days before as_of, drawn from the given stream."""
+        return g.as_of - timedelta(days=rr.randint(hi, lo))
 
     suppliers = g.master("suppliers")
     factories = g.master("factories")
@@ -20,6 +24,7 @@ def generate(g):
     shipments = g.master("shipments")
     employees = g.master("employees")
 
+    launched = [p for p in products if p["style_id"] not in ADDED_STYLES]
     supplier_variances = []
     supplier_claims = []
     corrective_actions = []
@@ -53,7 +58,7 @@ def generate(g):
         unit_cost = float(prod_by_sku[pl["sku"]]["unit_cost_gbp"])
         if abs(units) * unit_cost > 1500:  # larger variances are still under dispute and not logged in the portal
             continue
-        reason = "over-ship" if units > 0 else r.choices(["short-ship", "damage", "receiving_error"], [70, 15, 15])[0]
+        reason = "over-ship" if units > 0 else rf("variance", pl["po_id"], pl["line_no"]).choices(["short-ship", "damage", "receiving_error"], [70, 15, 15])[0]
         supplier_variances.append({
             "variance_id": f"VAR-{variance_id:06d}",
             "po_id": pl["po_id"],
@@ -75,6 +80,7 @@ def generate(g):
     # Claims already raised, only for variances whose window has closed (the story's open ones are still unclaimed)
     claim_id = 1
     for var in supplier_variances:
+        r = rf("claim", var["po_id"], var["sku"])
         if not var["is_claimable"] or (g.as_of - var["received_at"]).days <= 14 or r.random() > 0.35:
             continue
         status = r.choices(["submitted", "accepted", "settled", "rejected"], [30, 30, 30, 10])[0]
@@ -99,13 +105,14 @@ def generate(g):
     # Generate corrective actions
     car_id = 1
     for supplier in suppliers[:80]:
+        r = rf("car", supplier["supplier_id"])
         for _ in range(r.randint(0, 3)):
-            raised = g.date_between(90, 1)
+            raised = days_back(r, 90, 1)
             has_response = r.random() < 0.6
             car = {
                 "corrective_action_id": f"CAR-{car_id:06d}",
                 "supplier_id": supplier["supplier_id"],
-                "sku": r.choice([p["sku"] for p in products])[:20] if products else "SKU-001",
+                "sku": r.choice([p["sku"] for p in launched])[:20] if launched else "SKU-001",
                 "issue_type": r.choice(["quality", "compliance", "delivery"]),
                 "severity": r.choices(["high", "medium", "low"], [20, 50, 30])[0],
                 "description": f"Issue with {r.choice(['seam strength', 'colour fastness', 'delivery', 'documentation'])}",
@@ -162,6 +169,7 @@ def generate(g):
     for sup_id in sorted(skus_by_supplier):
         for idx, prod in enumerate(sorted(skus_by_supplier[sup_id], key=lambda x: x["sku"])):
             sku = prod["sku"]
+            r = rf("position", sku)
             prof = cat_profile.get((prod["category"], sup_id))
             trend = trend_profile.get(sup_id)
             if trend:
@@ -208,8 +216,7 @@ def generate(g):
                     "mto_lead_time_days": mto[0] if mto else None,
                     "mto_moq_units": mto[1] if mto else None,
                 }
-                # master products added after the original build (STY-9501..9510: no stock or orders yet) get no supply position;
-                # the draws above still run so every other supplier's generated numbers are unchanged
+                # master products added after the original build (STY-9501..9510: no stock or orders yet) get no supply position
                 if prod["style_id"] not in ADDED_STYLES:
                     supply_position.append(row)
                 position_id += 1
@@ -224,6 +231,7 @@ def generate(g):
     ]
     for sup_id, mat_id, cap, pcts, lead_weeks in mills:
         for k, pct in enumerate(pcts):
+            r = rf("mill", mat_id, k)
             age = (len(pcts) - 1 - k) * 28
             committed = int(cap * pct / 100)
             supply_position.append({
@@ -247,12 +255,13 @@ def generate(g):
     # Supplier delay notices: history only (mitigated or expired); the live notices are seeded
     delay_id = 1
     for supplier in suppliers:
+        r = rf("delay", supplier["supplier_id"])
         if r.random() < 0.35:
-            sku_pool = skus_by_supplier.get(supplier["supplier_id"]) or []
+            sku_pool = [p for p in (skus_by_supplier.get(supplier["supplier_id"]) or []) if p["style_id"] not in ADDED_STYLES]
             if not sku_pool:
                 continue
             prod = r.choice(sku_pool)
-            notice = g.date_between(120, 30)
+            notice = days_back(r, 120, 30)
             delay_days = r.randint(3, 20)
             orig = notice + timedelta(days=r.randint(5, 20))
             supplier_delays.append({
@@ -295,6 +304,7 @@ def generate(g):
     for factory in factories:
         if factory["factory_id"] == "FAC-0121":  # seeded story factory
             continue
+        r = rf("fop", factory["factory_id"])
         trm = random.Random("fterm-" + factory["factory_id"])
         terms = fixed_terms.get(factory["factory_id"]) or (trm.randint(5, 50) * 100, trm.randint(21, 56), trm.randint(7, 21))
         for week in range(12):
@@ -367,6 +377,7 @@ def generate(g):
     mat_id = 1
     material_types = ["Organic cotton", "Recycled polyester", "Cotton blend", "Modal", "Linen"]
     for supplier in suppliers[:60]:
+        r = rf("material", supplier["supplier_id"])
         for _ in range(r.randint(1, 4)):
             mat = {
                 "material_id": f"MAT-{mat_id:06d}",
@@ -395,6 +406,7 @@ def generate(g):
     esg_id = 1
     for supplier in suppliers[:100]:
         for year in [2024, 2025]:
+            r = rf("esg", supplier["supplier_id"], year)
             status = r.choices(["not_submitted", "submitted", "accepted", "low_quality"], [25, 40, 30, 5])[0]
             esg = {
                 "esg_id": f"ESG-{esg_id:06d}",
@@ -402,7 +414,7 @@ def generate(g):
                 "submission_year": year,
                 "submission_type": r.choice(["esg_full", "emissions_only"]),
                 "submission_status": status,
-                "submitted_date": g.date_between(90, 1) if status != "not_submitted" else None,
+                "submitted_date": days_back(r, 90, 1) if status != "not_submitted" else None,
                 "data_quality_score": r.randint(50, 100) if status in ["submitted", "accepted"] else None,
                 "emissions_tonnes_co2e": r.randint(100, 10000) if status in ["submitted", "accepted"] else None,
                 "renewable_pct": r.randint(0, 100) if r.random() < 0.7 else None,
@@ -531,6 +543,7 @@ def generate(g):
     # Generate supplier communications (comments, milestones, access logs)
     com_id = 1
     for supplier in suppliers[:80]:
+        r = rf("comment", supplier["supplier_id"])
         # Sample comments
         for _ in range(r.randint(0, 3)):
             com = {
@@ -551,7 +564,7 @@ def generate(g):
                 "status": r.choice(["sent", "responded"]),
                 "portal_page": None,
                 "accessed_at": None,
-                "deadline": g.date_between(30, 1) if r.random() < 0.5 else None,
+                "deadline": days_back(r, 30, 1) if r.random() < 0.5 else None,
                 "overdue": r.random() < 0.1,
                 "created_at": now_ts,
                 "updated_at": now_ts,
@@ -561,6 +574,7 @@ def generate(g):
 
     # Portal access logs
     for supplier in suppliers[:50]:
+        r = rf("access", supplier["supplier_id"])
         for _ in range(r.randint(2, 8)):
             com = {
                 "communication_id": f"COM-{com_id:06d}",
@@ -582,7 +596,7 @@ def generate(g):
                     "Capacity"
                 ]),
                 "accessed_at": datetime.combine(
-                    g.date_between(30, 1),
+                    days_back(r, 30, 1),
                     datetime.min.time()
                 ) + timedelta(hours=r.randint(6, 22), minutes=r.randint(0, 59)),
                 "deadline": None,
@@ -638,6 +652,7 @@ def generate(g):
     part_supply = []
     mhe_parts = ["Mast chain", "Hydraulic pump", "Drive wheel", "Battery charger", "Control handle", "Lift cylinder"]
     for i, (cls, nm) in enumerate([(c, n) for c in ("forklift", "reach_truck") for n in mhe_parts]):
+        r = rf("part", cls, nm)
         part_supply.append({
             "part_id": f"PRT-{i + 1:06d}",
             "part_name": f"{cls.replace('_', ' ').capitalize()} {nm.lower()}",
@@ -648,7 +663,7 @@ def generate(g):
             "moq_units": r.choice([1, 1, 2, 4]),
             "price_gbp_per_unit": round(r.uniform(60, 1800), 2),
             "stock_units_available": r.randint(0, 20),
-            "quoted_at": g.date_between(90, 5),
+            "quoted_at": days_back(r, 90, 5),
         })
 
     return {
