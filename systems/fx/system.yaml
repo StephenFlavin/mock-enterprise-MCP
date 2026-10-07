@@ -422,19 +422,26 @@ tools:
     kind: sql
     args:
       currency_pair: {desc: "Currency pair"}
-      period_from: {type: date, default: "-90d", desc: "Period start"}
+      period_from: {type: date, default: "-90d", desc: "Period start (hedges created on or after)"}
+      status: {type: enum, values: [open, closed, matured, unwound], desc: "Only hedges with this status; omit for all"}
     sql: |
       SELECT h.hedge_id, h.currency_pair, h.instrument_type, printf('%.4f', h.hedge_rate) AS hedge_rate,
              h.maturity_date, h.effectiveness_pct,
-             round(h.mark_to_market_gbp, 2) AS unrealised_pl_gbp,
+             CASE WHEN h.status = 'open' THEN 0.0 ELSE round(h.mark_to_market_gbp, 2) END AS realised_pl_gbp,
+             CASE WHEN h.status = 'open' THEN round(h.mark_to_market_gbp, 2) ELSE 0.0 END AS unrealised_pl_gbp,
+             round(h.effectiveness_pct / 100.0, 2) AS hedge_efficiency_ratio,
              h.status,
              CASE WHEN h.effectiveness_pct >= 80 THEN 'highly effective'
                   WHEN h.effectiveness_pct >= 60 THEN 'effective'
                   ELSE 'needs review' END AS effectiveness_status,
+             round(sum(CASE WHEN h.status = 'open' THEN 0.0 ELSE h.mark_to_market_gbp END) OVER (), 2) AS total_realised_pl_gbp,
+             round(sum(CASE WHEN h.status = 'open' THEN h.mark_to_market_gbp ELSE 0.0 END) OVER (), 2) AS total_unrealised_pl_gbp,
+             round(sum(h.effectiveness_pct * h.notional_gbp) OVER () / sum(h.notional_gbp) OVER (), 1) AS notional_weighted_effectiveness_pct,
              'effectiveness = hedge_pl / exposure_pl' AS formula
       FROM hedge_positions h
       WHERE ($currency_pair IS NULL OR h.currency_pair = $currency_pair)
         AND h.created_at >= CAST($period_from AS DATE)
+        AND ($status IS NULL OR h.status = $status)
       ORDER BY h.created_at DESC
     limit: 50
     example: {}
