@@ -67,7 +67,7 @@ def generate(g):
         return r.randint(6, 13) if x < 0.24 else r.randint(14, 27) if x < 0.62 else r.randint(28, 49)
 
     def collides(carrier, dest, sail):
-        return any(c == carrier and d == dest and abs(off(sail) - o) <= 4 for c, d, o in BLANKS)
+        return any(c == carrier and d == dest and abs(off(sail) - o) <= 10 for c, d, o in BLANKS)
 
     # ---------------------------------------------------------------- bookings from master sea shipments
     base = []

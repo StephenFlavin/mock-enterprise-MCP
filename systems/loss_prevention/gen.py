@@ -36,8 +36,8 @@ STORY_SKUS = {
 
 # Typical annual cost and annual shrink reduction (GBP) per store for each control type, with spread.
 CONTROL_PROFILE = {
-    "pos_rules": (1000, 1450, 0.12),
-    "tagging": (2500, 3800, 0.15),
+    "pos_rules": (1000, 1750, 0.12),
+    "tagging": (2500, 3600, 0.15),
     "self_checkout_monitoring": (4000, 4400, 0.15),
     "training": (1500, 1200, 0.20),
     "layout": (5000, 2800, 0.15),
