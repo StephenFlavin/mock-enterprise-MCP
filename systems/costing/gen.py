@@ -83,9 +83,10 @@ BOTTLE_LINES = [("metal", "304 stainless steel body and base (0.42 kg)", 1.38), 
                 ("tooling", "Tooling amortisation (14,000 over 50,000 units)", 0.28),
                 ("overhead", "Overhead and supplier margin", 0.69)]
 # STORY: SKU-103157 is on clearance, so it carries heavy markdown (plan markdown moves with it, so variance to plan is unchanged)
-STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0,
+STORY_MD_OFFSET = {"SKU-101897": 1.0, "SKU-103157": 9.0, "SKU-103640": 24.0, "SKU-101876": 19.0,
                    "SKU-100077": 70.0, "SKU-100070": 66.6, "SKU-100063": 63.5, "SKU-100056": 61.7, "SKU-100049": 58.4}
-EXTRA_SMALL = {"SKU-100063": 1000, "SKU-100056": 1500, "SKU-100049": 2000}  # annual units of the added low-volume lines
+EXTRA_SMALL = {"SKU-100063": 1000, "SKU-100056": 1500, "SKU-100049": 2000,
+               "SKU-103640": 730, "SKU-101876": 4700}  # last two: the Tops delete candidates of the 06:54:Q2 range review (heavy markdown)  # annual units of the added low-volume lines
 # STORY: target margins that make the pipeline and overshirt questions discoverable (no random draws, applied after the row is built)
 TARGET_OVERRIDE = {"SKU-102310": 66.0, "SKU-100154": 58.5, "SKU-100161": 58.5, "SKU-100168": 58.5,
                    "SKU-106335": 78.0}  # SKU-106335 = the new overshirt (STY-9505): the linen option misses its target cost

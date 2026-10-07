@@ -638,16 +638,6 @@ def generate(g):
                     "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
                     "correction_reason": None, "updated_at": as_of})
 
-    # The seasonal bedding throw (SKU-104963, outside the top 300 sellers) comes straight from master sales. No random
-    # numbers are drawn.
-    for sku in ("SKU-104963",):
-        if sku in weekly and sku not in in_history:
-            for wk, units, rev in weekly[sku]:
-                demand_history.append({
-                    "history_id": f"DH-{len(demand_history) + 1:06d}", "sku": sku, "category": prod[sku]["category"],
-                    "period_date": wk, "units_sold": units, "revenue_gbp": round(rev, 2), "demand_type": "actual",
-                    "correction_reason": None, "updated_at": as_of})
-
     winter_cats = {"Outerwear", "Knitwear", "Scarves", "Bedding", "Towels", "Lighting", "Fragrance"}
     summer_cats = {"Dresses", "Blouses", "Shirts", "T-Shirts", "Tops", "Trousers", "Footwear", "Bags", "Jewellery",
                    "Drinkware"}
@@ -755,8 +745,8 @@ def generate(g):
                     "bias_pct": bias, "rmse": 14 if level == "store_sku" else 22})
     # New-product launches (live accuracy of the comparable-product method, CFG-000004). Same launches as the S&OP
     # launch-assumption review (sop get_launch_assumptions_vs_actuals), worst first.
-    launch_mape = {"SKU-100259": 50.0, "SKU-101645": 42.0, "SKU-101561": 42.0, "SKU-101057": 41.0, "SKU-101435": 40.0,
-                   "SKU-100700": 35.0, "SKU-100847": 30.0, "SKU-100973": 6.0, "SKU-101750": 3.0}
+    launch_mape = {"SKU-100259": 56.0, "SKU-101645": 47.4, "SKU-101561": 47.0, "SKU-101057": 46.0, "SKU-101435": 44.0,
+                   "SKU-100700": 38.0, "SKU-100847": 33.0, "SKU-100973": 6.0, "SKU-101750": 3.0}
     for sku, mean in launch_mape.items():
         for i, off in enumerate((-4, -3, -2, -1)):
             period_end = as_of + timedelta(weeks=off)
@@ -768,14 +758,10 @@ def generate(g):
 
     # Seasonal bedding throw SKU-104963: forecast at the weekly rate of the inventory story (176 a week in the six
     # northern stores plus 100 a week in the six southern stores), on the seasonal curve peaking in the week of 23
-    # November. Appended after the category forecasts so nothing else moves; no random numbers are drawn.
+    # November. Appended after the category forecasts and without history rows so no category total, price or other
+    # figure moves; no random numbers are drawn.
     throw = "SKU-104963"
     if throw in weekly:
-        throw_actual = {wk: u for (wk, u, _) in weekly[throw]}
-        for i, off in enumerate(range(-10, 0)):
-            wk = this_monday + timedelta(weeks=off)
-            if wk in throw_actual:
-                add_forecast(throw, wk, "base", throw_actual[wk] * (1.0 + 0.03 * math.sin(i * 1.3)), wk - timedelta(days=28))
         for off in range(0, 16):
             wk = this_monday + timedelta(weeks=off)
             base = 276.0 * kettle_curve[off]

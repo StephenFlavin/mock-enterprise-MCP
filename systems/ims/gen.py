@@ -618,7 +618,8 @@ def generate(g):
         bid = ("BATCH-SHOE-003", "BATCH-SHOE-004", "BATCH-SHOE-002", "BATCH-SHOE-001")[i % 4]
         add_batch("SKU-100301", bid, "released", 45, st, max(int(next(p["on_hand"] for p in pos_rows if p["sku"] == "SKU-100301" and p["site_id"] == st) * 0.6), 1))
     # leather bag SKU-101813: BATCH-LEATHER-002 failed chromium VI, 001 passed
-    for site, q in {"DC3": 1800, "DC5": 950}.items():
+    # (the qms production lot for this SKU from batch 002 is 300 units, so only a few hundred are left across DCs and stores)
+    for site, q in {"DC3": 150, "DC5": 60}.items():
         add_batch("SKU-101813", "BATCH-LEATHER-002", "released", 120, site, q)
     for site, q in {"DC2": 1200, "DC4": 900}.items():
         add_batch("SKU-101813", "BATCH-LEATHER-001", "released", 150, site, q)
