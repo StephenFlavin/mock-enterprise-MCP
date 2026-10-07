@@ -83,6 +83,7 @@ def generate(g):
 
     spend_rows = []
     cell = {}  # (sid, cat) -> monthly spend list
+    cell_target = {}  # (sid, cat) -> exact last-12-month total, so a category figure never depends on the random monthly shape
     for sid, s in sup.items():
         extra = INDIRECT.get(sid, [])
         if s.get("supplier_type") == "indirect":  # no products and no master spend: only the service spend below
@@ -102,6 +103,7 @@ def generate(g):
         for c, k in cats.items():
             vals = [v * product_annual * k / n for v in base]
             cell[(sid, c)] = vals
+            cell_target[(sid, c)] = product_annual * k / n
         for cat, total, kind in extra:
             ws = [0.0] * 24
             if kind == "project":  # one-off refurbishment: three big months plus a small run-rate
@@ -120,6 +122,7 @@ def generate(g):
                 tot12 = sum(ws[12:])
                 ws = [w * total / tot12 for w in ws]
             cell[(sid, cat)] = ws
+            cell_target[(sid, cat)] = float(total)
 
     # round to pounds, fix the last-12-month total to the master annual spend
     for sid, s in sup.items():
@@ -129,10 +132,12 @@ def generate(g):
         for k in keys:
             cell[k] = [round(v) for v in cell[k]]
         target = sum(x[1] for x in INDIRECT[sid]) if s.get("supplier_type") == "indirect" else round(float(s["annual_spend_gbp"]))
-        diff = target - sum(sum(cell[k][12:]) for k in keys)
-        big = max(keys, key=lambda k: sum(cell[k][12:]))
-        j = max(range(12, 24), key=lambda i: cell[big][i])
-        cell[big][j] += diff
+        tg = {k: round(cell_target[k]) for k in keys}
+        big = max(keys, key=lambda k: tg[k])
+        tg[big] += target - sum(tg.values())  # the pound or two of rounding goes to the biggest category
+        for k in keys:
+            j = max(range(12, 24), key=lambda i: cell[k][i])
+            cell[k][j] += tg[k] - sum(cell[k][12:])
     for (sid, c), vals in cell.items():
         s = sup[sid]
         pref = s["tier"] in ("strategic", "preferred")
@@ -158,9 +163,10 @@ def generate(g):
     explicit = {"SUP-0074": 0.253}
     supplier_volume = []
     for sid in sup:
-        if sup[sid].get("supplier_type") == "indirect":  # service suppliers: no sales figure
-            continue
-        share = explicit.get(sid, r.uniform(0.04, 0.4))
+        if sup[sid].get("supplier_type") == "indirect":  # service suppliers: fixed share, no random draw (keeps the stream of the others)
+            share = 0.35
+        else:
+            share = explicit.get(sid, r.uniform(0.04, 0.4))
         supplier_volume.append({"supplier_id": sid, "annual_sales_gbp": float(round(last12[sid] / share, -3))})
 
     # payment terms benchmark

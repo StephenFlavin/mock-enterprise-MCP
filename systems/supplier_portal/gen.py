@@ -148,9 +148,12 @@ def generate(g):
         "SKU-101260": 6200, "SKU-102884": 0, "SKU-104536": 3100, "SKU-101722": 0, "SKU-100280": 1800,
         "SKU-105341": 4200, "SKU-102338": 0, "SKU-101575": 2500, "SKU-103458": 0, "SKU-101834": 900, "SKU-105159": 0,
     }
-    mto_story = {  # 03:28:Q4 long-tail SKUs: (make-to-order lead days, MOQ) or None when not offered
+    mto_story = {  # 03:28:Q4 long-tail SKUs: (make-to-order lead days, MOQ) or None when not offered. The first five are
+        # the best candidates from inventory optimisation (the ones supply planning switches to make to order).
+        "SKU-101253": (21, 100), "SKU-105054": (14, 50), "SKU-101617": (28, 100), "SKU-102387": (28, 150),
+        "SKU-103038": (21, 100),
         "SKU-102898": (21, 100), "SKU-106034": (28, 150), "SKU-102289": None, "SKU-104130": (35, 200),
-        "SKU-104053": (21, 100), "SKU-101253": None, "SKU-105054": (14, 50), "SKU-101617": (28, 100),
+        "SKU-104053": (21, 100),
     }
     skus_by_supplier = defaultdict(list)
     for prod in products:
