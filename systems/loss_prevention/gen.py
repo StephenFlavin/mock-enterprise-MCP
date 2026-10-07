@@ -64,22 +64,23 @@ def generate(g):
             for _ in range(num_incidents):
                 inc_type = r.choice(incident_types)
                 product = r.choice(products)
+                cost = float(product.get("unit_cost_gbp", 0) or 0)
 
                 if inc_type == "theft_external":
                     units = r.randint(1, 5)
-                    value = units * product["unit_cost_gbp"] * r.uniform(1.5, 2.5)
+                    value = units * cost * r.uniform(1.5, 2.5)
                 elif inc_type == "theft_internal":
                     units = r.randint(1, 3)
-                    value = units * product["unit_cost_gbp"] * r.uniform(1.2, 1.8)
+                    value = units * cost * r.uniform(1.2, 1.8)
                 elif inc_type == "damage":
                     units = r.randint(1, 10)
-                    value = units * product["unit_cost_gbp"] * r.uniform(0.5, 0.9)
+                    value = units * cost * r.uniform(0.5, 0.9)
                 elif inc_type == "system_error":
                     units = r.randint(1, 5)
-                    value = units * product["unit_cost_gbp"]
+                    value = units * cost
                 else:
                     units = r.randint(1, 3)
-                    value = units * product["unit_cost_gbp"]
+                    value = units * cost
 
                 incident_id = f"INC-{len(incidents) + 1:06d}"
                 incidents.append({

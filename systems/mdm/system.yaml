@@ -168,17 +168,22 @@ tools:
     desc: Vendors sharing bank accounts (potential fraud or legitimate consolidation). Flags payment risk.
     kind: sql
     args:
-      bank_account_hash: {type: str, desc: "Bank account hash or leave blank to find all matches"}
+      iban_suffix: {type: str, desc: "IBAN suffix to match (e.g. last 4 chars), or blank for all"}
     sql: |
-      SELECT v.vendor_id, v.name, v.country, v.status,
-             bd.bank_name, bd.account_holder, bd.currency,
-             COUNT(*) OVER (PARTITION BY bd.bank_account_hash) AS vendor_count,
-             STRING_AGG(DISTINCT v.vendor_id, ', ') OVER (PARTITION BY bd.bank_account_hash) AS vendor_ids
-      FROM vendor_master v
-      JOIN vendor_bank_details bd ON v.vendor_id = bd.vendor_id
-      WHERE bd.status = 'active'
-        AND ($bank_account_hash IS NULL OR bd.bank_account_hash = $bank_account_hash)
-      ORDER BY vendor_count DESC, v.vendor_id
+      WITH account_groups AS (
+        SELECT bd.iban, COUNT(DISTINCT bd.vendor_id) AS vendor_count,
+               STRING_AGG(DISTINCT v.vendor_id, ', ' ORDER BY v.vendor_id) AS vendor_ids,
+               STRING_AGG(DISTINCT v.name, '; ' ORDER BY v.name) AS vendor_names
+        FROM vendor_bank_details bd
+        JOIN vendor_master v ON bd.vendor_id = v.vendor_id
+        WHERE bd.status = 'active'
+          AND ($iban_suffix IS NULL OR bd.iban LIKE '%' || $iban_suffix)
+        GROUP BY bd.iban
+        HAVING COUNT(DISTINCT bd.vendor_id) > 1
+      )
+      SELECT vendor_ids, vendor_names, iban, vendor_count
+      FROM account_groups
+      ORDER BY vendor_count DESC, iban
     limit: 100
     example: {}
 
