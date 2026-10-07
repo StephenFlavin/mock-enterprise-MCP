@@ -258,31 +258,34 @@ tables:
 
 tools:
   - name: create_incident_ticket
-    desc: Open an incident ticket and assign it to a support team. Returns the new incident ticket.
+    desc: Open an incident ticket for a system or interface and route it to a support team. Returns the new incident ticket.
     kind: insert
     table: incident_tickets
     id_prefix: INC-
-    defaults: {status: open}
+    defaults: {status: open, severity: medium}
     args:
       title: {required: true}
       description: {required: true}
-      severity: {required: true, values: [critical, high, medium, low]}
       system_affected: {required: true}
-      assigned_to: {type: str, desc: Employee id to assign to}
-    example: {title: "WMS interface timeout", description: "Stock feed timing out", severity: high, system_affected: "WMS"}
+      severity: {values: [critical, high, medium, low]}
+      assigned_team: {type: str, desc: "Support team to route to, e.g. Interface Team, WMS Support"}
+      assigned_to: {type: str, desc: "Employee id to assign to, e.g. EMP-00095"}
+    example: {title: "WMS interface timeout", description: "Stock feed timing out", severity: high, system_affected: "WMS", assigned_team: "Interface Team"}
 
   - name: create_incident_ticket_for_site_error
-    desc: Raises an incident ticket for a site error. Returns the new ticket.
+    desc: Raises an incident ticket for a website error and links it to the error id. Returns the new ticket.
     kind: insert
     table: incident_tickets
     id_prefix: INC-
-    defaults: {status: open, severity: high}
+    defaults: {status: open, severity: high, system_affected: Website, assigned_team: Web Platform Team}
     args:
       title: {required: true}
       description: {required: true}
-      system_affected: {required: true}
-      assigned_to: {type: str}
-    example: {title: "Checkout error spike", description: "Checkout errors increasing", system_affected: "POS"}
+      source_error_id: {type: str, desc: "Site error being ticketed, e.g. ERR-900001"}
+      severity: {values: [critical, high, medium, low]}
+      system_affected: {type: str, desc: "System affected, e.g. Website, Payment Gateway"}
+      assigned_team: {type: str, desc: "Support team to route to, e.g. Web Platform Team"}
+    example: {title: "Checkout errors", description: "Checkout errors increasing", source_error_id: ERR-900001}
 
   - name: create_fault_ticket_for_self_checkout
     desc: Raises a fault ticket for a self-checkout unit. Returns the new ticket.
@@ -299,40 +302,41 @@ tools:
     example: {site_id: ST214, device_id: "SCO-214-01", fault_type: "scanning error", description: "Barcode scanner not responding", severity: high}
 
   - name: create_change_request
-    desc: Create a change request record for a patch, firmware or configuration change. Returns the new change request.
+    desc: Create a draft change request for a patch, firmware, configuration or migration change. Returns the new change request.
     kind: insert
     table: change_requests
     id_prefix: CHG-
-    defaults: {status: draft}
+    defaults: {status: draft, submitted_at: ""}
     args:
       title: {required: true}
       description: {required: true}
       change_type: {required: true, values: [patch, firmware, configuration, migration]}
-      system_affected: {required: true}
-      planned_date: {type: date}
-      assigned_to: {type: str}
-    example: {title: "WMS 9.3 security patch", description: "Apply critical security patch", change_type: patch, system_affected: WMS, planned_date: "+7d"}
+      system_affected: {required: true, type: str, desc: "System affected, e.g. WMS, AMR Fleet, ERP, Integration"}
+      planned_date: {type: date, desc: Planned implementation date}
+      assigned_to: {type: str, desc: "Employee id responsible, e.g. EMP-00095"}
+    example: {title: "WMS 9.2.7 patch", description: "Apply patch to fix duplicate replenishment tasks", change_type: patch, system_affected: WMS, planned_date: "+14d"}
 
   - name: submit_change_request
-    desc: Submit a change request for approval at the change board. Returns the old and new status.
+    desc: Submit a draft change request for approval at the next change board (CAB). Returns the old and new status.
     kind: update
     table: change_requests
     set: {status: submitted, submitted_at: "$as_of"}
     args: {}
-    example: {change_id: CHG-900001}
+    example: {change_id: CHG-900110}
 
   - name: create_load_test_run
-    desc: Schedules a load test run against an interface. Returns the new test run.
+    desc: Schedules a load test run against an interface at a target message rate. Returns the new test run.
     kind: insert
     table: load_test_runs
     id_prefix: LTR-
     defaults: {status: scheduled}
     args:
-      interface_name: {required: true}
-      test_type: {required: true}
-      target_message_rate: {required: true, type: int}
-      scheduled_at: {type: timestamp, desc: When to schedule the test}
-    example: {interface_name: "Order API", test_type: "peak load", target_message_rate: 5000}
+      interface_name: {required: true, values: [ASN_Inbound, ERP_to_GL, ERP_to_WMS, WMS_to_OMS, WMS_to_Website]}
+      test_type: {required: true, values: [peak load, stress, endurance, spike]}
+      target_message_rate: {required: true, type: int, desc: Target messages per second}
+      scheduled_at: {type: timestamp, default: "+7d", desc: "When to run the test, ideally in a quiet window"}
+      notes: {type: str, desc: Reason for the test}
+    example: {interface_name: WMS_to_OMS, test_type: "peak load", target_message_rate: 830}
 
   - name: create_security_remediation_task
     desc: Creates a remediation task for a security finding. Returns the new task.
@@ -350,73 +354,82 @@ tools:
     example: {title: "Patch WMS SQLi vulnerability", description: "Apply vendor patch", finding_id: "VULN-042", risk_level: critical, due_date: "+7d"}
 
   - name: list_site_errors_for_period
-    desc: Lists site errors for period. Returns error id, type, message and occurrence count.
+    desc: Website errors seen in a period, biggest first. Returns error id, type, page, device, counts, sessions affected, status and proposed fix.
     kind: sql
     args:
-      site_id: {}
-      date_from: {type: date, default: "-30d", desc: "Errors from this date onward"}
-      date_to: {type: date, default: "$as_of", desc: "Errors up to this date"}
-      error_type: {type: str, desc: "Filter by error type"}
+      date_from: {type: date, default: "-30d", desc: "Errors still occurring on or after this date"}
+      date_to: {type: date, default: "$as_of", desc: "Errors first seen on or before this date"}
+      error_type: {type: str, desc: "Filter by type: checkout_error, payment_gateway, inventory_sync, basket_error, search_error, login_error"}
+      device: {type: str, desc: "Filter by device: mobile, desktop or all"}
+      status: {type: enum, values: [active, investigating, resolved, ignored], desc: "Filter by status"}
     sql: |
-      SELECT error_id, site_id, error_type, error_message, error_count, first_seen, last_seen, status
+      SELECT error_id, error_type, page, device, error_message, error_count, sessions_affected,
+             first_seen, last_seen, status, resolution
       FROM site_errors
-      WHERE ($site_id IS NULL OR site_id = $site_id)
-        AND first_seen >= CAST($date_from AS DATE)
-        AND last_seen <= CAST($date_to AS DATE)
-        AND ($error_type IS NULL OR error_type = $error_type)
-      ORDER BY last_seen DESC
+      WHERE CAST(last_seen AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(first_seen AS DATE) <= CAST($date_to AS DATE)
+        AND ($error_type IS NULL OR lower(error_type) = lower($error_type))
+        AND ($device IS NULL OR lower(device) = lower($device))
+        AND ($status IS NULL OR status = $status)
+      ORDER BY error_count DESC, last_seen DESC
     limit: 50
     example: {}
 
   - name: list_self_checkout_fault_tickets
-    desc: Lists self checkout fault tickets. Returns ticket id, site, device, fault type and status.
+    desc: Self-checkout fault tickets, newest first. Returns ticket id, store, unit, fault type, severity and status. Leave site_id empty for all stores.
     kind: sql
     args:
       site_id: {}
       status: {type: enum, values: [open, investigating, repaired, closed], desc: "Filter by status"}
-      raised_from: {col: raised_at, op: ">=", type: date, default: "-30d"}
+      fault_type: {type: str, desc: "Filter by fault type, e.g. scanning error, payment failure, software crash, display issue"}
+      raised_from: {type: date, default: "-30d", desc: "Tickets raised on or after this date"}
     sql: |
       SELECT fault_id, site_id, device_id, fault_type, description, status, severity, raised_at, resolved_at
       FROM fault_tickets
       WHERE ($site_id IS NULL OR site_id = $site_id)
         AND ($status IS NULL OR status = $status)
-        AND raised_at >= CAST($raised_from AS DATE)
+        AND ($fault_type IS NULL OR lower(fault_type) = lower($fault_type))
+        AND CAST(raised_at AS DATE) >= CAST($raised_from AS DATE)
       ORDER BY raised_at DESC
-    limit: 50
+    limit: 100
     example: {}
 
   - name: list_load_test_history
-    desc: Previous load tests and results. Returns test id, interface, dates and outcome.
+    desc: Previous load tests per interface with target rate, peak achieved, latency, errors and outcome. Use to see what has and has not been tested.
     kind: sql
     args:
-      interface_name: {}
-      date_from: {type: date, default: "-90d", desc: "Tests scheduled from this date onward"}
+      interface_name: {values: [ASN_Inbound, ERP_to_GL, ERP_to_WMS, WMS_to_OMS, WMS_to_Website]}
+      date_from: {type: date, default: "-365d", desc: "Tests scheduled on or after this date"}
       status: {type: enum, values: [scheduled, in_progress, passed, failed], desc: "Filter by test status"}
     sql: |
       SELECT test_run_id, interface_name, test_type, target_message_rate, peak_achieved,
              avg_latency_ms, max_latency_ms, errors, status, scheduled_at, completed_at, notes
       FROM load_test_runs
       WHERE ($interface_name IS NULL OR interface_name = $interface_name)
-        AND scheduled_at >= CAST($date_from AS DATE)
+        AND CAST(scheduled_at AS DATE) >= CAST($date_from AS DATE)
         AND ($status IS NULL OR status = $status)
-      ORDER BY scheduled_at DESC
+      ORDER BY interface_name, scheduled_at DESC
     limit: 50
     example: {}
 
   - name: list_releases_and_change_requests
-    desc: Releases and change records affecting systems in a date range. Returns release, system, date and changes.
+    desc: Releases and their linked change requests affecting a system in a date range. Returns release, system, date, what changed, change titles and rollback.
     kind: sql
     args:
-      system_affected: {}
-      date_from: {type: date, default: "-90d", desc: "Releases from this date onward"}
-      date_to: {type: date, default: "$as_of", desc: "Releases up to this date"}
+      system_affected: {type: str, desc: "System name or part of it, e.g. Demand Model, WMS, Stock Feed"}
+      date_from: {type: date, default: "-180d", desc: "Releases on or after this date"}
+      date_to: {type: date, default: "$as_of", desc: "Releases on or before this date"}
     sql: |
-      SELECT release_id, release_name, system_affected, release_date, change_description, change_request_ids, deployed_to, status
-      FROM releases_and_changes
-      WHERE ($system_affected IS NULL OR system_affected = $system_affected)
-        AND release_date >= CAST($date_from AS DATE)
-        AND release_date <= CAST($date_to AS DATE)
-      ORDER BY release_date DESC
+      SELECT r.release_id, r.release_name, r.system_affected, r.release_date, r.change_description,
+             r.deployed_to, r.status, r.rollback_available, r.change_request_ids,
+             string_agg(c.change_id || ': ' || c.title || ' (' || c.change_type || ', ' || c.status || ')', '; ' ORDER BY c.change_id) AS change_requests
+      FROM releases_and_changes r
+      LEFT JOIN change_requests c ON position(c.change_id IN r.change_request_ids) > 0
+      WHERE ($system_affected IS NULL OR r.system_affected ILIKE '%' || $system_affected || '%')
+        AND CAST(r.release_date AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(r.release_date AS DATE) <= CAST($date_to AS DATE)
+      GROUP BY ALL
+      ORDER BY r.release_date DESC
     limit: 50
     example: {}
 
@@ -453,13 +466,18 @@ tools:
     example: {}
 
   - name: get_interface_throughput_and_capacity
-    desc: Current throughput and rated capacity per interface. Returns interface, capacity, usage and headroom.
+    desc: Current throughput, rated capacity and headroom per integration interface, tightest first. Set peak_uplift_pct to see load at peak.
     kind: sql
     args:
-      interface_name: {}
+      interface_name: {values: [ASN_Inbound, ERP_to_GL, ERP_to_WMS, WMS_to_OMS, WMS_to_Website]}
+      peak_uplift_pct: {type: float, default: 0, desc: "Extra load to apply, e.g. 57 for a 57% rise at peak"}
     sql: |
       SELECT interface_id, interface_name, source_system, target_system, message_type,
-             current_throughput_msgs_per_sec, rated_capacity_msgs_per_sec, headroom_pct, status, last_measured
+             current_throughput_msgs_per_sec, rated_capacity_msgs_per_sec,
+             round(100.0 * (rated_capacity_msgs_per_sec - current_throughput_msgs_per_sec) / rated_capacity_msgs_per_sec, 1) AS headroom_pct,
+             round(current_throughput_msgs_per_sec * (1 + $peak_uplift_pct / 100.0), 0) AS projected_msgs_per_sec,
+             round(100.0 * current_throughput_msgs_per_sec * (1 + $peak_uplift_pct / 100.0) / rated_capacity_msgs_per_sec, 1) AS projected_utilisation_pct,
+             status, last_measured
       FROM system_interfaces
       WHERE ($interface_name IS NULL OR interface_name = $interface_name)
       ORDER BY headroom_pct ASC
@@ -467,36 +485,49 @@ tools:
     example: {}
 
   - name: get_peak_interface_load_history
-    desc: Message volumes and latency during previous peaks. Returns test runs with throughput and latency.
+    desc: Message volumes, peak rate and latency per interface during previous peak events such as Black Friday week. Use to see what load was really hit.
     kind: sql
     args:
-      interface_name: {required: true}
-      days: {type: int, default: 180, desc: "Look back this many days"}
+      interface_name: {values: [ASN_Inbound, ERP_to_GL, ERP_to_WMS, WMS_to_OMS, WMS_to_Website]}
+      days: {type: int, default: 420, desc: "Look back this many days"}
     sql: |
-      SELECT test_run_id, interface_name, peak_achieved, avg_latency_ms, max_latency_ms, errors, completed_at
-      FROM load_test_runs
-      WHERE interface_name = $interface_name
-        AND status IN ('passed', 'failed')
-        AND completed_at >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
-      ORDER BY completed_at DESC
-    limit: 30
-    example: {interface_name: "Order API"}
+      SELECT peak_id, interface_name, event_name, peak_date, peak_msgs_per_sec, rated_capacity_msgs_per_sec,
+             round(100.0 * peak_msgs_per_sec / rated_capacity_msgs_per_sec, 1) AS peak_utilisation_pct,
+             avg_latency_ms, p95_latency_ms, error_rate_pct, messages_in_peak_day
+      FROM interface_peak_load
+      WHERE ($interface_name IS NULL OR interface_name = $interface_name)
+        AND CAST(peak_date AS DATE) >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      ORDER BY interface_name, peak_date DESC
+    limit: 50
+    example: {}
 
   - name: get_wifi_network_load
-    desc: Wireless network load and latency by area and hour. Returns device count, throughput and latency.
+    desc: Average wireless load by area and hour over recent days. Returns devices, throughput, latency, channel use and packet loss. Compare hours to spot peaks.
     kind: sql
     args:
       site_id: {required: true}
-      area: {type: str, desc: "Area within site, e.g. warehouse, checkout"}
-      hour_of_day: {type: int, desc: "Hour 0-23 (default all)"}
+      area: {type: str, desc: "Area within site: warehouse, loading_dock or office"}
+      hour_from: {type: int, desc: "First hour of day to include, 0-23"}
+      hour_to: {type: int, desc: "Last hour of day to include, 0-23"}
+      days: {type: int, default: 14, desc: "Average over this many recent days"}
     sql: |
-      SELECT measurement_id, site_id, area, hour_of_day, date_measured, device_count, throughput_mbps, latency_ms, signal_strength_dbm
+      SELECT site_id, area, hour_of_day,
+             round(avg(device_count), 0) AS avg_device_count,
+             round(avg(throughput_mbps), 1) AS avg_throughput_mbps,
+             round(avg(latency_ms), 1) AS avg_latency_ms,
+             round(max(latency_ms), 1) AS max_latency_ms,
+             round(avg(channel_utilisation_pct), 1) AS avg_channel_utilisation_pct,
+             round(avg(packet_loss_pct), 2) AS avg_packet_loss_pct,
+             count(*) AS days_measured
       FROM wifi_network_load
       WHERE site_id = $site_id
         AND ($area IS NULL OR area = $area)
-        AND ($hour_of_day IS NULL OR hour_of_day = $hour_of_day)
-      ORDER BY date_measured DESC, hour_of_day ASC
-    limit: 50
+        AND ($hour_from IS NULL OR hour_of_day >= $hour_from)
+        AND ($hour_to IS NULL OR hour_of_day <= $hour_to)
+        AND CAST(date_measured AS DATE) >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      GROUP BY ALL
+      ORDER BY area, hour_of_day
+    limit: 100
     example: {site_id: DC1}
 
   - name: get_wms_system_performance
@@ -516,33 +547,37 @@ tools:
     example: {site_id: DC1}
 
   - name: get_model_alert_rules
-    desc: Configured monitoring alerts and thresholds for models. Returns rule id, model, metric and threshold.
+    desc: Configured monitoring alert rules per ML model with threshold, enabled flag and noise level. Shows which models lack an active drift alert.
     kind: sql
     args:
-      model_name: {}
-      rule_type: {type: str, desc: "Type: drift, accuracy, retraining"}
+      model_id: {type: str, desc: "ML model id, e.g. MOD-demand"}
+      rule_type: {type: str, desc: "Type: drift, accuracy, data_freshness"}
     sql: |
-      SELECT rule_id, model_name, rule_type, threshold_value, threshold_metric, enabled, created_at, last_triggered, noise_level
+      SELECT rule_id, model_id, model_name, rule_type, threshold_value, threshold_metric, enabled,
+             noise_level, alerts_last_30d, last_triggered, created_at,
+             bool_or(rule_type = 'drift' AND enabled) OVER (PARTITION BY model_id) AS model_has_active_drift_alert
       FROM model_alert_rules
-      WHERE ($model_name IS NULL OR model_name = $model_name)
+      WHERE ($model_id IS NULL OR lower(model_id) = lower($model_id))
         AND ($rule_type IS NULL OR rule_type = $rule_type)
-      ORDER BY model_name, rule_type
+      ORDER BY model_id, rule_type
     limit: 50
     example: {}
 
   - name: get_pipeline_step_timings
-    desc: Timing of each step in a data pipeline. Returns step name, order and durations.
+    desc: Timing of each step in a data pipeline against its 90-day baseline, with each step's share of the total. Use to find the step adding delay.
     kind: sql
     args:
-      pipeline_name: {required: true}
+      pipeline_name: {required: true, type: str, desc: "Pipeline: stock_feed, demand_forecast or sales_analytics"}
     sql: |
-      SELECT pipeline_step_id, pipeline_name, step_name, step_order, avg_duration_seconds, max_duration_seconds,
-             min_duration_seconds, rows_processed, last_run_date, success_rate_pct
+      SELECT pipeline_step_id, pipeline_name, step_name, step_order, avg_duration_seconds, baseline_avg_seconds,
+             round(avg_duration_seconds - baseline_avg_seconds, 0) AS added_seconds,
+             round(100.0 * avg_duration_seconds / sum(avg_duration_seconds) OVER (), 1) AS share_of_total_pct,
+             max_duration_seconds, rows_processed, success_rate_pct, last_run_date, notes
       FROM data_pipeline
-      WHERE pipeline_name = $pipeline_name
+      WHERE lower(pipeline_name) = lower($pipeline_name)
       ORDER BY step_order ASC
     limit: 50
-    example: {pipeline_name: "demand_forecast"}
+    example: {pipeline_name: "stock_feed"}
 
   - name: get_recovery_time_and_backup_status
     desc: RTO/RPO targets and last backup and restore tests. Returns system, targets and test dates.

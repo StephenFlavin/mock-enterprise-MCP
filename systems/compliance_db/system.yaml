@@ -41,6 +41,7 @@ tables:
     cols:
       sku: {desc: "Product SKU"}
       market: {type: enum, values: [UK, EU, US, AU, JP, CN, other], desc: "Market"}
+      country: {type: str, desc: "Country code when the gap applies to one country only, e.g. IE; blank = whole market"}
       product_category: {type: str, desc: "Regulated category the product falls under, e.g. childrens_drinkware"}
       compliance_status: {type: enum, values: [compliant, non_compliant, under_review, blocked, exempt], desc: "Compliance status"}
       missing_data_type: {type: str, desc: "What data is missing, e.g. test_report, certificate, labelling_approval"}
@@ -83,7 +84,7 @@ tables:
     cols:
       cert_id: {type: str, desc: "Certification id, e.g. CRT-000123"}
       certificate_number: {type: str, desc: "Official certificate number"}
-      certification_type: {type: enum, values: [oeko_tex, gots, fair_trade, b_corp, eu_ecolabel, cradle_to_cradle, bluesign, other], desc: "Type of certification"}
+      certification_type: {type: enum, values: [oeko_tex, gots, grs, rcs, fair_trade, b_corp, eu_ecolabel, cradle_to_cradle, bluesign, other], desc: "Type of certification"}
       holder_type: {type: enum, values: [supplier, factory, own_product, material], desc: "Who holds it"}
       holder_name: {type: str, desc: "Company or product name holding cert"}
       supplier_id: {type: str, desc: "If held by supplier"}
@@ -115,7 +116,7 @@ tables:
       substance_id: {type: str, desc: "Substance id, e.g. SUB-000123"}
       substance_name: {type: str, desc: "Chemical name"}
       common_name: {type: str, desc: "Common/trade name if any"}
-      restriction_type: {type: enum, values: [banned, restricted, candidate_list, under_review, phase_out], desc: "Type of restriction"}
+      restriction_type: {type: enum, values: [banned, restricted, candidate_list, under_review, phase_out, allowed], desc: "Type of restriction; allowed = no restriction"}
       market: {type: enum, values: [UK, EU, US, AU, JP, CN, global, other], desc: "Where it applies"}
       applies_to: {type: str, desc: "Product types or uses affected"}
       effective_date: {type: date, desc: "When the restriction takes effect"}
@@ -406,31 +407,51 @@ tools:
     example: {country: DE, product_scope: all_textiles}
 
   - name: get_labelling_and_language_requirements
-    desc: Retrieves labelling and language requirements by market (e.g. which languages required, font sizes).
+    desc: Retrieves labelling and language requirements for a country or market (which languages are required, what must be on the label, font sizes), optionally for one product scope.
     kind: sql
     args:
-      market: {required: true}
-      language: {type: str, desc: "Language code, e.g. fr, de, it (optional)"}
+      country: {type: str, desc: "Country code or name, e.g. PL, CZ, Poland. Includes market-wide rules"}
+      market: {type: str, desc: "Market, e.g. EU, UK. Omit when a country is given"}
+      language: {type: str, desc: "Language code, e.g. pl, cs, fr, de (optional)"}
+      product_scope: {type: str, desc: "Regulated category, e.g. all_textiles, cookware, homeware_storage (optional)"}
     sql: |
-      SELECT market, language, requirement_category, requirement_text, mandatory, minimum_font_size_pt
-      FROM labelling_requirements
-      WHERE market = $market
-        AND ($language IS NULL OR language = $language)
-      ORDER BY language, requirement_category
-    limit: 40
+      WITH t AS (
+        SELECT (SELECT c.country FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))) AS cc,
+               coalesce((SELECT c.market FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))), upper($market)) AS mk
+      )
+      SELECT lr.market, lr.country, lr.language, lr.product_scope, lr.requirement_category, lr.requirement_text,
+             lr.mandatory, lr.minimum_font_size_pt
+      FROM labelling_requirements lr, t
+      WHERE (t.mk IS NULL OR lr.market = t.mk)
+        AND (t.cc IS NULL OR lr.country IS NULL OR lr.country = t.cc)
+        AND ($language IS NULL OR lr.language = lower($language))
+        AND ($product_scope IS NULL OR lr.product_scope = replace(lower($product_scope), ' ', '_'))
+      ORDER BY lr.country, lr.language, lr.product_scope, lr.requirement_category, lr.label_req_id
+    limit: 60
     example: {market: EU}
 
   - name: get_language_requirements_by_country
-    desc: Return language requirements by country (which languages must labels be in).
+    desc: Languages that labels must carry in a country (or every country of a market), with the number of rules per language and the product scopes.
     kind: sql
     args:
-      market: {required: true}
+      country: {type: str, desc: "Country code or name, e.g. FR, DE, IT"}
+      market: {type: str, desc: "Market, e.g. EU. Omit when a country is given"}
+      product_scope: {type: str, desc: "Regulated category, e.g. cosmetics, all_textiles. Omit for all"}
     sql: |
-      SELECT DISTINCT market, language
-      FROM labelling_requirements
-      WHERE market = $market
-      ORDER BY language
-    limit: 10
+      WITH t AS (
+        SELECT (SELECT c.country FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))) AS cc,
+               coalesce((SELECT c.market FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))), upper($market)) AS mk
+      )
+      SELECT coalesce(lr.country, 'whole ' || lr.market || ' market') AS country, lr.market, lr.language,
+             count(*) AS rules, string_agg(DISTINCT lr.product_scope, ', ') AS product_scopes,
+             string_agg(DISTINCT lr.requirement_category, ', ') AS requirement_categories
+      FROM labelling_requirements lr, t
+      WHERE (t.mk IS NULL OR lr.market = t.mk)
+        AND (t.cc IS NULL OR lr.country = t.cc)
+        AND ($product_scope IS NULL OR lr.product_scope = replace(lower($product_scope), ' ', '_'))
+      GROUP BY ALL
+      ORDER BY 1, lr.language
+    limit: 20
     example: {market: EU}
 
   - name: compare_label_to_requirements
@@ -580,17 +601,20 @@ tools:
     example: {substance_name: PFAS}
 
   - name: get_material_compliance_status
-    desc: Return material compliance status (whether in use, if restricted, alternatives available).
+    desc: Regulatory status of a material or substance in a market (restricted, phase-out dates, alternatives available) and which of our materials contain it.
     kind: sql
     args:
-      material: {required: true, desc: "Material or substance name"}
-      market: {required: true}
+      material: {required: true, desc: "Material or substance name or common name, e.g. PFAS, lead"}
+      market: {type: str, desc: "Market, e.g. UK, EU, US. Global rules are always included. Omit for all markets"}
     sql: |
       SELECT sr.substance_id, sr.substance_name, sr.restriction_type, sr.market,
-             sr.applies_to, sr.alternative_available
+             sr.applies_to, sr.effective_date, sr.ban_date, sr.alternative_available,
+             (SELECT string_agg(DISTINCT ms.material_id || ' ' || ms.material_name, '; ')
+              FROM material_substances ms WHERE ms.substance_id = sr.substance_id) AS our_materials_affected
       FROM substance_restrictions sr
-      WHERE sr.substance_name ILIKE '%' || $material || '%'
-        AND (sr.market = $market OR sr.market = 'global')
+      WHERE (sr.substance_name ILIKE '%' || $material || '%' OR sr.common_name ILIKE '%' || $material || '%')
+        AND ($market IS NULL OR sr.market = upper($market) OR sr.market = 'global')
+      ORDER BY sr.market, sr.effective_date
     limit: 20
     example: {material: PFAS, market: EU}
 
@@ -630,89 +654,103 @@ tools:
     example: {supplier_id: SUP-0001}
 
   - name: get_fabric_sustainability_certifications
-    desc: Return fabric sustainability certifications (OEKO-TEX, GOTS, Bluesign, Fair Trade).
+    desc: Return fabric sustainability certifications (OEKO-TEX, GOTS, Bluesign, EU Ecolabel) held by a fabric supplier or for a fabric type, with validity.
     kind: sql
     args:
-      material: {required: true, desc: "Fabric type or supplier"}
+      material: {type: str, desc: "Fabric type or supplier name, e.g. cotton, polyester"}
+      supplier_id: {desc: "Fabric supplier id"}
     sql: |
-      SELECT cert_id, certificate_number, certification_type, holder_name,
-             issue_date, expiry_date, verified_in_registry, status
+      SELECT cert_id, supplier_id, holder_name, material, certification_type, certificate_number,
+             issue_date, expiry_date, verified_in_registry, status,
+             CASE WHEN status = 'active' AND expiry_date >= CAST($as_of AS DATE) THEN 'valid' ELSE 'expired' END AS validity
       FROM material_certifications
-      WHERE (holder_name LIKE '%' || $material || '%' OR material LIKE '%' || $material || '%')
+      WHERE ($material IS NULL OR holder_name ILIKE '%' || $material || '%' OR material ILIKE '%' || $material || '%')
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
         AND certification_type IN ('oeko_tex', 'gots', 'bluesign', 'eu_ecolabel')
-      ORDER BY certification_type, expiry_date DESC
+      ORDER BY supplier_id, certification_type, expiry_date DESC
     limit: 30
     example: {material: cotton}
 
   - name: search_material_certification_registry
-    desc: Search for material certification registry entries and verify their status.
+    desc: Search for material certification registry entries (public register) and verify their validity and expiry.
     kind: sql
     args:
-      certification_type: {required: true, desc: "Type like oeko_tex, gots, fair_trade"}
+      certification_type: {required: true, desc: "Type like oeko_tex, gots, grs, bluesign, fair_trade"}
       holder_name: {desc: "Company or mill name (partial match)"}
     sql: |
-      SELECT registry_entry_id, certificate_number, certification_type, holder_name,
-             issued_date, expiry_date, is_valid
+      SELECT registry_entry_id, certificate_number, certification_type, holder_name, holder_country,
+             issued_date, expiry_date, is_valid, status
       FROM certification_registry
-      WHERE certification_type = $certification_type
-        AND ($holder_name IS NULL OR holder_name LIKE '%' || $holder_name || '%')
+      WHERE certification_type = replace(replace(lower($certification_type), '-', '_'), ' ', '_')
+        AND ($holder_name IS NULL OR holder_name ILIKE '%' || $holder_name || '%')
       ORDER BY expiry_date DESC
     limit: 30
     example: {certification_type: oeko_tex}
 
   - name: compare_claims_to_certifications
-    desc: Compare claims to certifications. Which claims are backed by verified certificates.
+    desc: Compare claims to certifications. Which claims of a product or company are backed by verified certificates and which are not.
     kind: sql
     args:
-      subject_id: {required: true, desc: "Product SKU or company name"}
+      subject_id: {required: true, desc: "Product SKU or company name (partial match)"}
     sql: |
-      SELECT sc.claim_id, sc.claim_text, sc.claim_type, sc.certification_backing,
-             sc.certification_verified, sc.confidence_level
+      SELECT sc.claim_id, sc.subject_id, sc.claim_text, sc.claim_type, sc.certification_backing,
+             sc.certification_verified, sc.confidence_level, sc.sources,
+             CASE WHEN sc.certification_verified THEN 'backed by verified certificate'
+                  WHEN sc.certification_backing IS NULL THEN 'no certificate named'
+                  ELSE 'certificate not verified' END AS verdict
       FROM sustainability_claims sc
-      WHERE sc.subject_id = $subject_id
+      WHERE sc.subject_id ILIKE '%' || $subject_id || '%'
       ORDER BY sc.certification_verified DESC, sc.confidence_level
     limit: 30
     example: {subject_id: STY-5520}
 
   - name: compare_claims_to_certificate_coverage
-    desc: Check if recycled content claims meet chain-of-custody evidence requirements.
+    desc: Check whether our recycled content claims are covered by a current chain-of-custody certificate (GRS or RCS) for the product. Omit the sku to check every recycled content claim.
     kind: sql
     args:
-      sku: {required: true}
+      sku: {desc: "Product SKU. Omit for all products with a recycled content claim"}
     sql: |
-      SELECT sc.claim_id, sc.claim_text, sc.certification_backing,
-             mc.cert_id, mc.certificate_number, mc.status
+      SELECT sc.claim_id, sc.subject_id AS sku, sc.claim_text, sc.certification_backing,
+             mc.cert_id, mc.certificate_number, mc.holder_name, mc.expiry_date,
+             CASE WHEN mc.cert_id IS NULL THEN 'NO CERTIFICATE: remove the claim'
+                  WHEN mc.status <> 'active' OR mc.expiry_date < CAST($as_of AS DATE) THEN 'CERTIFICATE EXPIRED: reword or remove the claim'
+                  ELSE 'COVERED' END AS coverage,
+             'needs a current GRS or RCS scope certificate for the product supplier' AS evidence_required
       FROM sustainability_claims sc
-      LEFT JOIN material_certifications mc ON sc.certification_backing = mc.certification_type
-      WHERE sc.subject_id = $sku AND sc.claim_type = 'recycled_content'
+      LEFT JOIN material_certifications mc ON mc.sku = sc.subject_id AND mc.certification_type IN ('grs', 'rcs')
+      WHERE sc.claim_type = 'recycled_content' AND sc.subject_type = 'own_product'
+        AND ($sku IS NULL OR sc.subject_id = $sku)
+      ORDER BY coverage, sc.subject_id
     limit: 20
     example: {sku: K-1700}
 
   - name: search_competitor_sustainability_claims
-    desc: Search for competitor sustainability claims and whether they are certified.
+    desc: Competitors' sustainability claims and whether each is backed by a verified certificate. Omit the keyword to list every competitor claim.
     kind: sql
     args:
-      keyword: {required: true, desc: "Search term like sustainable, recycled, organic"}
+      keyword: {type: str, desc: "Optional word in the claim, claim type, certificate type or competitor name, e.g. recycled, organic, gots, Fjordline"}
     sql: |
-      SELECT DISTINCT claim_id, subject_type, subject_id, claim_text, claim_type,
-             certification_verified, confidence_level
+      SELECT claim_id, subject_id AS competitor, claim_text, claim_type, certification_backing,
+             certification_verified, confidence_level, sources
       FROM sustainability_claims
-      WHERE subject_type IN ('competitor_product', 'supplier_brand')
-        AND claim_text ILIKE '%' || $keyword || '%'
-      ORDER BY certification_verified DESC
+      WHERE subject_type = 'competitor_product'
+        AND ($keyword IS NULL OR claim_text ILIKE '%' || $keyword || '%' OR claim_type ILIKE '%' || $keyword || '%'
+             OR certification_backing ILIKE '%' || $keyword || '%' OR subject_id ILIKE '%' || $keyword || '%')
+      ORDER BY subject_id, certification_verified DESC, claim_id
     limit: 50
     example: {keyword: Carbon}
 
   - name: search_recycled_content_claim_standards
-    desc: Search for recycled content claim standards and chain-of-custody requirements.
+    desc: Recycled content claim standards, wording rules and chain-of-custody evidence requirements by market.
     kind: sql
     args:
-      market: {required: true}
+      market: {type: str, desc: "Market, e.g. UK, EU, US. Omit for all markets"}
     sql: |
-      SELECT label_req_id, market, requirement_category, requirement_text
+      SELECT label_req_id, market, requirement_category, requirement_text, mandatory
       FROM labelling_requirements
-      WHERE market = $market AND requirement_text ILIKE '%recycled%'
-    limit: 20
+      WHERE ($market IS NULL OR market = upper($market)) AND requirement_text ILIKE '%recycled%'
+      ORDER BY market, label_req_id
+    limit: 30
     example: {market: EU}
 
   - name: search_cosmetics_regulatory_requirements
@@ -729,18 +767,25 @@ tools:
     example: {market: EU}
 
   - name: search_cosmetics_labelling_requirements_by_country
-    desc: Search for cosmetics labelling requirements by country (ingredients, warnings, language).
+    desc: Cosmetics labelling requirements for a country (legal marks, recycling labels, ingredients, warnings, language) including its market-wide rules.
     kind: sql
     args:
-      market: {required: true}
+      country: {type: str, desc: "Country code or name, e.g. FR, DE, IT. Includes market-wide rules"}
+      market: {type: str, desc: "Market, e.g. EU, UK. Omit when a country is given"}
     sql: |
-      SELECT label_req_id, market, language, requirement_category, requirement_text,
-             mandatory, minimum_font_size_pt
-      FROM labelling_requirements
-      WHERE market = $market AND product_scope LIKE '%cosmetics%'
-      ORDER BY language, requirement_category
-    limit: 30
-    example: {market: EU}
+      WITH t AS (
+        SELECT (SELECT c.country FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))) AS cc,
+               coalesce((SELECT c.market FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))), upper($market)) AS mk
+      )
+      SELECT lr.label_req_id, lr.market, lr.country, lr.language, lr.requirement_category, lr.requirement_text,
+             lr.mandatory, lr.minimum_font_size_pt
+      FROM labelling_requirements lr, t
+      WHERE lr.product_scope = 'cosmetics'
+        AND (t.mk IS NULL OR lr.market = t.mk)
+        AND (t.cc IS NULL OR lr.country IS NULL OR lr.country = t.cc)
+      ORDER BY lr.country, lr.requirement_category, lr.label_req_id
+    limit: 40
+    example: {country: FR}
 
   - name: list_required_registrations_by_market
     desc: Registrations, notifications and certificates required to sell a product category in a market (cosmetics CPNP, SCPN, GMP and so on).
@@ -759,65 +804,79 @@ tools:
     example: {market: EU, product_category: cosmetics}
 
   - name: get_regulatory_status_by_substance_and_region
-    desc: Return regulatory status of a substance by region (banned, restricted, allowed, phase-out timeline).
+    desc: Return regulatory status of a substance or finish by region (banned, restricted, allowed, under review, phase-out timeline). Omit the market to see every region.
     kind: sql
     args:
-      substance_name: {required: true, desc: "Chemical name"}
-      market: {type: enum, values: [UK, EU, US, AU, JP, CN, global, other], default: global}
+      substance_name: {required: true, desc: "Chemical or finish name, e.g. PFAS, silicone, wax"}
+      market: {type: str, desc: "Region, e.g. UK, EU, US, global. Omit for all regions"}
     sql: |
       SELECT substance_id, substance_name, restriction_type, market, applies_to,
              effective_date, ban_date, alternative_available
       FROM substance_restrictions
-      WHERE (substance_name LIKE '%' || $substance_name || '%' OR common_name LIKE '%' || $substance_name || '%')
-        AND (market = $market OR market = 'global')
-      ORDER BY market, effective_date
-    limit: 20
+      WHERE (substance_name ILIKE '%' || $substance_name || '%' OR common_name ILIKE '%' || $substance_name || '%')
+        AND ($market IS NULL OR market = upper($market) OR market = 'global' OR upper($market) = 'GLOBAL')
+      ORDER BY substance_name, market, effective_date
+    limit: 30
     example: {substance_name: PFAS, market: EU}
 
   - name: search_upcoming_regulations_by_topic
-    desc: Search for upcoming regulations by topic (e.g. microplastics, PFAS, recycling, traceability).
+    desc: Search for upcoming regulations by topic (e.g. microplastics, microfibre, PFAS, recycling, traceability), soonest first, with what each requires.
     kind: sql
     args:
-      topic: {required: true, desc: "Topic keyword, e.g. microplastics, PFAS, traceability"}
+      topic: {required: true, desc: "Topic keyword, e.g. microplastics, microfibre, PFAS, traceability"}
     sql: |
-      SELECT regulation_id, title, market, product_scope, effective_date, impact_level
+      SELECT regulation_id, title, market, product_scope, effective_date, transitional_period_end, impact_level, required_action
       FROM regulations
       WHERE status = 'upcoming'
-        AND (title LIKE '%' || $topic || '%' OR description LIKE '%' || $topic || '%')
+        AND (title ILIKE '%' || $topic || '%' OR description ILIKE '%' || $topic || '%' OR keywords ILIKE '%' || $topic || '%')
       ORDER BY effective_date ASC
     limit: 30
     example: {topic: microplastics}
 
   - name: list_products_missing_compliance_data_by_market
-    desc: List products missing compliance data by market (test reports, certifications, labelling approval).
+    desc: List products missing compliance data (test reports, certificates, labelling approval) for a market or one country, earliest deadline first, with the supplier to ask.
     kind: sql
     args:
-      market: {required: true}
+      market: {type: str, desc: "Market, e.g. UK, EU, US. Omit when a country is given"}
+      country: {type: str, desc: "Country code or name, e.g. IE or Ireland; includes market-wide gaps of its market"}
     sql: |
-      SELECT sku, market, compliance_status, missing_data_type, required_by
-      FROM product_compliance_status
-      WHERE market = $market AND missing_data_type IS NOT NULL
-      ORDER BY required_by ASC
+      WITH t AS (
+        SELECT (SELECT c.country FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))) AS cc,
+               coalesce((SELECT c.market FROM countries c WHERE lower($country) IN (lower(c.country), lower(c.name))), upper($market)) AS mk
+      )
+      SELECT s.sku, p.name, p.supplier_id, s.market, s.country, s.product_category, s.compliance_status,
+             s.missing_data_type, s.required_by, s.notes
+      FROM product_compliance_status s JOIN master.products p USING (sku), t
+      WHERE s.missing_data_type IS NOT NULL
+        AND (t.mk IS NULL OR s.market = t.mk)
+        AND (t.cc IS NULL OR s.country IS NULL OR s.country = t.cc)
+      ORDER BY s.required_by ASC, s.sku
     limit: 50
     example: {market: EU}
 
   - name: get_product_compliance_requirements_by_market
-    desc: Compliance requirements (testing, certification, labelling, materials) that apply to one product in a market, with its current status.
+    desc: Compliance requirements (testing, certification, labelling, materials) that apply to one product, or to a regulated product category, in a market or country, with the product's current status.
     kind: sql
     args:
-      sku: {required: true}
-      market: {required: true}
+      sku: {desc: "Product SKU"}
+      product_category: {type: str, desc: "Regulated category instead of a SKU, e.g. cookware, all_textiles"}
+      market: {type: str, required: true, desc: "Market or country, e.g. EU, UK, JP, PL, CZ, Japan"}
     sql: |
-      WITH pc AS (
-        SELECT product_category FROM product_compliance_status WHERE sku = $sku AND market = $market
+      WITH t AS (
+        SELECT coalesce((SELECT c.market FROM countries c WHERE lower($market) IN (lower(c.country), lower(c.name))), upper($market)) AS mk
+      ), pc AS (
+        SELECT product_category FROM product_compliance_status WHERE sku = $sku AND market = (SELECT mk FROM t)
         UNION
         SELECT rc.product_category FROM regulated_categories rc JOIN master.products p ON p.sku = $sku
-        WHERE list_contains(string_split(rc.master_categories, '|'), p.category)
+        WHERE list_contains(string_split(rc.master_categories, '|'), p.category) OR (rc.hazmat <> '' AND rc.hazmat = p.hazmat)
+        UNION
+        SELECT replace(lower($product_category), ' ', '_') WHERE $product_category IS NOT NULL
       )
       SELECT DISTINCT rr.product_category, rr.requirement_type, rr.topic, rr.standard, rr.description, rr.applies_to,
-             (SELECT ps.compliance_status FROM product_compliance_status ps WHERE ps.sku = $sku AND ps.market = $market) AS compliance_status
-      FROM regulatory_requirements rr
-      WHERE rr.market = $market AND rr.product_category IN (SELECT product_category FROM pc)
-      ORDER BY rr.product_category, rr.requirement_type
+             (SELECT ps.compliance_status FROM product_compliance_status ps WHERE ps.sku = $sku AND ps.market = rr.market) AS compliance_status,
+             (SELECT ps.notes FROM product_compliance_status ps WHERE ps.sku = $sku AND ps.market = rr.market) AS status_note
+      FROM regulatory_requirements rr, t
+      WHERE rr.market = t.mk AND rr.product_category IN (SELECT product_category FROM pc)
+      ORDER BY rr.product_category, rr.requirement_type, rr.topic
     limit: 40
     example: {sku: K-1700, market: EU}

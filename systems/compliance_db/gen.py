@@ -2,7 +2,11 @@
 from datetime import timedelta
 
 STORY_SKUS = {"SKU-102590", "SKU-104123", "SKU-104795", "SKU-105551", "SKU-104809", "PF-220", "SKU-100847", "SKU-102779",
-              "SKU-104039", "SKU-100868", "SKU-103136", "SKU-101813", "SKU-103199", "SKU-103745", "SKU-102905", "K-1700"}
+              "SKU-104039", "SKU-100868", "SKU-103136", "SKU-101813", "SKU-103199", "SKU-103745", "SKU-102905", "K-1700",
+              "SKU-100875", "SKU-100882", "SKU-101456", "SKU-101463", "SKU-100385", "SKU-100259", "SKU-100154", "SKU-100427",
+              "SKU-100700"}
+# suppliers whose certificates are planted in seed/ (kept out of the generated noise)
+STORY_SUPPLIERS = {"SUP-0001", "SUP-0002", "SUP-0036", "SUP-0044", "SUP-0052", "SUP-0058", "SUP-0067", "SUP-0077"}
 CATEGORY_MAP = {"Nightwear": "kids_sleepwear", "Drinkware": "childrens_drinkware", "Outerwear": "waterproof_outerwear",
                 "Skincare": "cosmetics", "Bodycare": "cosmetics", "Haircare": "cosmetics", "Fragrance": "cosmetics",
                 "Bags": "leather_goods", "Small Appliances": "electrical_appliances"}
@@ -40,6 +44,8 @@ def generate(g):
         for mk in ("UK", "EU"):
             s = r.choices(["compliant", "under_review"], weights=[93, 7])[0]
             missing = r.choice(["test_report", "certificate", "labelling_approval"]) if s != "compliant" else None
+            if mk == "EU":  # EU gaps are all planted in seed/ so the list for EU/Ireland is exactly the story
+                s, missing = "compliant", None
             status_rows.append({"sku": p["sku"], "market": mk, "product_category": cat, "compliance_status": s,
                                 "missing_data_type": missing, "required_by": g.days_ago(-r.randint(30, 150)) if missing else None,
                                 "notes": f"Awaiting {missing}" if missing else "Tracked", "updated_at": g.days_ago(r.randint(0, 40))})
@@ -60,7 +66,7 @@ def generate(g):
                       "created_at": g.days_ago(r.randint(30, 90)), "updated_at": g.days_ago(r.randint(0, 30))})
 
     certs, registry = [], []
-    for i, sup in enumerate(r.sample([s for s in suppliers if s["country"] not in ("PT", "TR")], 10), 1):
+    for i, sup in enumerate(r.sample([s for s in suppliers if s["country"] not in ("PT", "TR") and s["supplier_id"] not in STORY_SUPPLIERS], 10), 1):
         num = f"OT-26-{4000000 + i * 37}"
         exp = g.days_ago(-r.randint(90, 600))
         certs.append({"cert_id": f"CRT-{i:06d}", "certificate_number": num, "certification_type": r.choice(["oeko_tex", "gots", "bluesign"]),

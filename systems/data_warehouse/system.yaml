@@ -23,14 +23,16 @@ tables:
       customer_segment: {type: str, desc: "Customer segment"}
 
   product_kpi_history:
-    key: [date, kpi_name]
+    key: [date, kpi_name, period_type]
     cols:
-      date: {type: date, desc: "Date of KPI measurement"}
-      kpi_name: {type: str, desc: "KPI name, e.g. OTIF, markdown_rate"}
-      kpi_value: {type: float, desc: "KPI value"}
+      date: {type: date, desc: "Period start (first of the month for monthly, Monday for weekly)"}
+      kpi_name: {type: str, desc: "KPI name, e.g. OTIF, markdown_rate, sell_through_rate, inventory_turns, cost_per_unit_gbp, inventory_accuracy"}
+      kpi_value: {type: float, desc: "KPI value for the period"}
       period_type: {type: enum, values: [daily, weekly, monthly], desc: "Period aggregation"}
       target_value: {type: float, desc: "Target value for this KPI"}
-      variance_pct: {type: float, desc: "Variance from target in %"}
+      variance_pct: {type: float, desc: "Variance from target in % of target (value minus target, over target)"}
+      higher_is_better: {type: bool, desc: "True if a value above target is good (OTIF), false if below is good (markdown rate, cost)"}
+      unit: {type: str, desc: "Unit of the value, e.g. %, GBP, turns"}
 
   otif_metrics:
     key: [week, supplier_id, category, site_id, inbound_mode]
@@ -74,10 +76,10 @@ tables:
       initial_allocation_units: {type: int, desc: "Initial allocation units"}
       units_sold_week1: {type: int, desc: "Units sold in week 1"}
       units_sold_month1: {type: int, desc: "Units sold in first month"}
-      forecast_vs_actual_pct: {type: float, desc: "Forecast accuracy %"}
-      sell_through_rate_pct: {type: float, desc: "Sell-through rate %"}
-      peak_week_demand_units: {type: int, desc: "Peak week demand"}
-      status: {type: enum, values: [planned, launched, evergreen, discontinued], desc: "Launch status"}
+      forecast_vs_actual_pct: {type: float, desc: "Month-1 forecast as % of actual month-1 units (100 = perfect, above 100 = over-forecast)"}
+      sell_through_rate_pct: {type: float, desc: "Month-1 sell-through % (units sold in month 1 over initial allocation)"}
+      peak_week_demand_units: {type: int, desc: "Peak week demand in the first month"}
+      status: {type: enum, values: [planned, launched, evergreen, discontinued], desc: "launched = within 120 days of launch, evergreen = established, discontinued = withdrawn"}
 
   inventory_balance_reconciliation:
     key: [date, site_id, sku]
@@ -89,11 +91,11 @@ tables:
       erp_units: {type: int, desc: "ERP reported units"}
       finance_units: {type: int, desc: "Finance system units"}
       physical_count_units: {type: int, desc: "Physical inventory count"}
-      wms_erp_variance: {type: int, desc: "WMS minus ERP variance"}
-      erp_finance_variance: {type: int, desc: "ERP minus finance variance"}
+      wms_erp_variance: {type: int, desc: "WMS minus ERP variance, units"}
+      erp_finance_variance: {type: int, desc: "ERP minus finance variance, units"}
       category: {type: str, desc: "Variance category: timing, definitional, error"}
       variance_explanation: {type: str, desc: "Explanation of variance"}
-      adjustment_required: {type: bool, desc: "Whether adjustment is needed"}
+      adjustment_required: {type: bool, desc: "True if the difference is an error that needs a correcting journal"}
 
   product_performance_metrics:
     key: [sku, period]
@@ -130,6 +132,7 @@ tables:
     cols:
       table_name: {type: str, desc: "Table name"}
       column_name: {type: str, desc: "Column name"}
+      ordinal: {type: int, desc: "Column position in the table"}
       column_type: {type: str, desc: "Data type"}
       description: {type: str, desc: "Column description"}
       source_system: {type: str, desc: "Source system"}
@@ -145,42 +148,85 @@ tables:
       description: {type: str, desc: "View purpose"}
       status: {type: enum, values: [active, archived], desc: "View status"}
 
+  wms_order_costs:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "Customer order, e.g. ORD-2026-0108564"}
+      fulfil_site_id: {type: str, desc: "DC that picked the order"}
+      order_date: {type: date, desc: "Order date"}
+      order_lines: {type: int, desc: "Order lines picked"}
+      units: {type: int, desc: "Units picked"}
+      pick_time_minutes: {type: float, desc: "Total pick time in minutes"}
+      pick_labour_gbp: {type: float, desc: "Pick labour cost in GBP"}
+      pack_labour_gbp: {type: float, desc: "Pack labour cost in GBP"}
+      handling_cost_gbp: {type: float, desc: "Handling cost (lines, units, locations) in GBP"}
+      total_cost_gbp: {type: float, desc: "Pick plus pack plus handling in GBP"}
+
+  tms_shipment_costs:
+    key: shipment_id
+    cols:
+      shipment_id: {type: str, desc: "Outbound shipment, e.g. SHP-002528"}
+      order_id: {type: str, desc: "Customer order carried; several shipments can share one order"}
+      carrier_id: {type: str, desc: "Carrier id"}
+      mode: {type: str, desc: "Transport mode, e.g. parcel, road"}
+      ship_date: {type: date, desc: "Dispatch date"}
+      units: {type: int, desc: "Units on this shipment"}
+      freight_cost_gbp: {type: float, desc: "Freight cost of this shipment in GBP"}
+      is_split: {type: bool, desc: "True if the order was split across several shipments"}
+
+  erp_order_headers:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "Customer order, e.g. ORD-2026-0108564"}
+      entity_id: {type: str, desc: "Legal entity that booked the order"}
+      posting_date: {type: date, desc: "Date posted in the ERP"}
+      revenue_gbp: {type: float, desc: "Order revenue in GBP"}
+      freight_charge_gbp: {type: float, desc: "Delivery charge billed to the customer in GBP"}
+      handling_charge_gbp: {type: float, desc: "Handling charge billed to the customer in GBP"}
+      discount_gbp: {type: float, desc: "Discount given in GBP"}
+
 tools:
   - name: search_data_catalogue
-    desc: Search tables and columns in the warehouse by name, type or content. Returns table names and schema details.
-    kind: select
-    from: warehouse_data_catalogue
-    filters:
-      table_name: {op: like, desc: "Table name or part of it"}
-      table_type: {}
-    columns: [table_name, table_type, description, grain, primary_key, refresh_frequency]
-    order: table_name
-    example: {table_name: sales}
-
-  - name: get_table_schema
-    desc: Get columns, keys and grain of any table in the warehouse.
+    desc: Search warehouse tables by name, description or column name, e.g. order, freight, wms. Returns table, type, grain, key and refresh frequency.
     kind: sql
     args:
-      table_name: {required: true, desc: "Table name to describe"}
+      query: {desc: "Word to find in table names, descriptions or column names, e.g. freight; blank lists all tables"}
+      table_type: {values: [fact, dimension, master, view], desc: "Only this table type, optional"}
     sql: |
-      SELECT c.table_name, c.column_name, c.column_type, c.description, c.source_system
-      FROM warehouse_column_index c
-      WHERE c.table_name = $table_name
-      ORDER BY c.table_name, c.column_name
+      SELECT c.table_name, c.table_type, c.description, c.grain, c.primary_key, c.refresh_frequency, c.row_count
+      FROM warehouse_data_catalogue c
+      WHERE ($table_type IS NULL OR c.table_type = $table_type)
+        AND ($query IS NULL
+             OR c.table_name ILIKE '%' || $query || '%'
+             OR c.description ILIKE '%' || $query || '%'
+             OR EXISTS (SELECT 1 FROM warehouse_column_index x
+                        WHERE x.table_name = c.table_name
+                          AND (x.column_name ILIKE '%' || $query || '%' OR x.description ILIKE '%' || $query || '%')))
+      ORDER BY c.table_type, c.table_name
+    limit: 30
+    example: {query: order}
+  - name: get_table_schema
+    desc: Columns, types, keys and grain of one warehouse or master table. Use after search_data_catalogue and before writing SQL.
+    kind: sql
+    args:
+      table_name: {required: true, desc: "Table name to describe, e.g. wms_order_costs or master.orders"}
+    sql: |
+      SELECT c.table_name, x.column_name, x.column_type, x.description, x.source_system, c.grain, c.primary_key
+      FROM warehouse_data_catalogue c
+      JOIN warehouse_column_index x ON x.table_name = c.table_name
+      WHERE lower(c.table_name) = lower($table_name) OR lower(c.table_name) = 'master.' || lower($table_name)
+      ORDER BY x.ordinal
     limit: 100
     example: {table_name: product_sales_fact}
-
   - name: run_sql_query
-    desc: Run a read-only SQL query against warehouse tables and master data. For analysis or custom aggregations.
-    kind: select
-    from: product_sales_fact
-    filters:
-      sku: {}
-    columns: [sku, units_sold, sales_gbp]
-    order: units_sold
+    desc: Run one read-only SELECT against warehouse tables and master data (master.orders and so on). Returns up to 100 rows, to test joins and aggregations.
+    kind: py
+    fn: run_sql_query
+    args:
+      query: {required: true, type: text, desc: "A single SELECT or WITH query, e.g. SELECT sku, sum(sales_gbp) FROM product_sales_fact GROUP BY sku"}
+      limit: {type: int, default: 100, desc: "Maximum rows to return"}
     limit: 100
-    example: {sku: "K-1700"}
-
+    example: {query: "SELECT sku, sum(units_sold) AS units FROM product_sales_fact GROUP BY sku ORDER BY units DESC LIMIT 5"}
   - name: list_top_products_by_sales_for_category
     desc: Top-selling SKUs for a category or department, ranked by sales. Returns units, revenue, markdown and margin rates, origin country and lead time.
     kind: sql
@@ -365,25 +411,30 @@ tools:
     example: {category: "Small Appliances", market: UK}
 
   - name: get_product_sales_rank
-    desc: Sales rank for a product. Returns its position among all products and its category.
+    desc: Sales rank by revenue over the last N days for one SKU, several SKUs, or the overall top sellers if none given. Returns overall and category rank.
     kind: sql
     args:
-      sku: {required: true}
+      sku: {desc: "One SKU, e.g. K-1700"}
+      skus: {type: list, desc: "Several SKUs to rank at once, e.g. [K-1700, PF-220]"}
       period_days: {type: int, default: 90, desc: "Days back from today"}
+      limit_rows: {type: int, default: 20, desc: "Rows to return when no SKU is given"}
     sql: |
       WITH ranked AS (
-        SELECT p.sku, sum(p.sales_gbp) AS sales_gbp,
+        SELECT p.sku, p.category, sum(p.units_sold) AS units_sold, round(sum(p.sales_gbp), 2) AS sales_gbp,
                row_number() OVER (ORDER BY sum(p.sales_gbp) DESC) AS overall_rank,
                row_number() OVER (PARTITION BY p.category ORDER BY sum(p.sales_gbp) DESC) AS category_rank,
-               p.category
+               count(*) OVER () AS products_ranked
         FROM product_sales_fact p
-        WHERE p.date >= CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
+        WHERE p.date > CAST($as_of AS DATE) - INTERVAL (CAST($period_days AS INT)) DAY
         GROUP BY p.sku, p.category
       )
-      SELECT sku, category, sales_gbp, overall_rank, category_rank FROM ranked WHERE sku = $sku
-    limit: 1
+      SELECT r.sku, pr.name, r.category, r.units_sold, r.sales_gbp, r.overall_rank, r.category_rank, r.products_ranked
+      FROM ranked r JOIN master.products pr ON pr.sku = r.sku
+      WHERE ($sku IS NULL AND $skus IS NULL AND r.overall_rank <= CAST($limit_rows AS INT))
+         OR r.sku = $sku OR (CAST($skus AS VARCHAR[]) IS NOT NULL AND list_contains(CAST($skus AS VARCHAR[]), r.sku))
+      ORDER BY r.overall_rank
+    limit: 100
     example: {sku: "K-1700"}
-
   - name: list_product_performance_for_range
     desc: Product performance for a range review over the last N days. Returns sales, margin %, markdown rate, strategic role and a recommended action (extend, refresh, reprice or delete).
     kind: sql
@@ -467,32 +518,88 @@ tools:
     example: {category: "Outerwear", department: Womenswear}
 
   - name: get_new_product_launch_history
-    desc: Past new-product launches with early-life demand, sell-through and forecast accuracy.
-    kind: select
-    from: product_launch_history
-    filters:
-      status: {default: launched}
-      category: {}
-    columns: [sku, style_id, category, launch_date, initial_allocation_units, units_sold_month1, sell_through_rate_pct, forecast_vs_actual_pct]
-    order: launch_date
-    limit: 100
-    example: {status: launched}
-
+    desc: Past new-product launches with week-1 and month-1 units, sell-through and forecast accuracy. group_by category summarises how well launches were forecast.
+    kind: sql
+    args:
+      category: {desc: "Product category, e.g. Outerwear; optional"}
+      department: {desc: "Department, e.g. Womenswear, Home; optional"}
+      launched_from: {type: date, default: "-540d", desc: "Launches on or after"}
+      status: {values: [launched, evergreen, discontinued], desc: "Launch status, optional"}
+      group_by: {values: [launch, category], default: launch, desc: "launch lists each launch; category gives averages and forecast error per category"}
+    sql: |
+      WITH l AS (
+        SELECT h.*, pr.department, abs(h.forecast_vs_actual_pct - 100) AS abs_error_pct
+        FROM product_launch_history h JOIN master.products pr ON pr.sku = h.sku
+        WHERE ($category IS NULL OR h.category = $category)
+          AND ($department IS NULL OR pr.department = $department)
+          AND ($status IS NULL OR h.status = $status)
+          AND h.launch_date >= CAST($launched_from AS DATE)
+      )
+      SELECT sku, style_id, category, department, launch_date, initial_allocation_units, units_sold_week1, units_sold_month1,
+             peak_week_demand_units, sell_through_rate_pct, forecast_vs_actual_pct, status,
+             NULL::INT AS launches, NULL::DOUBLE AS avg_abs_forecast_error_pct, NULL::DOUBLE AS pct_launches_error_over_20
+      FROM l WHERE $group_by = 'launch'
+      UNION ALL
+      SELECT NULL, NULL, category, NULL, NULL, round(avg(initial_allocation_units)), round(avg(units_sold_week1)),
+             round(avg(units_sold_month1)), round(avg(peak_week_demand_units)), round(avg(sell_through_rate_pct), 1),
+             round(avg(forecast_vs_actual_pct), 1), NULL, count(*), round(avg(abs_error_pct), 1),
+             round(100.0 * count(*) FILTER (WHERE abs_error_pct > 20) / count(*), 1)
+      FROM l WHERE $group_by = 'category' GROUP BY category
+      ORDER BY launches DESC NULLS LAST, launch_date DESC
+    limit: 60
+    example: {category: Outerwear}
   - name: get_otif_by_dimension
-    desc: OTIF actuals sliced by supplier, category, DC, weekday and inbound mode. Break down the metric by each dimension.
-    kind: select
-    from: otif_metrics
-    filters:
+    desc: OTIF % for the latest N weeks versus the N weeks before, sliced by supplier, category, DC, weekday, inbound mode or week. Shows each slice's share of the drop.
+    kind: sql
+    args:
+      group_by: {required: true, values: [supplier_id, category, site_id, weekday, inbound_mode, week], desc: "Dimension to slice by; week gives the weekly trend"}
+      weeks: {type: int, default: 4, desc: "Length of each period in weeks; latest N weeks vs the N before"}
       supplier_id: {}
       category: {}
       site_id: {}
       inbound_mode: {}
-      week: {col: week, op: ">=", type: date, default: "-12w"}
-    columns: [week, supplier_id, category, site_id, inbound_mode, on_time_units, total_units, otif_pct, late_units]
-    order: week
-    limit: 200
-    example: {supplier_id: "SUP-0001"}
-
+      weekday: {desc: "Day of week, e.g. Mon, Fri"}
+    sql: |
+      WITH mx AS (SELECT max(week) AS m FROM otif_metrics),
+      o AS (
+        SELECT t.*, CASE WHEN t.week > mx.m - 7 * CAST($weeks AS INT) THEN 'current' ELSE 'prior' END AS period,
+               CASE $group_by WHEN 'supplier_id' THEN t.supplier_id WHEN 'category' THEN t.category
+                              WHEN 'site_id' THEN t.site_id WHEN 'weekday' THEN t.weekday
+                              WHEN 'inbound_mode' THEN t.inbound_mode ELSE CAST(t.week AS VARCHAR) END AS slice
+        FROM otif_metrics t, mx
+        WHERE t.week > mx.m - 14 * CAST($weeks AS INT)
+          AND ($supplier_id IS NULL OR t.supplier_id = $supplier_id)
+          AND ($category IS NULL OR t.category = $category)
+          AND ($site_id IS NULL OR t.site_id = $site_id)
+          AND ($inbound_mode IS NULL OR lower(t.inbound_mode) = lower($inbound_mode))
+          AND ($weekday IS NULL OR lower(t.weekday) = lower($weekday))
+      ),
+      tot AS (
+        SELECT sum(total_units) FILTER (WHERE period = 'current') AS t_cur, sum(total_units) FILTER (WHERE period = 'prior') AS t_pri,
+               sum(on_time_units) FILTER (WHERE period = 'current') AS o_cur, sum(on_time_units) FILTER (WHERE period = 'prior') AS o_pri
+        FROM o
+      ),
+      g AS (
+        SELECT slice,
+               sum(total_units) FILTER (WHERE period = 'prior') AS units_prior,
+               sum(total_units) FILTER (WHERE period = 'current') AS units_current,
+               100.0 * sum(on_time_units) FILTER (WHERE period = 'prior') / nullif(sum(total_units) FILTER (WHERE period = 'prior'), 0) AS otif_prior,
+               100.0 * sum(on_time_units) FILTER (WHERE period = 'current') / nullif(sum(total_units) FILTER (WHERE period = 'current'), 0) AS otif_current,
+               100.0 * (coalesce(sum(on_time_units) FILTER (WHERE period = 'current'), 0) / (SELECT t_cur FROM tot)
+                        - coalesce(sum(on_time_units) FILTER (WHERE period = 'prior'), 0) / (SELECT t_pri FROM tot)) AS contrib
+        FROM o GROUP BY slice
+      )
+      SELECT $group_by AS dimension, slice AS value, units_prior, units_current,
+             round(otif_prior, 1) AS otif_pct_prior, round(otif_current, 1) AS otif_pct_current,
+             round(otif_current - otif_prior, 1) AS change_pts,
+             round(contrib, 2) AS contribution_to_total_change_pts,
+             round(100.0 * contrib / nullif(100.0 * ((SELECT o_cur FROM tot) / (SELECT t_cur FROM tot) - (SELECT o_pri FROM tot) / (SELECT t_pri FROM tot)), 0), 1) AS share_of_total_change_pct,
+             round(100.0 * (SELECT o_pri FROM tot) / (SELECT t_pri FROM tot), 1) AS total_otif_pct_prior,
+             round(100.0 * (SELECT o_cur FROM tot) / (SELECT t_cur FROM tot), 1) AS total_otif_pct_current
+      FROM g
+      ORDER BY CASE WHEN $group_by = 'week' THEN 0 ELSE 1 END, contrib, slice
+    limit: 50
+    example: {group_by: inbound_mode}
   - name: calculate_units_affected_by_grade_change
     desc: Units sold of one style size over a period, with its share of the style and weekly run-rate. Use to size a grade-rule change for that size.
     kind: sql
@@ -517,36 +624,54 @@ tools:
     example: {style_id: "STY-T-4410", size: "14"}
 
   - name: compare_inventory_balances
-    desc: Reconcile two inventory sources and itemise differences. Shows WMS vs ERP vs Finance variances.
-    kind: select
-    from: inventory_balance_reconciliation
-    filters:
-      site_id: {required: true}
+    desc: Reconcile WMS, ERP and finance unit balances per SKU with physical count, variance type and reason. group_by category totals timing, definitional and error.
+    kind: sql
+    args:
+      site_id: {desc: "DC to reconcile, e.g. DC2; blank for all DCs"}
+      date_from: {type: date, default: "-30d", desc: "Reconciliation snapshots on or after"}
+      variance_category: {values: [timing, definitional, error], desc: "Only this kind of difference, optional"}
       adjustment_required: {}
-      category: {op: like}
-    columns: [date, sku, wms_units, erp_units, finance_units, wms_erp_variance, erp_finance_variance, category, variance_explanation]
-    order: date
+      group_by: {values: [item, category], default: item, desc: "item lists each SKU difference; category totals by variance type"}
+    sql: |
+      WITH r AS (
+        SELECT b.*, pr.unit_cost_gbp FROM inventory_balance_reconciliation b JOIN master.products pr ON pr.sku = b.sku
+        WHERE b.date >= CAST($date_from AS DATE)
+          AND ($site_id IS NULL OR b.site_id = $site_id)
+          AND ($variance_category IS NULL OR b.category = $variance_category)
+          AND ($adjustment_required IS NULL OR b.adjustment_required = $adjustment_required)
+      )
+      SELECT date, site_id, sku, wms_units, erp_units, finance_units, physical_count_units, wms_erp_variance, erp_finance_variance,
+             wms_units - finance_units AS wms_finance_variance,
+             round((wms_units - finance_units) * unit_cost_gbp, 2) AS wms_finance_variance_gbp,
+             category AS variance_category, variance_explanation, adjustment_required, NULL::INT AS items
+      FROM r WHERE $group_by = 'item'
+      UNION ALL
+      SELECT max(date), coalesce($site_id, 'all DCs'), NULL, sum(wms_units), sum(erp_units), sum(finance_units), sum(physical_count_units),
+             sum(wms_erp_variance), sum(erp_finance_variance), sum(wms_units - finance_units),
+             round(sum((wms_units - finance_units) * unit_cost_gbp), 2),
+             category, string_agg(DISTINCT variance_explanation, ' | '), bool_or(adjustment_required), count(*)
+      FROM r WHERE $group_by = 'category' GROUP BY category
+      ORDER BY site_id, date DESC, sku
     limit: 100
-    example: {site_id: DC1, adjustment_required: true}
-
+    example: {site_id: DC2}
   - name: get_kpi_history
-    desc: Historical monthly and weekly KPI series for monitoring trends. Returns KPI name, value and variance from target.
+    desc: Monthly or weekly KPI series (OTIF, markdown_rate, sell_through_rate, inventory_turns, cost_per_unit_gbp, inventory_accuracy) with target and variance, oldest first. Use for trends, peaks and forecasting.
     kind: select
     from: product_kpi_history
     filters:
-      kpi_name: {desc: "KPI name, e.g. OTIF, markdown_rate, sell_through"}
+      kpi_name: {desc: "KPI name, e.g. OTIF, markdown_rate, sell_through_rate; blank for all KPIs"}
       period_type: {default: monthly}
-    columns: [date, kpi_name, kpi_value, target_value, variance_pct]
-    order: date
-    limit: 52
+      date_from: {col: date, op: ">=", type: date, default: "-540d", desc: "Periods starting on or after"}
+    columns: [date, kpi_name, kpi_value, target_value, variance_pct, higher_is_better, unit]
+    order: kpi_name, date
+    limit: 200
     example: {kpi_name: OTIF, period_type: monthly}
-
   - name: create_warehouse_view
     desc: Create a saved view in the warehouse from supplied SQL. View becomes available for all users.
     kind: insert
     table: saved_warehouse_views
     id_prefix: VIEW-
-    defaults: {status: active}
+    defaults: {status: active, created_by: data_analyst}
     args:
       view_name: {required: true, desc: "Name for this view"}
       sql_query: {required: true, type: text, desc: "SQL query for the view"}
