@@ -152,18 +152,20 @@ tools:
       min_severity: {type: enum, values: [minor, moderate, severe], default: moderate, desc: "Minimum severity to show"}
       period_end: {type: date, default: "+0d", desc: "Use the latest period ending on or before this date"}
     sql: |
+      WITH latest AS (
+        SELECT * FROM kpi_variances
+        WHERE period_end <= CAST($period_end AS DATE)
+        QUALIFY row_number() OVER (PARTITION BY kpi_id ORDER BY period_end DESC) = 1)
       SELECT v.variance_id, v.kpi_id, t.kpi_name, t.domain, v.period_start, v.period_end, v.target_value,
              v.actual_value, v.variance_value, v.variance_pct,
              round(CASE WHEN t.better_when = 'lower' THEN v.variance_pct ELSE -v.variance_pct END, 1) AS adverse_pct,
              v.severity, v.status
-      FROM kpi_variances v JOIN kpi_targets t USING (kpi_id)
+      FROM latest v JOIN kpi_targets t USING (kpi_id)
       WHERE ($domain IS NULL OR t.domain = $domain)
-        AND v.period_end <= CAST($period_end AS DATE)
         AND v.severity <> 'on_track'
         AND CASE v.severity WHEN 'severe' THEN 3 WHEN 'moderate' THEN 2 ELSE 1 END >=
             CASE $min_severity WHEN 'severe' THEN 3 WHEN 'moderate' THEN 2 ELSE 1 END
         AND CASE WHEN t.better_when = 'lower' THEN v.variance_pct ELSE -v.variance_pct END > 0
-      QUALIFY row_number() OVER (PARTITION BY v.kpi_id ORDER BY v.period_end DESC) = 1
       ORDER BY adverse_pct DESC
     limit: 20
     example: {}
@@ -279,7 +281,7 @@ tools:
                     ELSE avg(actual_value) FILTER (WHERE yr = 'prior') END AS prior_v,
                CASE WHEN aggregation = 'sum' THEN sum(actual_value) FILTER (WHERE yr = 'cur')
                     ELSE avg(actual_value) FILTER (WHERE yr = 'cur') END AS cur_v
-        FROM w GROUP BY ALL)
+        FROM w GROUP BY kpi_id, kpi_name, unit, aggregation, target_value)
       SELECT kpi_id, kpi_name, unit, aggregation,
              round(prior_v, 2) AS prior_year_value, round(cur_v, 2) AS current_year_value,
              round(CASE WHEN aggregation = 'sum' THEN target_value * 52 ELSE target_value END, 2) AS annual_target,

@@ -6,6 +6,7 @@ Story (all relative to g.as_of, the latest Monday):
 - ST214 (Glasgow Retail Park) and DC2 (Daventry DC) are the two worst sites.
 - Circularity: units collected / value recovered weekly KPIs with fixed 52-week totals for YoY.
 """
+import math
 from datetime import datetime, timedelta
 
 # id, name, domain, unit, target (per week), better_when, aggregation, decimals, weekly noise (fraction of target)
@@ -20,8 +21,8 @@ KPIS = [
     ("KPI-0008", "GHG Emissions per Unit", "sustainability", "kg CO2e", 0.85, "lower", "avg", 2, 0.008),
     ("KPI-0009", "Waste Diversion Rate", "sustainability", "%", 72.0, "higher", "avg", 1, 0.004),
     ("KPI-0010", "DC Throughput", "service", "units/hr", 850.0, "higher", "avg", 0, 0.006),
-    ("KPI-0011", "Circularity Units Collected", "sustainability", "units", 1000.0, "higher", "sum", 0, 0.05),
-    ("KPI-0012", "Circularity Value Recovered", "sustainability", "£", 5000.0, "higher", "sum", 0, 0.05),
+    ("KPI-0011", "Circularity Units Collected", "sustainability", "units", 1000.0, "higher", "sum", 0, 0.03),
+    ("KPI-0012", "Circularity Value Recovered", "sustainability", "£", 5000.0, "higher", "sum", 0, 0.03),
 ]
 
 # actual / target factor for the four-week periods k = 0 (latest) .. 5
@@ -36,11 +37,11 @@ FACTORS = {
     "KPI-0008": [1.03, 1.02, 1.01, 1.0, 1.0, 0.99],
     "KPI-0009": [0.919, 0.945, 0.97, 0.99, 0.995, 1.0],
     "KPI-0010": [1.02, 1.01, 1.0, 0.99, 1.0, 1.01],
-    "KPI-0011": [0.97, 0.96, 0.95, 0.93, 0.91, 0.90],
-    "KPI-0012": [0.97, 0.94, 0.92, 0.90, 0.88, 0.86],
+    "KPI-0011": [0.98, 0.97, 0.97, 0.96, 0.96, 0.95],
+    "KPI-0012": [0.98, 0.97, 0.96, 0.96, 0.95, 0.95],
 }
 # 52-week totals for the summed circularity KPIs: (this year, prior year)
-YEAR_TOTALS = {"KPI-0011": (47650, 39300), "KPI-0012": (224900, 178600)}
+YEAR_TOTALS = {"KPI-0011": (49400, 40100), "KPI-0012": (245000, 190000)}
 
 # Root causes for the latest-period (k=0) variances
 CAUSES = {
@@ -162,7 +163,7 @@ def generate(g):
         period_end = as_of - timedelta(days=28 * k)
         for kid, name, domain, unit, target, better, agg, dp, noise in KPIS:
             seg = series[kid][4 * k:4 * k + 4]
-            actual = round(sum(seg) / 4, 2)
+            actual = math.floor(sum(seg) / 4 * 100 + 0.5) / 100
             var = actual - target
             pct = var / target * 100
             adverse = pct if better == "lower" else -pct
