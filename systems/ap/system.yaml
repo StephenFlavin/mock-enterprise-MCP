@@ -117,6 +117,7 @@ tables:
       invoices_count: {type: int, desc: Number of invoices in run}
       total_amount_gbp: {type: float, desc: Total payment amount}
       status: {type: enum, values: [draft, scheduled, processing, completed, cancelled], desc: Run status}
+      cancellation_reason: {type: str, desc: Reason if cancelled}
       created_date: {type: date, desc: When run was created}
       created_by: {type: str, desc: Employee who created}
       updated_at: {type: timestamp, desc: Last updated}
@@ -229,9 +230,9 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
-      date_from: {type: date, default: "-90d"}
-      date_to: {type: date, default: "+1d"}
-      payment_status: {}
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+      date_to: {type: date, default: "+1d", desc: "Invoice date on or before"}
+      payment_status: {desc: "Filter by payment status"}
     sql: |
       SELECT invoice_id, invoice_number, invoice_date, amount_gbp, invoice_type,
              po_id, three_way_match_status, gl_account, cost_centre_id,
@@ -249,8 +250,8 @@ tools:
     desc: Air freight spend by supplier, with reason codes and avoidability breakdown.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d"}
-      supplier_id: {}
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
+      supplier_id: {desc: "Filter by supplier (optional)"}
     sql: |
       SELECT supplier_id, air_reason, count(*) AS invoice_count,
              sum(amount_gbp) AS total_spend_gbp,
@@ -268,7 +269,7 @@ tools:
     desc: Splits air freight spend into avoidable and unavoidable by cause. Returns detailed breakdown.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d"}
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
     sql: |
       SELECT
         sum(amount_gbp) AS total_air_spend_gbp,
@@ -288,7 +289,7 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
-      date_from: {type: date, default: "-365d"}
+      date_from: {type: date, default: "-365d", desc: "Invoice date on or after"}
       variance_pct_gt: {type: float, desc: "Show only lines with variance > this %"}
     sql: |
       SELECT i.invoice_id, i.invoice_number, i.invoice_date, il.line_no,
@@ -386,7 +387,7 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
-      days_back: {type: int, default: 365}
+      days_back: {type: int, default: 365, desc: "Look back this many days"}
     sql: |
       SELECT supplier_id,
              count(*) AS total_payments,
@@ -434,8 +435,8 @@ tools:
     desc: Freight invoices received but not yet accrued in accounting. Shows timing gaps.
     kind: sql
     args:
-      date_from: {type: date, default: "-60d"}
-      supplier_id: {}
+      date_from: {type: date, default: "-60d", desc: "Invoice date on or after"}
+      supplier_id: {desc: "Filter by supplier (optional)"}
     sql: |
       SELECT invoice_id, invoice_number, invoice_date, supplier_id, amount_gbp,
              received_date, accrued, invoices.created_date
@@ -452,7 +453,7 @@ tools:
     desc: Freight invoices posted to unexpected GL accounts or without cost centre coding.
     kind: sql
     args:
-      date_from: {type: date, default: "-90d"}
+      date_from: {type: date, default: "-90d", desc: "Invoice date on or after"}
     sql: |
       SELECT invoice_id, invoice_number, invoice_date, amount_gbp, supplier_id,
              gl_account, cost_centre_id, invoice_type
@@ -517,29 +518,29 @@ tools:
     set: {gl_account: "{gl_account}", cost_centre_id: "{cost_centre_id}"}
     args:
       invoice_id: {required: true}
-      gl_account: {}
-      cost_centre_id: {}
+      gl_account: {desc: "New GL account code"}
+      cost_centre_id: {desc: "New cost centre"}
     example: {invoice_id: INV-000001, gl_account: "5100", cost_centre_id: "CC-2101"}
 
   - name: update_payment_run_date
     desc: Moves a scheduled payment run to a new date.
     kind: update
     table: payment_runs
-    set: {run_date: "{new_run_date}"}
+    set: {run_date: "{run_date}"}
     args:
       payment_run_id: {required: true}
-      new_run_date: {type: date, required: true}
-    example: {payment_run_id: RUN-000001, new_run_date: "+7d"}
+      run_date: {required: true, desc: "New payment date"}
+    example: {payment_run_id: RUN-000001, run_date: "+7d"}
 
   - name: cancel_payment_run
     desc: Cancels a scheduled payment run. All invoices remain in the system for later processing.
     kind: update
     table: payment_runs
-    set: {status: cancelled}
+    set: {status: cancelled, cancellation_reason: "{cancellation_reason}"}
     args:
       payment_run_id: {required: true}
-      reason: {required: true, desc: Reason for cancellation}
-    example: {payment_run_id: RUN-000001, reason: "Liquidity constraint"}
+      cancellation_reason: {required: true, desc: Reason for cancellation}
+    example: {payment_run_id: RUN-000001, cancellation_reason: "Liquidity constraint"}
 
   - name: get_payment_runs_for_changed_vendors
     desc: Payments made or queued to vendors whose bank details recently changed.
@@ -562,7 +563,7 @@ tools:
     desc: New vendors and bank detail changes with dates and approvals. For audit trail and fraud screening.
     kind: sql
     args:
-      days_back: {type: int, default: 180}
+      days_back: {type: int, default: 180, desc: "Look back this many days"}
     sql: |
       SELECT vendor_id, supplier_id, name, 'new_vendor' AS change_type, updated_at
       FROM vendors

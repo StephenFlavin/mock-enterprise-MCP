@@ -24,11 +24,13 @@ def generate(g):
     rule_id = 1
     for channel in ["store", "online", "wholesale"]:
         for product in r.sample(products, min(5, len(products))):
+            # Pick a random customer or use first one
+            cust = r.choice(customers)
             allocation_rules.append({
                 "rule_id": f"AR-{rule_id:06d}",
                 "product_sku": product["sku"],
                 "channel": channel,
-                "customer_id": "ALL",
+                "customer_id": cust["customer_id"],
                 "store_pct": 40 if channel == "store" else 30 if channel == "online" else 30,
                 "online_pct": 35 if channel == "online" else 30 if channel == "store" else 35,
                 "wholesale_pct": 25 if channel == "wholesale" else 40 if channel == "online" else 35,

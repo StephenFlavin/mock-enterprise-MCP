@@ -1,0 +1,552 @@
+id: last_mile
+name: Last-Mile Delivery Platform
+instructions: >
+  Customer order delivery tracking, courier performance and allocation. Track
+  delivery attempts, first-attempt success, courier scorecards and capacity
+  planning. Order ids look like ORD-2026-0123456. Courier ids look like CAR-001.
+  Allocation rule ids look like RULE-001.
+
+tables:
+  delivery_attempts:
+    key: attempt_id
+    cols:
+      attempt_id: {type: str, desc: "Delivery attempt, e.g. ATT-000001"}
+      order_id: {type: str, desc: "Customer order"}
+      courier_id: {type: str, desc: "Courier"}
+      sku: {type: str, desc: "Main SKU in order"}
+      postcode_area: {type: str, desc: "UK postcode area, e.g. SW1A"}
+      delivery_service: {type: enum, values: [standard, next_day, same_day], desc: "Delivery service promised"}
+      delivery_option: {type: enum, values: [door, safe_place, locker, collect_point], desc: "Delivery option"}
+      attempt_number: {type: int, desc: "1st, 2nd, etc."}
+      promised_delivery_date: {type: date, desc: "Promised delivery date"}
+      actual_delivery_date: {type: date, desc: "Actual delivery date (or null if failed)"}
+      attempt_time: {type: timestamp, desc: "When delivery was attempted"}
+      delivery_time: {type: timestamp, desc: "When successfully delivered"}
+      status: {type: enum, values: [delivered, failed, damaged, not_attempted], desc: "Delivery outcome"}
+      failure_reason: {type: str, desc: "Why delivery failed"}
+      address_issue: {type: bool, desc: "Address quality caused failure"}
+      customer_availability: {type: bool, desc: "Customer not home/unavailable"}
+      damage_reported: {type: bool, desc: "Damage reported after delivery"}
+      complaint_raised: {type: bool, desc: "Customer complaint raised"}
+      has_tracking_scans: {type: int, desc: "Number of tracking scans"}
+      cost_gbp: {type: float, desc: "Cost per drop"}
+      region: {type: str, desc: "Delivery region"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  couriers:
+    key: courier_id
+    cols:
+      courier_id: {type: str, desc: "Courier, e.g. CAR-001"}
+      name: {type: str, desc: "Courier company name"}
+      mode: {type: enum, values: [road, parcel], desc: "Transport mode"}
+      scope: {type: str, desc: "Coverage, e.g. UK domestic"}
+      region: {type: str, desc: "Primary region"}
+      peak_capacity_units_month: {type: int, desc: "Peak season monthly capacity"}
+      rating: {type: float, desc: "Public rating (0-5)"}
+      contract_end: {type: date, desc: "Current contract end date"}
+
+  courier_allocation_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Allocation rule, e.g. RULE-001"}
+      rule_name: {type: str, desc: "Human-readable rule name"}
+      courier_id: {type: str, desc: "Courier"}
+      postcode_areas: {type: str, desc: "Comma-separated postcode areas"}
+      volume_share_pct: {type: float, desc: "Percentage of volume for this courier"}
+      region: {type: str, desc: "Region this rule applies to"}
+      status: {type: enum, values: [active, trial, archived], desc: "Rule status"}
+      created_at: {type: timestamp, desc: "When rule was created"}
+      updated_at: {type: timestamp, desc: "When rule was last changed"}
+      trial_end_date: {type: date, desc: "Trial end date if status=trial"}
+
+  delivery_scans:
+    key: [attempt_id, scan_number]
+    cols:
+      attempt_id: {type: str, desc: "Delivery attempt"}
+      scan_number: {type: int, desc: "Sequence of scans"}
+      scanned_at: {type: timestamp, desc: "When scan was recorded"}
+      location: {type: str, desc: "Scan location description"}
+      event: {type: str, desc: "Event description, e.g. Out for delivery"}
+
+  address_validation_issues:
+    key: issue_id
+    cols:
+      issue_id: {type: str, desc: "Issue record, e.g. AVI-000001"}
+      order_id: {type: str, desc: "Customer order"}
+      postcode_area: {type: str, desc: "Postcode area"}
+      issue_type: {type: enum, values: [no_match, partial_match, invalid_postcode, ambiguous, undeliverable], desc: "Type of validation issue"}
+      validation_timestamp: {type: timestamp, desc: "When validation occurred"}
+      resolved: {type: bool, desc: "Whether issue was resolved"}
+
+  delivery_complaints:
+    key: complaint_id
+    cols:
+      complaint_id: {type: str, desc: "Complaint record, e.g. CMPLT-000001"}
+      order_id: {type: str, desc: "Customer order"}
+      courier_id: {type: str, desc: "Courier"}
+      complaint_date: {type: timestamp, desc: "When complaint was raised"}
+      issue_type: {type: str, desc: "Type of complaint"}
+      resolved: {type: bool, desc: "Whether resolved"}
+
+tools:
+  - name: get_first_attempt_success_trend
+    desc: First-attempt success rate trend by week over a period. Use to diagnose changes.
+    kind: sql
+    args:
+      weeks: {type: int, default: 8, desc: "Number of weeks to analyse"}
+    sql: |
+      SELECT
+        CAST(d.attempt_time AS DATE) - INTERVAL (DAYOFWEEK(d.attempt_time) - 1) DAY as week_start,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) AS first_attempt_success,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS success_rate_pct
+      FROM delivery_attempts d
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY ALL
+      ORDER BY week_start DESC
+    limit: 12
+    example: {}
+
+  - name: get_first_attempt_failures_by_dimension
+    desc: First-attempt failures broken down by courier, region, product SKU and delivery option. Shows where problems are.
+    kind: sql
+    args:
+      courier_id: {desc: "Limit to one courier (optional)"}
+      region: {desc: "Limit to one region (optional)"}
+      weeks: {type: int, default: 8, desc: "Analyse last N weeks"}
+    sql: |
+      SELECT
+        d.courier_id,
+        d.region,
+        d.sku,
+        d.delivery_option,
+        COUNT(*) AS attempts,
+        COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) AS first_success,
+        COUNT(*) FILTER (WHERE d.status = 'failed') AS failures,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'failed') / COUNT(*), 1) AS failure_rate_pct
+      FROM delivery_attempts d
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+        AND ($courier_id IS NULL OR d.courier_id = $courier_id)
+        AND ($region IS NULL OR d.region = $region)
+      GROUP BY ALL
+      ORDER BY failure_rate_pct DESC, attempts DESC
+    limit: 50
+    example: {}
+
+  - name: list_failed_delivery_reasons
+    desc: Top reasons for failed deliveries. Use to diagnose first-attempt failures.
+    kind: sql
+    args:
+      weeks: {type: int, default: 4, desc: "Analyse last N weeks"}
+      limit_reasons: {type: int, default: 10, desc: "Top N reasons to show"}
+    sql: |
+      SELECT
+        d.failure_reason,
+        COUNT(*) AS failure_count,
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE status = 'failed' AND attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK), 1) AS pct_of_failures,
+        COUNT(*) FILTER (WHERE d.address_issue) AS address_related,
+        COUNT(*) FILTER (WHERE d.customer_availability) AS customer_related
+      FROM delivery_attempts d
+      WHERE d.status = 'failed'
+        AND d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY d.failure_reason
+      ORDER BY failure_count DESC
+      LIMIT CAST($limit_reasons AS INT)
+    limit: 20
+    example: {}
+
+  - name: get_address_validation_failure_rate
+    desc: Address validation failure rate by postcode area and issue type. Identifies poor data quality.
+    kind: sql
+    args:
+      postcode_area: {desc: "Limit to one postcode area (optional)"}
+      weeks: {type: int, default: 4, desc: "Analyse last N weeks"}
+    sql: |
+      SELECT
+        a.postcode_area,
+        a.issue_type,
+        COUNT(*) AS validation_issues,
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM address_validation_issues WHERE validation_timestamp >= $as_of - INTERVAL CAST($weeks AS INT) WEEK), 1) AS pct_of_total
+      FROM address_validation_issues a
+      WHERE a.validation_timestamp >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+        AND ($postcode_area IS NULL OR a.postcode_area = $postcode_area)
+      GROUP BY a.postcode_area, a.issue_type
+      ORDER BY validation_issues DESC
+    limit: 30
+    example: {}
+
+  - name: list_worst_postcodes_by_failed_delivery
+    desc: Postcodes with highest failed delivery rates. Use to target quality improvements.
+    kind: sql
+    args:
+      weeks: {type: int, default: 8, desc: "Analyse last N weeks"}
+      min_attempts: {type: int, default: 20, desc: "Only show postcodes with at least this many attempts"}
+    sql: |
+      SELECT
+        d.postcode_area,
+        d.region,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.status = 'failed') AS failures,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'failed') / COUNT(*), 1) AS failure_rate_pct,
+        COUNT(*) FILTER (WHERE d.address_issue) AS address_issues,
+        COUNT(*) FILTER (WHERE d.customer_availability) AS customer_unavailable
+      FROM delivery_attempts d
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY d.postcode_area, d.region
+      HAVING COUNT(*) >= CAST($min_attempts AS INT)
+      ORDER BY failure_rate_pct DESC, total_attempts DESC
+    limit: 30
+    example: {}
+
+  - name: calculate_repeat_delivery_cost
+    desc: Cost impact of repeat deliveries by top failure causes. Shows savings opportunity.
+    kind: sql
+    args:
+      weeks: {type: int, default: 4, desc: "Analyse last N weeks"}
+    sql: |
+      SELECT
+        d.failure_reason,
+        COUNT(*) AS failures,
+        AVG(d.cost_gbp) AS avg_cost_per_drop_gbp,
+        ROUND(COUNT(*) * AVG(d.cost_gbp), 2) AS total_repeat_cost_gbp,
+        'total_cost = failure_count * avg_cost_per_drop' AS formula
+      FROM delivery_attempts d
+      WHERE d.status = 'failed'
+        AND d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY d.failure_reason
+      ORDER BY total_repeat_cost_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: get_courier_scorecard
+    desc: Comprehensive courier performance scorecard: on-time, damage, complaints, cost. Six-month view.
+    kind: sql
+    args:
+      courier_id: {desc: "Limit to one courier (optional)"}
+      region: {desc: "Limit to one region (optional)"}
+    sql: |
+      SELECT
+        d.courier_id,
+        c.name AS courier_name,
+        COUNT(*) AS total_attempts,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS first_attempt_success_pct,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) / COUNT(*), 1) AS on_time_pct,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.damage_reported) / COUNT(*), 1) AS damage_rate_pct,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.complaint_raised) / COUNT(*), 1) AS complaint_rate_pct,
+        ROUND(AVG(d.cost_gbp), 2) AS avg_cost_per_drop_gbp
+      FROM delivery_attempts d
+      LEFT JOIN couriers c ON d.courier_id = c.courier_id
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND ($courier_id IS NULL OR d.courier_id = $courier_id)
+        AND ($region IS NULL OR d.region = $region)
+      GROUP BY d.courier_id, c.name
+      ORDER BY first_attempt_success_pct DESC, total_attempts DESC
+    limit: 20
+    example: {}
+
+  - name: get_cost_per_drop_by_courier
+    desc: Average cost per drop by courier over six months. Shows cost efficiency.
+    kind: sql
+    args:
+      courier_id: {desc: "Limit to one courier (optional)"}
+      region: {desc: "Limit to one region (optional)"}
+    sql: |
+      SELECT
+        d.courier_id,
+        c.name AS courier_name,
+        COUNT(*) AS deliveries,
+        ROUND(AVG(d.cost_gbp), 2) AS avg_cost_gbp,
+        ROUND(MIN(d.cost_gbp), 2) AS min_cost_gbp,
+        ROUND(MAX(d.cost_gbp), 2) AS max_cost_gbp
+      FROM delivery_attempts d
+      LEFT JOIN couriers c ON d.courier_id = c.courier_id
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND d.status = 'delivered'
+        AND ($courier_id IS NULL OR d.courier_id = $courier_id)
+        AND ($region IS NULL OR d.region = $region)
+      GROUP BY d.courier_id, c.name
+      ORDER BY avg_cost_gbp ASC
+    limit: 20
+    example: {}
+
+  - name: get_damage_rate_by_courier
+    desc: Damage rate by courier as a percentage. Shows quality consistency.
+    kind: sql
+    args:
+      courier_id: {desc: "Limit to one courier (optional)"}
+    sql: |
+      SELECT
+        d.courier_id,
+        c.name AS courier_name,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.damage_reported) AS damage_count,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.damage_reported) / COUNT(*), 2) AS damage_rate_pct
+      FROM delivery_attempts d
+      LEFT JOIN couriers c ON d.courier_id = c.courier_id
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND ($courier_id IS NULL OR d.courier_id = $courier_id)
+      GROUP BY d.courier_id, c.name
+      ORDER BY damage_rate_pct DESC, total_attempts DESC
+    limit: 20
+    example: {}
+
+  - name: get_complaint_rate_by_courier
+    desc: Complaint rate by courier as percentage of deliveries. Measures satisfaction.
+    kind: sql
+    args:
+      courier_id: {desc: "Limit to one courier (optional)"}
+    sql: |
+      SELECT
+        d.courier_id,
+        c.name AS courier_name,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.complaint_raised) AS complaint_count,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.complaint_raised) / COUNT(*), 2) AS complaint_rate_pct
+      FROM delivery_attempts d
+      LEFT JOIN couriers c ON d.courier_id = c.courier_id
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND ($courier_id IS NULL OR d.courier_id = $courier_id)
+      GROUP BY d.courier_id, c.name
+      ORDER BY complaint_rate_pct DESC, total_attempts DESC
+    limit: 20
+    example: {}
+
+  - name: get_delivery_volumes_by_city
+    desc: Delivery volumes and performance by UK/EU city. Use for regulatory impact planning.
+    kind: sql
+    args:
+      country: {desc: "Limit to one country (optional)"}
+    sql: |
+      SELECT
+        s.city,
+        s.country,
+        COUNT(DISTINCT d.order_id) AS orders,
+        COUNT(*) AS delivery_attempts,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS first_attempt_success_pct
+      FROM delivery_attempts d
+      JOIN master.sites s ON s.site_id = 'HQ1'
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+        AND ($country IS NULL OR s.country = $country)
+      GROUP BY s.city, s.country
+      ORDER BY orders DESC
+    limit: 30
+    example: {}
+
+  - name: get_delivery_promise_accuracy
+    desc: How often promised delivery dates are met, by delivery service. Measures reliability.
+    kind: sql
+    args:
+      delivery_service: {desc: "Limit to one service (optional)"}
+      weeks: {type: int, default: 8, desc: "Analyse last N weeks"}
+    sql: |
+      SELECT
+        d.delivery_service,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.status = 'delivered' AND CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) AS on_time,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) / COUNT(*), 1) AS on_time_pct
+      FROM delivery_attempts d
+      WHERE d.status = 'delivered'
+        AND d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+        AND ($delivery_service IS NULL OR d.delivery_service = $delivery_service)
+      GROUP BY d.delivery_service
+      ORDER BY on_time_pct DESC
+    limit: 10
+    example: {}
+
+  - name: get_tracking_update_latency
+    desc: Average time between delivery attempt and final tracking update. Shows update speed.
+    kind: sql
+    args:
+      weeks: {type: int, default: 4, desc: "Analyse last N weeks"}
+    sql: |
+      SELECT
+        COUNT(*) AS tracked_attempts,
+        ROUND(AVG(EXTRACT(EPOCH FROM (MAX(ds.scanned_at) - d.attempt_time)) / 3600.0), 1) AS avg_hours_to_final_update
+      FROM delivery_attempts d
+      LEFT JOIN delivery_scans ds ON d.attempt_id = ds.attempt_id
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY ALL
+    limit: 1
+    example: {}
+
+  - name: list_orders_with_missed_scans
+    desc: Orders with fewer than expected tracking scans. For proactive notification.
+    kind: sql
+    args:
+      weeks: {type: int, default: 2, desc: "Recent orders from last N weeks"}
+      min_expected_scans: {type: int, default: 3, desc: "Orders with fewer than this many scans"}
+    sql: |
+      SELECT
+        d.order_id,
+        d.attempt_id,
+        d.courier_id,
+        d.postcode_area,
+        d.status,
+        COUNT(ds.scan_number) AS actual_scans,
+        d.has_tracking_scans,
+        d.attempt_time
+      FROM delivery_attempts d
+      LEFT JOIN delivery_scans ds ON d.attempt_id = ds.attempt_id
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY d.order_id, d.attempt_id, d.courier_id, d.postcode_area, d.status, d.has_tracking_scans, d.attempt_time
+      HAVING COUNT(ds.scan_number) < CAST($min_expected_scans AS INT) OR d.has_tracking_scans < CAST($min_expected_scans AS INT)
+      ORDER BY d.attempt_time DESC
+    limit: 100
+    example: {}
+
+  - name: get_historical_peak_delivery_performance
+    desc: On-time performance during historical peak seasons. Shows capacity stress points.
+    kind: sql
+    args:
+      years_back: {type: int, default: 2, desc: "Look back this many years"}
+    sql: |
+      SELECT
+        YEAR(d.attempt_time) AS year,
+        EXTRACT(WEEK FROM d.attempt_time) AS week_num,
+        COUNT(*) AS attempts,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(d.delivery_time AS DATE) <= d.promised_delivery_date) / COUNT(*), 1) AS on_time_pct,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'delivered' AND d.attempt_number = 1) / COUNT(*), 1) AS first_attempt_success_pct
+      FROM delivery_attempts d
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($years_back AS INT) YEAR
+        AND EXTRACT(MONTH FROM d.attempt_time) BETWEEN 11 AND 12
+      GROUP BY YEAR(d.attempt_time), EXTRACT(WEEK FROM d.attempt_time)
+      ORDER BY year DESC, week_num DESC
+    limit: 50
+    example: {}
+
+  - name: list_worst_delivery_days
+    desc: Worst performing days ranked by failure rate and volume. Shows patterns.
+    kind: sql
+    args:
+      weeks: {type: int, default: 12, desc: "Analyse last N weeks"}
+      min_attempts: {type: int, default: 50, desc: "Only days with at least this many attempts"}
+    sql: |
+      SELECT
+        CAST(d.attempt_time AS DATE) AS delivery_day,
+        DAYNAME(d.attempt_time) AS day_of_week,
+        COUNT(*) AS total_attempts,
+        COUNT(*) FILTER (WHERE d.status = 'failed') AS failures,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE d.status = 'failed') / COUNT(*), 1) AS failure_rate_pct
+      FROM delivery_attempts d
+      WHERE d.attempt_time >= $as_of - INTERVAL CAST($weeks AS INT) WEEK
+      GROUP BY CAST(d.attempt_time AS DATE), DAYNAME(d.attempt_time)
+      HAVING COUNT(*) >= CAST($min_attempts AS INT)
+      ORDER BY failure_rate_pct DESC, total_attempts DESC
+    limit: 30
+    example: {}
+
+  - name: calculate_cost_per_drop_impact
+    desc: Cost per drop impact of applying different allocation rules. Shows cost-benefit.
+    kind: sql
+    args:
+      rule_id: {required: true, desc: "Allocation rule to model"}
+    sql: |
+      SELECT
+        r.rule_id,
+        r.rule_name,
+        COUNT(*) AS modelled_attempts,
+        ROUND(AVG(d.cost_gbp), 2) AS avg_cost_per_drop_gbp,
+        ROUND(COUNT(*) * AVG(d.cost_gbp), 2) AS total_cost_gbp,
+        'total_cost = attempt_count * avg_cost_per_drop' AS formula
+      FROM courier_allocation_rules r
+      CROSS JOIN delivery_attempts d
+      WHERE r.rule_id = $rule_id
+        AND d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      GROUP BY r.rule_id, r.rule_name
+    limit: 1
+    example: {rule_id: "RULE-900001"}
+
+  - name: calculate_courier_capacity_gap_by_region
+    desc: Courier capacity shortfall by region during peak. Shows where to invest.
+    kind: sql
+    args:
+      forecast_volume: {type: int, default: 10000, desc: "Peak volume forecast for next peak season"}
+    sql: |
+      SELECT
+        d.region,
+        COUNT(*) AS historical_peak_attempts,
+        CAST($forecast_volume AS INT) AS forecast_peak_volume,
+        ROUND(SUM(c.peak_capacity_units_month) / 4.0, 0) AS current_weekly_capacity,
+        CAST($forecast_volume AS INT) - ROUND(SUM(c.peak_capacity_units_month) / 4.0, 0) AS capacity_gap
+      FROM delivery_attempts d
+      LEFT JOIN couriers c ON d.courier_id = c.courier_id
+      WHERE d.attempt_time >= $as_of - INTERVAL 26 WEEK
+      GROUP BY d.region
+      ORDER BY capacity_gap DESC
+    limit: 20
+    example: {}
+
+  - name: create_courier_allocation_rule
+    desc: Create a new courier allocation rule splitting volume by postcode area.
+    kind: insert
+    table: courier_allocation_rules
+    id_prefix: RULE-
+    defaults: {status: active}
+    args:
+      rule_name: {required: true, desc: "Name for the rule, e.g. London trial"}
+      courier_id: {required: true, desc: "Courier to allocate volume to"}
+      postcode_areas: {required: true, desc: "Comma-separated postcode areas, e.g. SW1,W1,WC1"}
+      volume_share_pct: {required: true, type: float, desc: "Percentage of volume for this rule"}
+      region: {required: true, desc: "Region, e.g. London"}
+    example: {rule_name: "North London trial", courier_id: "CAR-002", postcode_areas: "N1,N4,N7", volume_share_pct: 20.0, region: "London"}
+
+  - name: update_courier_allocation_rule
+    desc: Change the share or postcode scope of an allocation rule during a trial.
+    kind: update
+    table: courier_allocation_rules
+    args:
+      volume_share_pct: {type: float, desc: "New percentage of volume"}
+      postcode_areas: {desc: "New postcode areas, comma-separated"}
+      status: {type: enum, values: [active, trial, archived], desc: "New rule status"}
+      trial_end_date: {type: date, desc: "New trial end date"}
+    example: {rule_id: "RULE-900001", postcode_areas: "N1,N4", volume_share_pct: 15.0}
+
+  - name: draft_courier_trial_plan
+    desc: Draft a six-week courier trial plan with success criteria and exit conditions.
+    kind: draft
+    args:
+      courier_id: {required: true, desc: "Courier to trial"}
+      trial_postcode_areas: {required: true, desc: "Postcode areas for trial"}
+      volume_share_pct: {required: true, type: float, desc: "Volume percentage to test"}
+    sql:
+      current_baseline: |
+        SELECT
+          ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'delivered' AND attempt_number = 1) / COUNT(*), 1) AS baseline_first_attempt_pct,
+          ROUND(AVG(cost_gbp), 2) AS baseline_cost_gbp,
+          COUNT(*) AS baseline_weekly_volume
+        FROM delivery_attempts
+        WHERE attempt_time >= $as_of - INTERVAL 4 WEEK
+      courier_info: |
+        SELECT name, rating FROM couriers WHERE courier_id = $courier_id
+      trial_region_volume: |
+        SELECT
+          COUNT(*) AS trial_region_volume,
+          ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM delivery_attempts WHERE attempt_time >= $as_of - INTERVAL 4 WEEK), 1) AS pct_of_total
+        FROM delivery_attempts
+        WHERE attempt_time >= $as_of - INTERVAL 4 WEEK
+    template: |
+      COURIER TRIAL PLAN
+      ==================
+      Courier: {{ courier_info[0].name }} (Rating: {{ courier_info[0].rating }}/5)
+      Trial Period: 6 weeks
+      Postcode Areas: {{ trial_postcode_areas }}
+      Volume Share: {{ volume_share_pct }}%
+      Expected Weekly Volume: {{ (trial_region_volume[0].trial_region_volume * volume_share_pct / 100) | num(0) }} orders
+
+      BASELINE METRICS (last 4 weeks):
+      - First-attempt success: {{ current_baseline[0].baseline_first_attempt_pct }}%
+      - Average cost per drop: £{{ current_baseline[0].baseline_cost_gbp }}
+      - Weekly volume: {{ current_baseline[0].baseline_weekly_volume | num(0) }} orders
+
+      SUCCESS CRITERIA:
+      1. First-attempt success >= {{ current_baseline[0].baseline_first_attempt_pct | num(0) }}% (hold or improve baseline)
+      2. Cost per drop <= £{{ current_baseline[0].baseline_cost_gbp | num(2) }} (no increase)
+      3. Damage rate < 2%
+      4. Complaint rate < 3%
+
+      EXIT CONDITIONS (stop trial):
+      - First-attempt success drops below {{ (current_baseline[0].baseline_first_attempt_pct - 5) | num(0) }}%
+      - Damage rate > 4%
+      - Customer complaints > 5 per week
+      - Any public service disruptions
+    example: {courier_id: "CAR-002", trial_postcode_areas: "N1,N4,N7,N15", volume_share_pct: 20.0}

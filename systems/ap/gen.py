@@ -268,6 +268,7 @@ def generate(g):
             "invoices_count": run_invoices,
             "total_amount_gbp": r.uniform(50000, 500000),
             "status": r.choices(["completed", "scheduled", "draft"], [60, 30, 10])[0],
+            "cancellation_reason": None,
             "created_date": run_date - timedelta(days=r.randint(1, 5)),
             "created_by": r.choice([e["employee_id"] for e in g.master("employees")]),
             "updated_at": run_date

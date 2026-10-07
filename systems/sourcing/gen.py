@@ -19,7 +19,7 @@ def generate(g):
 
     # Generate RFQs for products
     for i, prod in enumerate(products[:30]):
-        rfq_id = f"RFQ-{i+1:06d}"
+        rfq_id = f"RFQ-{1000000 + i + 1:06d}"
         req_date = g.as_of + timedelta(days=r.randint(30, 90))
         rfqs.append({
             "rfq_id": rfq_id,
@@ -37,7 +37,7 @@ def generate(g):
         # Generate responses for each RFQ
         num_responses = r.choice([2, 3, 4])
         for j in range(num_responses):
-            resp_id = f"RFR-{len(rfq_responses)+1:06d}"
+            resp_id = f"RFR-{1000000 + len(rfq_responses) + 1:06d}"
             supplier = r.choice(suppliers)
             factory = next((f for f in factories if f["supplier_id"] == supplier["supplier_id"]), None)
 
@@ -63,7 +63,7 @@ def generate(g):
 
     # Generate RFX events for carrier tenders
     for i in range(5):
-        rfx_id = f"RFX-{i+1:06d}"
+        rfx_id = f"RFX-{1000000 + i + 1:06d}"
         rfx_events.append({
             "rfx_id": rfx_id,
             "event_type": r.choice(["carrier_tender", "3pl_tender"]),
@@ -80,7 +80,7 @@ def generate(g):
         num_rfx_responses = r.choice([2, 3, 4])
         for j in range(num_rfx_responses):
             carrier = r.choice(carriers)
-            rfx_resp_id = f"RXR-{len(rfx_responses)+1:06d}"
+            rfx_resp_id = f"RXR-{1000000 + len(rfx_responses) + 1:06d}"
 
             rfx_responses.append({
                 "rfx_response_id": rfx_resp_id,
@@ -102,7 +102,7 @@ def generate(g):
 
     # Generate scorecard templates
     for i in range(5):
-        tst_id = f"TST-{i+1:06d}"
+        tst_id = f"TST-{1000000 + i + 1:06d}"
         scorecard_templates.append({
             "template_id": tst_id,
             "name": r.choice([
@@ -141,7 +141,7 @@ def generate(g):
 
     # Generate sourcing awards
     for i, prod in enumerate(products[:15]):
-        awd_id = f"AWD-{i+1:06d}"
+        awd_id = f"AWD-{1000000 + i + 1:06d}"
         supplier = r.choice(suppliers)
         total_vol = r.choice([100000, 150000, 200000, 300000])
 
@@ -162,7 +162,7 @@ def generate(g):
 
     # Generate RFQ clarifications
     for i in range(8):
-        rfc_id = f"RFC-{i+1:06d}"
+        rfc_id = f"RFC-{1000000 + i + 1:06d}"
         rfq_responses.append({
             "response_id": f"RFR-{r.randint(1, len(rfq_responses)):06d}"
         }) if i < len(rfq_responses) else None

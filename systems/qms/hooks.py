@@ -1,6 +1,47 @@
 """Quality management system tools for measurement tolerance calculation."""
 
 
+def update_lot_disposition(ctx, lot_id, disposition):
+    """Update production lot disposition and status based on QA decision.
+
+    Args:
+        ctx: Tool context with database access
+        lot_id: Production lot to update
+        disposition: QA decision (release, rework, reject)
+
+    Returns:
+        dict with updated lot details
+    """
+    from datetime import datetime
+
+    # Map disposition to status
+    disposition_to_status = {
+        'release': 'released',
+        'rework': 'reworked',
+        'reject': 'rejected'
+    }
+
+    status = disposition_to_status.get(disposition, disposition)
+
+    # Update the lot
+    ctx.q("""
+        UPDATE production_lots
+        SET lot_disposition = $disp, status = $status, updated_at = CURRENT_TIMESTAMP
+        WHERE lot_id = $lid
+    """, disp=disposition, status=status, lid=lot_id)
+
+    # Fetch and return the updated lot
+    rows = ctx.q("""
+        SELECT lot_id, sku, factory_id, status, lot_disposition, qty_produced, updated_at
+        FROM production_lots
+        WHERE lot_id = $lid
+    """, lid=lot_id)
+
+    if rows:
+        return rows[0]
+    return {"lot_id": lot_id, "error": "Lot not found"}
+
+
 def calculate_recommended_tolerance(ctx, factory_id, material, measurement_type):
     """Calculate recommended tolerance based on factory process capability and material shrinkage.
 

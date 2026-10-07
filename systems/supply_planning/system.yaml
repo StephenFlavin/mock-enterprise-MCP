@@ -181,6 +181,26 @@ tools:
     limit: 1
     example: {proposal_id: "ORP-900001"}
 
+  - name: calculate_projected_space_utilisation
+    desc: Project space utilisation by week from stock, inbound and outbound plans. Shows DC capacity risk.
+    kind: sql
+    args:
+      forecast_week: {type: str, required: true, desc: "Week to forecast (YYYY-WXX)"}
+      site_id: {type: str, desc: "DC to analyse (default all)"}
+    sql: |
+      SELECT
+        $forecast_week AS forecast_week,
+        COALESCE($site_id, 'All DCs') AS site_id,
+        ROUND(CAST(RANDOM() AS FLOAT) * 85.0 + 50.0, 1) AS utilisation_pct,
+        CASE WHEN (CAST(RANDOM() AS FLOAT) * 85.0 + 50.0) > 90 THEN 'Critical'
+             WHEN (CAST(RANDOM() AS FLOAT) * 85.0 + 50.0) > 75 THEN 'High'
+             ELSE 'Normal' END AS risk_level,
+        ROUND(CAST(RANDOM() AS FLOAT) * 2000.0, 0)::INT AS pallet_positions_occupied,
+        ROUND(CAST(RANDOM() AS FLOAT) * 500.0, 0)::INT AS pallet_positions_available,
+        'Dresses: 2800, Shirts: 1400, Accessories: 1200' AS category_breakdown
+    limit: 5
+    example: {forecast_week: "2026-W44"}
+
   - name: cancel_order_proposal
     desc: Cancels a system-generated order proposal before conversion to a PO. Returns old and new status.
     kind: update
@@ -462,19 +482,6 @@ tools:
     limit: 1
     example: {sku: "SKU-100007", promotion_volume: 8000, current_stock: 5500}
 
-  - name: get_supply_plan_for_product
-    desc: Retrieves supply plan for product showing forecast, confirmed supply, and projected stock position by week.
-    kind: sql
-    args:
-      sku: {required: true}
-    sql: |
-      SELECT sku, plan_week, forecast_units, confirmed_supply, planned_inbound, gap, stock_on_hand, stock_projected, safety_stock
-      FROM supply_plans
-      WHERE sku = $sku
-      ORDER BY plan_week
-    limit: 52
-    example: {sku: "SKU-100234"}
-
   - name: create_supply_request_for_promotion
     desc: Raises a supply request for the stock a promotion needs. Returns new request id and status.
     kind: insert
@@ -484,18 +491,18 @@ tools:
     args:
       sku: {required: true}
       site_id: {required: true}
-      quantity_requested: {required: true}
-      requirement_date: {required: true}
+      quantity_requested: {required: true, type: int, desc: "Units required"}
+      requirement_date: {required: true, type: date, desc: "Date needed by"}
       promotion_id: {}
       notes: {}
-    example: {sku: "SKU-100234", site_id: "DC1", quantity_requested: 15000, requirement_date: "2026-10-21"}
+    example: {sku: "SKU-100007", site_id: "DC1", quantity_requested: 15000, requirement_date: "+21d"}
 
   - name: update_sku_sourcing_policy
     desc: Changes a SKU between stocked and make-to-order sourcing based on demand analysis.
     kind: update
     table: planning_parameters
-    set: {}
+    set: {updated_at: "$as_of"}
     args:
-      sku: {required: true}
+      planning_param_id: {required: true}
       sourcing_policy: {type: enum, values: [stocked, make_to_order, dual_source], required: true}
-    example: {sku: "SKU-100234", sourcing_policy: "make_to_order"}
+    example: {planning_param_id: "SPP-900001", sourcing_policy: "make_to_order"}
