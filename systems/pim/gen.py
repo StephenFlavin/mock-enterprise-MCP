@@ -155,6 +155,19 @@ def _value(g, a, p):
         return str(r.choice([0, 30, 50, 100]))
     if name == "Bulb Fitting":
         return r.choice(["E27", "B22", "GU10", "E14"])
+    pools = {
+        "Sleeve Length": ["Short", "3/4", "Long", "Sleeveless"], "Neckline": ["Crew", "V-neck", "Turtleneck"],
+        "Length": ["Waist", "Mid-thigh", "Knee"], "Lining": ["Fleece", "Silk", "Cotton", "Unlined"],
+        "Closure": ["Zip", "Magnetic", "Drawstring"], "Hallmark": ["925", "375", "None"],
+        "Shelf Life": ["6 months", "12 months", "24 months"], "Skin Type": ["Dry", "Oily", "All skin types"],
+        "Fragrance Family": ["Floral", "Woody", "Citrus", "Oriental"], "Allergen Declaration": ["Declared", "None declared"],
+        "Battery Type": ["Li-ion", "AA", "None"], "Sole Material": ["Rubber", "EVA", "Leather"],
+        "Safety Standard": ["BS EN 14682", "BS EN 71"], "Flame Retardancy": ["BS 5722 compliant"],
+        "Ingredients": ["Aqua, glycerin, parfum", "Aqua, cetearyl alcohol, panthenol"], "Battery Life": ["4", "8", "12", "20"],
+        "Weight Limit": ["50", "80", "120", "200"], "Country of Origin": ["CN", "PT", "TR", "IN", "GB"],
+    }
+    if name in pools:
+        return r.choice(pools[name])
     if name == "Thread Count":
         return str(r.choice([200, 400, 600, 1000]))
     if name == "Age Range":
