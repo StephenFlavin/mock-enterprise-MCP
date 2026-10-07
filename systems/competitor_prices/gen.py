@@ -22,7 +22,8 @@ COFFEE = "SKU-100532"       # Small Appliances style STY-4301, 99.99
 COFFEE_PRO = "SKU-104732"   # Small Appliances style STY-8598, 334.99 (priced well above its category)
 BOTTLE = "SKU-106307"       # Drinkware style STY-9501, 15.99 (our new 750ml insulated bottle)
 JACKET = "SKU-100161"       # Menswear Outerwear style STY-4102, 66.99 (the jacket on 30% markdown)
-LUNCH = None            # no matched own SKU for lunch boxes
+LUNCH = "SKU-106314"     # Kitchenware style STY-9502, 13.99 (our new insulated lunch box)
+WOOL_COAT = "SKU-106321"    # Womenswear Outerwear style STY-9503, 128.99 (our new wool coat)
 ATH_TOP = "SKU-100070"      # Womenswear Tops style STY-4056 (athleisure), 63.99
 
 # Promotion tuple: (first_week_ago, last_week_ago, type, pct, description); last_week_ago 0 = still running.
@@ -131,7 +132,7 @@ add(6, "L01", LUNCH, LB, "Insulated lunch boxes", "Home", "JD Gym Meal Prep Insu
 
 # ---- Women's outerwear (AW27 trend: oversized silhouettes, recycled materials) ----
 WO = "Women's outerwear"
-add(2, "W01", None, WO, "Coats", "Womenswear", "John Lewis Oversized Wool-Blend Coat", "John Lewis", "Dropped shoulder; wool-blend; double breasted", 159.00,
+add(2, "W01", WOOL_COAT, WO, "Coats", "Womenswear", "John Lewis Oversized Wool-Blend Coat", "John Lewis", "Dropped shoulder; wool-blend; double breasted", 159.00,
     colour="Chocolate brown", material="Recycled wool", sil="Oversized", launch=3)
 add(2, "W02", None, WO, "Coats", "Womenswear", "John Lewis Belted Trench Coat", "John Lewis", "Classic belted trench", 125.00,
     colour="Camel", material="Cotton gabardine", sil="Tailored", launch=40)
@@ -145,7 +146,7 @@ add(6, "W02", None, WO, "Jackets", "Womenswear", "JD Cropped Shell Jacket", "JD 
     colour="Sand", material="Nylon", sil="Cropped", launch=30)
 add(5, "W01", None, WO, "Coats", "Womenswear", "Argos Padded Longline Coat", "Argos Brand", "Longline padded coat", 79.99,
     colour="Black", material="Polyester", sil="Longline", launch=25)
-add(3, "W01", None, WO, "Coats", "Womenswear", "Manteau femme laine", "Carrefour", "Straight cut wool coat", 74.99, dq="estimated",
+add(3, "W01", WOOL_COAT, WO, "Coats", "Womenswear", "Manteau femme laine", "Carrefour", "Straight cut wool coat", 74.99, dq="estimated",
     colour="Navy", material="Wool", sil="Straight", launch=26)
 
 # ---- Wellness and recovery ----

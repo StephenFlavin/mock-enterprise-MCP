@@ -133,9 +133,9 @@ def generate(g):
     incident(bed["FAC-0022"][2], "FAC-0022", "Flame-retardant treatment test failure on bedding batch", "critical", "open", 14)
 
     # ---- 04:34:Q6 nearshore pilot suppliers vs Asian comparators ---------------------------------------------------------
-    program("FAC-0076", skus("FAC-0076"), 4, 0.8, 80, 9, 1)
-    program("FAC-0077", skus("FAC-0077"), 4, 0.8, 76, 7, 3)
-    program("FAC-0084", skus("FAC-0084"), 8, 1.5, 80, 6, 2)
+    program("FAC-0076", skus("FAC-0076"), 4, 1.3, 80, 9, 1)
+    program("FAC-0077", skus("FAC-0077"), 4, 1.3, 76, 7, 3)
+    program("FAC-0084", skus("FAC-0084"), 8, 0.8, 80, 6, 2)
     program("FAC-0110", skus("FAC-0110"), 8, 2.4, 80, 6, 5)
     incident(skus("FAC-0084")[0], "FAC-0084", "Button thread colour mismatch on shirts", "low", "closed", 33)
     incident(skus("FAC-0110")[0], "FAC-0110", "Skipped stitches on hems of outerwear", "medium", "resolved", 29)
