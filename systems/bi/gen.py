@@ -145,7 +145,8 @@ def generate(g):
     return {
         "store_performance": store_perf,
         "product_performance": product_perf,
-        "performance_targets": targets,
+        "store_targets": store_targets,
+        "product_targets": product_targets,
         "data_quality_issues": dq_issues,
         "scheduled_reports": reports
     }
