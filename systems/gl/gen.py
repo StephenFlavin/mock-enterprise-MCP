@@ -720,7 +720,7 @@ def build_sourcing_margins():
     return rows
 
 
-LATE_PAYERS = {'SUP-0073': (21, 5), 'SUP-0046': (17, 5), 'SUP-0068': (12, 5), 'SUP-0033': (9, 4)}   # days beyond terms (mean, sd)
+LATE_PAYERS = {'SUP-0053': (23, 5), 'SUP-0073': (21, 5), 'SUP-0046': (17, 5), 'SUP-0068': (12, 5), 'SUP-0033': (9, 4)}   # days beyond terms (mean, sd)
 GBP_PER = {'GBP': 1.0, 'USD': 0.79, 'EUR': 0.855}
 
 

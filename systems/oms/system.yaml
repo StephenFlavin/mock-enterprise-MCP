@@ -9,7 +9,8 @@ tables:
     key: order_id
     cols:
       order_id: {type: str, desc: "Sales order, e.g. ORD-900001"}
-      customer_id: {type: str, desc: "Customer or wholesale account, e.g. CUS-000010; blank for store replenishment orders"}
+      customer_id: {type: str, desc: "Online customer (master customers), e.g. CUS-000134; blank for store and wholesale orders"}
+      partner_id: {type: str, desc: "Wholesale account (master partners, type wholesale), e.g. PTN-006; blank for store and online orders"}
       site_id: {type: str, desc: "Destination store for store orders, e.g. ST159; blank otherwise"}
       channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
       status: {type: enum, values: [open, allocated, picked, shipped, delivered, cancelled], desc: Order status}
@@ -77,7 +78,8 @@ tables:
       shipment_id: {type: str, desc: "Shipment, e.g. SHP-001"}
       order_id: {type: str, desc: "Sales order shipped"}
       channel: {type: enum, values: [store, online, wholesale], desc: Channel}
-      customer_id: {type: str, desc: "Customer"}
+      customer_id: {type: str, desc: "Online customer; blank for store and wholesale shipments"}
+      partner_id: {type: str, desc: "Wholesale account; blank for store and online shipments"}
       delivery_notes: {type: str, desc: "Delivery notes id/reference"}
       shipped_date: {type: date, desc: "Date shipped"}
       shipped_at: {type: timestamp, desc: "Timestamp shipped"}
@@ -120,21 +122,21 @@ tables:
 
 tools:
   - name: get_open_orders_for_customer
-    desc: Open orders for a customer, newest first, with priority, due date and any credit or stock hold. Use for ship-or-hold decisions.
+    desc: Open orders for a wholesale account, newest first, with priority, due date and any credit or stock hold. Use for ship-or-hold decisions.
     kind: sql
     args:
-      customer_id: {required: true}
+      partner_id: {required: true}
       date_from: {type: date, default: "-90d", desc: "Orders placed on or after this date"}
     sql: |
-      SELECT o.order_id, o.customer_id, o.channel, o.status, o.priority, o.order_date, o.due_date,
+      SELECT o.order_id, o.partner_id, o.channel, o.status, o.priority, o.order_date, o.due_date,
              o.hold_status, o.hold_reason, o.total_units, o.total_gbp
       FROM orders o
-      WHERE o.customer_id = $customer_id
+      WHERE o.partner_id = $partner_id
         AND o.status IN ('open', 'allocated', 'picked')
         AND o.order_date >= CAST($date_from AS DATE)
       ORDER BY o.order_date DESC, o.order_id
     limit: 20
-    example: {customer_id: CUS-000016}
+    example: {partner_id: PTN-032}
 
   - name: list_split_orders_by_cause
     desc: Orders shipped in more than one shipment, with cause (stock, location, wave, carrier, other), SKUs and value. Filter by cause, channel or SKU.
@@ -149,7 +151,7 @@ tools:
         SELECT s.order_id, count(*) AS shipments, max(s.split_reason) AS cause, min(s.shipped_date) AS first_shipped,
                sum(s.total_units) AS units
         FROM shipments s GROUP BY s.order_id HAVING count(*) > 1)
-      SELECT o.order_id, o.customer_id, o.site_id, o.channel, sp.cause, sp.shipments,
+      SELECT o.order_id, o.customer_id, o.partner_id, o.site_id, o.channel, sp.cause, sp.shipments,
              (SELECT string_agg(DISTINCT ol.sku, ', ') FROM order_lines ol WHERE ol.order_id = o.order_id) AS skus,
              sp.units, o.total_gbp, sp.first_shipped
       FROM sp JOIN orders o ON o.order_id = sp.order_id
@@ -331,7 +333,7 @@ tools:
         JOIN orders o ON o.order_id = ad.order_id
         LEFT JOIN master.sites st ON st.site_id = o.site_id
         LEFT JOIN master.customers cu ON cu.customer_id = o.customer_id
-        JOIN dc_catchments c ON c.region = COALESCE(st.region, cu.region) AND c.channel = o.channel
+        JOIN dc_catchments c ON c.region = COALESCE(st.region, cu.region, o.partner_id) AND c.channel = o.channel
         WHERE ad.qty_allocated > 0 AND ad.decided_at >= CAST($date_from AS DATE)
           AND ($channel IS NULL OR $channel = '' OR o.channel = $channel)
         GROUP BY o.order_id, o.total_gbp, c.local_dc)
@@ -409,17 +411,17 @@ tools:
     desc: Order count, units and revenue per wholesale account for the last N weeks versus the N weeks before, with last order date. Use for forecasting.
     kind: sql
     args:
-      customer_id: {}
+      partner_id: {}
       periods: {type: int, default: 13, desc: "Weeks per period; compared with the previous period of the same length"}
     sql: |
       WITH w AS (SELECT CAST($as_of AS DATE) - 7 * $periods AS cut1, CAST($as_of AS DATE) - 14 * $periods AS cut0),
       x AS (
-        SELECT o.customer_id, o.order_date, o.total_units, o.total_gbp,
+        SELECT o.partner_id, o.order_date, o.total_units, o.total_gbp,
                CASE WHEN o.order_date > w.cut1 THEN 'recent' WHEN o.order_date > w.cut0 THEN 'prior' END AS per
         FROM orders o, w
         WHERE o.channel = 'wholesale' AND o.status <> 'cancelled'
-          AND ($customer_id IS NULL OR $customer_id = '' OR o.customer_id = $customer_id))
-      SELECT customer_id,
+          AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id))
+      SELECT partner_id,
              count(*) FILTER (WHERE per = 'recent') AS orders_recent, count(*) FILTER (WHERE per = 'prior') AS orders_prior,
              sum(total_units) FILTER (WHERE per = 'recent') AS units_recent, sum(total_units) FILTER (WHERE per = 'prior') AS units_prior,
              round(sum(total_gbp) FILTER (WHERE per = 'recent'), 2) AS revenue_recent_gbp,
@@ -427,7 +429,7 @@ tools:
              round(100.0 * (sum(total_gbp) FILTER (WHERE per = 'recent') - sum(total_gbp) FILTER (WHERE per = 'prior'))
                    / nullif(sum(total_gbp) FILTER (WHERE per = 'prior'), 0), 1) AS revenue_change_pct,
              max(order_date) AS last_order_date
-      FROM x WHERE per IS NOT NULL GROUP BY customer_id ORDER BY revenue_change_pct, customer_id
+      FROM x WHERE per IS NOT NULL GROUP BY partner_id ORDER BY revenue_change_pct, partner_id
     limit: 30
     example: {}
 
@@ -435,10 +437,10 @@ tools:
     desc: Unit and order-line fill rate by wholesale account for shipped orders, lowest fill first. Use to find accounts at risk of fines.
     kind: sql
     args:
-      customer_id: {}
+      partner_id: {}
       date_from: {type: date, default: "-90d", desc: "Orders placed on or after this date"}
     sql: |
-      SELECT o.customer_id, count(DISTINCT o.order_id) AS orders, count(*) AS order_lines,
+      SELECT o.partner_id, count(DISTINCT o.order_id) AS orders, count(*) AS order_lines,
              count(*) FILTER (WHERE ol.qty_shipped >= ol.qty_ordered) AS lines_in_full,
              round(100.0 * count(*) FILTER (WHERE ol.qty_shipped >= ol.qty_ordered) / count(*), 1) AS line_fill_rate_pct,
              sum(ol.qty_ordered) AS units_ordered, sum(ol.qty_shipped) AS units_shipped,
@@ -447,8 +449,8 @@ tools:
       FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
       WHERE o.channel = 'wholesale' AND o.status IN ('shipped', 'delivered')
         AND o.order_date >= CAST($date_from AS DATE)
-        AND ($customer_id IS NULL OR $customer_id = '' OR o.customer_id = $customer_id)
-      GROUP BY o.customer_id ORDER BY unit_fill_rate_pct, o.customer_id
+        AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id)
+      GROUP BY o.partner_id ORDER BY unit_fill_rate_pct, o.partner_id
     limit: 30
     example: {}
 
@@ -460,7 +462,7 @@ tools:
       product_sku: {type: str, desc: "Product SKU, e.g. K-1700 (blank = all)"}
       date_from: {type: date, default: "-30d", desc: "Allocated on or after this date"}
     sql: |
-      SELECT ad.order_id, o.customer_id, o.channel, ad.sku, ad.qty_requested, ad.qty_allocated,
+      SELECT ad.order_id, o.customer_id, o.partner_id, o.channel, ad.sku, ad.qty_requested, ad.qty_allocated,
              ad.qty_requested - ad.qty_allocated AS short_units, o.status AS order_status,
              CASE WHEN o.status = 'cancelled' THEN 'cancelled'
                   WHEN o.status IN ('shipped', 'delivered') AND ol.qty_shipped < ol.qty_ordered THEN 'short_shipped'
@@ -564,15 +566,15 @@ tools:
     kind: sql
     args:
       product_sku: {type: str, required: true, desc: "Product SKU, e.g. SKU-100035"}
-      customer_id: {}
+      partner_id: {}
     sql: |
-      SELECT o.order_id, ol.line_no, o.customer_id, o.order_date, o.status, o.priority, o.hold_status,
+      SELECT o.order_id, ol.line_no, o.partner_id, o.order_date, o.status, o.priority, o.hold_status,
              ol.qty_ordered, ol.qty_allocated, ol.qty_shipped, ol.qty_ordered - ol.qty_shipped AS qty_outstanding,
              ol.unit_price_gbp, round((ol.qty_ordered - ol.qty_shipped) * ol.unit_price_gbp, 2) AS outstanding_value_gbp
       FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
       WHERE o.channel = 'wholesale' AND ol.sku = $product_sku
         AND o.status IN ('open', 'allocated', 'picked') AND ol.status <> 'cancelled'
-        AND ($customer_id IS NULL OR $customer_id = '' OR o.customer_id = $customer_id)
+        AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id)
       ORDER BY o.order_date, o.order_id, ol.line_no
     limit: 30
     example: {product_sku: "SKU-100035"}
@@ -633,18 +635,18 @@ tools:
     desc: Draft a message telling a customer which open order lines will ship short, with ordered and allocated quantities. Use for wholesale notifications.
     kind: draft
     args:
-      customer_id: {required: true}
+      partner_id: {required: true}
       product_sku: {type: str, desc: "Only lines for this SKU, e.g. SKU-100035 (blank = all short lines)"}
     sql:
       lines: |
         SELECT o.order_id, ol.sku, ol.qty_ordered, ol.qty_allocated, ol.qty_ordered - ol.qty_allocated AS qty_short
         FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
-        WHERE o.customer_id = $customer_id AND o.status IN ('open', 'allocated', 'picked')
+        WHERE o.partner_id = $partner_id AND o.status IN ('open', 'allocated', 'picked')
           AND ol.qty_allocated < ol.qty_ordered AND ol.status <> 'cancelled'
           AND ($product_sku IS NULL OR $product_sku = '' OR ol.sku = $product_sku)
         ORDER BY o.order_id, ol.line_no
     template: |
-      To {{ customer_id }},
+      To {{ partner_id }},
 
       Due to limited stock, the following open order lines will be shipped short:
 
@@ -655,4 +657,4 @@ tools:
 
       Best regards,
       Order Management Team
-    example: {customer_id: CUS-000010}
+    example: {partner_id: PTN-006}

@@ -275,7 +275,7 @@ def generate(g):
             story_rows.append(trow("K-1700", s, wk, False, 0, None))
     for wk in weeks[-8:-3]:
         story_rows.append(trow("K-1700", "ST214", wk, False, 0, None))
-    # Wholesale orders (customer CUS-000030): DC1 stock position in the weeks around each order. The first order (800 units
+    # Wholesale orders (customer PTN-001): DC1 stock position in the weeks around each order. The first order (800 units
     # of SKU-100469) met only 560 units on hand; later orders were covered.
     def put(sku, site, wk, qty, dem, cause=None, lost=0, days=0):
         story_rows.append({"sku": sku, "site_id": site, "tracking_date": wk, "available": qty > 0, "quantity_available": qty,

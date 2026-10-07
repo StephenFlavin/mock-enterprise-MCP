@@ -10,7 +10,11 @@ from datetime import date, datetime, timedelta
 # Suppliers / POs whose confirmations, amendments and holds are written by hand in seed/*.csv.
 STORY_SUPPLIERS = {"SUP-0070", "SUP-0027", "SUP-0045", "SUP-0076", "SUP-0022", "SUP-0034"}
 STORY_FACTORIES = {"FAC-0104", "FAC-0021"}
-STORY_POS = {"PO-2026-004072", "PO-2026-004312", "PO-2026-004062", "PO-2026-005154", "PO-2026-004663"}
+# Story entities added after the first build (04:35:Q1 supplier SUP-0053, 04:33:Q1 factory FAC-0121): kept out of the random amendments
+# at the end of the loop rather than in the sets above, so the random stream (and every other generated row) is unchanged.
+SEEDED_ONLY_SUPPLIERS = {"SUP-0053"}
+SEEDED_ONLY_FACTORIES = {"FAC-0121"}
+STORY_POS = {"PO-2026-004072", "PO-2026-004312", "PO-2026-004062", "PO-2026-005784", "PO-2026-004663"}
 NEARSHORE = ["SUP-0044", "SUP-0058", "SUP-0079", "SUP-0040", "SUP-0039"]
 OPEN = ("open", "confirmed", "shipped")
 DONE = ("received", "closed")
@@ -105,7 +109,7 @@ def generate(g):
             pct = r.choice([-0.03, -0.02, 0.02, 0.03])
             old, new = (round(val / (1 + pct), 2), round(val, 2)) if status in ("implemented", "approved") else (round(val, 2), round(val * (1 + pct), 2))
             impact, old, new = round(new - old, 2), str(old), str(new)
-        amendments.append({
+        amend_row = ({
             "amendment_id": f"AMD-{len(amendments) + 1:06d}", "po_id": po["po_id"], "line_no": None, "amendment_type": atype,
             "old_value": old, "new_value": new, "reason": r.choice(reasons[atype]),
             "requested_by": r.choice(buyers), "requested_at": ts(asked, r),
@@ -114,6 +118,9 @@ def generate(g):
             "status": status,
             "supplier_confirmed_at": ts(asked + timedelta(days=2), r) if status == "implemented" else None,
             "cost_impact_gbp": impact, "updated_at": ts(asked + timedelta(days=2), r)})
+        # SEEDED_ONLY entities keep only their hand-written amendments (skipped after the draws so the random stream is unchanged)
+        if po["supplier_id"] not in SEEDED_ONLY_SUPPLIERS and po["factory_id"] not in SEEDED_ONLY_FACTORIES:
+            amendments.append(amend_row)
 
     # ---------------------------------------------------------------- holds (background: a few quality / compliance holds)
     blocks = []
@@ -215,7 +222,7 @@ def generate(g):
     base_price = {"Cotton": 1650, "Polyester": 1050, "Steel": 640, "Plastic": 1180, "Leather": 3900, "Copper": 7600, "Cardboard": 520}
     commitments = []
     sup_list = sorted(suppliers.values(), key=lambda s: s["supplier_id"])
-    for sup in r.sample([s for s in sup_list if s["status"] == "active"], 22):
+    for sup in r.sample([s for s in sup_list if s["status"] == "active" and s["category_focus"] in commodity_for], 22):
         commodity = r.choice(commodity_for[sup["category_focus"]])
         start = as_of - timedelta(days=r.randint(30, 300))
         end = start + timedelta(days=r.choice([180, 270, 365]))

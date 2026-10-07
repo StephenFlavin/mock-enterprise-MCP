@@ -130,6 +130,11 @@ RECYCLED = [  # material_type, commodity, recycled, virgin, unit, recycled cost,
 ]
 
 
+# master products added after the original build (STY-9501..9510): own per-SKU rng and no margin blocks, so adding
+# them leaves every other SKU's generated numbers unchanged
+ADDED_STYLES = {f"STY-95{n:02d}" for n in range(1, 11)}
+
+
 def generate(g):
     r = g.rng
     products = g.master("products")
@@ -156,16 +161,18 @@ def generate(g):
 
     # ---- product_costings + cost sheets + commodity exposures
     costings, sheets, exposures = [], [], []
+    add_costings, add_sheets, add_exposures = [], [], []  # rows for ADDED_STYLES, appended after everything else is built
     exp_n = 1
     for p in products:
         sku, cat, dept = p["sku"], p["category"], p["department"]
+        rr = random.Random(sku) if p["style_id"] in ADDED_STYLES else r
         total, retail = float(p["unit_cost_gbp"]), float(p["retail_price_gbp"])
         co = p["country_of_origin"]
         prof = list(PROFILES.get(cat) or DEPT_PROFILES.get(dept) or APPAREL)
         prof[1] *= LABOUR_MULT.get(co, 1.2)
         if co in NEAR:
             prof[3] *= 0.5
-        prof = [x * r.uniform(0.92, 1.08) for x in prof]
+        prof = [x * rr.uniform(0.92, 1.08) for x in prof]
         sm = sum(prof)
         parts = [round(total * x / sm, 2) for x in prof]
         parts[2] = round(total - sum(parts) + parts[2], 2)
@@ -185,18 +192,18 @@ def generate(g):
         gm = round(retail - total, 2)
         wk = wk_units.get(sku)
         moq = int(p["moq"] or 500)
-        qty = max(300, int(round(moq * r.randint(2, 6), -2)))
+        qty = max(300, int(round(moq * rr.randint(2, 6), -2)))
         weekly = int(round(wk)) if wk else max(20, qty // 16)
         row = {
             "costing_id": f"CST-{sku}-V1", "style_id": p["style_id"], "sku": sku, "season": p["season"], "version": 1,
             "origin_country": co, "supplier_id": p["supplier_id"], "factory_id": p["factory_id"], "quantity_units": qty,
             "material_cost_gbp": mat, "labour_cost_gbp": lab, "overhead_cost_gbp": ovh, "freight_cost_gbp": frt,
             "tooling_cost_gbp": tool, "total_cost_gbp": total, "retail_price_gbp": retail, "gross_margin_gbp": gm,
-            "gross_margin_pct": round(gm / retail * 100, 1), "target_margin_pct": round(TARGET_MARGIN.get(dept, 58) + r.uniform(-1.5, 1.5), 1),
+            "gross_margin_pct": round(gm / retail * 100, 1), "target_margin_pct": round(TARGET_MARGIN.get(dept, 58) + rr.uniform(-1.5, 1.5), 1),
             "status": "obsolete" if p["status"] == "discontinued" else "active",
             "notes": f"{p['season']} costing at {qty} units", "category": cat, "department": dept,
             "weekly_demand_units": weekly, "late_sales_lost_pct": float(LOST_PCT.get(dept, 50)),
-            "created_at": g.as_of - timedelta(days=r.randint(30, 120)), "updated_at": g.as_of - timedelta(days=r.randint(0, 30)),
+            "created_at": g.as_of - timedelta(days=rr.randint(30, 120)), "updated_at": g.as_of - timedelta(days=rr.randint(0, 30)),
         }
         row.update(STORY_COSTING.get(sku, {}))
         if sku in TARGET_OVERRIDE:
@@ -204,29 +211,32 @@ def generate(g):
         if sku == BOTTLE:
             row["target_margin_pct"] = 58.0
             row["notes"] = "Stainless insulated bottle costing; steel body is the main cost"
-        costings.append(row)
+        added = p["style_id"] in ADDED_STYLES
+        (add_costings if added else costings).append(row)
         for i, (t, d, c) in enumerate(lines, 1):
             qty_, unit_, ucost_ = 1, "unit", c
             if t == "fabric" and c > 0:  # fabric is costed per metre: metres per garment = line cost / commodity price per metre
                 fp = FABRIC_PRICE.get(COMMODITY.get(cat, ("",))[0], 6.5)
                 qty_ = round(c / fp, 2)
                 unit_, ucost_ = "metre", round(c / qty_, 3)
-            sheets.append({"costing_id": row["costing_id"], "line_no": i, "component_type": t, "description": d, "quantity": qty_,
+            (add_sheets if added else sheets).append({"costing_id": row["costing_id"], "line_no": i, "component_type": t, "description": d, "quantity": qty_,
                            "unit": unit_, "unit_cost_gbp": ucost_, "total_cost_gbp": c, "as_pct_of_total": round(c / total * 100, 1)})
         if cat in COMMODITY and row["status"] == "active":
             code, ctype, el = COMMODITY[cat]
             ln = next((x for x in lines if x[0] == ctype), None)
             if ln:
-                exposures.append({"exposure_id": f"EXP-{exp_n:06d}", "sku": sku, "category": cat, "commodity": code,
+                (add_exposures if added else exposures).append({"exposure_id": f"EXP-{exp_n:06d}", "sku": sku, "category": cat, "commodity": code,
                                   "exposure_pct": round(ln[2] / total * 100, 1), "exposure_unit": "kg",
                                   "exposure_quantity": round(ln[2] / 17.0, 2) if code == "SS304" else round(ln[2] / 9.0, 2),
                                   "elasticity": el, "date_from": g.as_of - timedelta(days=365)})
                 exp_n += 1
-    cost_by_sku = {c["sku"]: c for c in costings}
+    cost_by_sku = {c["sku"]: c for c in costings + add_costings}
 
     # ---- margin sample and blocks
     combos = defaultdict(list)
     for p in products:
+        if p["style_id"] in ADDED_STYLES:
+            continue
         combos[(p["department"], p["category"])].append(p["sku"])
     sample = {}
     for k, skus in combos.items():
@@ -385,11 +395,12 @@ def generate(g):
 
     cat_cost = defaultdict(list)
     for p in products:
-        cat_cost[p["category"]].append(float(p["unit_cost_gbp"]))
+        if p["style_id"] not in ADDED_STYLES:
+            cat_cost[p["category"]].append(float(p["unit_cost_gbp"]))
     base_outlet = {"Womenswear": 46, "Menswear": 44, "Kids": 42, "Accessories": 40, "Home": 36, "Beauty": 30, "Electricals": 50}
     cat_mult = {"Knitwear": 1.15, "Towels": 0.75, "Bedding": 0.9, "Outerwear": 1.05}
     dec_o, dec_l = [1.0, 0.9, 0.78, 0.62], [1.0, 0.97, 0.92, 0.85]
-    cat_dept = {p["category"]: p["department"] for p in products}
+    cat_dept = {p["category"]: p["department"] for p in products if p["style_id"] not in ADDED_STYLES}
     for cat, dept in sorted(cat_dept.items()):
         cm = cat_mult.get(cat, r.uniform(0.9, 1.1))
         cost = round(sum(cat_cost[cat]) / len(cat_cost[cat]), 2)
@@ -603,7 +614,8 @@ def generate(g):
     # ---- holding cost rates, repair costs, packaging options, recycled premiums
     holds, dept_of = [], {}
     for p in products:
-        dept_of.setdefault(p["category"], p["department"])
+        if p["style_id"] not in ADDED_STYLES:
+            dept_of.setdefault(p["category"], p["department"])
     for cat, dept in sorted(dept_of.items()):
         cap, sto, ins, obs = HOLD_PROFILE.get(dept, (9.0, 5.0, 1.0, 6.0))
         if cat == "Outerwear":
@@ -612,6 +624,13 @@ def generate(g):
             sto, obs = round(sto + r.uniform(-0.5, 0.5), 1), round(obs + r.uniform(-0.8, 0.8), 1)
         holds.append({"rate_id": f"HLD-{len(holds) + 1:03d}", "category": cat, "capital_cost_pct": cap, "storage_handling_pct": sto, "insurance_pct": ins, "obsolescence_pct": obs,
                       "total_annual_pct": round(cap + sto + ins + obs, 1), "notes": "Annual cost of holding stock as % of inventory value"})
+    for p in products:  # categories first seen on the added products: standard rates, no random draws
+        if p["category"] not in dept_of:
+            dept_of[p["category"]] = p["department"]
+            cap, sto, ins, obs = HOLD_PROFILE.get(p["department"], (9.0, 5.0, 1.0, 6.0))
+            holds.append({"rate_id": f"HLD-{len(holds) + 1:03d}", "category": p["category"], "capital_cost_pct": cap, "storage_handling_pct": sto,
+                          "insurance_pct": ins, "obsolescence_pct": obs, "total_annual_pct": round(cap + sto + ins + obs, 1),
+                          "notes": "Annual cost of holding stock as % of inventory value"})
     repairs = [{"repair_id": f"RPR-{i:03d}", "category": c, "repair_cost_gbp": rc, "avg_repair_days": d, "success_rate_pct": sr, "typical_repair_work": w, "notes": ""}
                for i, (c, rc, d, sr, w) in enumerate(REPAIR, 1)]
     pack, pn = [], 1
@@ -625,9 +644,9 @@ def generate(g):
              "recycled_cost_gbp": rcost, "virgin_cost_gbp": vcost, "notes": n} for i, (t, cm, rm, vm, u, rcost, vcost, n) in enumerate(RECYCLED, 1)]
 
     return {
-        "product_costings": costings, "material_costs": mats, "margin_analyses": margins, "cost_variance_drivers": drivers,
+        "product_costings": costings + add_costings, "material_costs": mats, "margin_analyses": margins, "cost_variance_drivers": drivers,
         "recovery_routes": [dict(zip(["route_id", "route_name", "description", "category_focus", "min_age_days", "max_age_days", "status"], x)) for x in routes],
-        "recovery_rates": rates, "scenario_analyses": scen, "cost_sheet_details": sheets, "commodity_exposures": exposures,
+        "recovery_rates": rates, "scenario_analyses": scen, "cost_sheet_details": sheets + add_sheets, "commodity_exposures": exposures + add_exposures,
         "supplier_cost_history": hist, "fob_price_history": fob, "origin_cost_quotes": quotes,
         "cost_bridges": bridges, "holding_cost_rates": holds, "repair_costs": repairs, "packaging_options": pack, "recycled_premiums": recs,
         "fix_options": [],  # STORY: seed/fix_options.csv

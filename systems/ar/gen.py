@@ -1,13 +1,14 @@
 """AR system: wholesale customer invoices, payments, credit accounts, collection history.
 
-Accounts are wholesale customers CUS-000009..CUS-000040 (the key accounts used by oms and contracts).
+Accounts are 32 wholesale accounts (master partners with type wholesale: the key accounts PTN-001..PTN-010 used by oms, wholesale_edi and
+contracts, plus PTN-025..PTN-047). `wholesale` lists them in the order the generator draws random numbers (do not reorder).
 Everything is derived from one invoice/payment list so balances, ageing, history and provisions agree.
 Planted stories (days are relative to as_of):
-  Q1 CUS-000026 "Hartley & Reed Ltd": days-to-pay drifting up, score 58, limit 250k, insurance cover 150k
-  Q2 CUS-000028: invoice INV-2026-900040 for 480k (8,000 units at 60) disputed, second delivery 360 units short
+  Q1 PTN-025 "Hartley & Reed Ltd": days-to-pay drifting up, score 58, limit 250k, insurance cover 150k
+  Q2 PTN-041: invoice INV-2026-900040 for 480k (8,000 units at 60) disputed, second delivery 360 units short
   Q3 portfolio ledger, ECL above the booked provision
-  Q4 ten accounts with overdue balances that grew over the last 60 days; CUS-000022 is a big overdue that shrank
-  Q5 CUS-000016: oldest invoice 75 days overdue, balance over its limit, not yet on hold
+  Q4 ten accounts with overdue balances that grew over the last 60 days; PTN-007 is a big overdue that shrank
+  Q5 PTN-032: oldest invoice 75 days overdue, balance over its limit, not yet on hold
 """
 from datetime import datetime, timedelta
 
@@ -23,25 +24,28 @@ def generate(g):
                 if p["status"] == "active" and 15 <= float(p["retail_price_gbp"]) <= 130]
     rich = [p for p in products if float(p["retail_price_gbp"]) >= 55]
 
-    wholesale = [f"CUS-{n:06d}" for n in range(9, 41)]
+    # slot order = the original draw order, so story numbers stay put; ids are the master wholesale partners
+    wholesale = [f"PTN-{n:03d}" for n in (3, 6, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 7, 38, 10, 39, 25, 40, 41, 42, 1, 8, 43, 9, 44, 45,
+                                          2, 4, 5, 46, 47)]
+    rank = {c: i for i, c in enumerate(wholesale)}
 
     # planted accounts: unpaid invoices as (amount, due_days_ago); negative = not yet due
     P = {
-        "CUS-000010": dict(limit=300000, score=52, over=[(85000, 75), (62000, 50), (71000, 22)], open=[(38000, -8)], ins=(200000, 90)),
-        "CUS-000026": dict(limit=250000, score=58, over=[(64000, 40), (58000, 18), (46000, 5)], open=[(22000, -10), (29000, -24)],
+        "PTN-006": dict(limit=300000, score=52, over=[(85000, 75), (62000, 50), (71000, 22)], open=[(38000, -8)], ins=(200000, 90)),
+        "PTN-025": dict(limit=250000, score=58, over=[(64000, 40), (58000, 18), (46000, 5)], open=[(22000, -10), (29000, -24)],
                            ins=(150000, 90), drift=24),
-        "CUS-000033": dict(limit=200000, score=55, over=[(54000, 66), (47000, 35), (38000, 9)], open=[(25000, -15)]),
-        "CUS-000018": dict(limit=150000, score=49, over=[(44000, 52), (52000, 21), (31000, 6)], open=[(18000, -12)]),
-        "CUS-000015": dict(limit=150000, score=51, over=[(40000, 64), (36000, 33), (29000, 12)], open=[]),
-        "CUS-000032": dict(limit=150000, score=60, over=[(61000, 47), (33000, 20)], open=[(20000, -20)]),
-        "CUS-000036": dict(limit=120000, score=59, over=[(38000, 50), (30000, 20), (22000, 10)], open=[(16000, -14)]),
-        "CUS-000039": dict(limit=120000, score=57, over=[(35000, 52), (28000, 20), (24000, 8)], open=[(15000, -18)]),
-        "CUS-000030": dict(limit=120000, score=53, over=[(30000, 61), (26000, 31), (25000, 3)], open=[(12000, -22)]),
-        "CUS-000016": dict(limit=60000, score=41, over=[(61000, 75), (10000, 34)], open=[], orders=["", "ORD-004880"]),
+        "PTN-009": dict(limit=200000, score=55, over=[(54000, 66), (47000, 35), (38000, 9)], open=[(25000, -15)]),
+        "PTN-034": dict(limit=150000, score=49, over=[(44000, 52), (52000, 21), (31000, 6)], open=[(18000, -12)]),
+        "PTN-031": dict(limit=150000, score=51, over=[(40000, 64), (36000, 33), (29000, 12)], open=[]),
+        "PTN-043": dict(limit=150000, score=60, over=[(61000, 47), (33000, 20)], open=[(20000, -20)]),
+        "PTN-002": dict(limit=120000, score=59, over=[(38000, 50), (30000, 20), (22000, 10)], open=[(16000, -14)]),
+        "PTN-046": dict(limit=120000, score=57, over=[(35000, 52), (28000, 20), (24000, 8)], open=[(15000, -18)]),
+        "PTN-001": dict(limit=120000, score=53, over=[(30000, 61), (26000, 31), (25000, 3)], open=[(12000, -22)]),
+        "PTN-032": dict(limit=60000, score=41, over=[(61000, 75), (10000, 34)], open=[], orders=["", "ORD-004880"]),
     }
     TERMS = 30
-    DECOY = "CUS-000022"      # large overdue 30-60 days ago, paid since
-    DISPUTE = "CUS-000028"   # the 480k disputed invoice
+    DECOY = "PTN-007"      # large overdue 30-60 days ago, paid since
+    DISPUTE = "PTN-041"   # the 480k disputed invoice
 
     invoices, lines, payments = [], [], []
     acct = {}
@@ -156,7 +160,7 @@ def generate(g):
             add(cid, 18, 30, noise_lines(28000), None)
 
     # ---- ids and child rows
-    invoices.sort(key=lambda i: (i["invoice_date"], i["customer_id"]))
+    invoices.sort(key=lambda i: (i["invoice_date"], rank[i["customer_id"]]))
     n = 0
     p_n = 900100
     for inv in invoices:
@@ -175,7 +179,7 @@ def generate(g):
     for p in payments:
         p["invoice_id"] = p.pop("_inv")["invoice_id"]
     by_id = {i["invoice_id"]: i for i in invoices}
-    payments.sort(key=lambda p: (p["payment_date"], p["customer_id"]))
+    payments.sort(key=lambda p: (p["payment_date"], rank[p["customer_id"]]))
     cnt = {}
     for p in payments:
         y = p["payment_date"].year
@@ -231,15 +235,15 @@ def generate(g):
     noise = [c for c in wholesale if c not in P and c not in (DECOY, DISPUTE)]
     for cid in r.sample(noise, 6):
         insured[cid] = (r.choice([50000, 100000, 200000]), r.choice([80, 90, 95]))
-    for k, (cid, (cover, pct)) in enumerate(sorted(insured.items()), 1):
+    for k, (cid, (cover, pct)) in enumerate(sorted(insured.items(), key=lambda kv: rank[kv[0]]), 1):
         start = d(r.randint(120, 330))
-        if cid == "CUS-000026":
+        if cid == "PTN-025":
             start, end = d(300), d(-70)
         else:
             end = start + timedelta(days=365)
         insurance.append(dict(
             policy_id=f"INS-{k:05d}", customer_id=cid,
-            insurer="Atradius" if cid == "CUS-000026" else r.choice(["Atradius", "Coface", "AXA Credit Insurance", "Zurich"]),
+            insurer="Atradius" if cid == "PTN-025" else r.choice(["Atradius", "Coface", "AXA Credit Insurance", "Zurich"]),
             cover_limit_gbp=cover, cover_percentage_pct=pct, policy_start=start, policy_end=end, status="active",
             updated_at=datetime.combine(A, datetime.min.time()) + timedelta(hours=9)))
 

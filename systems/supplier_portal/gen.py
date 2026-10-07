@@ -28,7 +28,7 @@ def generate(g):
     supplier_communications = []
 
     # Receipt-versus-ASN variances (01:4:Q4): master PO lines received short or over in the last 90 days (small ones only).
-    # SUP-0013 (the short-shipper in the story) is fully seeded, so it is skipped here.
+    # SUP-0072 (the short-shipper in the story, Vaughan Industries) and SUP-0013 (one small claimed short) are fully seeded, so they are skipped here.
     po_by_id = {p["po_id"]: p for p in purchase_orders}
     prod_by_sku = {p["sku"]: p for p in products}
     ship_by_po = {sh["po_id"]: sh for sh in shipments}
@@ -38,7 +38,7 @@ def generate(g):
         sh = ship_by_po.get(pl["po_id"])
         if not po or not sh or po["status"] not in ("received", "closed") or not sh.get("ata"):
             continue
-        if po["supplier_id"] == "SUP-0013":
+        if po["supplier_id"] in ("SUP-0013", "SUP-0072"):
             continue
         recd = date.fromisoformat(sh["ata"])
         if recd > g.as_of or recd < g.days_ago(90):
@@ -446,7 +446,7 @@ def generate(g):
     # Forecasts shared with suppliers (04:35:Q5): one row per completed four-week period, own RNG per supplier
     supplier_forecasts = []
     fc_id = 1
-    story_bias = {"SUP-0036": [4, 6, 11, 17, 22, 26]}  # oldest to newest of the last six periods: we increasingly over-forecast
+    story_bias = {"SUP-0012": [4, 6, 11, 17, 22, 26]}  # oldest to newest of the last six periods: we increasingly over-forecast
     for supplier in suppliers:
         if not skus_by_supplier.get(supplier["supplier_id"]):
             continue

@@ -24,7 +24,7 @@ ENT = {
                   note="On budget: £60k supplier rebate timing shortfall offset by better category mix."),
     "LE-US": dict(rev=12_000_000, gm=36.0, op=678_000, op_var=-320_000, rev_var=-400_000, growth=4.5, turn=5.3,
                   py_gm=36.8, py_turn=5.5, py_opm=7.1, freight=6.3, dc=4.0, carrier=90.8, supplier=84.9, dpo=39,
-                  note="£320k below budget: USD-denominated purchase costs and tariff-driven landed cost increases."),
+                  note="£320k below budget: £250k Electricals price variance and £70k Accessories cost variance, neither yet explained by the entity accountant."),
 }
 SEASON = {1: 0.92, 2: 0.88, 3: 0.95, 4: 0.98, 5: 1.0, 6: 1.0, 7: 0.97, 8: 0.98, 9: 1.0, 10: 1.04, 11: 1.18, 12: 1.4}
 OLD_NOTES = [None, None, "Trading in line with budget", "Favourable variances in core categories",
@@ -48,7 +48,8 @@ def generate(g):
     r = g.rng
     kpis, monthly, sc, tasks, ics = [], [], [], [], []
     entities = [{k: e[k] for k in ("entity_id", "name", "country", "currency")} for e in g.master("legal_entities")]
-    entities.append({"entity_id": "LE-PL", "name": "Harbour & Vale Polska Sp. z o.o.", "country": "PL", "currency": "PLN"})
+    if not any(e["entity_id"] == "LE-PL" for e in entities):  # LE-PL is in master now; kept only as a fallback
+        entities.append({"entity_id": "LE-PL", "name": "Harbour & Vale Polska Sp. z o.o.", "country": "PL", "currency": "PLN"})
 
     for i, (y, m) in enumerate(_periods(g.as_of)):
         period = f"{y}-{m:02d}"

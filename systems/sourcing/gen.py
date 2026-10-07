@@ -7,9 +7,9 @@ from pathlib import Path
 SEED = Path(__file__).parent / "seed"
 STORY_CATEGORIES = {"Outerwear", "Bedding", "Trousers", "Dresses"}
 ORIGIN_PRICE = {"CN": 0.85, "VN": 0.90, "IN": 0.88, "BD": 0.82, "TR": 1.05, "PT": 1.25, "IT": 1.30, "MX": 1.05,
-                "PL": 1.15, "FR": 1.35, "DE": 1.40, "GB": 1.45}
+                "PL": 1.15, "FR": 1.35, "DE": 1.40, "GB": 1.45, "ID": 0.90, "KH": 0.85}
 ORIGIN_LEAD = {"CN": 90, "VN": 75, "IN": 80, "BD": 85, "TR": 30, "PT": 25, "IT": 28, "MX": 40, "PL": 30, "FR": 30,
-               "DE": 28, "GB": 21}
+               "DE": 28, "GB": 21, "ID": 80, "KH": 85}
 GENERIC_CAPABILITY = {"Womenswear": "woven dresses and blouses", "Menswear": "woven shirts and trousers",
                       "Kids": "kidswear cut-and-sew", "Home": "home textiles", "Accessories": "accessories and soft goods",
                       "Electricals": "electrical assembly", "Beauty": "beauty fill and pack"}

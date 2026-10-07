@@ -14,7 +14,14 @@ HOT = "K-1700"
 # local DC for a destination region (mirrors seed/dc_catchments.csv)
 LOCAL = {"store": {"UK South": "DC1", "UK Midlands": "DC1", "UK North": "DC3", "Scotland": "DC3", "Ireland": "DC1",
                    "IE": "DC1", "EU Central": "DC4", "DE": "DC4", "NL": "DC4", "FR": "DC4", "US": "DC5"}}
-LOCAL["wholesale"] = LOCAL["store"]
+LOCAL["wholesale"] = dict(LOCAL["store"])
+# wholesale accounts are master partners (type wholesale); each is routed by its own catchment row (region = partner id in
+# seed/dc_catchments.csv): non-UK accounts by country, UK accounts by trading region
+WS_REGION = {"PTN-001": "DE", "PTN-002": "NL", "PTN-003": "NL", "PTN-004": "IE", "PTN-005": "NL", "PTN-006": "IE",
+             "PTN-007": "NL", "PTN-008": "DE", "PTN-009": "DE", "PTN-010": "IE", "PTN-026": "IE", "PTN-031": "FR",
+             "PTN-032": "UK Midlands", "PTN-034": "DE", "PTN-041": "Scotland", "PTN-043": "NL", "PTN-046": "Scotland"}
+for _pid, _reg in WS_REGION.items():
+    LOCAL["wholesale"][_pid] = LOCAL["wholesale"][_reg]
 LOCAL["online"] = {**{r: "DC2" for r in ("UK South", "UK Midlands", "UK North", "Scotland", "Ireland", "IE")},
                    "EU Central": "DC4", "DE": "DC4", "NL": "DC4", "FR": "DC4", "US": "DC5"}
 
@@ -24,12 +31,12 @@ WHOLESALE_HOURS = [0] * 8 + [4, 8, 9, 8, 6, 7, 8, 7, 5, 3] + [0] * 6
 
 # key wholesale accounts: orders per week (older 13 weeks, recent 13 weeks), share of lines short, share short
 ACCOUNTS = {
-    "CUS-000010": dict(older=1.6, recent=0.7, short_p=0.40, short_frac=0.30),   # worst fill, cutting orders
-    "CUS-000022": dict(older=1.4, recent=1.5, short_p=0.04, short_frac=0.15),
-    "CUS-000024": dict(older=1.2, recent=1.4, short_p=0.12, short_frac=0.20),
-    "CUS-000026": dict(older=1.5, recent=1.0, short_p=0.22, short_frac=0.25),   # slipping
-    "CUS-000031": dict(older=1.0, recent=1.2, short_p=0.15, short_frac=0.25),
-    "CUS-000033": dict(older=1.3, recent=1.3, short_p=0.30, short_frac=0.28),
+    "PTN-006": dict(older=1.6, recent=0.7, short_p=0.55, short_frac=0.35),   # worst fill, cutting orders
+    "PTN-007": dict(older=1.4, recent=1.5, short_p=0.04, short_frac=0.15),
+    "PTN-010": dict(older=1.2, recent=1.4, short_p=0.12, short_frac=0.20),
+    "PTN-003": dict(older=1.5, recent=1.0, short_p=0.22, short_frac=0.25),   # slipping
+    "PTN-008": dict(older=1.0, recent=1.2, short_p=0.15, short_frac=0.25),
+    "PTN-009": dict(older=1.3, recent=1.3, short_p=0.30, short_frac=0.28),
 }
 
 # weekly late rate of store orders by due-week (0 = current week). Falls from 98.5% to 95%.
@@ -44,6 +51,9 @@ def generate(g):
     pool = [p for p in products if p["sku"] not in STORY_SKUS]
     b.retail = {p["sku"]: float(p["retail_price_gbp"]) for p in g.master("products")}
     customers = {c["customer_id"]: c for c in g.master("customers")}
+    for p in g.master("partners"):   # wholesale accounts: region key = partner id (see WS_REGION)
+        if p["type"] == "wholesale":
+            customers[p["partner_id"]] = {"customer_id": p["partner_id"], "region": p["partner_id"], "country": p["country"]}
     b.cust = customers
     sites = [s for s in g.master("sites") if s["type"] == "store" and s["country"] == "GB"]
     b.sites = {s["site_id"]: s for s in g.master("sites")}
@@ -103,6 +113,8 @@ class Builder:
             oid = f"ORD-{self.n_order:06d}"
         shipments = shipments or []
         country = self.country(site or None, customer or None)
+        partner, customer = (customer, "") if customer.startswith("PTN-") else ("", customer)   # wholesale account vs online customer
+        wcust = partner or customer
         oversold = oversold or {}
         shipped = {i: 0 for i in range(len(lines))}
         for s in shipments:
@@ -142,7 +154,7 @@ class Builder:
                     source_location=f"{line_dc}-{aisle}-{r.randint(1, 20):02d}-{r.randint(1, 4):02d}" if alloc > 0 else "",
                     batch_id=l["batch"], rule_id=l.get("rule") or self.rules[channel], oversold=short,
                     cross_ship_reason=cross_reason if (alloc > 0 and line_dc != LOCAL[channel].get(
-                        self.region(channel, site or None, customer or None))) else "",
+                        self.region(channel, site or None, wcust or None))) else "",
                     decided_at=odt + timedelta(minutes=r.randint(10, 90))))
         last = odt
         split = len(shipments) > 1
@@ -155,7 +167,7 @@ class Builder:
             last = max(last, at)
             deliver = s["deliver"]
             self.ships.append(dict(
-                shipment_id=sid, order_id=oid, channel=channel, customer_id=customer, delivery_notes=f"DN-{self.n_ship:06d}",
+                shipment_id=sid, order_id=oid, channel=channel, customer_id=customer, partner_id=partner, delivery_notes=f"DN-{self.n_ship:06d}",
                 shipped_date=sdate, shipped_at=at, delivered_date=deliver or "", total_units=sunits, is_split=split,
                 split_reason=s.get("reason", "") if split else "", status="delivered" if deliver else "in_transit",
                 units_received=(s.get("received", sunits) if deliver else ""),
@@ -168,7 +180,7 @@ class Builder:
                 self.ship_lines.append(dict(shipment_id=sid, line_no=k, order_line_no=i + 1, sku=lines[i]["sku"],
                                             qty_shipped=q, batch_id=lines[i]["batch"], country=country))
         self.orders.append(dict(
-            order_id=oid, customer_id=customer, site_id=site, channel=channel, status=ostatus, order_date=odt.date(),
+            order_id=oid, customer_id=customer, partner_id=partner, site_id=site, channel=channel, status=ostatus, order_date=odt.date(),
             order_time=odt, due_date=due, fulfil_dc=dc, hold_status=hold[0], hold_reason=hold[1], priority=priority,
             total_units=units, total_gbp=value, created_at=odt, updated_at=last + timedelta(minutes=r.randint(5, 600))))
         return oid
@@ -420,8 +432,8 @@ def plant_stories(b):
         (A, "store", stores[3], 120, 20), (A, "store", stores[4], 120, 13), (A, "store", stores[5], 120, 7),
         (B_, "store", stores[6], 100, 52), (B_, "store", stores[7], 100, 45), (B_, "store", stores[8], 100, 38),
         (B_, "store", stores[9], 100, 31),
-        (A, "wholesale", "CUS-000015", 200, 25), (A, "wholesale", "CUS-000018", 300, 22),
-        (A, "wholesale", "CUS-000007", 150, 15), (B_, "wholesale", "CUS-000032", 250, 40),
+        (A, "wholesale", "PTN-031", 200, 25), (A, "wholesale", "PTN-034", 300, 22),
+        (A, "wholesale", "PTN-026", 150, 15), (B_, "wholesale", "PTN-043", 250, 40),
     ]
     for batch, ch, who, qty, ago in spec:
         site, cust = (who, "") if ch == "store" else ("", who)
@@ -449,8 +461,8 @@ def plant_stories(b):
             ("BATCH-POL-PINK-007", "SKU-100007", 500, 0, 6)]
     for batch, sku, alloc_total, shipped, ago in lots:
         w_ship = int(shipped * 0.6)
-        parts = [("wholesale", "CUS-000039", w_ship, True), ("store", stores[1], shipped - w_ship, True),
-                 ("wholesale", "CUS-000039", alloc_total - shipped, False)]
+        parts = [("wholesale", "PTN-046", w_ship, True), ("store", stores[1], shipped - w_ship, True),
+                 ("wholesale", "PTN-046", alloc_total - shipped, False)]
         for ch, who, qty, is_shipped in parts:
             if qty <= 0:
                 continue
@@ -462,12 +474,12 @@ def plant_stories(b):
                   lines=[b.line(sku, qty, channel=ch, batch=batch)], dc=LOCAL[ch][region], due=od + timedelta(days=7),
                   status="allocated", shipments=ships)
     # DE lot export (batch 003) from Venlo
-    b.add(channel="wholesale", customer="CUS-000018", odt=datetime.combine(D(34), datetime.min.time()) + timedelta(hours=11),
+    b.add(channel="wholesale", customer="PTN-034", odt=datetime.combine(D(34), datetime.min.time()) + timedelta(hours=11),
           lines=[b.line("SKU-100021", 200, channel="wholesale", batch="BATCH-POL-PINK-003")], dc="DC4", due=D(28),
           shipments=[ship(D(32), D(30), {0: 200})])
 
     # --- 07:65:Q2 disputed GBP 480k wholesale invoice: second delivery arrived 360 units short and damaged
-    b.add(oid="ORD-900040", channel="wholesale", customer="CUS-000028", odt=T(40, 10), dc="DC3", due=D(26),
+    b.add(oid="ORD-900040", channel="wholesale", customer="PTN-041", odt=T(40, 10), dc="DC3", due=D(26),
           lines=[b.line("SKU-100448", 4000, 60.0, "wholesale"), b.line("SKU-100455", 4000, 60.0, "wholesale")],
           shipments=[ship(D(31), D(29), {0: 4000, 1: 1000}, reason="location", signed="M. Hargreaves (goods-in)"),
                      ship(D(28), D(25), {1: 3000}, reason="location", received=2640,
@@ -477,20 +489,20 @@ def plant_stories(b):
     for oid, qty, price, prio, ago, sku in [("ORD-900050", 400, 50.0, "urgent", 2, "SKU-100469"),
                                             ("ORD-900051", 350, 90.0, "normal", 9, "SKU-100476"),
                                             ("ORD-900052", 260, 70.0, "normal", 16, "SKU-100483")]:
-        b.add(oid=oid, channel="wholesale", customer="CUS-000016", odt=T(ago, 11), dc="DC1", due=D(ago - 7),
+        b.add(oid=oid, channel="wholesale", customer="PTN-032", odt=T(ago, 11), dc="DC1", due=D(ago - 7),
               lines=[b.line(sku, qty, price, "wholesale", alloc=0)], status="open", priority=prio,
               hold=("credit", "Account 75 days overdue, over credit limit"))
-    b.add(channel="wholesale", customer="CUS-000016", odt=T(70, 11), dc="DC1", due=D(63),
+    b.add(channel="wholesale", customer="PTN-032", odt=T(70, 11), dc="DC1", due=D(63),
           lines=[b.line("SKU-100469", 200, 50.0, "wholesale")], shipments=[ship(D(66), D(64), {0: 200})])
 
     # --- 08:75:Q2 8,000 scarves, three wholesale customers ordered 15,000
-    for oid, cust, qty, ago in [("ORD-900060", "CUS-000036", 6000, 21), ("ORD-900061", "CUS-000037", 5000, 14),
-                                ("ORD-900062", "CUS-000038", 4000, 7)]:
+    for oid, cust, qty, ago in [("ORD-900060", "PTN-002", 6000, 21), ("ORD-900061", "PTN-004", 5000, 14),
+                                ("ORD-900062", "PTN-005", 4000, 7)]:
         b.add(oid=oid, channel="wholesale", customer=cust, odt=T(ago, 10), dc="DC1", due=D(ago - 21),
               lines=[b.line("SKU-100035", qty, 54.5, "wholesale", alloc=0)], status="open")
 
-    # --- 08:75:Q1 CUS-000030: last four orders arrived short (two our fault, one lost by carrier, one not short)
-    cu = "CUS-000030"
+    # --- 08:75:Q1 PTN-001: last four orders arrived short (two our fault, one lost by carrier, one not short)
+    cu = "PTN-001"
     b.add(oid="ORD-900070", channel="wholesale", customer=cu, odt=T(45, 9), dc="DC1", due=D(38),   # oversold at allocation
           lines=[b.line("SKU-100469", 800, 32.0, "wholesale", alloc=560), b.line("SKU-100476", 300, 32.0, "wholesale")],
           oversold={0: True}, shipments=[ship(D(42), D(40), {0: 560, 1: 300}, signed="Goods-in")])

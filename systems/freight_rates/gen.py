@@ -77,11 +77,11 @@ def generate(g):
     # ------------------------------------------------------------------ road spot rates (peak by lane)
     # lane: (standard, black friday week, christmas week); per load, single drop
     road = {
-        "DC3-ST148": (285, 355, 390), "DC3-ST150": (140, 175, 195), "DC3-ST151": (175, 220, 245),
-        "DC3-ST200": (150, 190, 210), "DC1-ST101": (190, 235, 255), "DC1-ST050": (260, 310, 340),
+        "DC1-ST148": (285, 355, 390), "DC1-ST150": (140, 175, 195), "DC1-ST151": (175, 220, 245),
+        "DC1-ST200": (150, 190, 210), "DC1-ST101": (190, 235, 255), "DC1-ST050": (260, 310, 340),
         "DC1-ST214": (520, 640, 700), "DC1-ST215": (560, 690, 760),
     }
-    road_days = {"DC3-ST148": 1, "DC3-ST150": 1, "DC3-ST151": 1, "DC3-ST200": 1, "DC1-ST101": 1,
+    road_days = {"DC1-ST148": 1, "DC1-ST150": 1, "DC1-ST151": 1, "DC1-ST200": 1, "DC1-ST101": 1,
                  "DC1-ST050": 1, "DC1-ST214": 2, "DC1-ST215": 2}
     for lane, (std, bf, xm) in road.items():
         o, d = lane.split("-")
@@ -183,8 +183,9 @@ def generate(g):
                  None, None, None, None, "pallet", terms=road_terms)
     add_contract("CAR-002", "DC1-NORTH", "road", d_("2025-02-04"), d_("2028-02-04"), 645.0, "per load",
                  None, None, None, None, "full load", terms=load_terms)
-    add_contract("CAR-001", "DC3-NORTH", "road", d_("2025-06-05"), d_("2028-06-05"), 16.40, "per pallet",
-                 None, None, None, None, "pallet", terms="Fuel surcharge capped at 10% of base rate; tail lift 15 GBP per drop; waiting time 40 GBP per hour after 60 free minutes")
+    # CAR-001 (main UK road carrier) matches the contracts system rate card RTC-000010 (DC1 to UK North, 16.90, 12% fuel cap)
+    add_contract("CAR-001", "DC1-NORTH", "road", d_("2025-06-05"), d_("2028-06-05"), 16.90, "per pallet",
+                 None, None, None, None, "pallet", terms="Fuel surcharge capped at 12% of base rate; tail lift 18 GBP per drop; waiting time 42 GBP per hour after 60 free minutes; redelivery 55 GBP")
     # parcel contracts (service x weight band)
     parcel = {
         "standard": ("CAR-013", [(0, 1, 2.90), (1, 5, 4.05), (5, 20, 7.50)]),

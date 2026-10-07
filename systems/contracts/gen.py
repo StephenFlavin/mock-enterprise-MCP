@@ -8,7 +8,8 @@ from datetime import timedelta
 # Story overrides (ids are master ids). Each entry replaces the generated clause of that type.
 # ---------------------------------------------------------------------------------------------
 
-# 01:4:Q4 supplier that short-ships against ASNs: tight claim window, 2% tolerance, credit-note remedy.
+# SUP-0013: 14-day claim window, 2% tolerance, credit-note remedy (matches its small claimed short on PO-2026-005711 in supplier_portal).
+# The 01:4:Q4 short-shipper is SUP-0072 (see its entry below).
 SUP_STORY = {
     "SUP-0013": {
         "claim_window": dict(shortage_claim_days=14, damage_claim_days=14, quality_claim_days=90,
@@ -17,7 +18,8 @@ SUP_STORY = {
                                claim_basis="ASN quantity versus goods receipt quantity",
                                summary="Shortfalls beyond 2% of the ASN quantity are credited at invoice unit cost; no per-unit penalty."),
     },
-    # 02:13:Q2 the three suppliers with the most avoidable air freight: three different chargeback positions.
+    # 02:13:Q2 the three suppliers with the most avoidable air freight (SUP-0012, SUP-0015, SUP-0021): three different chargeback positions.
+    # (the first two are stored under the old keys here and re-keyed to SUP-0012 / SUP-0015 below.)
     "SUP-0023": {
         "chargeback": dict(air_freight_recharge_pct=100, recharge_trigger="supplier-caused delay of more than 5 days against the confirmed ex-factory date",
                            quality_chargeback_pct=100,
@@ -77,6 +79,12 @@ ORIGINAL_STORY_SUPPLIERS = set(SUP_STORY)  # suppliers excluded when sampling la
 # 04:38:Q1 / 04:38:Q3: the draft supply agreement (v3) with probation knitwear supplier SUP-0072 (CTR-000072) caps liability at
 # the value of the order, carves out nothing for product safety, and deviates from our standard terms in other ways.
 SUP_STORY["SUP-0072"] = {
+    # 01:4:Q4: the supplier short-shipping against its ASNs (PO-2026-005321, PO-2026-005133): 28-day claim window, 2% tolerance, credit note.
+    "claim_window": dict(shortage_claim_days=28, damage_claim_days=28, quality_claim_days=90,
+                         summary="Shortage and damage claims must be notified within 28 days of goods receipt; quality claims within 90 days."),
+    "short_shipment": dict(tolerance_pct=2.0, penalty_gbp_per_unit=0, remedy="credit note at invoice unit cost for units short beyond tolerance",
+                           claim_basis="ASN quantity versus goods receipt quantity",
+                           summary="Shortfalls beyond 2% of the ASN quantity are credited at invoice unit cost; no per-unit penalty."),
     "liability": dict(limit_gbp=120000, limit_basis="value of the order giving rise to the claim", deductible_gbp=0, product_safety_uncapped=False,
                       summary="Supplier liability is limited to the value of the order giving rise to the claim (typically about GBP 120,000); product-safety and IP claims are not carved out of the cap."),
     "price_review": dict(frequency="quarterly", max_increase_pct=8, trigger="quarterly yarn and labour cost index", notice_days=30,
@@ -153,6 +161,11 @@ SUP_STORY["SUP-0012"] = {"ip_protection": dict(ownership="joint", supplier_may_r
                                               summary="Jointly owned; the supplier may not use the developed designs for other customers and licenses us its background IP needed to make the product.")}
 SUP_STORY["SUP-0015"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=False, licence_back=True, assignment_of_improvements=True,
                                               summary="Jointly owned knit constructions; the supplier may not use them for other customers and licenses us its background IP.")}
+# 02:13:Q2 reconciled with ap/forwarder air-freight invoices: the top three avoidable air-freight suppliers are SUP-0012 (90k), SUP-0015 (59k)
+# and SUP-0021. The chargeback/penalty positions written above under SUP-0023 / SUP-0022 move to SUP-0012 / SUP-0015 (the original keys
+# stay in ORIGINAL_STORY_SUPPLIERS so the random stream is unchanged).
+SUP_STORY["SUP-0012"].update(SUP_STORY.pop("SUP-0023"))
+SUP_STORY["SUP-0015"].update(SUP_STORY.pop("SUP-0022"))
 SUP_STORY["SUP-0040"] = {"ip_protection": dict(ownership="supplier", supplier_may_reuse=True, licence_back=False, assignment_of_improvements=False,
                                               summary="Supplier owns all IP in the thermal-regulating fabric, including improvements made with our input, and licenses it to us for the term only; it may reuse it for other customers.")}
 SUP_STORY["SUP-0020"] = {"ip_protection": dict(ownership="joint", supplier_may_reuse=True, licence_back=False, assignment_of_improvements=False,
@@ -361,7 +374,7 @@ def generate(g):
 
     # ------------------------------------------------------------------ supplier contracts
     eligible = [s for s in suppliers if s["supplier_id"] not in story_suppliers and s["supplier_id"] not in knit_suppliers
-                and s["status"] != "exited"]
+                and s["status"] != "exited" and s.get("supplier_type", "product") == "product"]
     expired = {s["supplier_id"] for s in r.sample(eligible, EXPIRED_SUPPLIERS)}
 
     for s in suppliers:

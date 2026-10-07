@@ -68,8 +68,10 @@ CERT_STORY = {
     ("SUP-0023", "BSCI"): (880, 730), ("SUP-0042", "OEKO-TEX"): (427, 365),
 }
 SEEDED_INSURANCE = {"SUP-0015"}
-SEEDED_FACTORY_COMPLIANCE = {"FAC-0010", "FAC-0063", "FAC-0099"}
+SEEDED_FACTORY_COMPLIANCE = {"FAC-0042", "FAC-0021", "FAC-0023", "FAC-0099"}
 STORY_ALT_STYLES = {"STY-4012"}
+# Factories whose risk rating follows the factory_audit story rather than the master audit grade (rating, note)
+FACTORY_STORY = {"FAC-0001": ("critical", "latest social audit found repeat critical findings (working hours, fire exits, forced labour indicators) and corrective actions are overdue")}
 SEEDED_ALERT_SUPPLIERS = {"SUP-0053", "SUP-0055", "SUP-0001", "SUP-0072", "SUP-0035", "SUP-0036", "SUP-0038",
                           "SUP-0028", "SUP-0065", "SUP-0046"}
 ONBOARDING_STORY = {"SUP-0023", "SUP-0025", "SUP-0042", "SUP-0060"}
@@ -137,7 +139,8 @@ def generate(g):
     fac_by_sup, fac_by_id = {}, {f["factory_id"]: f for f in facs}
     for f in facs:
         fac_by_sup.setdefault(f["supplier_id"], []).append(f)
-    live = [s for s in sup.values() if s["status"] != "exited"]
+    # indirect suppliers (master supplier_type, no product spend or materials) get no generated risk profile
+    live = [s for s in sup.values() if s["status"] != "exited" and s.get("supplier_type", "product") != "indirect"]
     spend = {k: float(v["annual_spend_gbp"] or 0) for k, v in sup.items()}
     top20 = set(sorted(spend, key=spend.get, reverse=True)[:20])
 
@@ -366,8 +369,12 @@ def generate(g):
     for f in facs:
         score = {"A": 0, "B": 1, "C": 2, "D": 3}[f["audit_rating"]] + (1 if f["status"] == "conditional" else 0) \
             + (2 if f["status"] == "suspended" else 0) + (1 if f["status"] == "delisted" else 0)
-        fprof.append({"factory_id": f["factory_id"], "risk_rating": "low" if score <= 1 else "medium" if score == 2 else "high" if score == 3 else "critical",
-                      "last_assessed_at": f["last_audit_date"]})
+        rating = "low" if score <= 1 else "medium" if score == 2 else "high" if score == 3 else "critical"
+        note = ""
+        if f["factory_id"] in FACTORY_STORY:  # 05:43:Q4 / 05:43:Q5: factory_audit shows repeat critical findings behind a C grade
+            rating, note = FACTORY_STORY[f["factory_id"]]
+        fprof.append({"factory_id": f["factory_id"], "risk_rating": rating, "last_assessed_at": f["last_audit_date"],
+                      "assessment_note": note})
 
     # ---- onboarding: history for suppliers onboarded since 2023 -------------------------------------------------------
     cases, items, case_n = [], [], 0
