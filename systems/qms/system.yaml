@@ -160,6 +160,18 @@ tables:
       method: {type: str, desc: "Test method or standard"}
       severity: {type: enum, values: [critical, major, minor], desc: "Failure severity; a critical failure blocks PO release"}
 
+  tolerance_standards:
+    key: standard_id
+    cols:
+      standard_id: {type: str, desc: "Standard, e.g. STD-000001"}
+      topic: {type: str, desc: "What the tolerance covers, e.g. shrinkage, zip strength, colour fastness"}
+      material: {type: str, desc: "Material the standard applies to, e.g. cotton, polyester, or all"}
+      construction: {type: str, desc: "Fabric construction, e.g. knit, woven, or all"}
+      source_type: {type: enum, values: [industry, internal], desc: "Industry standard or internal company guideline"}
+      reference: {type: str, desc: "Standard or guideline reference"}
+      tolerance_pct: {type: float, desc: "Tolerance as plus/minus percent (blank when the standard is not a percentage)"}
+      detail: {type: text, desc: "What the standard requires"}
+
   quality_reviews:
     key: review_id
     cols:
@@ -233,7 +245,8 @@ tools:
     args:
       factory_id: {required: true}
       material: {required: true, desc: "Material type, e.g. cotton, polyester"}
-      measurement_type: {required: true, desc: "E.g. length, width"}
+      measurement_type: {required: true, desc: "E.g. shrinkage, length, width"}
+      construction: {desc: "Fabric construction, e.g. knit or woven"}
     example: {factory_id: FAC-0107, material: cotton, measurement_type: length}
 
   - name: create_inspection_booking
@@ -759,48 +772,22 @@ tools:
     example: {style_id: STY-5520}
 
   - name: search_knowledge_base_for_tolerance_standards
-    desc: Search knowledge base for tolerance standards. Returns industry and internal standards for measurement specifications.
-    kind: draft
+    desc: Search industry and internal tolerance standards by topic and material (e.g. knit shrinkage, zip strength). Returns matching standards with their tolerance figures, best match first.
+    kind: sql
     args:
-      search_term: {required: true, desc: "Search term, e.g. 'cotton shrinkage', 'zip strength', 'colour fastness'"}
+      search_term: {required: true, desc: "Search term, e.g. 'knit shrinkage', 'zip strength', 'colour fastness'"}
       material: {desc: "Optional: material type, e.g. cotton, polyester, silk"}
-    sql:
-      standards: SELECT 'Standard document' AS title, 'ISO 3759 for knit shrinkage' AS content UNION ALL SELECT 'AATCC Test Method 135', 'Dimensional change in automatic home laundering of fabric specimens'
-    template: |
-      TOLERANCE STANDARDS SEARCH RESULTS
-
-      Query: {{ search_term }}
-      Search Date: {{ as_of }}
-
-      Relevant Industry Standards:
-      1. ISO 3759:2011 - Preparation, marking and measurement of flat knitted fabric and related products for testing dimensions
-      2. AATCC Test Method 135 - Dimensional changes of fabric after laundering
-      3. BS 5441:1988 - Method for assessment of fabric drape
-      4. ASTM D6775-12 - Standard Guide for Care Symbols for Textile Wearing Apparel
-
-      Common Tolerance Ranges by Material:
-      - Cotton wovens: ±2.5% on length and width
-      - Cotton knits: ±3.0% on length and width (post-wash)
-      - Polyester blends: ±2.0% on length and width
-      - Silk: ±1.5% (delicate; minimize washing)
-
-      ZIP/BUTTON STRENGTH STANDARDS:
-      - Zip pull strength: ≥100N minimum
-      - Button shank strength: ≥15N minimum
-      - Snap strength: ≥50N minimum
-
-      FOR COLOUR FASTNESS:
-      - ISO 105-C06:2010 - Color fastness to domestic/commercial laundering
-      - Minimum Grade 3 for most products
-      - Grade 4 minimum for premium ranges
-      - Rub fastness (AATCC 8): Grade 3+ minimum
-
-      Internal Company Guidelines:
-      - Standard tolerance band: ±5% of specification value
-      - Tighter tolerances (±2%) for premium or technical products
-      - Looser tolerances (±7%) only with buyer approval
-
-      Contact: Quality Assurance Team
+    sql: |
+      SELECT * FROM (
+        SELECT s.standard_id, s.topic, s.material, s.construction, s.source_type, s.reference, s.tolerance_pct, s.detail,
+               (SELECT count(*) FROM (SELECT unnest(string_split(lower($search_term), ' ')) AS w) t
+                 WHERE t.w <> '' AND lower(s.topic || ' ' || s.construction || ' ' || s.material || ' ' || s.detail) LIKE '%' || t.w || '%') AS terms_matched
+        FROM tolerance_standards s
+        WHERE $material IS NULL OR lower(s.material) IN (lower($material), 'all')
+      ) m
+      WHERE terms_matched > 0
+      ORDER BY terms_matched DESC, source_type, tolerance_pct
+    limit: 20
     example: {search_term: "cotton shrinkage"}
 
   - name: send_supplier_corrective_action_request

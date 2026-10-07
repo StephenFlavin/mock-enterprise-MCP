@@ -18,6 +18,20 @@ tables:
       profile_spend_tier: {type: enum, values: [high, medium, low], desc: "Typical spend tier"}
       customer_count: {type: int, desc: "Active customers in segment"}
       avg_annual_spend_gbp: {type: float, desc: "Average annual spend per customer"}
+      gender_skew: {type: str, desc: "mostly women, mixed or mostly men"}
+      female_share_pct: {type: float, desc: "Share of segment that is female"}
+      markets: {type: str, desc: "Markets the segment buys in, semicolon separated, e.g. UK;DE;US"}
+      top_categories: {type: str, desc: "Categories the segment buys most, semicolon separated"}
+      key_needs: {type: text, desc: "What the segment wants from products and service"}
+
+  segment_market_needs:
+    key: [segment_id, market]
+    cols:
+      segment_id: {type: str, desc: "Segment id"}
+      market: {type: str, desc: "Market code, e.g. UK, DE, US"}
+      needs: {type: text, desc: "What the segment wants in this market"}
+      top_attribute: {type: str, desc: "Most important product attribute in this market"}
+      share_of_segment_pct: {type: float, desc: "Share of the segment's customers in this market"}
 
   segment_behaviors:
     key: segment_id
@@ -35,96 +49,123 @@ tables:
 
 tools:
   - name: search_customers
-    desc: Find customers by segment, region or loyalty tier; returns customer ids and segments.
+    desc: Find customers by id, segment, region or loyalty tier; returns customer ids. Customer segments here are lifecycle labels, not CDP segment ids.
     kind: select
     from: master.customers
     filters:
-      segment: {op: like, desc: "Segment name or id, e.g. loyal, high_value"}
+      customer_id: {}
+      segment: {op: like, desc: "Lifecycle segment, e.g. loyal, high_value, lapsed"}
       region: {}
       loyalty_tier: {}
-    columns: [customer_id, segment, region, loyalty_tier, joined_date]
+    columns: [customer_id, segment, region, country, loyalty_tier, joined_date]
     order: customer_id
     limit: 100
     example: {segment: loyal}
 
   - name: get_customer_segment_profile
-    desc: Return customer segment profile with demographics, spend and engagement metrics. Use to understand segment characteristics and needs.
+    desc: Customer segment profiles with age range, gender mix, markets, categories, needs and spend. Filter by age, market or category to find segments; omit segment_id to list all.
     kind: sql
     args:
-      segment_id: {required: true, desc: "Segment id"}
+      segment_id: {desc: "Segment id, e.g. SEG-006. Omit to list all matching segments"}
+      age_from: {type: int, desc: "Lowest age of interest; segments whose age range overlaps are returned"}
+      age_to: {type: int, desc: "Highest age of interest"}
+      market: {type: str, desc: "Market code such as UK, DE or US; also shows needs in that market"}
+      category: {type: str, desc: "Category word in the segment's top categories, e.g. outdoor, home, wellness"}
     sql: |
       SELECT s.segment_id, s.segment_name, s.description, s.primary_region,
-             s.profile_age_min, s.profile_age_max, s.profile_spend_tier,
-             s.customer_count, s.avg_annual_spend_gbp,
+             s.profile_age_min, s.profile_age_max, s.gender_skew, s.female_share_pct,
+             s.markets, s.top_categories, s.key_needs,
+             (SELECT string_agg(n.market || ': ' || n.needs || ' (' || CAST(n.share_of_segment_pct AS INT) || '% of segment)', ' | ' ORDER BY n.market)
+                FROM segment_market_needs n
+               WHERE n.segment_id = s.segment_id AND ($market IS NULL OR n.market ILIKE $market)) AS needs_by_market,
+             s.profile_spend_tier, s.customer_count, s.avg_annual_spend_gbp,
              b.repeat_purchase_rate_pct, b.avg_basket_size_gbp
       FROM segments s
       LEFT JOIN segment_behaviors b USING (segment_id)
-      WHERE s.segment_id = $segment_id
-    limit: 1
-    example: {segment_id: SEG-001}
+      WHERE ($segment_id IS NULL OR s.segment_id = $segment_id)
+        AND ($age_to IS NULL OR s.profile_age_min <= $age_to)
+        AND ($age_from IS NULL OR s.profile_age_max >= $age_from)
+        AND ($market IS NULL OR s.markets ILIKE '%' || $market || '%')
+        AND ($category IS NULL OR s.top_categories ILIKE '%' || $category || '%')
+      ORDER BY s.customer_count DESC
+    limit: 10
+    example: {category: outdoor, age_from: 25, age_to: 34}
 
   - name: get_customer_segment_return_behaviour
-    desc: Segment return behaviour with return rates and sensitivity to return charges. Use to understand return dynamics and charge impact.
+    desc: Segment return rates and sensitivity to return charges, with annual return value and spend at risk. Omit segment_id to compare all segments, most sensitive first.
     kind: sql
     args:
-      segment_id: {required: true, desc: "Segment id"}
+      segment_id: {desc: "Segment id, e.g. SEG-002. Omit to list all segments"}
+      market: {type: str, desc: "Market code such as UK, DE or US; only segments buying there"}
     sql: |
-      SELECT s.segment_id, s.segment_name, b.return_rate_pct,
+      SELECT s.segment_id, s.segment_name, s.markets, s.customer_count, b.return_rate_pct,
              b.return_refund_sensitivity_pct, s.avg_annual_spend_gbp,
              round(s.avg_annual_spend_gbp * (b.return_rate_pct / 100.0), 2) AS annual_return_value_gbp,
-             round(s.avg_annual_spend_gbp * (b.return_refund_sensitivity_pct / 100.0), 2) AS potential_spend_loss_gbp
+             round(s.avg_annual_spend_gbp * (b.return_refund_sensitivity_pct / 100.0), 2) AS potential_spend_loss_gbp,
+             CAST(round(s.customer_count * s.avg_annual_spend_gbp * (b.return_refund_sensitivity_pct / 100.0), 0) AS BIGINT) AS segment_spend_at_risk_gbp
       FROM segments s
       JOIN segment_behaviors b USING (segment_id)
-      WHERE s.segment_id = $segment_id
-    limit: 1
-    example: {segment_id: SEG-001}
+      WHERE ($segment_id IS NULL OR s.segment_id = $segment_id)
+        AND ($market IS NULL OR s.markets ILIKE '%' || $market || '%')
+      ORDER BY b.return_refund_sensitivity_pct DESC
+    limit: 10
+    example: {market: UK}
 
   - name: get_customer_markdown_wait_behaviour
-    desc: Segment markdown wait behaviour with propensity to wait for discounts and conversion lift potential.
+    desc: Segment propensity to wait for markdowns and conversion lift when discounted, to judge the risk of training customers to wait. Omit segment_id for all segments.
     kind: sql
     args:
-      segment_id: {required: true, desc: "Segment id"}
+      segment_id: {desc: "Segment id, e.g. SEG-002. Omit to list all segments"}
+      market: {type: str, desc: "Market code such as UK, DE or US; only segments buying there"}
     sql: |
-      SELECT s.segment_id, s.segment_name, b.markdown_wait_propensity_pct,
+      SELECT s.segment_id, s.segment_name, s.customer_count, b.markdown_wait_propensity_pct,
              b.markdown_conversion_elasticity, b.avg_basket_size_gbp,
              round(b.avg_basket_size_gbp * b.markdown_conversion_elasticity, 2) AS expected_basket_when_discounted_gbp,
              'wait_propensity: % who wait for markdown; elasticity: sales lift multiplier' AS formula
       FROM segments s
       JOIN segment_behaviors b USING (segment_id)
-      WHERE s.segment_id = $segment_id
-    limit: 1
-    example: {segment_id: SEG-001}
+      WHERE ($segment_id IS NULL OR s.segment_id = $segment_id)
+        AND ($market IS NULL OR s.markets ILIKE '%' || $market || '%')
+      ORDER BY b.markdown_wait_propensity_pct DESC
+    limit: 10
+    example: {}
 
   - name: get_customer_segment_exposure_to_stockouts
-    desc: Segment stockout sensitivity and impact on sales and retention. Use to set service level targets by segment.
+    desc: Segment stockout sensitivity and revenue exposed to stockouts, to decide which segments to protect with service levels. Omit segment_id for all, most exposed first.
     kind: sql
     args:
-      segment_id: {required: true, desc: "Segment id"}
+      segment_id: {desc: "Segment id, e.g. SEG-004. Omit to list all segments"}
+      market: {type: str, desc: "Market code such as UK, DE or US; only segments buying there"}
     sql: |
       SELECT s.segment_id, s.segment_name, b.stockout_sensitivity_pct,
              b.repeat_purchase_rate_pct, s.customer_count,
              s.avg_annual_spend_gbp,
-             CAST(round(s.customer_count * s.avg_annual_spend_gbp, 0) AS INT) AS segment_annual_value_gbp,
-             CAST(round(s.customer_count * s.avg_annual_spend_gbp * (b.stockout_sensitivity_pct / 100.0), 0) AS INT) AS exposure_to_stockout_revenue_gbp
+             CAST(round(s.customer_count * s.avg_annual_spend_gbp, 0) AS BIGINT) AS segment_annual_value_gbp,
+             CAST(round(s.customer_count * s.avg_annual_spend_gbp * (b.stockout_sensitivity_pct / 100.0), 0) AS BIGINT) AS exposure_to_stockout_revenue_gbp
       FROM segments s
       JOIN segment_behaviors b USING (segment_id)
-      WHERE s.segment_id = $segment_id
-    limit: 1
-    example: {segment_id: SEG-001}
+      WHERE ($segment_id IS NULL OR s.segment_id = $segment_id)
+        AND ($market IS NULL OR s.markets ILIKE '%' || $market || '%')
+      ORDER BY exposure_to_stockout_revenue_gbp DESC
+    limit: 10
+    example: {}
 
   - name: get_customer_segment_participation
-    desc: Resale programme participation by segment with barriers to growth. Use to diagnose participation gaps and barriers.
+    desc: Resale programme participation by segment with the main barrier (awareness, effort or price) and participating customer counts. Omit segment_id for all segments, lowest participation first.
     kind: sql
     args:
-      segment_id: {required: true, desc: "Segment id"}
+      segment_id: {desc: "Segment id, e.g. SEG-004. Omit to list all segments"}
+      resale_barrier: {type: enum, values: [awareness, effort, price, none], desc: "Only segments with this main barrier"}
     sql: |
       SELECT s.segment_id, s.segment_name, b.resale_participation_pct,
              b.resale_barrier, s.customer_count,
-             round(s.customer_count * (b.resale_participation_pct / 100.0), 0) AS participating_customers,
-             round(s.customer_count * ((100.0 - b.resale_participation_pct) / 100.0), 0) AS non_participating,
+             CAST(round(s.customer_count * (b.resale_participation_pct / 100.0), 0) AS BIGINT) AS participating_customers,
+             CAST(round(s.customer_count * ((100.0 - b.resale_participation_pct) / 100.0), 0) AS BIGINT) AS non_participating,
              'barrier: the identified reason for non-participation' AS formula
       FROM segments s
       JOIN segment_behaviors b USING (segment_id)
-      WHERE s.segment_id = $segment_id
-    limit: 1
-    example: {segment_id: SEG-001}
+      WHERE ($segment_id IS NULL OR s.segment_id = $segment_id)
+        AND ($resale_barrier IS NULL OR b.resale_barrier = $resale_barrier)
+      ORDER BY b.resale_participation_pct
+    limit: 10
+    example: {}

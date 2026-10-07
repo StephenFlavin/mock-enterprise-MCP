@@ -351,13 +351,16 @@ def generate(g):
     dim_cats = {"Storage", "Bedding", "Towels", "Drinkware", "Bags"}
     mat_cats = {"Knitwear", "Outerwear", "Footwear", "Jewellery", "Scarves", "Trousers", "Shirts", "Dresses",
                 "Blouses", "Tops", "T-Shirts", "Nightwear", "Babywear", "Schoolwear"}
-    err_w = {"compat": (["COMPAT_WRONG", "DIMENSIONS_WRONG", "MATERIAL_WRONG", None], [45, 20, 15, 20]),
-             "dim": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG", None], [55, 15, 2, 28]),
-             "mat": (["MATERIAL_WRONG", "DIMENSIONS_WRONG", None], [40, 12, 48]),
-             "other": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG", None], [22, 18, 8, 52])}
+    err_w = {"compat": (["COMPAT_WRONG", "DIMENSIONS_WRONG", "MATERIAL_WRONG"], [40, 45, 15]),
+             "dim": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG"], [75, 17, 8]),
+             "mat": (["MATERIAL_WRONG", "DIMENSIONS_WRONG", "COMPAT_WRONG"], [40, 55, 5]),
+             "other": (["DIMENSIONS_WRONG", "MATERIAL_WRONG", "COMPAT_WRONG"], [55, 28, 17])}
     convert = {"Cookware": 0.7, "Smart Home": 0.5, "Lighting": 0.5, "Storage": 0.5, "Drinkware": 0.4,
                "Small Appliances": 0.25}
     for x in rows:
+        if x["style_id"] == "STY-4042" and x["return_reason_code"] == "NOT_AS_DESCRIBED":
+            x["defect_code"] = dr.choices(["MATERIAL_WRONG", "DIMENSIONS_WRONG"], [85, 15])[0]  # knitwear fibre content
+            continue
         if x["sku"] in story_skus or x["defect_code"]:
             continue
         if x["return_reason_code"] == "CHANGED_MIND" and dr.random() < convert.get(x["category"], 0):

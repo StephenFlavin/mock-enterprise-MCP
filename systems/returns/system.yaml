@@ -796,7 +796,7 @@ tools:
     example: {}
 
   - name: calculate_cost_of_returns_by_error_type
-    desc: "Cost of returns by error type (data, quality, fulfillment, other) over the last 12 months, with the specific error behind it (e.g. data errors: dimensions, materials, compatibility, colour/images). Optionally for one category, or ranked by category."
+    desc: "Cost of returns by error type (data, quality, fulfillment, other) over the last 12 months, with the specific error behind it (data errors: wrong dimensions, materials or compatibility in the product data). Optionally for one category, or ranked by category."
     kind: sql
     args:
       error_type: {type: str, desc: "Error type to analyze: Data, Quality, Fulfillment, Other (default all)"}
@@ -808,7 +808,6 @@ tools:
                  WHEN 'WRONG_ITEM' THEN 'Fulfillment'
                  WHEN 'DAMAGE' THEN 'Fulfillment'
                  WHEN 'NOT_AS_DESCRIBED' THEN 'Data'
-                 WHEN 'WRONG_COLOUR' THEN 'Data'
                  WHEN 'DEFECT' THEN 'Quality'
                  WHEN 'SOLE_SEPARATION' THEN 'Quality'
                  ELSE 'Other'
@@ -816,7 +815,7 @@ tools:
                CASE WHEN r.return_reason_code = 'NOT_AS_DESCRIBED' THEN
                       CASE r.defect_code WHEN 'DIMENSIONS_WRONG' THEN 'dimensions' WHEN 'MATERIAL_WRONG' THEN 'materials'
                                          WHEN 'COMPAT_WRONG' THEN 'compatibility' ELSE 'description or images' END
-                    WHEN r.return_reason_code = 'WRONG_COLOUR' THEN 'colour or images'
+                    WHEN r.return_reason_code = 'WRONG_COLOUR' THEN 'colour mismatch'
                     WHEN r.return_reason_code IN ('WRONG_SIZE', 'TOO_TIGHT_HIP') THEN 'sizing and fit'
                     WHEN r.return_reason_code = 'WRONG_ITEM' THEN 'wrong item picked'
                     WHEN r.return_reason_code = 'DAMAGE' THEN 'damaged in transit'
@@ -843,6 +842,124 @@ tools:
       ORDER BY total_net_cost_gbp DESC
     limit: 100
     example: {}
+
+  - name: get_return_reasons_for_product
+    desc: "Return reasons for one product (SKU) or a whole style over the last 6 months, optionally for one fit, with counts and share. Use to find quality or fit problems."
+    kind: sql
+    args:
+      sku: {}
+      style_id: {}
+      fit: {type: str, desc: "Fit variant, e.g. skinny, regular, comfort (default all)"}
+      days_back: {type: int, default: 180, desc: "Days of history to include"}
+    sql: |
+      SELECT min(r.style_id) AS style_id,
+             CASE WHEN $sku IS NOT NULL THEN min(p.name)
+                  ELSE regexp_replace(min(p.name), ' (\d+|XS|S|M|L|XL|XXL|ONE|\d+-\d+Y)$', '') END AS name,
+             r.return_reason_code,
+             rr.description,
+             count(*) AS return_count,
+             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+      FROM returns r
+      JOIN master.products p ON p.sku = r.sku
+      LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
+      WHERE ($sku IS NOT NULL OR $style_id IS NOT NULL)
+        AND ($sku IS NULL OR r.sku = $sku)
+        AND ($style_id IS NULL OR r.style_id = $style_id)
+        AND ($fit IS NULL OR lower(r.fit) = lower($fit))
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.return_reason_code, rr.description
+      ORDER BY return_count DESC
+    limit: 20
+    example: {style_id: "STY-T-4410"}
+
+  - name: get_return_reasons_for_sku
+    desc: "Return reasons for a SKU with defect detail over the last 8 weeks, split into the latest and the earlier 4 weeks. Shows why customers return this product and whether it is getting worse."
+    kind: sql
+    args:
+      sku: {required: true}
+      days_back: {type: int, default: 56, desc: "Days of history to include"}
+    sql: |
+      SELECT r.sku,
+             r.return_reason_code,
+             r.defect_code,
+             rr.description,
+             count(*) AS return_count,
+             count(*) FILTER (WHERE r.return_date > CAST($as_of AS DATE) - INTERVAL 28 DAY) AS last_4_weeks,
+             count(*) FILTER (WHERE r.return_date <= CAST($as_of AS DATE) - INTERVAL 28 DAY) AS earlier_weeks,
+             round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+      FROM returns r
+      LEFT JOIN return_reasons rr ON rr.reason_code = r.return_reason_code
+      WHERE r.sku = $sku
+        AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+      GROUP BY r.sku, r.return_reason_code, r.defect_code, rr.description
+      ORDER BY return_count DESC
+    limit: 20
+    example: {sku: "K-1700"}
+
+  - name: get_returns_rate_by_product
+    desc: "Return rate by product: items returned as % of online units sold in the same period, against the category average. Shows which SKUs have the highest return rates vs peers."
+    kind: sql
+    args:
+      category: {type: str, desc: "Filter by category (default all)"}
+      days_back: {type: int, default: 91, desc: "Days of history to include (record-level returns cover 13 weeks)"}
+      min_units_sold: {type: int, default: 50, desc: "Ignore SKUs with fewer online units sold than this"}
+    sql: |
+      WITH ret AS (
+        SELECT r.sku, count(DISTINCT r.return_id) AS return_count, sum(r.handling_cost_gbp) AS handling
+        FROM returns r
+        WHERE r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY r.sku),
+      sold AS (
+        SELECT s.sku, sum(s.online_units) AS units_sold
+        FROM master.sales_weekly s
+        WHERE s.week_start >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY s.sku),
+      j AS (
+        SELECT p.sku, p.name, p.category, COALESCE(ret.return_count, 0) AS return_count, COALESCE(ret.handling, 0) AS handling,
+               sold.units_sold
+        FROM sold JOIN master.products p ON p.sku = sold.sku LEFT JOIN ret ON ret.sku = sold.sku
+        WHERE sold.units_sold >= CAST($min_units_sold AS INT)),
+      cat AS (
+        SELECT category, round(100.0 * sum(return_count) / sum(units_sold), 1) AS category_rate_pct FROM j GROUP BY category)
+      SELECT j.sku, j.name, j.category, j.return_count, j.units_sold AS online_units_sold,
+             round(100.0 * j.return_count / j.units_sold, 1) AS return_rate_pct,
+             cat.category_rate_pct,
+             round((100.0 * j.return_count / j.units_sold) / NULLIF(cat.category_rate_pct, 0), 1) AS times_category_rate,
+             round(j.handling, 2) AS total_handling_cost_gbp
+      FROM j JOIN cat USING (category)
+      WHERE ($category IS NULL OR j.category = $category)
+      ORDER BY return_rate_pct DESC
+    limit: 50
+    example: {}
+
+  - name: get_returns_rate_by_size_and_fit
+    desc: "Return rate by size and fit for a style over 90 days, with units sold, size-related returns and share of returns. Identifies sizing and fit problems such as skinny cuts running tight."
+    kind: sql
+    args:
+      style_id: {required: true, desc: "Style to analyze, e.g. STY-T-4410"}
+      days_back: {type: int, default: 90, desc: "Days of history to include"}
+    sql: |
+      WITH ret AS (
+        SELECT p.size, COALESCE(r.fit, 'n/a') AS fit, count(*) AS return_count,
+               count(*) FILTER (WHERE r.return_reason_code IN ('WRONG_SIZE', 'TOO_TIGHT_HIP')) AS size_related
+        FROM returns r JOIN master.products p ON p.sku = r.sku
+        WHERE r.style_id = $style_id AND r.return_date >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY p.size, COALESCE(r.fit, 'n/a')),
+      sold AS (
+        SELECT p.size, sum(s.online_units) AS units_sold
+        FROM master.sales_weekly s JOIN master.products p ON p.sku = s.sku
+        WHERE p.style_id = $style_id AND s.week_start >= CAST($as_of AS DATE) - INTERVAL (CAST($days_back AS INT)) DAY
+        GROUP BY p.size)
+      SELECT $style_id AS style_id, ret.size, ret.fit, ret.return_count,
+             sum(ret.return_count) OVER (PARTITION BY ret.size) AS size_return_count,
+             sold.units_sold AS size_units_sold_online,
+             round(100.0 * sum(ret.return_count) OVER (PARTITION BY ret.size) / NULLIF(sold.units_sold, 0), 1) AS size_return_rate_pct,
+             round(100.0 * ret.size_related / ret.return_count, 1) AS pct_size_related,
+             round(100.0 * ret.return_count / sum(ret.return_count) OVER (), 1) AS pct_of_style_returns
+      FROM ret LEFT JOIN sold ON sold.size = ret.size
+      ORDER BY ret.return_count DESC
+    limit: 30
+    example: {style_id: "STY-T-4410"}
 
   - name: get_returns_cost_by_channel
     desc: "Returns handling cost and volume by sales channel, with orders and sales for the same period: cost per order, per unit and per pound of sales. Use to assess profitability by channel."

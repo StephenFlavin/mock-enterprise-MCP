@@ -83,7 +83,7 @@ def generate(g):
           "SEG-001 Premium Loyalists", "japandi", "Japanese-Scandinavian calm interiors: natural materials, low clutter"),
         T("TRD-000006", "Dopamine Decor", "Home", "theme", "UK", "growing", "fad", "2026-01-15", "2026-10-25", "2027-03-01",
           "SEG-005 Trend Followers", "dopamine decor", "Bright, maximal colour-led home accessories driven by social video"),
-        T("TRD-000007", "Sleep Sanctuary", "Home", "theme", "UK", "emerging", "structural", "2025-09-01", "2028-03-01", "2029-06-01",
+        T("TRD-000007", "Sleep Sanctuary", "Home", "theme", "UK", "emerging", "structural", "2025-09-01", "2027-12-01", "2028-09-01",
           "SEG-003 Conscious Shoppers", "sleep sanctuary", "Bedroom as a restorative space: bedding, lighting, scent"),
         T("TRD-000008", "Bold Maximalism", "Womenswear", "theme", "UK", "emerging", "structural", "2026-02-01", "2027-09-01", "2028-09-01",
           "SEG-005 Trend Followers", "bold maximalism", "Colour, print and statement texture replacing understated minimalism"),
@@ -359,7 +359,7 @@ def generate(g):
         F("FCT-000013", "TRD-000006", "AW27", "UK",
           "Dopamine decor is a fad: peaks within weeks and falls away sharply by spring 2027. Test only, do not commit volume.", "low"),
         F("FCT-000014", "TRD-000007", "AW27", "UK",
-          "Sleep sanctuary is early in its cycle with a long runway to 2029.", "medium"),
+          "Sleep sanctuary is early in its cycle and keeps growing into 2028.", "medium"),
         F("FCT-000015", "TRD-000006", "AW27", "Germany",
           "Dopamine decor is already past peak in Germany, which led the UK by about 12 weeks.", "medium"),
     ]
