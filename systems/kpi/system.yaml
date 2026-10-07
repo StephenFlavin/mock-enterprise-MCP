@@ -1,0 +1,249 @@
+id: kpi
+name: Executive KPI Scorecard
+instructions: >
+  Strategic KPIs and service metrics across supply chain domains (service, cost, inventory, safety, quality, sustainability).
+  Targets, actuals, variances and root causes. KPI ids look like KPI-0001.
+
+tables:
+  kpi_targets:
+    key: kpi_id
+    cols:
+      kpi_id: {type: str, desc: "KPI identifier, e.g. KPI-0001"}
+      kpi_name: {type: str, desc: "KPI name, e.g. On-Time-In-Full (OTIF)"}
+      domain: {type: enum, values: [service, cost, inventory, safety, quality, sustainability], desc: KPI domain}
+      frequency: {type: enum, values: [daily, weekly, monthly, quarterly, annual], desc: Measurement frequency}
+      unit: {type: str, desc: "Unit of measure, e.g. %, units, £, days"}
+      target_value: {type: float, desc: Target value for this period}
+      min_threshold: {type: float, desc: Minimum acceptable value (alert if below)"}
+      yellow_threshold: {type: float, desc: Warning threshold (alert if below)"}
+      fy_period: {type: int, desc: Financial period 1-12}
+      effective_from: {type: date, desc: When this target became effective}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  kpi_actuals:
+    key: [kpi_id, measured_date]
+    cols:
+      kpi_id: {type: str, desc: "KPI identifier"}
+      measured_date: {type: date, desc: Date the KPI was measured}
+      actual_value: {type: float, desc: Actual measured value}
+      ytd_value: {type: float, desc: Year-to-date accumulated value}
+      vs_target_pct: {type: float, desc: "Actual as % of target"}
+      data_quality: {type: enum, values: [good, estimated, incomplete], desc: Data quality flag}
+      notes: {type: str, desc: Notes on the measurement}
+
+  kpi_variances:
+    key: variance_id
+    cols:
+      variance_id: {type: str, desc: "Variance record, e.g. VAR-000123"}
+      kpi_id: {type: str, desc: KPI identifier}
+      period_start: {type: date, desc: Period start date}
+      period_end: {type: date, desc: Period end date}
+      target_value: {type: float, desc: Target for the period}
+      actual_value: {type: float, desc: Actual value in period}
+      variance_value: {type: float, desc: Actual minus target}
+      variance_pct: {type: float, desc: "Variance as % of target"}
+      severity: {type: enum, values: [on_track, minor, moderate, severe], desc: Variance severity}
+      status: {type: enum, values: [open, investigating, root_cause_identified, action_raised, resolved], desc: Investigation status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  site_metrics:
+    key: [site_id, measured_date]
+    cols:
+      site_id: {type: str, desc: "Site id"}
+      measured_date: {type: date, desc: Date measured}
+      service_score: {type: float, desc: "Service quality score (0-100)"}
+      cost_per_unit_gbp: {type: float, desc: "Cost per unit handled"}
+      safety_ltif: {type: float, desc: "Lost time injury frequency rate"}
+      quality_first_pass_pct: {type: float, desc: "First-pass quality %"}
+      stock_accuracy_pct: {type: float, desc: "Stock count accuracy %"}
+      oh_es: {type: int, desc: "On-hand minus expected stock variance"}
+
+  circularity_targets:
+    key: channel_id
+    cols:
+      channel_id: {type: str, desc: "Channel or category, e.g. CHN-000001"}
+      channel_name: {type: str, desc: "Channel name, e.g. Reuse, Recycling"}
+      units_collected_target: {type: int, desc: Target units collected}
+      value_recovered_target_gbp: {type: float, desc: "Target recovered value in GBP"}
+      handling_cost_per_unit_gbp: {type: float, desc: "Cost to handle per unit"}
+      fy_period: {type: int, desc: Financial period}
+      effective_from: {type: date, desc: When target became effective}
+
+  issue_root_causes:
+    key: cause_id
+    cols:
+      cause_id: {type: str, desc: "Root cause record, e.g. CAS-000123"}
+      variance_id: {type: str, desc: "Associated variance record"}
+      kpi_id: {type: str, desc: "Associated KPI"}
+      root_cause: {type: str, desc: "Root cause description"}
+      contributing_factors: {type: str, desc: "Contributing factors, semicolon-separated"}
+      department_responsible: {type: str, desc: "Department accountable for fix"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: Severity of the issue}
+      identified_at: {type: timestamp, desc: When the root cause was identified}
+      target_fix_date: {type: date, desc: Target date to resolve"}
+      status: {type: enum, values: [open, action_raised, in_progress, resolved, closed], desc: Status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  alert_thresholds:
+    key: alert_id
+    cols:
+      alert_id: {type: str, desc: "Alert threshold record, e.g. ALT-000123"}
+      kpi_id: {type: str, desc: "KPI identifier"}
+      alert_level: {type: enum, values: [red, amber, green], desc: Alert level}
+      threshold_value: {type: float, desc: Threshold value for this alert"}
+      alert_on: {type: enum, values: [below, above, equals], desc: Alert trigger condition}
+      enabled: {type: bool, desc: Is this alert active}
+      last_breached_at: {type: timestamp, desc: When alert was last triggered}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: get_kpi_targets
+    desc: Targets and thresholds for each KPI by domain and period. Use to see what we plan to deliver.
+    kind: select
+    from: kpi_targets
+    filters:
+      domain: {}
+      fy_period: {type: int, desc: "Financial period (1-12, default current)"}
+      kpi_id: {}
+    columns: [kpi_id, kpi_name, domain, target_value, min_threshold, yellow_threshold, unit, frequency]
+    order: domain
+    limit: 30
+    example: {domain: service}
+
+  - name: get_kpi_actuals
+    desc: "Actual KPI results over a period. Shows measured values, YTD totals and % of target."
+    kind: sql
+    args:
+      kpi_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Period start"}
+      date_to: {type: date, default: "+0d", desc: "Period end"}
+    sql: |
+      SELECT kpi_id, measured_date, actual_value, ytd_value, vs_target_pct, data_quality, notes
+      FROM kpi_actuals
+      WHERE kpi_id = $kpi_id
+        AND measured_date >= CAST($date_from AS DATE)
+        AND measured_date <= CAST($date_to AS DATE)
+      ORDER BY measured_date DESC
+    limit: 90
+    example: {kpi_id: KPI-0001}
+
+  - name: list_top_kpi_variances
+    desc: Largest adverse variances against plan, ranked by impact. Use to prioritize management focus.
+    kind: sql
+    args:
+      domain: {}
+      min_severity: {type: enum, values: [minor, moderate, severe], default: moderate, desc: "Minimum severity to show"}
+      period_end: {type: date, default: "+0d", desc: "Up to this date (default today)"}
+    sql: |
+      SELECT variance_id, kpi_id, period_start, period_end, target_value, actual_value,
+             variance_value, variance_pct, severity, status
+      FROM kpi_variances
+      WHERE ($domain IS NULL OR kpi_id IN (SELECT kpi_id FROM kpi_targets WHERE domain = $domain))
+        AND (severity IN ('moderate', 'severe') OR ($min_severity = 'minor'))
+        AND period_end <= CAST($period_end AS DATE)
+      ORDER BY abs(variance_pct) DESC, period_end DESC
+    limit: 20
+    example: {}
+
+  - name: get_issue_root_causes
+    desc: Recorded causes of off-plan KPIs with severity, accountable department and fix timeline.
+    kind: sql
+    args:
+      kpi_id: {}
+      status: {type: enum, values: [open, action_raised, in_progress, resolved], desc: "Filter by status (default all)"}
+    sql: |
+      SELECT cause_id, variance_id, kpi_id, root_cause, contributing_factors, department_responsible,
+             severity, identified_at, target_fix_date, status, updated_at
+      FROM issue_root_causes
+      WHERE ($kpi_id IS NULL OR kpi_id = $kpi_id)
+        AND ($status IS NULL OR status = $status)
+      ORDER BY severity DESC, identified_at DESC
+    limit: 50
+    example: {}
+
+  - name: get_site_scorecard
+    desc: Service, cost, safety and quality results for each site. Compare across DCs and stores for performance gaps.
+    kind: sql
+    args:
+      site_id: {desc: "Site id (default all)"}
+      measured_date: {type: date, default: "+0d", desc: "Latest data as of this date"}
+    sql: |
+      SELECT site_id, measured_date, service_score, cost_per_unit_gbp, safety_ltif,
+             quality_first_pass_pct, stock_accuracy_pct, oh_es
+      FROM site_metrics
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND measured_date = CAST($measured_date AS DATE)
+      ORDER BY service_score DESC
+    limit: 50
+    example: {}
+
+  - name: get_site_quality_metrics
+    desc: Quality metrics by site including first-pass rate and stock accuracy. Use to identify quality improvement opportunities.
+    kind: select
+    from: site_metrics
+    filters:
+      site_id: {}
+      measured_date: {type: date, desc: "Metrics as of (default latest)"}
+    columns: [site_id, measured_date, quality_first_pass_pct, stock_accuracy_pct, oh_es]
+    order: quality_first_pass_pct
+    limit: 50
+    example: {}
+
+  - name: get_circularity_targets
+    desc: "Circularity targets by channel (reuse, repair, recycle). Shows target collection, recovered value and cost per unit."
+    kind: select
+    from: circularity_targets
+    filters:
+      channel_name: {op: like}
+      fy_period: {type: int, desc: "Financial period (1-12, default current)"}
+    columns: [channel_id, channel_name, units_collected_target, value_recovered_target_gbp, handling_cost_per_unit_gbp]
+    order: channel_id
+    limit: 20
+    example: {}
+
+  - name: calculate_year_on_year_change
+    desc: Change versus prior year and target for a KPI. Returns prior year value, current year, target and calculated change %.
+    kind: sql
+    args:
+      kpi_id: {required: true}
+      period_end: {type: date, default: "+0d", desc: "Period end date"}
+    sql: |
+      SELECT kpi_id,
+             (SELECT COALESCE(SUM(actual_value), 0) FROM kpi_actuals WHERE kpi_id = $kpi_id
+              AND measured_date < CAST($period_end AS DATE) - INTERVAL 365 DAY
+              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 730 DAY) AS prior_year_value,
+             (SELECT COALESCE(SUM(actual_value), 0) FROM kpi_actuals WHERE kpi_id = $kpi_id
+              AND measured_date <= CAST($period_end AS DATE)
+              AND measured_date >= CAST($period_end AS DATE) - INTERVAL 365 DAY) AS current_year_value,
+             (SELECT target_value FROM kpi_targets WHERE kpi_id = $kpi_id LIMIT 1) AS target_value,
+             'yoy_change = (current - prior) / prior * 100' AS formula
+    limit: 1
+    example: {kpi_id: KPI-0001}
+
+  - name: get_executive_scorecard
+    desc: Headline KPIs against plan across all domains (service, cost, inventory, risk, sustainability). One-page executive summary.
+    kind: sql
+    args:
+      period_end: {type: date, default: "+0d", desc: "Scorecard as of (default today)"}
+    sql: |
+      SELECT t.domain, t.kpi_name, t.target_value, a.actual_value,
+             ROUND(((a.actual_value - t.target_value) / t.target_value * 100), 1) AS variance_pct,
+             CASE WHEN a.actual_value >= t.yellow_threshold THEN 'Green'
+                  WHEN a.actual_value >= t.min_threshold THEN 'Amber'
+                  ELSE 'Red' END AS status
+      FROM kpi_targets t
+      LEFT JOIN kpi_actuals a ON a.kpi_id = t.kpi_id AND a.measured_date = CAST($period_end AS DATE)
+      WHERE t.effective_from <= CAST($period_end AS DATE)
+      ORDER BY t.domain, t.kpi_name
+    limit: 30
+    example: {}
+
+  - name: update_kpi_alert_threshold
+    desc: Change the alert threshold on a KPI. Use to tighten thresholds for at-risk KPIs.
+    kind: update
+    table: alert_thresholds
+    set: {threshold_value: "{threshold_value}", updated_at: "$as_of"}
+    args:
+      threshold_value: {type: float, required: true, desc: "New threshold value"}
+      alert_level: {type: enum, values: [red, amber, green], desc: "Alert level being updated (default red)"}
+    example: {alert_id: ALT-000001, threshold_value: 95.5}
