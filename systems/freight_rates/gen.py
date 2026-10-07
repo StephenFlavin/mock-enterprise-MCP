@@ -5,11 +5,13 @@ uses g.rng. All port codes are master ports (VNSGN, GBFXT, NLRTM ...), except US
 transhipment ports (ESVLC, GRPIR), which master data does not list.
 """
 import math
+import random
 from datetime import date, timedelta
 
 
 def generate(g):
     r = g.rng
+    r2 = random.Random(20261)      # separate stream so later lanes do not move the older story data
     A = g.as_of
 
     def wk(n):          # n weeks before as_of
@@ -26,10 +28,13 @@ def generate(g):
         "VNSGN-USLAX": [3250, 3240, 3200, 3180, 3150, 3120, 3100, 3080, 3040, 3010, 2980, 2950],
     }
     for lane, now, start in [("CNSHA-GBFXT", 2280, 2190), ("CNSHA-NLRTM", 2330, 2240),
-                             ("BDCGP-GBFXT", 2520, 2450), ("CNSHA-USLAX", 3120, 3290)]:
+                             ("BDCGP-GBFXT", 2520, 2450), ("CNSHA-USLAX", 3120, 3290),
+                             ("CNYTN-GBFXT", 2310, 2210), ("INNSA-GBFXT", 2050, 2010), ("TRMER-GBFXT", 1420, 1390),
+                             ("PTLEI-GBFXT", 780, 765), ("MXZLO-GBFXT", 3000, 2960)]:
         sea_series[lane] = [round(start + (now - start) * i / 11) for i in range(12)]
     sea_transit = {"VNSGN-GBFXT": 26, "VNSGN-NLRTM": 27, "VNSGN-USLAX": 34, "CNSHA-GBFXT": 31,
-                   "CNSHA-NLRTM": 32, "BDCGP-GBFXT": 33, "CNSHA-USLAX": 18}
+                   "CNSHA-NLRTM": 32, "BDCGP-GBFXT": 33, "CNSHA-USLAX": 18, "CNYTN-GBFXT": 29,
+                   "INNSA-GBFXT": 25, "TRMER-GBFXT": 14, "PTLEI-GBFXT": 4, "MXZLO-GBFXT": 24}
     best_contract = {"VNSGN-GBFXT": 1750, "VNSGN-NLRTM": 1820, "VNSGN-USLAX": 3050, "CNSHA-GBFXT": 1650,
                      "CNSHA-NLRTM": 1700, "BDCGP-GBFXT": 2350, "CNSHA-USLAX": 2980}
 
@@ -43,12 +48,14 @@ def generate(g):
 
     # long history: older weeks follow a seasonal wave around the oldest story level
     full_hist = {}
+    old_lanes = {"VNSGN-GBFXT", "VNSGN-NLRTM", "VNSGN-USLAX", "CNSHA-GBFXT", "CNSHA-NLRTM", "BDCGP-GBFXT", "CNSHA-USLAX"}
     for lane, pts in sea_series.items():
         phase = (sum(map(ord, lane)) % 7) / 7 * 2 * math.pi
         series = {w: pts[11 - w] for w in range(12)}            # week back -> rate
+        rr = r if lane in old_lanes else r2
         for w in range(12, 64):
             wave = 0.10 * math.sin(2 * math.pi * w / 52 + phase)
-            series[w] = round(pts[0] * (0.93 + wave) * (1 + r.uniform(-0.012, 0.012)))
+            series[w] = round(pts[0] * (0.93 + wave) * (1 + rr.uniform(-0.012, 0.012)))
         full_hist[lane] = series
         for w in range(12):
             origin, dest = lane.split("-")
@@ -57,11 +64,11 @@ def generate(g):
                      transit_days=sea_transit[lane], source="market data")
         for w in range(63, -1, -1):
             sp = series[w]
-            ct = best_contract[lane]
+            ct = best_contract.get(lane)
             rate_history.append({
                 "lane_id": lane, "rate_date": wk(w), "mode": "sea",
-                "spot_rate_gbp": float(sp), "contract_rate_gbp": float(ct),
-                "contract_rate_pct": round(ct / sp * 100, 1),
+                "spot_rate_gbp": float(sp), "contract_rate_gbp": float(ct) if ct else None,
+                "contract_rate_pct": round(ct / sp * 100, 1) if ct else None,
                 "rate_change_week": pct(sp, series[w + 1]) if w + 1 in series else None,
                 "rate_change_month": pct(sp, series[w + 4]) if w + 4 in series else None,
                 "rate_change_year": pct(sp, series[w + 52]) if w + 52 in series else None,
@@ -268,7 +275,10 @@ def generate(g):
     transit_times = []
     for lane, sched, act, rel in [("VNSGN-GBFXT", 26, 27.5, 82.5), ("VNSGN-NLRTM", 27, 28.2, 80.0),
                                   ("VNSGN-USLAX", 34, 36.1, 75.0), ("CNSHA-GBFXT", 31, 33.0, 78.5),
-                                  ("CNSHA-NLRTM", 32, 33.5, 77.0), ("BDCGP-GBFXT", 33, 35.2, 74.0)]:
+                                  ("CNSHA-NLRTM", 32, 33.5, 77.0), ("BDCGP-GBFXT", 33, 35.2, 74.0),
+                                  ("CNYTN-GBFXT", 29, 30.4, 79.0), ("INNSA-GBFXT", 25, 26.3, 80.5),
+                                  ("TRMER-GBFXT", 14, 14.6, 88.0), ("PTLEI-GBFXT", 4, 4.2, 92.0),
+                                  ("MXZLO-GBFXT", 24, 25.1, 84.0)]:
         o, d = lane.split("-")
         transit_times.append({"transit_id": f"TRN-{len(transit_times) + 1:06d}", "lane_id": lane, "mode": "sea",
                               "origin": o, "destination": d, "transit_days_scheduled": sched,
@@ -343,11 +353,70 @@ def generate(g):
                          unit=svc, origin=origin, destination=postcode, min_weight_kg=lo, max_weight_kg=hi,
                          transit_days=days, source="carrier quote")
 
-    freight_emissions = [
-        {"lane_id": "sea", "shipment_type": "sea", "mode": "40ft container", "weight_kg": 20000,
-         "emissions_co2e_kg": 2500, "emissions_co2e_per_kg": 0.125, "data_source": "industry standard"},
-        {"lane_id": "air", "shipment_type": "air", "mode": "typical cargo", "weight_kg": 5000,
-         "emissions_co2e_kg": 5000, "emissions_co2e_per_kg": 1.0, "data_source": "industry standard"},
+    # air/sea corridors with emissions from distance (same factors as the TMS: air 0.602, sea 0.016 kg CO2e per tonne-km)
+    freight_emissions = []
+    for o_air, o_port, km in (("DAC", "BDCGP", 8000), ("SGN", "VNSGN", 10000), ("PVG", "CNSHA", 9200),
+                              ("IST", "TRMER", 3300)):
+        freight_emissions.append({
+            "corridor_id": f"{o_air}-LHR", "origin_airport": o_air, "origin_port": o_port,
+            "destination_airport": "LHR", "destination_port": "GBFXT", "distance_km": km,
+            "air_co2e_kg_per_kg": round(km * 0.602 / 1000, 3), "sea_co2e_kg_per_kg": round(km * 0.016 / 1000, 3),
+            "sea_kg_per_container": 20000, "data_source": "distance x emission factor per tonne-km (air 0.602, sea 0.016)",
+        })
+
+    # ------------------------------------------------------------------ announced carrier rate increases and annual spend
+    lane_contract_boxes = {}
+    for row in booking_volumes:
+        if row["booking_period"] != "four quarters ago":
+            lane_contract_boxes[row["lane_id"]] = lane_contract_boxes.get(row["lane_id"], 0) + row["contract_volume_units"]
+    lane_contract_boxes["CNSHA-NLRTM"] = 3000
+    lane_contract_boxes["BDCGP-GBFXT"] = 600
+    shares = {"VNSGN-GBFXT": {"CAR-007": .5, "CAR-005": .3, "CAR-006": .2},
+              "VNSGN-NLRTM": {"CAR-007": .6, "CAR-005": .4}, "VNSGN-USLAX": {"CAR-006": .6, "CAR-005": .4},
+              "CNSHA-GBFXT": {"CAR-007": 1.0}, "CNSHA-NLRTM": {"CAR-007": 1.0}, "BDCGP-GBFXT": {"CAR-005": 1.0}}
+    sea_units, sea_cost = {}, {}
+    for lane, sh in shares.items():
+        for car, share in sh.items():
+            rate = next(c["rate_gbp"] for c in contract_rates
+                        if c["carrier_id"] == car and c["lane_id"] == lane and c["mode"] == "sea")
+            boxes = lane_contract_boxes[lane] * share
+            sea_units[car] = sea_units.get(car, 0) + boxes
+            sea_cost[car] = sea_cost.get(car, 0) + boxes * rate
+    spend_rows = []
+    for car, pct, eff, note in (("CAR-007", 6.0, 12, "General rate increase notice for next year"),
+                                ("CAR-005", 8.0, 12, "General rate increase plus Asia-Europe peak season pricing"),
+                                ("CAR-006", 10.0, 12, "General rate increase; carrier signalling firm push on renewal")):
+        boxes = round(sea_units[car])
+        spend_rows.append((car, "sea", boxes, "40ft containers", round(sea_cost[car] / boxes, 2), pct, eff, note))
+    spend_rows += [
+        ("CAR-001", "road", 120000, "pallets", 16.40, 4.0, 4, "General rate increase 4% from November (notice ALR-900004)"),
+        ("CAR-002", "road", 210000, "pallets", 17.20, 3.5, 12, "Annual review uplift on contract rate card"),
+        ("CAR-008", "air", 120000, "kg", 3.25, 3.2, 2, "Q4 rate review, average 3.2% (notice ALR-900007)"),
+        ("CAR-018", "air", 30000, "kg", 3.67, 4.5, 12, "Express courier tariff increase"),
+        ("CAR-011", "parcel", 150000, "parcels", 9.55, 5.9, 12, "Annual tariff uplift"),
+        ("CAR-012", "parcel", 420000, "parcels", 6.95, 4.8, 12, "Annual tariff uplift"),
+        ("CAR-013", "parcel", 1100000, "parcels", 4.05, 4.2, 12, "Annual tariff uplift"),
+    ]
+    carrier_spend = [{
+        "carrier_id": c, "mode": m, "annual_volume": float(v), "volume_unit": u, "avg_rate_gbp": float(rt),
+        "baseline_annual_gbp": round(v * rt, 2), "announced_increase_pct": pc, "effective_from": A + timedelta(weeks=ew),
+        "notice": nt,
+    } for c, m, v, u, rt, pc, ew, nt in spend_rows]
+
+    # ------------------------------------------------------------------ alternative load ports if the Ho Chi Minh City port closes
+    port_diversions = [
+        {"route_id": "DIV-000001", "closed_port": "VNSGN", "alternate_load_port": "VNCMT", "alternate_port_name": "Cai Mep",
+         "destination_port": "GBFXT", "routing": "Barge or truck from Ho Chi Minh City to Cai Mep (about 80 km), then direct sailing",
+         "positioning_cost_gbp": 240.0, "rate_premium_gbp": 0.0, "extra_transit_days": 1, "capacity_share_pct": 60,
+         "status": "limited", "notes": "Deep-water terminal next to the closed port; absorbs about 60% of normal weekly volume"},
+        {"route_id": "DIV-000002", "closed_port": "VNSGN", "alternate_load_port": "SGSIN", "alternate_port_name": "Singapore",
+         "destination_port": "GBFXT", "routing": "Feeder from Cai Mep to Singapore, transhipped onto the mainline service",
+         "positioning_cost_gbp": 330.0, "rate_premium_gbp": 150.0, "extra_transit_days": 5, "capacity_share_pct": 100,
+         "status": "active", "notes": "Weekly feeder sailings; transhipment adds dwell time"},
+        {"route_id": "DIV-000003", "closed_port": "VNSGN", "alternate_load_port": "VNHPH", "alternate_port_name": "Hai Phong",
+         "destination_port": "GBFXT", "routing": "Coastal feeder or road from southern Vietnam to Hai Phong (about 1,700 km), then direct sailing",
+         "positioning_cost_gbp": 590.0, "rate_premium_gbp": 60.0, "extra_transit_days": 6, "capacity_share_pct": 80,
+         "status": "active", "notes": "Longest positioning leg; northern Vietnam factories are closer to this port"},
     ]
 
     return {
@@ -356,4 +425,5 @@ def generate(g):
         "market_benchmarks": market_benchmarks, "surcharges": surcharges, "alternate_ports": alt,
         "rate_forecast": rate_forecast, "transit_times": transit_times, "rate_indices": rate_indices,
         "booking_volumes": booking_volumes, "freight_emissions": freight_emissions,
+        "carrier_spend": carrier_spend, "port_diversions": port_diversions,
     }

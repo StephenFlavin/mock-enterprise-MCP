@@ -312,11 +312,13 @@ tools:
     example: {style_id: STY-4056}
 
   - name: get_availability_by_store
-    desc: Availability by store over a period, from availability tracking. Shows in-stock rate and lost sales per store.
+    desc: Availability by store over a period, from availability tracking. Shows in-stock rate and lost sales per store, lowest rate first.
     kind: sql
     args:
       site_id: {}
       cluster: {desc: "Store cluster letter, e.g. B, to compare similar stores"}
+      region: {desc: "Site region, e.g. UK North"}
+      min_records: {type: int, default: 12, desc: "Ignore stores with fewer tracked records than this, so thin samples do not distort rankings"}
       date_from: {type: date, default: "-30d", desc: "From this date"}
     sql: |
       SELECT a.site_id, s.cluster, s.region,
@@ -326,13 +328,14 @@ tools:
       FROM availability_tracking a
       JOIN master.sites s USING (site_id)
       WHERE s.type = 'store' AND ($site_id IS NULL OR a.site_id = $site_id)
-        AND ($cluster IS NULL OR s.cluster = $cluster) AND a.tracking_date >= CAST($date_from AS DATE)
-      GROUP BY ALL ORDER BY in_stock_rate_pct
+        AND ($cluster IS NULL OR s.cluster = $cluster) AND ($region IS NULL OR s.region = $region)
+        AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY ALL HAVING count(*) >= $min_records ORDER BY in_stock_rate_pct
     limit: 100
     example: {site_id: ST214}
 
   - name: get_availability_rate_for_top_products
-    desc: Availability rate for the best-selling products over a period, with the previous period for comparison. Tracking is weekly, so a week counts in a period if any of its days fall in it.
+    desc: Availability rate for the best-selling products over a period, with the previous period for comparison. A tracked week counts if any day falls in the period.
     kind: sql
     args:
       category: {}
@@ -356,22 +359,23 @@ tools:
     example: {limit_products: 50}
 
   - name: get_availability_trend_for_store
-    desc: Retrieves availability trend for store over time. Shows trend in in-stock rates.
+    desc: Weekly availability trend for a store (all categories together, or one category). Shows products tracked, in stock and in-stock rate per week.
     kind: sql
     args:
       site_id: {required: true}
       category: {}
       date_from: {type: date, default: "-90d", desc: "From this date"}
     sql: |
-      SELECT a.tracking_date, a.site_id, p.category,
+      SELECT CAST(date_trunc('week', a.tracking_date) AS DATE) AS week_start, a.site_id, coalesce($category, 'all') AS category,
              count(*) AS products_tracked,
              count(CASE WHEN a.available THEN 1 END) AS products_in_stock,
-             round(100.0 * count(CASE WHEN a.available THEN 1 END) / count(*), 1) AS availability_rate_pct
+             round(100.0 * count(CASE WHEN a.available THEN 1 END) / count(*), 1) AS availability_rate_pct,
+             sum(a.lost_sales) AS lost_sales_units
       FROM availability_tracking a
       JOIN master.products p USING (sku)
       WHERE a.site_id = $site_id AND a.tracking_date >= CAST($date_from AS DATE)
         AND ($category IS NULL OR p.category = $category)
-      GROUP BY ALL ORDER BY a.tracking_date DESC
+      GROUP BY ALL ORDER BY week_start DESC
     limit: 100
     example: {site_id: ST214}
 

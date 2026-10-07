@@ -413,7 +413,7 @@ def draft_board_paper(ctx, topic, options=None, envelope_gbp=None, hurdle_rate_p
     opts.sort(key=lambda o: -o["irr"])
     left, funded = env, []
     for o in opts:
-        o["funded"] = o["capex"] <= left
+        o["funded"] = o["capex"] <= left and (hurdle is None or o["irr"] >= hurdle)
         if o["funded"]:
             left -= o["capex"]
             funded.append(o)
@@ -424,7 +424,7 @@ def draft_board_paper(ctx, topic, options=None, envelope_gbp=None, hurdle_rate_p
           "", "OPTIONS: RISK AND RETURN", "| Option | Capex | IRR | IRR after revenue miss | Change | Risk | Funded |", "|---|---|---|---|---|---|---|"]
     for o in opts:
         L.append(f"| {o['name']} | {_gbp_s(o['capex'])} | {o['irr']:.1f}% | {o['dn']:.1f}% | {o['dn'] - o['irr']:+.1f} pts | {o['risk']} | "
-                 f"{'yes' if o['funded'] else 'no'} |")
+                 f"{'yes' if o['funded'] else ('no, below hurdle' if hurdle is not None and o['irr'] < hurdle else 'no, over envelope')} |")
     L += ["", f"SENSITIVITY: {miss:.0f}% REVENUE MISS"]
     if hurdle is not None:
         fail = sorted((o for o in opts if o["dn"] < hurdle), key=lambda o: o["dn"])
@@ -570,7 +570,7 @@ def draft_investment_roadmap(ctx, investment_theme, budget_million_gbp=None, ini
         L += ["", f"PHASE {w} (£{sum(x['cost'] for x in grp if x['in']):g}m funded)"]
         for x in grp:
             dep = f"; after {', '.join(x['deps'])}" if x["deps"] else ""
-            L.append(f"- {x['name']}: £{x['cost']:g}m, return {x['ret']:g}%, risk {x['risk']}, {x['yrs']:g} years{dep}"
+            L.append(f"- {x['name']}: £{x['cost']:g}m, return {x['ret']:g}%, risk {x['risk']}, {x['yrs']:g} yr{dep}"
                      + ("" if x["in"] else " [OUTSIDE ENVELOPE]"))
     used = sum(x["cost"] for x in order if x["in"])
     L += ["", f"WITHIN ENVELOPE: £{used:g}m of £{budget:g}m"]
@@ -602,6 +602,9 @@ def draft_sponsor_challenge_brief(ctx, project_name, total_investment_gbp=None, 
     rank = {r["p"]: i for i, r in enumerate(sorted(rows, key=lambda r: -r["irr"]), 1)}
     L += [f"Projects: {len(rows)}; total ask £{_int(ask)}; envelope £{_int(env)}; funded in full £{_int(ftot)}"]
     hurdle = _f(hurdle_irr_pct) if hurdle_irr_pct is not None else None
+    y1 = sum(r["y1"] or 0 for r in rows if r["dec"] == "phase")
+    if y1:
+        L.append(f"Year-one spend on phased projects £{_int(y1)}; committed in year one £{_int(ftot + y1)}, leaving £{_int(env - ftot - y1)} of the envelope")
     for r in sorted((r for r in rows if r["dec"] != "fund"), key=lambda r: -r["irr"]):
         L += ["", f"{r['p'].upper()} ({r['sp']}): {r['dec'].upper()}",
               f"Ask: £{_int(r['cap'])}, IRR {r['irr']:g}% (rank {rank[r['p']]} of {len(rows)} on return), risk {r['risk']}"]
@@ -610,7 +613,7 @@ def draft_sponsor_challenge_brief(ctx, project_name, total_investment_gbp=None, 
             obj += f" It clears the {hurdle:g}% hurdle."
         L.append(obj)
         better = [x for x in funded if x["irr"] >= r["irr"]]
-        resp = f"Response: the envelope cannot hold the £{_int(ask)} asked; {len(better)} of the {len(funded)} funded projects return at least as much"
+        resp = f"Response: the £{_int(env)} envelope cannot hold the £{_int(ask)} asked; {len(better)} of the {len(funded)} fully funded projects return at least as much"
         if r["dec"] == "phase" and r["y1"] is not None:
             resp += f"; phasing limits year-one spend to £{_int(r['y1'])}"
         if r["risk"].lower() == "high":

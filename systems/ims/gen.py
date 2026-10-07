@@ -193,6 +193,36 @@ def generate(g):
                                "shrink_units": max(int(v / 12), 1), "shrink_value_gbp": round(v, 2),
                                "shrink_rate_pct": rate, "vs_peer_avg_pct": peer, "main_cause": cause})
 
+    # UK North patch: every northern store has shrink history (own random stream, so nothing else moves).
+    # Region norm is about 1.0-1.1%; Preston High Street 2 (ST143), Preston High Street (ST142) and Leeds Shopping Centre
+    # (ST150) run at 2.1% or more. Durham (ST144) is healthy.
+    import random as _random
+    nr = _random.Random(8173)
+    north = [x["site_id"] for x in sites if x["type"] == "store" and x["region"] == "UK North" and x["status"] == "open"]
+    have = {x["site_id"] for x in shrink}
+    north_bad = {"ST143": 2.6, "ST142": 2.3, "ST150": 2.2}
+    for s_ in north:
+        if s_ in have:
+            continue
+        base = north_bad.get(s_, 0.8 if s_ == "ST144" else nr.uniform(0.68, 0.86))
+        size = min(max(sqft[s_] / 20000.0, 0.5), 1.6)
+        for wk in range(0, 40):
+            monday = g.as_of - timedelta(days=g.as_of.weekday()) - timedelta(weeks=wk + 1)
+            for cat in cats:
+                rate = round(base * nr.uniform(0.85, 1.15), 2)
+                peer = round(rate - 1.0, 2)
+                cause = nr.choice(["shrink", "theft", "picking error", "receiving error"])
+                if s_ in north_bad:
+                    cause = nr.choice(["theft", "theft", "shrink", "receiving error"])
+                if cat == "Knitwear" and wk < 5:
+                    rate = round(rate + 0.45, 2)
+                    peer = round(peer + 0.4, 2)
+                    cause = "theft"
+                v = rate * nr.uniform(40, 80) * size
+                shrink.append({"site_id": s_, "category": cat, "analysis_week": monday,
+                               "shrink_units": max(int(v / 12), 1), "shrink_value_gbp": round(v, 2),
+                               "shrink_rate_pct": rate, "vs_peer_avg_pct": peer, "main_cause": cause})
+
     # ================= availability tracking: weekly panel, quota-driven OOS rate =================
     panel_sites = list(dict.fromkeys(["ST214", "ST215", "ST216", "ST150", "ST159", "ST165", "ST164", "ST181", "ST183"] + store_ids[:30]))
     panel_pairs = []
@@ -303,6 +333,22 @@ def generate(g):
                        and k[0] not in keep_out), key=lambda k: _hh("heal", *k))
         for k in pool[:flipped]:
             tracking[k] = trow(k[0], k[1], wk, False, 0, None)
+    # UK North patch availability: Preston stores (ST142, ST143) are below 95% in stock; Durham (ST144) is strong.
+    # Weekly out-of-stock counts follow the network rate so network totals barely move. Deterministic hashing only.
+    north_av = {"ST142": [2, 2, 1, 2, 2, 1, 2, 2, 2, 3, 3, 3], "ST143": [1, 2, 2, 1, 2, 2, 2, 2, 3, 2, 2, 2],
+                "ST144": [0] * 12}
+    for s_, oos_counts in north_av.items():
+        lst = sorted((k for k in by_site[s_] if k not in keep_out and "@" not in k), key=lambda k: _hh("north", s_, k))[:28]
+        for wi, wk in enumerate(weeks):
+            order = sorted(lst, key=lambda k: _hh("nwk", s_, k, wk))
+            out = set(order[:oos_counts[wi]])
+            for k in lst:
+                key = (k, s_, wk)
+                if key in tracking:
+                    continue
+                oos = k in out
+                cause = ("allocation_shortfall" if _hh("nc", s_, k, wk) < 0.7 else "forecast_under") if oos else None
+                tracking[key] = trow(k, s_, wk, oos, 1 + int(_hh("nd", s_, k, wk) * 6) if oos else 0, cause)
     availability = list(tracking.values())
 
     # ================= lost products: two years, ambient small =================

@@ -1,41 +1,49 @@
 - question: 03:23:Q5
-  story: 'Portable fan had stockouts in July (zero units). Demand history shows 280-290 units in adjacent weeks. Correction method: use average of pre/post (300 units). Adjustment applied for model retraining.
-
-    '
+  story: 'Last quarter''s stockouts: PF-220 lost 770 units (450 + 320), SKU-100056 600, K-1700 287, SKU-100539 262 and the delisted SKU-100441 640 (product status discontinued, leave it alone). Corrected
+    history spreads each adjustment''s lost units over its stockout days; the correction method on the story rows starts as ''not yet corrected''.'
   checks:
-  - tool: get_demand_history_for_sku
-    args:
-      sku: PF-220
-      period_start: -52w
-      period_end: -30d
-    expect:
-    - PF-220
-    - units_sold
-    - period_date
   - tool: calculate_lost_demand_for_sku
     args:
       sku: PF-220
-      period_start: -90d
-      period_end: -30d
+      period_start: -13w
+      period_end: today
     expect:
-    - total_lost_units
-    - estimated_lost_revenue
+    - ADJ-900001
+    - '770'
+    - active
+  - tool: calculate_lost_demand_for_sku
+    args:
+      sku: SKU-100441
+      period_start: -13w
+      period_end: today
+    expect:
+    - discontinued
+    - '640'
+  - tool: get_demand_history_for_sku
+    args:
+      sku: PF-220
+      period_start: -13w
+    expect:
+    - PF-220
+    - units_sold
   - tool: calculate_corrected_demand_history
     args:
       sku: PF-220
-      period_start: -90d
-      period_end: -30d
+      period_start: -13w
+      period_end: today
     expect:
     - corrected_units
-    - adjustment
-    - formula
+    - '373'
+    - '466'
   - tool: update_demand_history_adjustments
     args:
       adjustment_id: ADJ-900001
-      units_lost: 450
+      units_lost: 480
       correction_method: use average of pre/post
     expect:
     - ADJ-900001
+    - '480'
+    - use average of pre/post
 - question: 03:23:Q1
   story: 'Outerwear bias +18% over the last four weeks: weather 9.0 points, promotion 4.0, pricing 2.0, store cluster 1.8, new launches 1.2. UK markets 20-26%, Ireland 12%, EU Central 5%.'
   checks:
@@ -59,98 +67,108 @@
     - Ireland
     - EU Central
 - question: 03:30:Q2
-  story: 'Forecasts show high error. Configuration change caused regression. Recommendation: rollback and tune instead.
-
-    '
+  story: Vendor upgrade 4.2 reset outlier_capping to off on CFG-000001 about eight weeks ago. MAPE rose from 12.2% to 17.6% overall (significant) and to 28-31% for Fragrance, Knitwear, Outerwear, Dresses,
+    Footwear and Lighting. Rolling back beats tuning; the rollback sets outlier_capping=on.
   checks:
   - tool: list_forecasts_by_error_and_bias
     args:
-      mape_threshold_pct: 20.0
       period_start: -26w
-      period_end: -4w
     expect:
-    - config_id
-    - mape_pct
+    - CFG-000001
+    - Fragrance
+    - Knitwear
   - tool: get_configuration_change_log
     args:
-      period_start: -26w
-      period_end: -4w
+      config_id: CFG-000001
     expect:
-    - config_id
-    - config_name
-    - created_at
-    - status
+    - outlier_capping
+    - vendor upgrade 4.2
+    - 'off'
+  - tool: get_forecast_model_settings
+    args:
+      item_type: fast_mover
+    expect:
+    - CFG-000001
+    - outlier_capping=off
   - tool: compare_forecast_accuracy_before_after_change
     args:
       config_id: CFG-000001
-      change_date: -26w
+      change_date: '2026-08-12'
     expect:
-    - before_mape_pct
-    - after_mape_pct
+    - '12.2'
+    - '17.6'
+    - 'Yes'
   - tool: calculate_rollback_vs_tune_impact
     args:
       config_id: CFG-000001
       period_start: -26w
-      period_end: -4w
+      period_end: today
     expect:
-    - recommendation
+    - rollback
+    - '12.2'
   - tool: update_forecast_model_settings
     args:
       config_id: CFG-000001
-      status: archived
-      notes: Rolled back
+      parameters: alpha=0.2; seasonality=multiplicative; outlier_capping=on
+      notes: Rolled back vendor default
     expect:
     - CFG-000001
+    - outlier_capping=on
 - question: 03:30:Q3
-  story: 'Vendor platform supports new product forecasting. Backtest accuracy vs live accuracy evidence.
-
-    '
+  story: 'New items use the comparable-product method (CFG-000004: backtest 18.4% MAPE, live 35.6%); slow movers use a 104-week moving average. The platform licenses Croston/SBA for intermittent items but
+    it is switched off; lifecycle curves are on the vendor roadmap.'
   checks:
-  - tool: get_forecast_vendor_capabilities
-    args:
-      method_type: exponential_smoothing
-    expect:
-    - method_type
   - tool: get_current_forecast_method_for_item_type
     args:
       item_type: new_product
     expect:
-    - new_product
-    - method
+    - comparable_products
+    - CFG-000004
+  - tool: get_current_forecast_method_for_item_type
+    args:
+      item_type: slow_mover
+    expect:
+    - moving_average
+    - '104'
+  - tool: get_forecast_vendor_capabilities
+    args:
+      item_type: slow_mover
+    expect:
+    - croston_sba
+    - licensed_not_enabled
   - tool: get_backtest_vs_live_accuracy_evidence
     args:
-      config_id: CFG-000001
+      config_id: CFG-000004
     expect:
-    - backtest_mape_pct
-    - live_mape_pct
+    - '18.4'
+    - '35.6'
 - question: 03:30:Q4
-  story: 'Forecasting by level comparison: store-SKU vs cluster level.
-
-    '
+  story: 'Slow movers: store-SKU forecasts are the most accurate (12.5% MAPE) but take 95 minutes and about £48 to run on 306,400 series; cluster level is 17.0% MAPE and runs in 7 minutes on 9,800 series.
+    SKU-101897 matches the allocation story (11.2% and 15.8%).'
   checks:
-  - tool: run_forecast_backtest
-    args:
-      config_id: CFG-000001
-      period_start: -26w
-      period_end: -4w
-    expect:
-    - backtest_mape_pct
-    - items_backtested
   - tool: compare_forecast_accuracy_by_level
     args:
-      category: Audio
-      period_start: -13w
-      period_end: -4w
+      item_type: slow_mover
     expect:
-    - forecast_level
-    - mape_pct
+    - store_sku
+    - '12.5'
+    - cluster
+    - '17'
   - tool: get_forecast_run_effort_metrics
     args:
-      period_start: -13w
-      period_end: -4w
+      item_type: slow_mover
     expect:
-    - active_configs
-    - skus_forecast
+    - '306400'
+    - '9800'
+    - avg_run_minutes
+  - tool: run_forecast_backtest
+    args:
+      config_id: CFG-000003
+    expect:
+    - store_sku
+    - '10.8'
+    - cluster
+    - '14.6'
 - question: 03:30:Q5
   story: 'History window change from 52 to 26 weeks for fashion. Backtest shows improvement.
 
@@ -306,61 +324,77 @@
     - avg_cannibalisation_pct
     - incremental_pct
 - question: 03:23:Q6
-  story: 'Demand by category over time and scenario analysis for S&OP.
-
-    '
+  story: 'The last squeeze ran for 26 weeks starting 104 weeks ago: discretionary categories (Jewellery, Dresses, Smart Home, Fragrance) fell furthest, essentials (Schoolwear, Babywear, Personal Care) held
+    up. A -8% downside on the base forecast for the next-quarter 13 weeks is 657,768 base units down to 605,147.'
   checks:
   - tool: get_category_demand_history_by_period
     args:
+      grain: total
+      period_start: -104w
+      period_end: -79w
+    expect:
+    - Schoolwear
+    - Jewellery
+    - units_sold
+  - tool: get_category_demand_history_by_period
+    args:
       category: Dresses
-      period_start: -52w
-      period_end: -4w
+      grain: month
+      period_start: -104w
+      period_end: -79w
     expect:
     - Dresses
-    - units_sold
     - revenue_gbp
   - tool: run_demand_scenario
     args:
       scenario_name: downside
-      scenario_adjustment_pct: -5.0
-      period_start: $as_of
-      period_end: +30d
+      scenario_adjustment_pct: -8.0
+      period_start: +13w
+      period_end: +25w
     expect:
     - downside
+    - base_units
     - scenario_units
 - question: 03:25:Q2
-  story: 'Category forecast for open-to-buy planning.
-
-    '
+  story: Spring category forecast (13 weeks starting 22 weeks ahead) with base, upside and downside units for every category; summer categories (Trousers, Footwear, Shirts) rise, winter categories (Outerwear,
+    Bedding) fall away.
   checks:
+  - tool: get_category_forecast
+    args:
+      grain: total
+      period_start: +22w
+      period_end: +34w
+    expect:
+    - Trousers
+    - Footwear
+    - base_units
+    - downside_units
   - tool: get_category_forecast
     args:
       category: Audio
       period_start: $as_of
-      period_end: +30d
+      period_end: +4w
     expect:
     - Audio
-    - units_forecast
+    - base_units
 - question: 03:27:Q5
-  story: 'New product launches and forecast accuracy tracking.
-
-    '
+  story: 'Eight launches from the last three S&OP cycles all over-forecast: demand error +12% to +46% (worst SKU-102800 Outerwear at 51% MAPE, then SKU-101057 Scarves), stores ranged 6-16% below plan, and
+    five of eight launches slipped by a week or more. Demand is the main miss, then distribution, then timing.'
   checks:
   - tool: list_new_product_launches
     args:
       season: AW26
-      status: approved
+      status: launched
     expect:
-    - pipeline_id
-    - product_name
+    - SKU-102800
+    - launched
   - tool: get_new_product_forecast_accuracy
-    args:
-      period_start: -52w
-      period_end: -4w
+    args: {}
     expect:
-    - sku
-    - product_name
-    - mape_pct
+    - SKU-102800
+    - demand_error_pct
+    - assumptions_missed
+    - '51'
 - question: 03:23:Q2
   story: New backpack range (stand-in SKU-103423, launch in 14 weeks). Comparable Bags launches give a weekly base curve with low/high range; thresholds for weeks 1-3; base case loaded as override and alerts
     created.
@@ -642,73 +676,110 @@
     - '12765'
     - allocation_shortfall
 - question: 03:23:Q3
-  story: 'Winter forecast drivers: weather (+8% in cold winters), holidays (+12% peak week), trending +2% YoY. These factors inform model configuration for accuracy.
-
-    '
+  story: 'Winter Outerwear drivers for the UK and Germany: weather +12% on average (14.5% last winter), holidays +6%, consumer confidence -2.5%, competitor action -3% in the UK; Germany weather +7%, confidence
+    -4%. Only price, promotion and the UK holiday calendar are in the model; weather was tested and not adopted, German holidays, confidence and competitor inputs are absent.'
   checks:
   - tool: get_historic_driver_impact_on_category
     args:
       category: Outerwear
     expect:
-    - error_driver
+    - Germany
+    - weather
+    - '14.5'
+    - in_forecast_model
+  - tool: get_historic_driver_impact_on_category
+    args:
+      category: Outerwear
+      market: Germany
+      driver: consumer_confidence
+    expect:
+    - '-4'
+    - Germany
   - tool: list_forecast_model_external_regressors
     args:
-      error_driver: weather
+      driver: weather
     expect:
-    - error_driver
+    - uk_temperature_anomaly
+    - tested_not_adopted
+    - not_in_model
+  - tool: list_forecast_model_external_regressors
+    args:
+      status: in_model
+    expect:
+    - uk_holiday_and_peak_calendar
+    - price_index
 - question: 03:23:Q4
-  story: 'Promotion forecast: 25% off kitchenware week 47 forecast 35% uplift (27% incremental, 8% cannibalisation). Previous 25% off saw 8-week post-promo dip to 80% of baseline.
-
-    '
+  story: A 25% uplift on kitchenware for week 47 is written into the forecast as an override (percentage uplift, for the week six weeks ahead).
   checks:
   - tool: create_forecast_override
     args:
       category: Kitchenware
-      week_start: $as_of
-      week_end: +7d
-      override_pct: 35.0
+      week_start: +6w
+      week_end: +7w
+      override_pct: 25.0
       override_type: uplift
-      reason: 25% promotion
+      reason: 25% off promotion, week 47
     expect:
     - OVR-
+    - Kitchenware
+    - '25'
 - question: 03:28:Q1
-  story: 'Safety stock for 500 highest-value SKUs at 97% service level. Top items show 15% demand variability, requiring 450 units safety stock on average.
-
-    '
+  story: Two high-value A items, SKU-105341 (398 units a week, CV 37.9%) and SKU-105075 (371 a week, CV 39.7%), have a full 52 weeks of history; master sales hold no more than a year, so two years of history
+    do not exist.
   checks:
   - tool: get_demand_history_for_sku
     args:
-      sku: PF-220
+      sku: SKU-105341
+      period_start: -104w
     expect:
-    - sku
+    - SKU-105341
     - units_sold
   - tool: get_demand_variability_by_sku
     args:
-      top_n: 10
+      sku: SKU-105341
+      period_start: -104w
     expect:
-    - sku
-    - cv_pct
+    - '398'
+    - '37.9'
+    - weeks_of_history
+  - tool: get_demand_variability_by_sku
+    args:
+      sku: SKU-105075
+      period_start: -104w
+    expect:
+    - '371'
+    - '39.7'
 - question: 03:28:Q2
-  story: 'Home textiles 120-day vs 75-day target: forecast bias +8% suggests ordering too high. Min order quantities on 12 SKUs drive 35% of 45-day excess.
-
-    '
+  story: 'Home textiles (Bedding and Towels) have been over-forecast for twelve weeks: Bedding bias +14% (weather-driven), Towels +11% (promotion-driven), which feeds the excess cover.'
   checks:
   - tool: get_forecast_bias_for_category
     args:
-      category: Home
+      category: Bedding
+      period_start: -12w
     expect:
-    - bias_pct
+    - overall
+    - '14'
+    - Overforecasting
+  - tool: get_forecast_bias_for_category
+    args:
+      category: Towels
+      period_start: -12w
+    expect:
+    - overall
+    - '11'
 - question: 03:30:Q1
-  story: 'Order proposal analysis: 12,000-unit proposal traced to 52-week history with spike flagged. Recommendation: adjust to 8,400 units (840/week * 10 weeks).
-
-    '
+  story: 'SKU-100028 (the item behind the 12,000-unit proposal) launched about three weeks ago and sold 206, 322 and 248 units in its first three weeks: no history spike, so the cause is the pack size in
+    the planning parameters.'
   checks:
   - tool: get_demand_history_for_sku
     args:
-      sku: SKU-100056
+      sku: SKU-100028
+      period_start: -52w
     expect:
-    - sku
-    - units_sold
+    - SKU-100028
+    - '322'
+    - '248'
+    - '206'
 - question: 03:30:Q3
   story: 'Forecast methods research: vendor platform supports exponential smoothing, ARIMA, and Prophet. New product method shows 8% better live vs 12% backtest MAPE on average.
 

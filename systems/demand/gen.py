@@ -657,12 +657,12 @@ def generate(g):
         "Blouses": -11, "Tops": -9, "Lighting": -11, "Audio": -13, "Storage": -6, "Towels": -2, "Cookware": -4,
         "Bedding": -5, "Bags": -14, "Drinkware": -3, "T-Shirts": -8}
     category_history = []
-    first_weeks = [first_week + timedelta(weeks=i) for i in range(8)]
+    first_weeks = [this_monday - timedelta(weeks=n) for n in range(26, 0, -1)]   # last 26 weeks set the run-rate
     for cat in categories:
         u8 = [cat_totals.get((cat, w), [0, 0.0]) for w in first_weeks]
-        units8 = sum(x[0] for x in u8) / 8.0
+        units8 = sum(x[0] for x in u8) / 26.0
         price8 = (sum(x[1] for x in u8) / max(1, sum(x[0] for x in u8))) or 30.0
-        anchor = sum(seasonal(cat, w) for w in first_weeks) / 8.0
+        anchor = sum(seasonal(cat, w) for w in first_weeks) / 26.0
         for k in range(104, 0, -1):
             wk = first_week - timedelta(weeks=k)
             weeks_back = (this_monday - wk).days // 7
@@ -674,7 +674,7 @@ def generate(g):
             else:
                 sf = 0.0
             yrs = (first_week - wk).days / 365.0
-            units = units8 * seasonal(cat, wk) / anchor * (1.06 ** -yrs) * (1 + squeeze_pct.get(cat, -6) / 100.0 * sf)
+            units = units8 * seasonal(cat, wk) / anchor * (1.06 ** -(yrs + 0.5)) * (1 + squeeze_pct.get(cat, -6) / 100.0 * sf)
             units = max(1, int(round(units * r.gauss(1.0, 0.03))))
             price = price8 * (0.97 ** yrs) * (1 + 0.05 * sf)
             category_history.append({"category": cat, "period_date": wk, "units_sold": units,
@@ -762,12 +762,10 @@ def generate(g):
                  ("CFG-000004", "sku", 40, 2, 0.4, 0.1, 3.0)]
     for cfg, level, series, minutes, cost, gb, hours in run_specs:
         for off in range(-13, 0):
-            f = r.gauss(1.0, 0.04)
             forecast_run_metrics.append({
                 "run_id": f"RUN-{len(forecast_run_metrics) + 1:06d}", "config_id": cfg, "forecast_level": level,
                 "run_date": this_monday + timedelta(weeks=off), "series_count": series,
-                "run_minutes": int(round(minutes * f)), "compute_cost_gbp": round(cost * f, 2),
-                "data_volume_gb": round(gb * f, 2), "planner_review_hours": round(hours * r.gauss(1.0, 0.05), 1)})
+                "run_minutes": minutes, "compute_cost_gbp": cost, "data_volume_gb": gb, "planner_review_hours": hours})
 
     return {
         "demand_history": demand_history,
