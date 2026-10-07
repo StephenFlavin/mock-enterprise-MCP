@@ -106,7 +106,6 @@ tools:
     args:
       category: {desc: "Product category (optional filter)"}
       supplier_id: {desc: "Supplier (optional filter)"}
-      periods: {type: int, default: 12, desc: "Number of recent months"}
     sql: |
       SELECT s.supplier_id, sup.name, s.category, sum(s.spend_gbp) AS total_spend_gbp,
              sum(s.units) AS total_units, count(distinct s.period) AS periods_with_spend,
@@ -115,7 +114,6 @@ tools:
       LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
       WHERE ($category IS NULL OR s.category = $category)
         AND ($supplier_id IS NULL OR s.supplier_id = $supplier_id)
-        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
       GROUP BY ALL
       ORDER BY total_spend_gbp DESC
     limit: 50
@@ -139,30 +137,26 @@ tools:
     kind: sql
     args:
       category: {required: true}
-      periods: {type: int, default: 12, desc: "Number of months to return"}
     sql: |
       SELECT period, category, total_category_spend_gbp, preferred_spend_gbp,
              round(preferred_share_pct, 1) AS preferred_share_pct, preferred_supplier_count
       FROM preferred_supplier_tracking
       WHERE category = $category
-        AND period >= date_format(date_add(CAST($as_of AS DATE), INTERVAL -$periods MONTH), '%Y-%m')
-      ORDER BY period
+      ORDER BY period DESC
     limit: 24
     example: {category: "Home"}
 
   - name: get_supplier_spend_by_category
-    desc: Spend by product category for one supplier, latest 12 months. For supplier review.
+    desc: Spend by product category for one supplier. For supplier review.
     kind: sql
     args:
       supplier_id: {required: true}
-      periods: {type: int, default: 12, desc: "Number of recent months"}
     sql: |
       SELECT s.supplier_id, sup.name, s.category, sum(s.spend_gbp) AS spend_gbp,
              sum(s.units) AS units, round(avg(s.avg_unit_cost_gbp), 2) AS avg_unit_cost_gbp
       FROM supplier_spend s
       LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
       WHERE s.supplier_id = $supplier_id
-        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
       GROUP BY ALL
       ORDER BY spend_gbp DESC
     limit: 50
@@ -173,7 +167,6 @@ tools:
     kind: sql
     args:
       category: {required: true}
-      periods: {type: int, default: 6, desc: "Last N months"}
     sql: |
       SELECT p.sku, pr.name, p.category, p.supplier_id, sup.name AS supplier_name,
              round(p.contract_price_gbp, 2) AS benchmark_price_gbp, round(p.actual_price_gbp, 2) AS paid_price_gbp,
@@ -194,7 +187,6 @@ tools:
     args:
       supplier_id: {required: true}
       category: {}
-      periods: {type: int, default: 6, desc: "Last N months"}
     sql: |
       SELECT p.supplier_id, sup.name, p.category, count(*) AS lines,
              round(sum(p.volume_units), 0) AS total_units,
@@ -228,7 +220,6 @@ tools:
              'savings = tail_spend * (5-12% discount from consolidation)' AS formula
       FROM supplier_spend s
       WHERE s.category = $category
-        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL 6 MONTH, '%Y-%m')
     example: {category: "Home", consolidation_target_pct: 80}
 
   - name: calculate_renegotiation_recovery
@@ -237,10 +228,8 @@ tools:
     args:
       category: {}
       supplier_id: {}
-      periods: {type: int, default: 12, desc: "Analysis period in months"}
     sql: |
-      SELECT ($supplier_id IS NOT NULL AND $category IS NOT NULL) AS filtered,
-             round(sum(ss.spend_gbp), 0) AS annual_spend_gbp,
+      SELECT round(sum(ss.spend_gbp), 0) AS annual_spend_gbp,
              round(sum(ss.units), 0) AS annual_units,
              round(count(distinct ss.supplier_id), 0) AS supplier_count,
              round(0.03 * sum(ss.spend_gbp), 0) AS conservative_recovery_gbp,
@@ -249,7 +238,6 @@ tools:
       FROM supplier_spend ss
       WHERE ($category IS NULL OR ss.category = $category)
         AND ($supplier_id IS NULL OR ss.supplier_id = $supplier_id)
-        AND ss.period >= date_format(date_add(CAST($as_of AS DATE), INTERVAL -$periods MONTH), '%Y-%m')
     example: {category: "Home"}
 
   - name: classify_spend_one_off_vs_recurring
@@ -258,7 +246,6 @@ tools:
     args:
       supplier_id: {required: true}
       category: {}
-      periods: {type: int, default: 12, desc: "Look-back period in months"}
     sql: |
       SELECT s.supplier_id, sup.name, s.category,
              round(sum(s.spend_gbp), 0) AS total_spend_gbp,
@@ -270,7 +257,6 @@ tools:
       LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
       WHERE s.supplier_id = $supplier_id
         AND ($category IS NULL OR s.category = $category)
-        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
       GROUP BY ALL
     limit: 20
     example: {supplier_id: "SUP-0001"}
@@ -292,7 +278,6 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
-      periods: {type: int, default: 12, desc: "Number of months"}
     sql: |
       SELECT n.supplier_id, sup.name, n.period,
              round(n.actual_spend_gbp, 0) AS actual_spend_gbp,
@@ -302,7 +287,6 @@ tools:
       FROM nearshore_forecast n
       LEFT JOIN master.suppliers sup ON sup.supplier_id = n.supplier_id
       WHERE n.supplier_id = $supplier_id
-        AND n.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
       ORDER BY n.period DESC
     limit: 24
     example: {supplier_id: "SUP-0010"}
@@ -323,20 +307,16 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
-      periods: {type: int, default: 3, desc: "Months of cost data to analyse"}
     sql: |
       SELECT s.supplier_id, sup.name, count(distinct s.cost_component) AS cost_components,
              round(avg(case when s.cost_component = 'raw materials' then s.index_value end), 2) AS raw_materials_index,
              round(avg(case when s.cost_component = 'labour' then s.index_value end), 2) AS labour_index,
              round(avg(case when s.cost_component = 'shipping' then s.index_value end), 2) AS shipping_index,
-             round((avg(index_value) - lag(avg(index_value)) over (partition by supplier_id order by period)) / lag(avg(index_value)) over (partition by supplier_id order by period) * 100, 1) AS implied_increase_pct,
              'increase = (current_index - prior_index) / prior_index' AS formula
       FROM supplier_input_costs s
       LEFT JOIN master.suppliers sup ON sup.supplier_id = s.supplier_id
       WHERE s.supplier_id = $supplier_id
-        AND s.period >= date_format(CAST($as_of AS DATE) - INTERVAL ($periods) MONTH, '%Y-%m')
       GROUP BY s.supplier_id, sup.name
-      ORDER BY s.period DESC
     example: {supplier_id: "SUP-0001"}
 
   - name: list_reported_savings_initiatives
@@ -360,12 +340,11 @@ tools:
       category: {}
       initiative_type: {}
     sql: |
-      SELECT ($category IS NOT NULL) AS filtered,
-             count(*) AS initiatives_count,
+      SELECT count(*) AS initiatives_count,
              round(sum(reported_saving_gbp), 0) AS reported_total_gbp,
-             round(sum(realised_saving_gbp), 0) AS realised_total_gbp,
-             round(sum(realised_saving_gbp - reported_saving_gbp), 0) AS variance_gbp,
-             round(100.0 * sum(realised_saving_gbp) / nullif(sum(reported_saving_gbp), 0), 1) AS realisation_rate_pct,
+             round(sum(coalesce(realised_saving_gbp, 0)), 0) AS realised_total_gbp,
+             round(sum(coalesce(realised_saving_gbp, 0) - reported_saving_gbp), 0) AS variance_gbp,
+             round(100.0 * sum(coalesce(realised_saving_gbp, 0)) / nullif(sum(reported_saving_gbp), 0), 1) AS realisation_rate_pct,
              'realisation_rate = realised / reported' AS formula
       FROM savings_initiatives
       WHERE status = 'completed'
@@ -380,11 +359,11 @@ tools:
       status: {default: "completed"}
     sql: |
       SELECT initiative_id, name, category, initiative_type,
-             reported_saving_gbp, realised_saving_gbp,
-             round(realised_saving_gbp - reported_saving_gbp, 0) AS variance_gbp,
-             round(100.0 * realised_saving_gbp / nullif(reported_saving_gbp, 0), 1) AS realisation_pct,
-             case when realised_saving_gbp >= reported_saving_gbp then 'beat'
-                  when realised_saving_gbp >= 0.8 * reported_saving_gbp then 'on_track'
+             reported_saving_gbp, coalesce(realised_saving_gbp, 0) AS realised_saving_gbp,
+             round(coalesce(realised_saving_gbp, 0) - reported_saving_gbp, 0) AS variance_gbp,
+             round(100.0 * coalesce(realised_saving_gbp, 0) / nullif(reported_saving_gbp, 0), 1) AS realisation_pct,
+             case when coalesce(realised_saving_gbp, 0) >= reported_saving_gbp then 'beat'
+                  when coalesce(realised_saving_gbp, 0) >= 0.8 * reported_saving_gbp then 'on_track'
                   else 'missed' end AS performance_rating,
              status, target_completion_date
       FROM savings_initiatives
