@@ -55,7 +55,7 @@ Build one MCP server for each enterprise system named in the persona tool catalo
 | Language | **Python 3.12** | Smallest amount of code for this job: the official MCP SDK, DuckDB and YAML are all mature. Rust would save memory but needs several times more code per tool. |
 | MCP library | Official `mcp` SDK, **low-level `Server`** API | Tools come from YAML, not from decorated Python functions, so a single generic `list_tools` / `call_tool` pair serves every system. `FastMCP` would need one Python function per tool. |
 | Data store | **CSV files queried by DuckDB** | DuckDB treats CSVs as SQL tables with no import step and low memory. It is popular and runs in-process with no server. |
-| Writes | **Append-only CSV overlay** | Writes add rows to `state/<system>/<table>.csv`. Seed data is never changed, and a reset just deletes `state/`. |
+| Writes | **Append-only CSV overlay** | Writes add rows to an overlay `<state>/<system>/<table>.csv`. By default `<state>` is a temp dir per process, deleted on exit, so every start serves exactly the committed data. Set `MOCKMCP_STATE` to keep writes across restarts. |
 | Process model | **One "hub" process hosting all 96 servers**, each at its own URL (`http://127.0.0.1:8800/<id>/mcp`) | Each system is still a separate MCP server to the client. One Python process with one DuckDB connection costs a few hundred MB in total, where 96 separate processes would cost GBs. |
 | Fallback transport | `python -m mockmcp stdio <id>` | For clients that only support stdio. It runs the same code with a different transport. |
 | Tool definitions | **Declarative YAML for each system**, with a Python escape hatch | About 90% of tools become 5–15 lines of YAML. Only real calculations need Python. |
@@ -255,7 +255,7 @@ QUALIFY row_number() OVER (PARTITION BY adjustment_id ORDER BY _seq DESC) = 1
 - **Overlay files.** At startup the engine creates header-only overlay files, so a view never refers to a missing file.
 - **Appends.** Rows are appended with Python's `csv` module, under one `asyncio.Lock` per table. `_seq` comes from `time.time_ns()`.
 - **Visibility.** Views re-read the CSVs on every query, so a write is visible to the next call with no cache to invalidate.
-- **Reset.** `mockmcp reset [<id>]` deletes the `state/` files.
+- **Reset.** Stopping the process discards writes. With `MOCKMCP_STATE` set, `mockmcp reset [<id>]` deletes them.
 
 ### 5.4 Generated vs hand-written data
 

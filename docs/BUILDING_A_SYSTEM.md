@@ -20,7 +20,8 @@ You are done when **`python -m mockmcp check <id>` prints `ok   <id>`**.
 | `python -m mockmcp brief <id>` | Your tools (with catalogue descriptions) and every question that uses them, with follow-ups and the other tools called. **Start here.** |
 | `python -m mockmcp gen <id>` | Run `gen.py`, overlay `seed/*.csv`, write `data/*.csv`. Re-run after any data or column change. |
 | `python -m mockmcp run <id> <tool> '{"arg": "value"}'` | Call one tool and print exactly what the model would see. Writes are discarded. |
-| `python -m mockmcp check <id>` | Lint + run every tool's example + run every scenario. Must print `ok`. |
+| `python -m mockmcp check <id>` | Lint + run every tool's example + run every scenario + `gen --verify`. Must print `ok`. |
+| `python -m mockmcp gen --verify [<id>]` | Regenerate into a temp dir and fail if `data/` differs. Servers serve `data/` as is, so it must be exactly what `gen.py` + `seed/` produce. |
 
 ## Files you create
 
@@ -252,13 +253,18 @@ Read them in SQL with `read_text('{files}/*.md')` (columns `filename`, `content`
 ```python
 def generate(g):
     # g.rng (seeded random.Random), g.fake (Faker en_GB), g.as_of (date), g.days_ago(n), g.date_between(a, b),
-    # g.weeks(n) (last n Mondays), g.master("suppliers") -> list[dict] of strings, g.pick(seq[, k])
+    # g.weeks(n) (last n Mondays), g.master("suppliers") -> list[dict] of strings, g.pick(seq[, k]),
+    # g.rng_for("sku", sku) -> an independent random.Random per entity
     return {"<table>": [ {col: value, ...}, ... ], ...}
 ```
 - Return every table (may be empty if `seed/` fills it). Keys = column names; missing columns become blank.
 - Realistic volumes and noise; **≤ 20,000 rows per table** (hard cap 60,000) and ≤ 5 MB per system. Weekly grain for long history.
 - Derive from master (e.g. one row per relevant PO/site/sku) so ids line up across systems.
-- Deterministic: only `g.rng` / `g.fake` randomness, no `datetime.now()`.
+- Deterministic: only `g.rng` / `g.rng_for()` / `g.fake` randomness, no `datetime.now()`, and never iterate a `set` of
+  strings unsorted (its order changes with `PYTHONHASHSEED`).
+- **Stable when master grows:** when you loop over master rows and draw random numbers per row, use
+  `r = g.rng_for("sku", p["sku"])` instead of `g.rng`, so new master rows never shift what existing rows get.
+- **Never hand-edit `data/`.** Story rows go in `seed/` (or `gen.py`); `check` runs `gen --verify`.
 
 ### Data quality rules (reviewers found these mistakes in earlier builds)
 

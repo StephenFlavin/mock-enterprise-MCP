@@ -240,4 +240,6 @@ def _check(sid: str, partial: bool) -> list[str]:
     p = lint(sid, partial)
     if not any(x.startswith("system.yaml invalid") for x in p):
         p += run_examples(sid, partial)
+    from .gen import verify  # data/ must be exactly what gen.py + seed/ produce (reproducible bring-up)
+    p += [f"gen --verify: {x}" for x in verify(sid)]
     return p
