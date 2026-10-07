@@ -171,7 +171,7 @@ def generate(g):
     pat_def = [("EDI", "edi", 190, 150, 4500, "EDI integration (AS2/VAN) for document exchange with suppliers and partners"),
                ("REST_API", "api", 140, 110, 6500, "REST API integration for real-time data exchange"),
                ("FILE_TRANSFER", "file_transfer", 60, 70, 1800, "SFTP file transfer for batch data exchange"),
-               ("WEBHOOK", "webhook", 70, 60, 2500, "Webhook integration for event-driven updates")]
+               ("WEBHOOK", "webhook", 80, 60, 2500, "Webhook integration for event-driven updates")]
     patterns, pattern_run_costs = [], []
     for name, ptype, run_rate, sup_rate, setup, desc in pat_def:
         cnt = sum(1 for c in conns if c["active"] and proto_pattern[c["protocol"]] == ptype)
@@ -190,7 +190,7 @@ def generate(g):
     # ---- stock feed: runs every 5 min with a 1 min batch window until the schedule change (STORY 09:83:Q5), then every 15 min with a 15 min window
     change_at = _dt(today - timedelta(days=14), 20, 0)
     feed_runs = []
-    t = _dt(today - timedelta(days=21), 0, 0)
+    t = _dt(today - timedelta(days=28), 0, 0)
     end = _dt(today, 8, 0)
     while t <= end:
         post = t >= change_at

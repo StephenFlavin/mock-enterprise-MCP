@@ -132,7 +132,7 @@ tools:
       region: {desc: "Limit to one region (optional)"}
     sql: |
       WITH b AS (
-        SELECT d.*, CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+        SELECT d.*, CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d
         WHERE d.attempt_number = 1
           AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
@@ -140,7 +140,7 @@ tools:
           AND ($region IS NULL OR d.region = $region)
       )
       SELECT
-        CAST($as_of AS DATE) - 7 * wk AS week_ending,
+        CAST(date_trunc('week', CAST($as_of AS TIMESTAMP)) AS DATE) - 7 * (wk + 1) AS week_starting,
         COUNT(*) AS first_attempts,
         COUNT(*) FILTER (WHERE status = 'delivered') AS first_attempt_successes,
         ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'delivered') / COUNT(*), 1) AS success_rate_pct,
@@ -155,7 +155,7 @@ tools:
     example: {}
 
   - name: get_first_attempt_failures_by_dimension
-    desc: First-attempt success for the latest weeks versus the weeks before, by courier, region, product or delivery option. Shows what changed.
+    desc: First-attempt success for the latest weeks versus the weeks before, by courier, region, product or delivery option. Biggest increase in failures first - shows what changed.
     kind: sql
     args:
       dimension: {type: enum, values: [courier, region, product, delivery_option], required: true, desc: "What to break down by"}
@@ -165,7 +165,7 @@ tools:
       min_attempts: {type: int, default: 30, desc: "Hide values with fewer first attempts in the recent period"}
     sql: |
       WITH b AS (
-        SELECT d.*, CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk,
+        SELECT d.*, CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk,
           CASE $dimension WHEN 'courier' THEN d.courier_id WHEN 'region' THEN d.region
                WHEN 'product' THEN d.sku ELSE d.delivery_option END AS dim_value
         FROM delivery_attempts d
@@ -199,7 +199,7 @@ tools:
       LEFT JOIN couriers c ON $dimension = 'courier' AND c.courier_id = a.dim_value
       LEFT JOIN master.products p ON $dimension = 'product' AND p.sku = a.dim_value
       WHERE a.attempts_recent >= $min_attempts
-      ORDER BY change_pts ASC NULLS LAST, a.attempts_recent DESC
+      ORDER BY extra_failures DESC, change_pts ASC NULLS LAST
     limit: 30
     example: {dimension: courier}
 
@@ -212,7 +212,7 @@ tools:
       region: {desc: "Limit to one region (optional)"}
     sql: |
       WITH b AS (
-        SELECT d.*, CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+        SELECT d.*, CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d
         WHERE d.attempt_number = 1 AND d.status = 'failed'
           AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
@@ -244,7 +244,7 @@ tools:
     sql: |
       WITH o AS (
         SELECT d.order_id, d.postcode_area,
-          CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+          CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d
         WHERE d.attempt_number = 1 AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
           AND ($postcode_area IS NULL OR d.postcode_area = $postcode_area)
@@ -278,7 +278,7 @@ tools:
       courier_id: {desc: "Limit to one courier (optional)"}
     sql: |
       WITH b AS (
-        SELECT d.*, CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+        SELECT d.*, CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d
         WHERE d.attempt_number = 1 AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
           AND ($region IS NULL OR d.region = $region)
@@ -316,7 +316,7 @@ tools:
         FROM delivery_attempts d
         WHERE d.attempt_number = 1 AND d.status = 'failed'
           AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
-          AND d.attempt_time > CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
+          AND d.attempt_time >= date_trunc('week', CAST($as_of AS TIMESTAMP)) - INTERVAL ($weeks * 7) DAY
         GROUP BY d.failure_reason
       ), c AS (
         SELECT failure_reason, failures, avg_cost,
@@ -482,7 +482,7 @@ tools:
       weeks: {type: int, default: 4, desc: "Length of the recent period; compared with the same number of weeks before it"}
     sql: |
       WITH b AS (
-        SELECT d.*, CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+        SELECT d.*, CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d
         WHERE d.status = 'delivered' AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
           AND ($delivery_service IS NULL OR d.delivery_service = $delivery_service)
@@ -517,7 +517,7 @@ tools:
         GROUP BY attempt_id
       ), b AS (
         SELECT d.courier_id, d.attempt_time, f.final_scan,
-          CAST(date_diff('day', CAST(d.attempt_time AS DATE), CAST($as_of AS DATE)) // 7 AS INT) AS wk
+          CAST(date_diff('week', date_trunc('week', d.attempt_time), date_trunc('week', CAST($as_of AS TIMESTAMP))) AS INT) - 1 AS wk
         FROM delivery_attempts d LEFT JOIN fin f ON f.attempt_id = d.attempt_id
         WHERE d.attempt_time <= CAST($as_of AS TIMESTAMP) - INTERVAL 1 DAY
           AND ($courier_id IS NULL OR d.courier_id = $courier_id)
@@ -542,7 +542,7 @@ tools:
     desc: Delivery attempts with fewer tracking scans than expected, newest first. Use to find orders for proactive delay alerts.
     kind: sql
     args:
-      weeks: {type: int, default: 2, desc: "Attempts from the last N weeks"}
+      weeks: {type: int, default: 2, desc: "Attempts from the last N full weeks"}
       min_expected_scans: {type: int, default: 3, desc: "List attempts with fewer scans than this"}
       courier_id: {desc: "Limit to one courier (optional)"}
       region: {desc: "Limit to one region (optional)"}
@@ -561,7 +561,7 @@ tools:
         d.attempt_time
       FROM delivery_attempts d
       LEFT JOIN delivery_scans ds ON d.attempt_id = ds.attempt_id
-      WHERE d.attempt_time > CAST($as_of AS TIMESTAMP) - INTERVAL ($weeks * 7) DAY
+      WHERE d.attempt_time >= date_trunc('week', CAST($as_of AS TIMESTAMP)) - INTERVAL ($weeks * 7) DAY
         AND d.attempt_time <= CAST($as_of AS TIMESTAMP)
         AND ($courier_id IS NULL OR d.courier_id = $courier_id)
         AND ($region IS NULL OR d.region = $region)

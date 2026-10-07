@@ -56,8 +56,14 @@ SVC_DAYS = {"standard": 3, "next_day": 1, "same_day": 0}
 OPTIONS = ["door", "safe_place", "locker", "collect_point"]
 OPTION_W = [55, 20, 12, 13]
 CUSTOMER_FAIL = {"door": 0.036, "safe_place": 0.012, "locker": 0.006, "collect_point": 0.004}
-PLANT_PC_ISSUES = {"M4": 0.50, "L1": 0.35, "M1": 0.22}  # extra address-validation issue rate at full effect
+PLANT_PC_ISSUES = {"M4": 0.34, "L1": 0.24, "M1": 0.14}  # extra address-validation issue rate at full effect
 EVENTS_OUT = ["Collected from depot", "Out for delivery"]
+
+
+def weeks_back(as_of, d):
+    """Calendar weeks between d and the latest full data week (0 = the week before as_of's week)."""
+    monday = d - dt.timedelta(days=d.weekday())
+    return (as_of - monday).days // 7 - 1
 
 
 def ramp(wb):
@@ -124,7 +130,7 @@ def generate(g):
         c13 = courier == "CAR-013"
 
         # address validation at checkout (deterioration in planted postcodes)
-        wb_p = max((as_of - promised).days // 7, 0)
+        wb_p = max(weeks_back(as_of, promised), 0)
         fp = ramp(wb_p)
         p_issue = 0.02 + fp * PLANT_PC_ISSUES.get(pc, 0.0)
         had_issue = g.rng.random() < p_issue
@@ -149,7 +155,7 @@ def generate(g):
             num += 1
             if att_date > last_day:
                 break
-            wb = (as_of - att_date).days // 7
+            wb = weeks_back(as_of, att_date)
             f = ramp(wb)
             att_time = dt.datetime.combine(att_date, dt.time(g.rng.randint(9, 19), g.rng.randint(0, 59)))
             status, reason, addr, cust = "delivered", "", False, False
@@ -158,7 +164,7 @@ def generate(g):
                 p_cust = CUSTOMER_FAIL[option] + f * (0.010 if option == "door" else 0.0) + (f * sku_extra.get(sku, 0.0) if option == "door" else 0.0)
                 if sku == "PF-220":
                     p_cust += 0.008
-                p_courier = 0.008 + f * (0.30 if north13 else 0.03 if c13 else 0.0)
+                p_courier = 0.008 + f * (0.17 if north13 else 0.03 if c13 else 0.0)
                 p_access = 0.010
                 r = g.rng.random()
                 if r < p_addr:
