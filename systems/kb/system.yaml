@@ -76,6 +76,8 @@ tables:
     cols:
       lesson_id: {type: str, desc: "Lesson id, e.g. LES-000123"}
       programme_type: {type: str, desc: "Type of programme, e.g. ERP, WMS, transformation"}
+      programme_name: {type: str, desc: "Programme the lesson comes from"}
+      outcome: {type: enum, values: [successful, failed], desc: "Whether the programme succeeded or failed overall"}
       lesson_description: {type: text, desc: "The lesson learned"}
       recommendation: {type: text, desc: "Recommended action"}
       date_learned: {type: date, desc: "Date lesson was recorded"}
@@ -495,16 +497,21 @@ tools:
     example: {}
 
   - name: list_kpi_definition_changes
-    desc: Change history of KPI definitions and calculation rules for a KPI. Shows what changed and why.
-    kind: select
-    from: kpi_definition_changes
-    filters:
+    desc: Change history of KPI definitions and calculation rules, newest first. Shows what changed and why. Filter by KPI id or name, e.g. OTIF.
+    kind: sql
+    args:
       kpi_id: {}
-      changed_at: {op: ">=", default: "-90d", desc: "Change date on or after"}
-    columns: [change_id, kpi_id, changed_at, old_definition, new_definition, change_reason]
-    order: changed_at
+      kpi_name: {type: str, desc: "Words in the KPI name, e.g. OTIF or perfect order"}
+      changed_from: {type: date, default: "-90d", desc: "Change date on or after"}
+    sql: |
+      SELECT c.change_id, c.kpi_id, d.kpi_name, c.changed_at, c.old_definition, c.new_definition, c.change_reason
+      FROM kpi_definition_changes c JOIN kpi_definitions d USING (kpi_id)
+      WHERE ($kpi_id IS NULL OR c.kpi_id = $kpi_id)
+        AND ($kpi_name IS NULL OR lower(d.kpi_name) LIKE '%' || lower($kpi_name) || '%')
+        AND CAST(c.changed_at AS DATE) >= CAST($changed_from AS DATE)
+      ORDER BY c.changed_at DESC
     limit: 20
-    example: {kpi_id: KPI-OTIF-001}
+    example: {kpi_id: KPI-OTIF-900001}
 
   - name: list_programme_lessons_learned
     desc: Internal lessons-learned records from past programmes (ERP, WMS, transformation, etc).
@@ -512,7 +519,8 @@ tools:
     from: lessons_learned
     filters:
       programme_type: {op: like, desc: "Programme type, e.g. ERP or WMS"}
-    columns: [lesson_id, programme_type, lesson_description, recommendation, date_learned]
+      outcome: {desc: "successful or failed"}
+    columns: [lesson_id, programme_type, programme_name, outcome, lesson_description, recommendation, date_learned]
     order: date_learned
     limit: 50
     example: {programme_type: ERP}

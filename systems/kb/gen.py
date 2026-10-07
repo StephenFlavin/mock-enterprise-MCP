@@ -83,7 +83,7 @@ def generate(g):
             "policy_id": "POL-APPROVAL-001",
             "policy_type": "approval_limits",
             "policy_name": "Purchase Order and Payment Approval Limits",
-            "content": "Approval limits by role and amount:\n- Store Manager: GBP 5,000\n- Warehouse Manager: GBP 10,000\n- Buyer: GBP 50,000\n- Category Manager: GBP 100,000\n- Director: GBP 500,000\n- CFO/CEO: unlimited\nAll orders over GBP 1,000 require 2 approvals. All supplier bank detail changes require Finance review.",
+            "content": "Approval limits by role and amount:\n- Store Manager: GBP 5,000\n- Warehouse Manager: GBP 10,000\n- Buyer: GBP 50,000\n- Category Manager: GBP 100,000\n- Director: GBP 500,000\n- CFO/CEO: unlimited\nAll orders over GBP 1,000 require 2 approvals. All supplier bank detail changes require Finance review.\nSplitting an order or payment to stay under a limit is prohibited: related orders to the same supplier within 7 days are added together for the approval check.",
             "version": "2.1",
             "effective_date": g.days_ago(120),
             "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
@@ -110,7 +110,7 @@ def generate(g):
             "policy_id": "POL-HEDGE-001",
             "policy_type": "hedging",
             "policy_name": "Treasury Hedging Policy",
-            "content": "Currency hedging limits:\n- USD exposure: hedge 50-80% of 12-month forecast. Max 100%.\n- EUR exposure: hedge 40-70% of 12-month forecast. Max 90%.\n- Other major currencies: hedge 40-60%. Max 80%.\nInstruments allowed: forward contracts, options (call spreads max). Forbid: speculative positions, exotic options.\nReview hedge ratios quarterly. Spot rates used for P&L; mark hedges at forward rates.",
+            "content": "Currency hedging limits:\n- USD exposure: hedge 50-80% of 12-month forecast. Max 100%.\n- EUR exposure: hedge 40-70% of 12-month forecast. Max 90%.\n- Other major currencies: hedge 40-60%. Max 80%.\nInstruments allowed: forward contracts, options (call spreads max). Forbid: speculative positions, exotic options.\nReview hedge ratios quarterly. Spot rates used for P&L; mark hedges at forward rates.\nApprovals: moving a hedge ratio inside the policy range is approved by the Group Treasurer; any ratio above the top of the range (USD above 80%) needs CFO approval. Forwards have no upfront premium but give up the benefit if sterling strengthens; call spreads cost an upfront premium and keep part of that benefit.",
             "version": "1.4",
             "effective_date": g.days_ago(240),
             "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
@@ -137,7 +137,7 @@ def generate(g):
             "policy_id": "POL-INVENTORY-001",
             "policy_type": "inventory_definition",
             "policy_name": "Inventory Ownership and Valuation Policy",
-            "content": "Inventory ownership: Transfer of title at receipt into our DC (not in-transit). In-transit goods remain supplier's responsibility until gate-in.\nStatus definitions:\n- Available: ready for picking or sale\n- In-transit: on PO, not yet received\n- Reserved: allocated to open orders\n- Damaged: non-saleable, awaiting write-off approval\nValuation: FIFO method. Seasonal stock over 180 days old to be marked down 25% minimum per NRV rules.",
+            "content": "Inventory ownership: Transfer of title at receipt into our DC (not in-transit). In-transit goods remain supplier's responsibility until gate-in.\nStatus definitions:\n- Available: ready for picking or sale\n- In-transit: on PO, not yet received\n- Reserved: allocated to open orders\n- Damaged: non-saleable, awaiting write-off approval\nValuation: FIFO method. Seasonal stock over 180 days old to be marked down 25% minimum per NRV rules.\nAuthority: the general ledger is authoritative for stock value; the WMS/IMS stock record is authoritative for physical units and status. Operations reports units by status (available, reserved, damaged, with in-transit shown separately and not owned). Finance reports value at the lower of FIFO cost and net realisable value, and includes goods only after gate-in.\nTiming differences: receipts or issues posted after the month-end cutoff in one system, goods received not yet invoiced. Definitional differences: damaged stock awaiting write-off (counted by operations, already provided by Finance), reserved stock, NRV provisions, in-transit goods, standard cost versus FIFO. Errors (duplicate or missing postings) are corrected by journal with Finance Controller approval.",
             "version": "2.0",
             "effective_date": g.days_ago(365),
             "updated_at": g.fake.date_time_between(start_date="-120d", end_date="-5d"),
@@ -164,7 +164,7 @@ def generate(g):
             "policy_id": "POL-INCIDENT-001",
             "policy_type": "incident_response",
             "policy_name": "Incident Response and Escalation Playbook",
-            "content": "QUALITY INCIDENT:\n- Severity 1 (safety): Immediate hold, exec escalation, customer notification within 4 hours\n- Severity 2 (functionality): 24-hour response, manager escalation, customer notification within 24 hours\n- Severity 3 (cosmetic): 5-day response, team escalation\nSUPPLY CHAIN INCIDENT (geopolitical, transport, supplier failure):\n- Tier 1 (affects delivery <72 hours): Escalate to VP Supply Chain immediately\n- Tier 2 (affects delivery 3-7 days): Manager escalation, sourcing team response\n- Tier 3 (future impact): Monitor and document\nSECURITY INCIDENT:\n- CISO involvement mandatory. Supplier user account compromise: lock account, block payments, audit access logs.",
+            "content": "QUALITY INCIDENT:\n- Severity 1 (safety): Immediate hold, exec escalation, customer notification within 4 hours\n- Severity 2 (functionality): 24-hour response, manager escalation, customer notification within 24 hours\n- Severity 3 (cosmetic): 5-day response, team escalation\nSUPPLY CHAIN INCIDENT (geopolitical, transport, supplier failure):\n- Tier 1 (affects delivery <72 hours): Escalate to VP Supply Chain immediately\n- Tier 2 (affects delivery 3-7 days): Manager escalation, sourcing team response\n- Tier 3 (future impact): Monitor and document\nSECURITY INCIDENT:\n- CISO involvement mandatory: notify the CISO within 1 hour of a suspected compromise; the CISO owns the incident summary and decides on external notification.\n- Supplier user account compromise (login from an unusual location, access to the EDI portal or vendor bank detail screen): lock account, block payments to vendors whose bank details changed, audit access logs.\n- Safe to do immediately: preserve auth and access logs, force sign-out of active sessions, lock the account, reset credentials and MFA, and flag the vendor bank record. Needs approval first: blocking payment runs (Finance Director), reversing bank detail changes, and any message to the supplier.\n- Supplier notification: do not wait for the full investigation, but only once the account is locked and the CISO agrees. Use the phone number held on the vendor master from before the change, never the email or phone on the compromised account or in the changed bank details. Release held payments only after a call-back verification.\n- If personal data is involved, Legal and the DPO decide on ICO notification within 72 hours. Post-incident review within 5 working days.",
             "version": "1.4",
             "effective_date": g.days_ago(240),
             "updated_at": g.fake.date_time_between(start_date="-90d", end_date="-5d"),
@@ -191,7 +191,7 @@ def generate(g):
             "policy_id": "POL-MARKET-001",
             "policy_type": "market_entry",
             "policy_name": "Internal Policy on Market Entry Structures",
-            "content": "Market entry structures by region and spend:\nUK/EU (mature markets, <GBP 5m annual): Franchise or partnership preferred. Subsidiary if >GBP 50m spend or IP at risk.\nEmerging markets (China, India, SE Asia, <GBP 20m): Joint venture with local partner required. IP strictly protected. Exit clause mandatory.\nNearshore (Turkey, Morocco, Mexico, GBP 5-50m): Joint venture or subsidiary. Build IP gradually; don't over-rely on one partner.\nExit: Subsidiary - require 6-month notice, transfer of contracts and staff obligations. JV - buyout clause if partner underperforms.",
+            "content": "Market entry structures by region and spend:\nUK/EU (mature markets, <GBP 5m annual): Franchise or partnership preferred. Subsidiary if >GBP 50m spend or IP at risk.\nEmerging markets (China, India, SE Asia, <GBP 20m): Joint venture with local partner required. IP strictly protected. Exit clause mandatory.\nNearshore (Turkey, Morocco, Mexico, GBP 5-50m): Joint venture or subsidiary. Build IP gradually; don't over-rely on one partner.\nExit: Subsidiary - require 6-month notice, transfer of contracts and staff obligations. JV - buyout clause if partner underperforms. Franchise - not a standard route for nearshore markets; acceptable as an interim step below GBP 5m annual spend, with a fixed term of up to 3 years, IP licence limited to brand use, step-in rights and 12 months' notice of termination.\nLiability: a franchise keeps local liability with the franchisee; a subsidiary carries full local liability, tax and employment obligations, so ring-fence IP and capitalise it proportionately.",
             "version": "1.1",
             "effective_date": g.days_ago(300),
             "updated_at": g.fake.date_time_between(start_date="-150d", end_date="-5d"),
@@ -218,7 +218,7 @@ def generate(g):
             "policy_id": "POL-PROVISION-001",
             "policy_type": "provisioning",
             "policy_name": "Stock Provisioning Policy",
-            "content": "Seasonal stock provisioning rules:\n- Summer season (May-August): order stock to cover forecast + 20% safety stock\n- Winter season (November-December): order to cover forecast + 30% safety stock due to higher volatility\n- Spring/Autumn: 15% safety stock\nSlow-moving inventory:\n- Aged 90-180 days: offer at 15% discount to sales team\n- Aged 180+ days: 30% markdown; mark down further per NRV policy\n- Fashion items >3 seasons old: write off\nInventory turns by category:\n- Fashion: minimum 4x annual\n- Home: minimum 2x annual\n- Electronics: minimum 6x annual",
+            "content": "Seasonal stock provisioning rules:\n- Summer season (May-August): order stock to cover forecast + 20% safety stock\n- Winter season (November-December): order to cover forecast + 30% safety stock due to higher volatility\n- Spring/Autumn: 15% safety stock\nSlow-moving inventory:\n- Aged 90-180 days: offer at 15% discount to sales team\n- Aged 180+ days: 30% markdown (the inventory valuation policy floor is 25%); mark down further per NRV policy\n- Fashion items >3 seasons old: write off\nInventory turns by category:\n- Fashion: minimum 4x annual\n- Home: minimum 2x annual\n- Electronics: minimum 6x annual\nNRV method and audit evidence: NRV is tested line by line as expected selling price less costs to sell, compared with FIFO cost; the lower is carried. Auditors expect the stock ageing report by season, the NRV calculation per line, the approved markdown log and post year-end sales evidence for the aged seasonal lines.",
             "version": "1.3",
             "effective_date": g.days_ago(150),
             "updated_at": g.fake.date_time_between(start_date="-60d", end_date="-5d"),
@@ -351,7 +351,7 @@ def generate(g):
         {
             "kpi_id": "KPI-OTIF-001",
             "kpi_name": "perfect order rate",
-            "definition": "Percentage of orders that arrive in full, on-time, undamaged and with correct documentation.",
+            "definition": "Percentage of orders that arrive in full, on-time, undamaged and with correct documentation. Counted at order level (an order fails if any line fails). Unlike some industry definitions it does not include invoice accuracy, and our on-time test uses the confirmed delivery slot rather than the requested date.",
             "formula": "(Orders delivered on-time AND in-full AND no damage AND correct docs) / Total orders * 100",
             "data_source": "Order management system + delivery confirmation + damage reports",
             "unit": "percentage",
@@ -381,16 +381,7 @@ def generate(g):
     ]
 
     # KPI definition changes - for tracking history
-    kpi_changes = [
-        {
-            "change_id": "KPI-CHG-001",
-            "kpi_id": "KPI-OTIF-001",
-            "changed_at": g.fake.date_time_between(start_date="-90d", end_date="-30d"),
-            "old_definition": "On-time and in-full only",
-            "new_definition": "On-time and in-full and no damage and correct docs",
-            "change_reason": "Expanded to include damage and documentation accuracy after customer complaints",
-        },
-    ]
+    kpi_changes = []  # change history is planted in seed/kpi_definition_changes.csv
 
     # Audit requirements by risk tier
     audit_requirements = [
@@ -430,20 +421,38 @@ def generate(g):
 
     # Lessons learned
     lessons = [
-        {
-            "lesson_id": "LES-001",
-            "programme_type": "ERP",
-            "lesson_description": "Initial go-live was delayed 4 months due to data quality issues not caught in testing. 30% of master data records had duplicates or missing fields.",
-            "recommendation": "For future implementations, run 2 full data audit cycles 6 months before go-live. Assign dedicated data governance resource.",
-            "date_learned": g.days_ago(500),
-        },
-        {
-            "lesson_id": "LES-002",
-            "programme_type": "WMS",
-            "lesson_description": "Training completion was only 45% at go-live. Night shift teams skipped training. Errors doubled in first month.",
-            "recommendation": "Require 100% training completion with signed attestation. Schedule training on each shift, not just day shift.",
-            "date_learned": g.days_ago(400),
-        },
+        {"lesson_id": "LES-001", "programme_type": "ERP", "programme_name": "Retail ERP replacement (merchandising and finance)", "outcome": "failed",
+         "lesson_description": "Initial go-live was delayed 4 months due to data quality issues not caught in testing. 30% of master data records had duplicates or missing fields.",
+         "recommendation": "For future implementations, run 2 full data audit cycles 6 months before go-live. Assign dedicated data governance resource.",
+         "date_learned": g.days_ago(500)},
+        {"lesson_id": "LES-002", "programme_type": "WMS", "programme_name": "DC WMS upgrade", "outcome": "failed",
+         "lesson_description": "Training completion was only 45% at go-live. Night shift teams skipped training. Errors doubled in first month.",
+         "recommendation": "Require 100% training completion with signed attestation. Schedule training on each shift, not just day shift.",
+         "date_learned": g.days_ago(400)},
+        {"lesson_id": "LES-003", "programme_type": "ERP", "programme_name": "Retail ERP replacement (merchandising and finance)", "outcome": "failed",
+         "lesson_description": "Scope grew by about 40% after design sign-off because every business area asked for customisations; budget overran by 35% and the team was exhausted by go-live.",
+         "recommendation": "Freeze scope at design sign-off, route changes through a steering committee and keep to standard processes unless a business case is approved.",
+         "date_learned": g.days_ago(470)},
+        {"lesson_id": "LES-004", "programme_type": "WMS", "programme_name": "DC WMS upgrade", "outcome": "failed",
+         "lesson_description": "Big-bang cutover over a single weekend at the start of peak; integration with ERP and carrier systems was only tested with sample data, and receipts backed up for two weeks.",
+         "recommendation": "Never cut over within 8 weeks of peak. Run end-to-end integration tests with full-volume production data and keep a tested rollback plan.",
+         "date_learned": g.days_ago(380)},
+        {"lesson_id": "LES-005", "programme_type": "ERP", "programme_name": "Finance and procurement ERP phase 2", "outcome": "successful",
+         "lesson_description": "Delivered on time and within 5% of budget. Business process owners were released 50% of their time, the executive sponsor chaired a fortnightly steering committee, and cutover used 3 mock migrations.",
+         "recommendation": "Name business process owners with protected time, keep an engaged executive sponsor and rehearse data migration at least 3 times before go-live.",
+         "date_learned": g.days_ago(300)},
+        {"lesson_id": "LES-006", "programme_type": "WMS", "programme_name": "New DC WMS roll-out", "outcome": "successful",
+         "lesson_description": "Phased roll-out: one pilot DC first, then two more at 6-week intervals, with super-users on every shift and a 4-week hypercare period. Pick accuracy held at 99.5% through go-live.",
+         "recommendation": "Pilot at one site before roll-out, train super-users on each shift and plan at least 4 weeks of hypercare.",
+         "date_learned": g.days_ago(250)},
+        {"lesson_id": "LES-007", "programme_type": "ERP and WMS", "programme_name": "Joint ERP and WMS integration", "outcome": "failed",
+         "lesson_description": "ERP and WMS stock status codes and interface timings were defined late, so stock differed between the systems for weeks after go-live and Finance lost trust in the numbers.",
+         "recommendation": "Agree status mapping, cutoff times and reconciliation reports during design, and make the interface owner accountable for daily reconciliation.",
+         "date_learned": g.days_ago(200)},
+        {"lesson_id": "LES-008", "programme_type": "transformation", "programme_name": "Store operations transformation", "outcome": "successful",
+         "lesson_description": "Benefits were tracked from the start with named owners and a baseline; the programme reported benefits monthly to the board and stopped work that missed its targets.",
+         "recommendation": "Baseline benefits before the build, assign an owner to each benefit and review them monthly.",
+         "date_learned": g.days_ago(150)},
     ]
 
     # Standard clauses
