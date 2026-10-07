@@ -207,9 +207,14 @@ def generate(g):
 
         for day_offset in range(7):
             date = g.as_of - timedelta(days=day_offset)
+            # g.as_of is already a date, not datetime
+            if isinstance(date, datetime):
+                date_obj = date.date()
+            else:
+                date_obj = date
 
             for hour in range(24):
-                hour_end = datetime.combine(date.date(), time(hour, 59, 59))
+                hour_end = datetime.combine(date_obj, time(hour, 59, 59))
 
                 for zone in zones:
                     # Throughput drops 2-4pm (14:00-16:00): hour 14 and 15
