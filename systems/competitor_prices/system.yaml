@@ -80,6 +80,22 @@ tables:
       status: {type: enum, values: [open, closed], desc: "Current store status"}
       store_format: {type: str, desc: "Store format, e.g. online, high_street"}
 
+  competitor_price_events:
+    key: event_id
+    cols:
+      event_id: {type: str, desc: "Event row id, e.g. CPE-001"}
+      event_type: {type: enum, values: [tariff, cost_rise, price_rise, seasonal], desc: "What triggered the price move: tariff, cost_rise (freight or energy), price_rise (a competitor led a rise) or seasonal"}
+      event_date: {type: date, desc: "When the shock or lead price move happened"}
+      event_desc: {type: str, desc: "What happened, e.g. tariff added about 7% to landed cost"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      category: {type: str, desc: "Competitor product category affected, e.g. Small appliances"}
+      response: {type: enum, values: [passed_on, partly_passed_on, absorbed, matched, held, led], desc: "How the competitor reacted on shelf price"}
+      price_change_pct: {type: float, desc: "List price change they made in response, percent"}
+      response_lag_days: {type: int, desc: "Days from the event to their first price change, blank if no change"}
+      promo_support_pct: {type: float, desc: "Depth of any promotion they ran alongside, percent (0 if none)"}
+      promo_weeks: {type: int, desc: "Weeks that promotion ran"}
+      notes: {type: text, desc: "What they did in practice"}
+
   competitor_returns_policies:
     key: policy_id
     cols:
@@ -139,19 +155,20 @@ tools:
     example: {sku: "K-1700"}
 
   - name: get_competitor_prices_for_products
-    desc: Current competitor prices for several of our SKUs at once (latest per competitor product). Use for bulk comparison across a list of products.
+    desc: Current competitor prices for several of our SKUs at once (latest per competitor product), with our own price and our gap to each. Use for bulk comparison across a list of products.
     kind: sql
     args:
       skus: {required: true, type: list, desc: "List of our SKUs to compare, e.g. [K-1700, SKU-102590]"}
     sql: |
       WITH req AS (
-        SELECT m.sku AS our_sku, m.style_id FROM master.products m WHERE m.sku IN (SELECT value FROM UNNEST($skus) AS t(value))
+        SELECT m.sku AS our_sku, m.style_id, m.retail_price_gbp AS our_price_gbp FROM master.products m WHERE m.sku IN (SELECT value FROM UNNEST($skus) AS t(value))
       ),
       latest AS (
         SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
       )
-      SELECT req.our_sku AS sku, c.competitor_id, c.name AS competitor, cp.their_name,
-             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.in_clearance, p.price_date
+      SELECT req.our_sku AS sku, req.our_price_gbp, c.competitor_id, c.name AS competitor, cp.their_name,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.in_clearance, p.price_date,
+             round(100.0 * (req.our_price_gbp - p.price_gbp) / p.price_gbp, 1) AS our_gap_pct
       FROM latest p
       JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
       JOIN competitors c ON c.competitor_id = p.competitor_id
@@ -283,29 +300,31 @@ tools:
     example: {}
 
   - name: get_competitor_price_changes_for_period
-    desc: Which products changed price and how much, across competitors over a period. For competitive monitoring.
+    desc: Which competitor products changed shelf price and by how much over a period (promotions and clearance included), biggest moves first. For competitive monitoring.
     kind: sql
     args:
       date_from: {type: date, default: "-30d", desc: "Start of period"}
       date_to: {type: date, default: "+0d", desc: "End of period"}
       min_change_pct: {type: float, default: 5, desc: "Minimum price change to show"}
+      category: {type: str, desc: "Competitor product category, e.g. Men's jackets (default all)"}
     sql: |
       WITH dated_prices AS (
         SELECT p.competitor_product_id, p.competitor_id, cp.their_name, cp.category,
-               p.price_date, p.price_gbp, c.name,
+               p.price_date, p.price_gbp, c.name, p.promotion_type, p.in_clearance,
                LAG(p.price_gbp) OVER (PARTITION BY p.competitor_product_id ORDER BY p.price_date) AS prev_price
         FROM competitor_prices p
         JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
         JOIN competitors c ON c.competitor_id = p.competitor_id
-        WHERE p.price_date >= CAST($date_from AS DATE)
-          AND p.price_date <= CAST($date_to AS DATE)
+        WHERE ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
       )
-      SELECT competitor_id, name, category, their_name, price_date, prev_price, price_gbp,
+      SELECT competitor_id, name, category, their_name, price_date, prev_price, price_gbp, promotion_type, in_clearance,
              ROUND(100.0 * (price_gbp - prev_price) / prev_price, 1) AS change_pct
       FROM dated_prices
       WHERE prev_price IS NOT NULL
+        AND price_date >= CAST($date_from AS DATE)
+        AND price_date <= CAST($date_to AS DATE)
         AND ABS(100.0 * (price_gbp - prev_price) / prev_price) >= $min_change_pct
-      ORDER BY change_pct DESC, price_date DESC
+      ORDER BY ABS(change_pct) DESC, price_date DESC
     limit: 100
     example: {date_from: "-30d"}
 
@@ -450,7 +469,7 @@ tools:
       {% endif %}
 
       ### Competitor Pricing
-      {% for comp in competitor_offers %}- {{ comp.name }} ({{ comp.format }}): £{{ comp.price_gbp | num(2) }}{% if comp.discount_pct %} ({{ comp.discount_pct }}% off){% endif %}
+      {% for comp in competitor_offers %}- {{ comp.name }} ({{ comp.format }}): £{{ comp.price_gbp | num(2) }}{% if comp.discount_pct %} ({{ comp.discount_pct }}% off){% endif %}{{ '' }}
       {% endfor %}
     example: {sku: "K-1700"}
 
@@ -606,7 +625,7 @@ tools:
     example: {event_type: "tariff"}
 
   - name: get_price_changes_on_our_top_sellers
-    desc: Price changes by competitors on products similar to our top sellers over a period.
+    desc: Competitor price changes on products matched to our own SKUs over a period, with our unit cost and whether the new price is clearance. Use to see moves hitting our lines.
     kind: sql
     args:
       date_from: {type: date, default: "-30d", desc: "Period start"}
@@ -615,20 +634,23 @@ tools:
     sql: |
       WITH dated_prices AS (
         SELECT p.competitor_product_id, p.competitor_id, cp.their_name, cp.category, cp.sku,
-               p.price_date, p.price_gbp, c.name,
+               p.price_date, p.price_gbp, c.name, p.promotion_type, p.in_clearance,
                LAG(p.price_gbp) OVER (PARTITION BY p.competitor_product_id ORDER BY p.price_date) AS prev_price
         FROM competitor_prices p
         JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
         JOIN competitors c ON c.competitor_id = p.competitor_id
-        WHERE p.price_date >= CAST($date_from AS DATE)
-          AND cp.sku IS NOT NULL
+        WHERE cp.sku IS NOT NULL
       )
-      SELECT competitor_id, name, their_name, category, sku, price_date,
-             ROUND(prev_price, 2) as prev_price, ROUND(price_gbp, 2) as current_price,
-             ROUND(100.0 * (price_gbp - prev_price) / NULLIF(prev_price, 0), 1) AS change_pct
-      FROM dated_prices
-      WHERE prev_price IS NOT NULL
-        AND ABS(100.0 * (price_gbp - prev_price) / NULLIF(prev_price, 0)) >= $min_change_pct
+      SELECT d.competitor_id, d.name, d.their_name, d.category, d.sku, d.price_date,
+             ROUND(d.prev_price, 2) as prev_price, ROUND(d.price_gbp, 2) as current_price,
+             ROUND(100.0 * (d.price_gbp - d.prev_price) / NULLIF(d.prev_price, 0), 1) AS change_pct,
+             d.promotion_type, d.in_clearance, m.unit_cost_gbp AS our_unit_cost_gbp,
+             d.price_gbp < m.unit_cost_gbp AS below_our_cost
+      FROM dated_prices d
+      JOIN master.products m ON m.sku = d.sku
+      WHERE d.prev_price IS NOT NULL
+        AND d.price_date >= CAST($date_from AS DATE)
+        AND ABS(100.0 * (d.price_gbp - d.prev_price) / NULLIF(d.prev_price, 0)) >= $min_change_pct
       ORDER BY ABS(change_pct) DESC
       LIMIT $limit_to
     limit: 20
