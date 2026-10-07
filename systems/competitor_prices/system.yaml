@@ -621,39 +621,23 @@ tools:
     example: {category: "Kettles"}
 
   - name: get_sales_impact_of_past_competitor_openings
-    desc: Sales history before and after competitor stores opened near us. Shows historical impact on our locations.
+    desc: Competitor store openings and closures near us over past year. Helps forecast impact on our locations.
     kind: sql
     args:
-      site_id: {type: str, desc: "Our store location"}
+      site_id: {required: true, desc: "Our store location"}
       lookback_months: {type: int, default: 12, desc: "Months of history to analyze"}
     sql: |
-      WITH comp_opening AS (
-        SELECT DISTINCT cs.site_id, cs.competitor_id, cs.opening_date, c.name
-        FROM competitor_stores cs
-        JOIN competitors c ON c.competitor_id = cs.competitor_id
-        WHERE cs.site_id = $site_id
-          AND cs.opening_date >= CAST($as_of AS DATE) - INTERVAL 12 MONTH
-      ),
-      our_sales_history AS (
-        SELECT ml.site_id, CAST(ml.week_commencing AS DATE) as sales_date,
-               SUM(ml.sales_gbp) as weekly_sales
-        FROM master.sales_weekly ml
-        WHERE ml.site_id = $site_id
-          AND ml.week_commencing >= CAST($as_of AS DATE) - INTERVAL 13 MONTH
-        GROUP BY ml.site_id, CAST(ml.week_commencing AS DATE)
-      )
-      SELECT $site_id as site_id, comp.name as competitor_name, comp.opening_date,
-             COUNT(osr.sales_date) FILTER (WHERE osr.sales_date < comp.opening_date) as weeks_before,
-             COUNT(osr.sales_date) FILTER (WHERE osr.sales_date >= comp.opening_date) as weeks_after,
-             ROUND(AVG(osr.weekly_sales) FILTER (WHERE osr.sales_date < comp.opening_date), 0) as avg_sales_before,
-             ROUND(AVG(osr.weekly_sales) FILTER (WHERE osr.sales_date >= comp.opening_date), 0) as avg_sales_after,
-             ROUND(100.0 * (AVG(osr.weekly_sales) FILTER (WHERE osr.sales_date >= comp.opening_date)
-                           - AVG(osr.weekly_sales) FILTER (WHERE osr.sales_date < comp.opening_date))
-                   / NULLIF(AVG(osr.weekly_sales) FILTER (WHERE osr.sales_date < comp.opening_date), 0), 1) as sales_change_pct
-      FROM comp_opening comp
-      LEFT JOIN our_sales_history osr ON osr.site_id = comp.site_id
-      GROUP BY comp.name, comp.opening_date
-      ORDER BY comp.opening_date DESC
+      SELECT cs.site_id as our_site, cs.competitor_id, c.name as competitor_name, 
+             c.format, cs.opening_date, cs.closing_date, cs.status,
+             DATEDIFF('month', cs.opening_date, CAST($as_of AS DATE)) as months_since_opening,
+             CASE WHEN cs.status = 'open' THEN 'Active'
+                  WHEN cs.status = 'closed' THEN 'Closed' END as store_status
+      FROM competitor_stores cs
+      JOIN competitors c ON c.competitor_id = cs.competitor_id
+      WHERE cs.site_id = $site_id
+        AND (cs.opening_date >= CAST($as_of AS DATE) - INTERVAL 12 MONTH
+             OR (cs.closing_date IS NOT NULL AND cs.closing_date >= CAST($as_of AS DATE) - INTERVAL 12 MONTH))
+      ORDER BY COALESCE(cs.closing_date, cs.opening_date) DESC
     limit: 20
     example: {site_id: "ST214"}
 
