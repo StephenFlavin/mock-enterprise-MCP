@@ -539,6 +539,17 @@ def generate(g):
         if a:
             p["received_date"] = g.days_ago(a)
 
+    # (6b) Aged-stock story (03:29:Q5, quoted by costing): the three biggest lines older than 180 days are SKU-105054 at DC4
+    # (about 482k at cost), SKU-101253 at DC5 and SKU-100658 at DC5. Any other big DC line is kept just under 180 days.
+    AGED_TOP = {"SKU-105054|DC4": 230, "SKU-101253|DC5": 260, "SKU-100658|DC5": 245}
+    for p in pos_rows:
+        k = p["sku"] + "|" + p["site_id"]
+        if k in AGED_TOP:
+            p["received_date"] = g.days_ago(AGED_TOP[k])
+        elif (p["site_id"].startswith("DC") and p["on_hand"] * float(products[p["sku"]]["unit_cost_gbp"] or 0) >= 255000
+              and k not in AGED):
+            p["received_date"] = g.days_ago(min(170, (g.as_of - p["received_date"]).days))
+
     # (7) Demand rescaling for stories that are about cover (network cover = available / weekly demand).
     def net_cover(sku):
         av = sum(p["available"] for p in pos_rows if p["sku"] == sku)
