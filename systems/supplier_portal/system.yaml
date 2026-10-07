@@ -133,7 +133,7 @@ tables:
       material_id: {type: str, desc: "Material/fabric id, e.g. MAT-000123 or sku"}
       supplier_id: {type: str, desc: Supplier or mill}
       material_name: {type: str, desc: "Fabric name, e.g. 200 GSM cotton drill"}
-      material_type: {type: enum, values: [fabric, trim, zip, button, packaging, other], desc: Material type}
+      material_type: {type: enum, values: [fabric, trim, zip, button, packaging, finish, other], desc: "Material type; finish = chemical finishes such as DWR"}
       lead_time_days: {type: int, desc: Typical lead time}
       moq_units: {type: int, desc: Minimum order quantity}
       price_gbp_per_unit: {type: float, desc: Unit price}
@@ -562,18 +562,26 @@ tools:
     example: {material_id: "MAT-900001"}
 
   - name: get_supplier_capacity_for_material
-    desc: Return supplier capacity for material. Use to assess sourcing options.
+    desc: Monthly and annual capacity, stock, lead time and MOQ of a material's supplier, with shortfall against a required annual volume. Use to test whether it can scale.
     kind: sql
     args:
       material_id: {required: true}
       supplier_id: {type: str, desc: "Supplier/mill (optional)"}
+      required_annual_units: {type: int, desc: "Annual volume needed, e.g. 2000000 (optional); adds the shortfall"}
     sql: |
-      SELECT material_id, supplier_id, capacity_monthly_units, stock_units_available,
-             lead_time_days, moq_units, certifications
-      FROM material_supply
-      WHERE material_id = $material_id
-        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
-      ORDER BY capacity_monthly_units DESC
+      SELECT m.material_id, m.material_name, m.supplier_id, s.name AS supplier_name, m.capacity_monthly_units,
+             m.capacity_monthly_units * 12 AS capacity_annual_units, m.stock_units_available,
+             m.lead_time_days, m.moq_units, m.certifications,
+             CAST($required_annual_units AS BIGINT) AS required_annual_units,
+             CASE WHEN $required_annual_units IS NULL THEN NULL
+                  WHEN m.capacity_monthly_units * 12 >= $required_annual_units THEN 'yes' ELSE 'no' END AS covers_required_volume,
+             CASE WHEN $required_annual_units IS NULL THEN NULL
+                  ELSE greatest(0, CAST($required_annual_units AS BIGINT) - m.capacity_monthly_units * 12) END AS annual_shortfall_units,
+             'annual capacity = monthly capacity x 12' AS formula
+      FROM material_supply m JOIN master.suppliers s ON s.supplier_id = m.supplier_id
+      WHERE m.material_id = $material_id
+        AND ($supplier_id IS NULL OR m.supplier_id = $supplier_id)
+      ORDER BY m.capacity_monthly_units DESC
     limit: 10
     example: {material_id: "MAT-900001"}
 
@@ -656,13 +664,15 @@ tools:
     kind: draft
     args:
       supplier_id: {required: true}
+      submission_year: {type: int, default: 2025, desc: "Reporting year to chase"}
     sql:
       supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
-      esg: SELECT * FROM supplier_esg WHERE supplier_id = $supplier_id
+      esg: SELECT * FROM supplier_esg WHERE supplier_id = $supplier_id AND submission_year = $submission_year
            AND submission_status IN ('not_submitted', 'low_quality', 'rejected')
            ORDER BY submission_year DESC LIMIT 1
     template: |
-      To: {{ supplier[0].name }}
+      {% if not esg %}No chaser needed: {{ supplier[0].name }} has no missing, rejected or low-quality ESG submission for {{ submission_year }}.
+      {% else %}To: {{ supplier[0].name }}
 
       Subject: ESG Data Submission Required
 
@@ -682,6 +692,7 @@ tools:
 
       Regards,
       ESG Team
+      {% endif %}
     example: {supplier_id: "SUP-0013"}
 
   - name: get_forecast_accuracy_shared_with_supplier
@@ -724,17 +735,22 @@ tools:
     example: {supplier_id: "SUP-0022"}
 
   - name: get_supplier_corrective_action_response
-    desc: Return supplier corrective action response. Use to track CAR progress.
+    desc: Supplier response to corrective action requests, with root cause and committed actions. Find a request by id, or by supplier and SKU. Use to track CAR progress.
     kind: sql
     args:
-      corrective_action_id: {required: true}
+      corrective_action_id: {type: str, desc: "Corrective action request, e.g. CAR-900002 (optional)"}
+      supplier_id: {}
+      sku: {type: str, desc: "Product the request is about (optional)"}
     sql: |
       SELECT corrective_action_id, supplier_id, sku, issue_type, severity,
-             description, response_received, response_date, response_text, status,
+             description, root_cause, corrective_actions, response_received, response_date, response_text, status,
              raised_at, due_date
       FROM corrective_actions
-      WHERE corrective_action_id = $corrective_action_id
-    limit: 10
+      WHERE ($corrective_action_id IS NULL OR corrective_action_id = $corrective_action_id)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+        AND ($sku IS NULL OR sku = $sku)
+      ORDER BY raised_at DESC
+    limit: 20
     example: {corrective_action_id: "CAR-900002"}
 
   - name: compare_capacity_utilisation_year_on_year
@@ -970,12 +986,14 @@ tools:
     kind: sql
     args:
       supplier_id: {required: true}
+      sku: {type: str, desc: "Product (optional)"}
     sql: |
       SELECT communication_id, supplier_id, sku, po_id, title, content,
              from_party, created_at, status, deadline
       FROM supplier_communications
       WHERE supplier_id = $supplier_id
         AND communication_type = 'milestone_update'
+        AND ($sku IS NULL OR sku = $sku)
       ORDER BY created_at DESC
     limit: 50
     example: {supplier_id: "SUP-0013"}
@@ -987,7 +1005,7 @@ tools:
       supplier_id: {required: true}
       lookback_days: {type: int, default: 30, desc: "Historical period"}
     sql: |
-      SELECT communication_id, supplier_id, portal_page, accessed_at, status
+      SELECT communication_id, supplier_id, portal_page, content AS record_accessed, accessed_at, status
       FROM supplier_communications
       WHERE supplier_id = $supplier_id
         AND communication_type = 'portal_access'
@@ -1033,20 +1051,22 @@ tools:
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_response_times
-    desc: Return supplier response times to fit comments and other enquiries. Use to assess supplier responsiveness.
+    desc: Average and slowest supplier response time in hours per supplier and enquiry type such as fit_comment, slowest first. Leave supplier out to rank all suppliers.
     kind: sql
     args:
-      supplier_id: {required: true}
-      communication_type: {type: str, desc: "Type (optional)"}
+      supplier_id: {}
+      communication_type: {type: str, desc: "Enquiry type, e.g. fit_comment, sample_comment or milestone_update (optional)"}
     sql: |
-      SELECT communication_id, supplier_id, communication_type, title, response_time_hours,
-             deadline, overdue, created_at
-      FROM supplier_communications
-      WHERE supplier_id = $supplier_id
-        AND response_time_hours IS NOT NULL
-        AND ($communication_type IS NULL OR communication_type = $communication_type)
-      ORDER BY response_time_hours DESC
-    limit: 100
+      SELECT c.supplier_id, s.name AS supplier_name, c.communication_type, count(*) AS responses,
+             round(avg(c.response_time_hours), 1) AS avg_response_hours, max(c.response_time_hours) AS slowest_response_hours,
+             count(*) FILTER (WHERE c.overdue) AS overdue_responses
+      FROM supplier_communications c JOIN master.suppliers s ON s.supplier_id = c.supplier_id
+      WHERE c.response_time_hours IS NOT NULL
+        AND ($supplier_id IS NULL OR c.supplier_id = $supplier_id)
+        AND ($communication_type IS NULL OR c.communication_type = $communication_type)
+      GROUP BY c.supplier_id, s.name, c.communication_type
+      ORDER BY avg_response_hours DESC, c.supplier_id
+    limit: 50
     example: {supplier_id: "SUP-0013"}
 
   - name: get_supplier_ship_date_performance
@@ -1127,18 +1147,20 @@ tools:
     example: {supplier_id: SUP-0070}
 
   - name: list_supplier_esg_submissions
-    desc: ESG submissions by supplier and status. Use to track ESG data collection and quality.
+    desc: ESG submissions by supplier, status and reporting year, with quality score and follow-up notes. Filter not_submitted to see who has not sent data, low_quality for poor submissions.
     kind: sql
     args:
       submission_status: {type: enum, values: [not_submitted, submitted, pending_review, accepted, rejected, low_quality], desc: "Filter by status (optional)"}
-      min_data_quality: {type: float, default: 0, desc: "Minimum data quality score"}
+      submission_year: {type: int, default: 2025, desc: "Reporting year"}
+      min_data_quality: {type: float, default: 0, desc: "Minimum data quality score; submissions without a score count as 0"}
     sql: |
-      SELECT supplier_id, submission_year, submission_status, submitted_date, data_quality_score,
-             emissions_tonnes_co2e, renewable_pct, follow_up_needed
-      FROM supplier_esg
-      WHERE ($submission_status IS NULL OR submission_status = $submission_status)
-        AND data_quality_score >= $min_data_quality
-      ORDER BY submission_year DESC, supplier_id
+      SELECT e.supplier_id, s.name AS supplier_name, e.submission_year, e.submission_status, e.submitted_date, e.data_quality_score,
+             e.emissions_tonnes_co2e, e.renewable_pct, e.follow_up_needed, e.notes
+      FROM supplier_esg e JOIN master.suppliers s ON s.supplier_id = e.supplier_id
+      WHERE ($submission_status IS NULL OR e.submission_status = $submission_status)
+        AND e.submission_year = $submission_year
+        AND COALESCE(e.data_quality_score, 0) >= $min_data_quality
+      ORDER BY e.submission_status, e.supplier_id
     limit: 100
     example: {}
 
@@ -1171,21 +1193,26 @@ tools:
     example: {category_focus: Accessories, exclude_supplier_id: SUP-0070}
 
   - name: search_approved_material_suppliers
-    desc: Search for approved material suppliers by material type and certification. Use for material sourcing.
+    desc: Active suppliers of a material, by type, words in the material name or composition, certification and country, with price, capacity and lead time. Largest capacity first.
     kind: sql
     args:
-      material_type: {required: true}
-      certification: {type: str, desc: "Certification (optional)"}
-      country: {type: str, desc: "Country (optional)"}
+      material_type: {desc: "Material type, e.g. fabric, trim, zip, packaging or finish (optional)"}
+      material: {type: str, desc: "Words in the material name or composition, e.g. recycled polyester (optional)"}
+      certification: {type: str, desc: "Certification, e.g. GRS (optional)"}
+      country: {type: str, desc: "Supplier country code, e.g. IT (optional)"}
     sql: |
-      SELECT DISTINCT m.supplier_id, m.material_type, m.material_name, m.certifications, m.capacity_monthly_units,
-             m.price_gbp_per_unit, m.stock_units_available, s.name, s.country
+      SELECT DISTINCT m.material_id, m.supplier_id, s.name AS supplier_name, s.country, m.material_type, m.material_name,
+             m.certifications, m.capacity_monthly_units, m.price_gbp_per_unit, m.stock_units_available,
+             m.lead_time_days, m.moq_units
       FROM material_supply m
       JOIN master.suppliers s ON s.supplier_id = m.supplier_id
-      WHERE m.material_type = $material_type
+      WHERE s.status = 'active'
+        AND ($material_type IS NULL OR m.material_type = $material_type)
+        AND ($material IS NULL OR (lower(m.material_name) LIKE '%' || lower($material) || '%'
+                                   OR lower(m.composition) LIKE '%' || lower($material) || '%'))
         AND ($certification IS NULL OR m.certifications ILIKE '%' || $certification || '%')
-        AND ($country IS NULL OR s.country = $country)
-      ORDER BY m.capacity_monthly_units DESC
+        AND ($country IS NULL OR s.country = upper($country))
+      ORDER BY m.capacity_monthly_units DESC, m.material_id
     limit: 50
     example: {material_type: fabric}
 
@@ -1248,6 +1275,7 @@ tools:
     defaults: {status: sent, from_party: hv_to_supplier, communication_type: document_request}
     args:
       supplier_id: {required: true}
+      sku: {type: str, desc: "Product the documents are for (optional)"}
       title: {required: true}
       content: {required: true}
       deadline: {type: date, default: "+14d", desc: "Response deadline"}
