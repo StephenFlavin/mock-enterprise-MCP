@@ -210,8 +210,11 @@ def generate(g):
         if (g.as_of - day).days > 84:
             continue
         f = (1.07 + r.uniform(-0.03, 0.03)) if reg == "UK North" else (1.0 + r.uniform(-0.06, 0.06))
-        ly.append({"region": reg, "sale_date": day - timedelta(days=364), "units": int(round(u * f)),
-                   "revenue_gbp": round(rev * f, 2), "margin_gbp": round(mar * f * (1.012 if reg == "UK North" else 1.0), 2)})
+        fu = fr = f
+        if reg == "UK North":  # fixed ratios (noise draw kept above for the rng stream) so period-to-date is -6.7% units / -6.6% revenue whichever days are in the window (08:73:Q4)
+            fu, fr = 1 / 0.933, 1 / 0.934
+        ly.append({"region": reg, "sale_date": day - timedelta(days=364), "units": int(round(u * fu)),
+                   "revenue_gbp": round(rev * fr, 2), "margin_gbp": round(mar * fr * (1.012 if reg == "UK North" else 1.0), 2)})
 
     # ---- POS exceptions ----
     exc = []
@@ -262,7 +265,7 @@ def generate(g):
                 mgr["ST183"], r.choice(["T01", "T03", "T04"]), r.uniform(110, 160), "wrong item", r.choice(products)["sku"])
     # ST214: refunds 'wrong item' at till T03 by cover staff EMP-00529, mostly Saturdays, last four weeks
     for i in range(14):
-        d = 27 - 2 * i
+        d = 21 - (3 * i) // 2  # 21..1: well inside the default 4-week window whichever weekday today is
         add_exc("ST214", g.as_of - timedelta(days=max(d, 1)), r.choice([13, 14, 15]), r.randint(0, 59), "refund",
                 "EMP-00529", "T03", r.uniform(40, 85), r.choice(["wrong item", "wrong item", "fit issue"]),
                 r.choice(products)["sku"])

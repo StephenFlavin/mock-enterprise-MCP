@@ -3,7 +3,7 @@ name: Costing & Margin Tool
 instructions: >
   Product costing sheets, margin analysis and cost drivers. Style costings track
   material, labour, overhead and freight. Includes margin bridges, cost variance
-  analysis and disposition routes. Costing ids look like CST-STY-5520-26S1.
+  analysis and disposition routes. Costing ids look like CST-SKU-101897-V1; one per SKU.
 
 tables:
   product_costings:
@@ -30,6 +30,10 @@ tables:
       target_margin_pct: {type: float, desc: "Target margin goal for this product"}
       status: {type: enum, values: [active, obsolete, scenario, archived], desc: "Costing status"}
       notes: {type: str, desc: "Version notes or assumptions"}
+      category: {type: str, desc: "Product category from master, e.g. Outerwear"}
+      department: {type: str, desc: "Department from master, e.g. Womenswear"}
+      weekly_demand_units: {type: int, desc: "Planned or recent weekly sales units for this SKU"}
+      late_sales_lost_pct: {type: float, desc: "Share of demand in a late-delivery window that is lost for good, not deferred"}
       created_at: {type: timestamp, desc: "When created"}
       updated_at: {type: timestamp, desc: "Last updated"}
 
@@ -66,7 +70,10 @@ tables:
       net_margin_pct: {type: float, desc: "Net margin %"}
       plan_margin_pct: {type: float, desc: "Planned margin %"}
       variance_pct: {type: float, desc: "Actual vs plan variance"}
-      analysed_at: {type: timestamp, desc: "When analysed"}
+      analysed_at: {type: timestamp, desc: "Period end, end of the 4-week trading block"}
+      department: {type: str, desc: "Department from master, e.g. Womenswear"}
+      period_start: {type: date, desc: "First day of the 4-week trading block"}
+      shrink_gbp: {type: float, desc: "Stock loss (shrink) cost in period"}
 
   cost_variance_drivers:
     key: variance_id
@@ -84,6 +91,11 @@ tables:
       other_driver_pct: {type: float, desc: "Other variance %"}
       notes: {type: str, desc: "Analysis notes"}
       analysed_at: {type: timestamp, desc: "When analysed"}
+      department: {type: str, desc: "Department from master, e.g. Womenswear"}
+      period_start: {type: date, desc: "First day of the 4-week trading block analysed"}
+      basis: {type: enum, values: [vs_plan, yoy], desc: "vs_plan = margin against plan; yoy = buying margin against the same period last year"}
+      price_driver_pct: {type: float, desc: "Variance from selling price, points"}
+      shrink_driver_pct: {type: float, desc: "Variance from stock loss, points"}
 
   recovery_routes:
     key: route_id
@@ -108,6 +120,10 @@ tables:
       risk_rating: {type: enum, values: [low, medium, high], desc: "Brand/risk rating"}
       volume_last_6m: {type: int, desc: "Units through this route in last 6 months"}
       last_updated: {type: date, desc: "Last update date"}
+      stock_type: {type: enum, values: [returns, aged_stock], desc: "Whether the rates are for customer returns or aged stock"}
+      band_min_days: {type: int, desc: "Youngest item age in this band, days"}
+      band_max_days: {type: int, desc: "Oldest item age in this band, days"}
+      avg_unit_cost_gbp: {type: float, desc: "Typical unit cost of items in this category"}
 
   scenario_analyses:
     key: scenario_id
@@ -130,7 +146,7 @@ tables:
     cols:
       costing_id: {type: str, desc: "Parent costing"}
       line_no: {type: int, desc: "Line sequence"}
-      component_type: {type: enum, values: [fabric, trimming, labour_cut, labour_sew, labour_finish, packing, inbound_freight, tooling, overhead], desc: "Cost component"}
+      component_type: {type: enum, values: [fabric, trimming, metal, plastics, electronics, other_material, labour_cut, labour_sew, labour_finish, packing, inbound_freight, tooling, overhead], desc: "Cost component"}
       description: {type: str, desc: "Component description"}
       quantity: {type: float, desc: "Quantity of component per unit"}
       unit: {type: str, desc: "Unit of measure"}
@@ -150,6 +166,34 @@ tables:
       exposure_quantity: {type: float, desc: "Quantity exposed per unit"}
       elasticity: {type: float, desc: "Pass-through elasticity (% cost increase per 1% commodity price increase)"}
       date_from: {type: date, desc: "Period from"}
+
+  fob_price_history:
+    key: [origin_country, period_start]
+    cols:
+      origin_country: {type: str, desc: "ISO country code, e.g. VN, BD, KH"}
+      period_start: {type: date, desc: "First day of the 4-week block"}
+      avg_fob_cost_gbp: {type: float, desc: "Average FOB cost per unit"}
+      avg_labour_cost_gbp: {type: float, desc: "Average labour cost per unit within FOB"}
+      avg_material_cost_gbp: {type: float, desc: "Average material cost per unit within FOB"}
+      labour_share_pct: {type: float, desc: "Labour as % of FOB"}
+      basis: {type: enum, values: [ordered, quoted], desc: "ordered = from live costings; quoted = factory quotes, no orders yet"}
+      sku_count: {type: int, desc: "SKUs behind the average"}
+
+  origin_cost_quotes:
+    key: quote_id
+    cols:
+      quote_id: {type: str, desc: "Quote id, e.g. QTE-000001"}
+      origin_country: {type: str, desc: "ISO country code, e.g. VN, ID"}
+      category: {type: str, desc: "Product category, e.g. Footwear"}
+      factory_id: {type: str, desc: "Factory, blank for prospective factories not yet in master"}
+      supplier_id: {type: str, desc: "Supplier, blank for prospective factories"}
+      quote_status: {type: enum, values: [current, prospective], desc: "current = live costed factory; prospective = RFQ quote"}
+      fob_cost_gbp: {type: float, desc: "FOB cost per unit"}
+      freight_cost_gbp: {type: float, desc: "Inbound freight per unit"}
+      lead_time_days: {type: int, desc: "Production plus transit lead time"}
+      style_count: {type: int, desc: "Styles behind the figure"}
+      quoted_at: {type: date, desc: "Quote date"}
+      notes: {type: str, desc: "Notes"}
 
   supplier_cost_history:
     key: [supplier_id, sku, period]
