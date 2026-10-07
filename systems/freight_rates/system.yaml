@@ -465,33 +465,38 @@ tables:
         desc: Spot as % of total
   freight_emissions:
     key:
-    - lane_id
-    - shipment_type
+    - corridor_id
     cols:
-      lane_id:
+      corridor_id:
         type: str
-        desc: Lane identifier
-      shipment_type:
-        type: enum
-        values:
-        - sea
-        - air
-        desc: Sea or air shipment
-      mode:
+        desc: Air/sea corridor, e.g. DAC-LHR
+      origin_airport:
         type: str
-        desc: Mode detail (e.g. 40ft container, typical container)
-      weight_kg:
+        desc: Origin airport, e.g. DAC
+      origin_port:
+        type: str
+        desc: Origin sea port for the same origin, e.g. BDCGP
+      destination_airport:
+        type: str
+        desc: Destination airport, e.g. LHR
+      destination_port:
+        type: str
+        desc: Destination sea port, e.g. GBFXT
+      distance_km:
         type: int
-        desc: Weight in kg
-      emissions_co2e_kg:
+        desc: Distance used for emissions, km
+      air_co2e_kg_per_kg:
         type: float
-        desc: CO2e emissions per shipment in kg
-      emissions_co2e_per_kg:
+        desc: Air emissions, kg CO2e per kg shipped
+      sea_co2e_kg_per_kg:
         type: float
-        desc: Emissions per kg in kg
+        desc: Sea emissions, kg CO2e per kg shipped
+      sea_kg_per_container:
+        type: int
+        desc: Payload assumed per 40ft container, kg
       data_source:
         type: str
-        desc: Source of emissions data
+        desc: Source of emissions factors
   sea_air_routes:
     key: route_id
     cols:
@@ -552,6 +557,82 @@ tables:
       rate_gbp_per_kg:
         type: float
         desc: Lowest carrier rate per kg for the 1,000 to 2,999 kg weight break
+  carrier_spend:
+    key:
+    - carrier_id
+    - mode
+    cols:
+      carrier_id:
+        type: str
+        desc: Carrier, e.g. CAR-007
+      mode:
+        type: enum
+        values:
+        - sea
+        - air
+        - road
+        - parcel
+        desc: Transport mode
+      annual_volume:
+        type: float
+        desc: Volume moved with the carrier in the last 12 months
+      volume_unit:
+        type: str
+        desc: 'Unit of volume: 40ft containers, pallets, kg, parcels'
+      avg_rate_gbp:
+        type: float
+        desc: Average contract rate per unit, GBP
+      baseline_annual_gbp:
+        type: float
+        desc: Last 12 months contracted spend at current rates, GBP
+      announced_increase_pct:
+        type: float
+        desc: Rate increase the carrier has announced, %
+      effective_from:
+        type: date
+        desc: Date the increase takes effect
+      notice:
+        type: str
+        desc: Source or description of the announcement
+  port_diversions:
+    key: route_id
+    cols:
+      route_id:
+        type: str
+        desc: Diversion option, e.g. DIV-000001
+      closed_port:
+        type: str
+        desc: Load port that is closed or disrupted, e.g. VNSGN
+      alternate_load_port:
+        type: str
+        desc: Alternative load port code
+      alternate_port_name:
+        type: str
+        desc: Alternative port name
+      destination_port:
+        type: str
+        desc: Destination port, e.g. GBFXT
+      routing:
+        type: str
+        desc: How boxes reach the alternative port and sail
+      positioning_cost_gbp:
+        type: float
+        desc: Cost of moving a 40ft container to the alternative port, GBP
+      rate_premium_gbp:
+        type: float
+        desc: Sea rate premium at the alternative port versus the normal lane, GBP per 40ft
+      extra_transit_days:
+        type: int
+        desc: Extra transit days versus the normal lane
+      capacity_share_pct:
+        type: int
+        desc: Share of normal weekly volume the option can absorb, %
+      status:
+        type: str
+        desc: 'Availability: active or limited'
+      notes:
+        type: str
+        desc: Capacity and routing notes
 tools:
 - name: get_contract_container_rates_by_lane
   desc: Contracted 40ft container rates on a port pair by carrier and volume band, with today spot rate and spot premium over contract.
@@ -689,7 +770,7 @@ tools:
     origin_airport: DAC
   limit: 100
 - name: get_alternate_port_options_and_rates
-  desc: Alternate routing options and rates for a lane (e.g. transhipment or rail).
+  desc: 'Alternative ports with rates and transit times for a lane: other load ports if the origin port is closed (cost and extra days versus normal, capacity), and Mediterranean discharge ports with rail.'
   kind: sql
   args:
     origin_port:
@@ -701,19 +782,36 @@ tools:
       desc: Destination port code
       required: true
   sql: |
-    SELECT r.route_id, r.primary_dest_port, r.alternate_dest_port, r.transit_days_primary,
-           r.transit_days_alternate, r.rate_gbp_sea, r.rate_gbp_rail, r.total_transit_days,
-           r.cost_gbp, r.status
+    WITH sp AS (
+      SELECT lane_id, rate_gbp FROM spot_rates WHERE mode = 'sea' AND rate_date <= CAST($as_of AS DATE)
+      QUALIFY row_number() OVER (PARTITION BY lane_id ORDER BY rate_date DESC) = 1
+    )
+    SELECT 'alternate load port' AS option_type, d.route_id, d.alternate_load_port AS via_port, d.alternate_port_name AS via_port_name,
+           d.routing, d.positioning_cost_gbp, ROUND(sp.rate_gbp + d.rate_premium_gbp, 2) AS sea_rate_gbp,
+           ROUND(sp.rate_gbp + d.rate_premium_gbp + d.positioning_cost_gbp, 2) AS total_cost_gbp,
+           ROUND(d.rate_premium_gbp + d.positioning_cost_gbp, 2) AS extra_cost_vs_normal_gbp,
+           tt.transit_days_scheduled + d.extra_transit_days AS total_transit_days, d.extra_transit_days,
+           d.capacity_share_pct, d.status, d.notes
+    FROM port_diversions d
+    LEFT JOIN sp ON sp.lane_id = d.closed_port || '-' || d.destination_port
+    LEFT JOIN transit_times tt ON tt.lane_id = d.closed_port || '-' || d.destination_port AND tt.mode = 'sea'
+    WHERE UPPER(d.closed_port) = UPPER($origin_port) AND UPPER(d.destination_port) = UPPER($destination_port)
+    UNION ALL
+    SELECT 'alternate discharge port (sea + rail)', r.route_id, r.alternate_dest_port,
+           CASE r.alternate_dest_port WHEN 'ESVLC' THEN 'Valencia' WHEN 'GRPIR' THEN 'Piraeus' ELSE r.alternate_dest_port END,
+           'Sea to ' || r.alternate_dest_port || ', then rail to ' || r.final_destination, r.rate_gbp_rail, r.rate_gbp_sea, r.cost_gbp,
+           ROUND(r.cost_gbp - sp.rate_gbp - r.direct_haulage_to_dc_gbp, 2), r.total_transit_days,
+           r.total_transit_days - (r.transit_days_primary + 1), NULL, r.status, NULL
     FROM alternate_ports r
-    WHERE r.origin_port = $origin_port
-      AND r.primary_dest_port = $destination_port
+    LEFT JOIN sp ON sp.lane_id = r.primary_lane_id
+    WHERE UPPER(r.origin_port) = UPPER($origin_port) AND UPPER(r.primary_dest_port) = UPPER($destination_port)
       AND r.status IN ('active', 'seasonal')
-    ORDER BY r.cost_gbp, r.total_transit_days
+    ORDER BY option_type, total_cost_gbp
   example:
     origin_port: VNSGN
     destination_port: GBFXT
 - name: get_annual_carrier_spend_forecast
-  desc: Forecast carrier spend for the next 12 months by carrier and mode.
+  desc: 'Forecast carrier spend for the next 12 months by carrier and mode: last 12 months'' volume at contract rates, uplifted by each carrier''s announced rate increase, with a total row.'
   kind: sql
   args:
     carrier_id:
@@ -728,18 +826,24 @@ tools:
       - parcel
       desc: Transport mode
   sql: |
-    SELECT c.carrier_id, car.name AS carrier_name, c.mode,
-           ROUND(COALESCE(AVG(c.rate_gbp * COALESCE(bv.total_volume_units, 100)), 0), 2) AS forecast_annual_gbp
-    FROM contract_rates c
-    JOIN master.carriers car ON c.carrier_id = car.carrier_id
-    LEFT JOIN (SELECT lane_id, sum(total_volume_units) AS total_volume_units FROM booking_volumes GROUP BY lane_id) bv ON bv.lane_id = c.lane_id
-    WHERE ($carrier_id IS NULL OR c.carrier_id = $carrier_id)
-      AND ($mode IS NULL OR c.mode = $mode)
-      AND c.rate_from <= CAST($as_of AS DATE)
-      AND c.rate_to >= CAST($as_of AS DATE)
-    GROUP BY c.carrier_id, car.name, c.mode
-    ORDER BY forecast_annual_gbp DESC
-    LIMIT 20
+    SELECT * FROM (
+      SELECT s.carrier_id, car.name AS carrier_name, s.mode, s.annual_volume, s.volume_unit, s.avg_rate_gbp,
+             s.baseline_annual_gbp, s.announced_increase_pct, s.effective_from,
+             ROUND(s.baseline_annual_gbp * (1 + s.announced_increase_pct / 100), 2) AS forecast_annual_gbp,
+             ROUND(s.baseline_annual_gbp * s.announced_increase_pct / 100, 2) AS increase_gbp, s.notice
+      FROM carrier_spend s
+      JOIN master.carriers car ON s.carrier_id = car.carrier_id
+      WHERE ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+        AND ($mode IS NULL OR s.mode = $mode)
+      UNION ALL
+      SELECT 'TOTAL', 'All carriers selected', NULL, NULL, NULL, NULL, ROUND(SUM(s.baseline_annual_gbp), 2),
+             ROUND(SUM(s.baseline_annual_gbp * s.announced_increase_pct / 100) / SUM(s.baseline_annual_gbp) * 100, 2), NULL,
+             ROUND(SUM(s.baseline_annual_gbp * (1 + s.announced_increase_pct / 100)), 2),
+             ROUND(SUM(s.baseline_annual_gbp * s.announced_increase_pct / 100), 2), 'Weighted average increase in pct column'
+      FROM carrier_spend s
+      WHERE ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+        AND ($mode IS NULL OR s.mode = $mode)
+    ) ORDER BY (carrier_id = 'TOTAL'), increase_gbp DESC
   example:
     mode: sea
 - name: get_carrier_contract_rates
@@ -790,8 +894,8 @@ tools:
     FROM spot_rates s
     LEFT JOIN (SELECT lane_id, mode, min(rate_gbp) AS rate_gbp FROM contract_rates
                WHERE rate_from <= CAST($as_of AS DATE) AND rate_to >= CAST($as_of AS DATE) GROUP BY lane_id, mode) c ON c.lane_id = s.lane_id AND c.mode = s.mode
-    WHERE s.lane_id = $lane_id
-      AND s.mode = $mode
+    WHERE ($lane_id IS NULL OR UPPER(s.lane_id) = UPPER($lane_id))
+      AND ($mode IS NULL OR s.mode = $mode)
       AND s.rate_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
       AND s.rate_date <= CAST($as_of AS DATE)
     ORDER BY s.rate_date DESC
@@ -800,7 +904,7 @@ tools:
     lane_id: VNSGN-GBFXT
     mode: sea
 - name: get_freight_rate_forecast
-  desc: Contract and spot freight rate outlook by lane for next 12 weeks.
+  desc: Spot freight rate outlook by lane for the next 12 weeks, with the change versus the current spot rate and the contract rate (fixed until renewal) for comparison.
   kind: sql
   args:
     lane_id:
@@ -815,8 +919,19 @@ tools:
       - parcel
       desc: Transport mode
   sql: |
-    SELECT f.lane_id, f.forecast_date, f.forecast_gbp, f.trend, f.confidence_pct, f.notes
+    WITH sp AS (
+      SELECT lane_id, mode, rate_gbp FROM spot_rates WHERE rate_date <= CAST($as_of AS DATE)
+      QUALIFY row_number() OVER (PARTITION BY lane_id, mode ORDER BY rate_date DESC) = 1
+    ), ct AS (
+      SELECT lane_id, mode, min(rate_gbp) AS rate_gbp FROM contract_rates
+      WHERE rate_from <= CAST($as_of AS DATE) AND rate_to >= CAST($as_of AS DATE) GROUP BY lane_id, mode
+    )
+    SELECT f.lane_id, f.mode, f.forecast_date, f.forecast_gbp, sp.rate_gbp AS current_spot_gbp,
+           ROUND((f.forecast_gbp / sp.rate_gbp - 1) * 100, 1) AS change_vs_current_pct, ct.rate_gbp AS contract_rate_gbp,
+           f.trend, f.confidence_pct, f.notes
     FROM rate_forecast f
+    LEFT JOIN sp ON sp.lane_id = f.lane_id AND sp.mode = f.mode
+    LEFT JOIN ct ON ct.lane_id = f.lane_id AND ct.mode = f.mode
     WHERE ($lane_id IS NULL OR f.lane_id = $lane_id)
       AND ($mode IS NULL OR f.mode = $mode)
       AND f.forecast_date >= CAST($as_of AS DATE)
@@ -837,6 +952,12 @@ tools:
     min_weight_kg:
       type: int
       desc: Minimum shipment weight; shows breaks that apply at or above it
+    origin_airport:
+      type: str
+      desc: Origin airport code, e.g. SGN (Ho Chi Minh City), DAC (Dhaka)
+    destination_airport:
+      type: str
+      desc: Destination airport code, e.g. LHR
   sql: |
     SELECT q.origin_airport, q.destination_airport, q.carrier_id, car.name AS carrier_name, q.min_weight_kg, q.max_weight_kg,
            q.rate_gbp_per_kg, q.peak_rate_gbp_per_kg, q.transit_days, q.valid_until
@@ -844,6 +965,8 @@ tools:
     JOIN master.carriers car ON q.carrier_id = car.carrier_id
     WHERE q.valid_until >= CAST($as_of AS DATE)
       AND ($min_weight_kg IS NULL OR q.max_weight_kg >= $min_weight_kg)
+      AND ($origin_airport IS NULL OR q.origin_airport = UPPER($origin_airport))
+      AND ($destination_airport IS NULL OR q.destination_airport = UPPER($destination_airport))
     ORDER BY q.origin_airport, q.destination_airport, q.min_weight_kg, q.rate_gbp_per_kg
   example: {}
   limit: 60
@@ -886,7 +1009,7 @@ tools:
     mode: parcel
   limit: 40
 - name: calculate_freight_saving_per_container
-  desc: Calculate freight cost saving from packaging optimization per container.
+  desc: 'Freight saving per container and per year from lighter packed containers: weight cut x sea rate per kg. The rate per kg is given, or taken from the current spot rate of a sea lane (per 20,000 kg container).'
   kind: sql
   args:
     current_weight_kg:
@@ -904,13 +1027,23 @@ tools:
     current_rate_gbp_per_kg:
       type: float
       desc: Current rate per kg
+    lane_id:
+      type: str
+      desc: Sea lane to take the current rate from when no rate per kg is given, e.g. MXZLO-GBFXT
   sql: |
-    SELECT $current_weight_kg AS current_weight_kg,
-           $new_weight_kg AS new_weight_kg,
-           $containers_annual AS containers_annual,
-           COALESCE($current_rate_gbp_per_kg, 0) AS rate_gbp_per_kg,
-           ROUND(COALESCE($current_rate_gbp_per_kg, 0) * ($current_weight_kg - $new_weight_kg) * $containers_annual, 2) AS annual_saving_gbp,
-           'saving = (current_weight - new_weight) * rate * annual_containers' AS formula
+    WITH r AS (
+      SELECT COALESCE($current_rate_gbp_per_kg,
+               (SELECT rate_gbp / 20000.0 FROM spot_rates WHERE mode = 'sea' AND UPPER(lane_id) = UPPER($lane_id)
+                  AND rate_date <= CAST($as_of AS DATE) ORDER BY rate_date DESC LIMIT 1)) AS rate,
+             CASE WHEN $current_rate_gbp_per_kg IS NOT NULL THEN 'given' ELSE 'current spot rate of ' || $lane_id || ' / 20,000 kg' END AS rate_source
+    )
+    SELECT $current_weight_kg AS current_weight_kg, $new_weight_kg AS new_weight_kg, $containers_annual AS containers_annual,
+           ROUND(r.rate, 4) AS rate_gbp_per_kg, r.rate_source,
+           ROUND(($current_weight_kg - $new_weight_kg) * 100.0 / $current_weight_kg, 1) AS weight_reduction_pct,
+           ROUND(r.rate * ($current_weight_kg - $new_weight_kg), 2) AS saving_per_container_gbp,
+           ROUND(r.rate * ($current_weight_kg - $new_weight_kg) * $containers_annual, 2) AS annual_saving_gbp,
+           'saving = (current_weight - new_weight) * rate per kg; annual = saving per container * containers per year' AS formula
+    FROM r
   example:
     current_weight_kg: 15000
     new_weight_kg: 13500
@@ -955,33 +1088,67 @@ tools:
     booking_volume_units: 80
     carrier_id: CAR-007
 - name: compare_air_sea_freight_cost_and_emissions
-  desc: Compare air vs sea freight cost and CO2e emissions for a shipment.
+  desc: Cost and CO2e of air versus sea for a shipment weight on an origin corridor (airport or port code), and of shifting a share of the air volume to sea.
   kind: sql
   args:
     shipment_weight_kg:
       type: int
-      desc: Shipment weight in kg
+      desc: Shipment weight in kg (annual air volume to be compared)
       required: true
     origin:
       type: str
-      desc: Origin port/airport
+      desc: Origin airport or port code, e.g. DAC or BDCGP; blank for every corridor
     destination:
       type: str
-      desc: Destination port/airport
+      desc: Destination airport or port code, e.g. LHR or GBFXT
+    shift_pct:
+      type: int
+      desc: Share of the volume moved from air to sea in the shift option, %
+      default: 30
   sql: |
-    SELECT 'Air' AS mode, round(avg(q.rate_gbp_per_kg) * $shipment_weight_kg, 2) AS cost_gbp,
-           round($shipment_weight_kg * (SELECT max(emissions_co2e_per_kg) FROM freight_emissions WHERE shipment_type = 'air'), 1) AS emissions_co2e_kg
-    FROM air_freight_quotes q
-    WHERE q.valid_until >= CAST($as_of AS DATE) AND $shipment_weight_kg BETWEEN q.min_weight_kg AND q.max_weight_kg
-      AND ($origin IS NULL OR q.origin_airport = UPPER($origin)) AND ($destination IS NULL OR q.destination_airport = UPPER($destination))
+    WITH c AS (
+      SELECT * FROM freight_emissions
+      WHERE ($origin IS NULL OR UPPER($origin) IN (origin_airport, origin_port))
+        AND ($destination IS NULL OR UPPER($destination) IN (destination_airport, destination_port))
+    ), air AS (
+      SELECT c.corridor_id, avg(q.rate_gbp_per_kg) AS rate, min(q.transit_days) AS days
+      FROM c JOIN air_freight_quotes q ON q.origin_airport = c.origin_airport AND q.destination_airport = c.destination_airport
+      WHERE q.valid_until >= CAST($as_of AS DATE) AND $shipment_weight_kg BETWEEN q.min_weight_kg AND q.max_weight_kg
+      GROUP BY c.corridor_id
+    ), sea AS (
+      SELECT c.corridor_id, s.rate_gbp AS rate, s.transit_days AS days
+      FROM c JOIN spot_rates s ON s.lane_id = c.origin_port || '-' || c.destination_port AND s.mode = 'sea'
+           AND s.rate_date <= CAST($as_of AS DATE)
+      QUALIFY row_number() OVER (PARTITION BY c.corridor_id ORDER BY s.rate_date DESC) = 1
+    ), m AS (
+      SELECT c.corridor_id, c.origin_airport, c.origin_port,
+             $shipment_weight_kg * air.rate AS air_cost, $shipment_weight_kg * c.air_co2e_kg_per_kg AS air_kg,
+             CEIL($shipment_weight_kg / c.sea_kg_per_container) AS sea_boxes, sea.rate AS sea_rate,
+             $shipment_weight_kg * c.sea_co2e_kg_per_kg AS sea_kg, air.days AS air_days, sea.days AS sea_days,
+             CEIL($shipment_weight_kg * $shift_pct / 100.0 / c.sea_kg_per_container) AS shift_boxes,
+             c.air_co2e_kg_per_kg, c.sea_co2e_kg_per_kg
+      FROM c JOIN air ON air.corridor_id = c.corridor_id JOIN sea ON sea.corridor_id = c.corridor_id
+    )
+    SELECT corridor_id, 'Air (100%)' AS option, $shipment_weight_kg AS weight_kg, NULL AS sea_containers,
+           ROUND(air_cost, 2) AS cost_gbp, ROUND(air_kg, 0) AS emissions_co2e_kg, ROUND(air_kg / 1000, 2) AS emissions_co2e_tonnes,
+           air_days AS transit_days, NULL AS cost_saving_vs_air_gbp, NULL AS co2e_saving_vs_air_tonnes
+    FROM m
     UNION ALL
-    SELECT 'Sea' AS mode, round(avg(s.rate_gbp) * $shipment_weight_kg / 20000.0, 2) AS cost_gbp,
-           round($shipment_weight_kg * (SELECT max(emissions_co2e_per_kg) FROM freight_emissions WHERE shipment_type = 'sea'), 1) AS emissions_co2e_kg
-    FROM spot_rates s
-    WHERE s.mode = 'sea' AND s.rate_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY AND s.rate_date <= CAST($as_of AS DATE)
-    ORDER BY cost_gbp
+    SELECT corridor_id, 'Sea (100%)', $shipment_weight_kg, sea_boxes, ROUND(sea_boxes * sea_rate, 2), ROUND(sea_kg, 0),
+           ROUND(sea_kg / 1000, 2), sea_days, ROUND(air_cost - sea_boxes * sea_rate, 2), ROUND((air_kg - sea_kg) / 1000, 2)
+    FROM m
+    UNION ALL
+    SELECT corridor_id, 'Shift ' || $shift_pct || '% to sea', $shipment_weight_kg, shift_boxes,
+           ROUND(air_cost * (100 - $shift_pct) / 100.0 + shift_boxes * sea_rate, 2),
+           ROUND(air_kg * (100 - $shift_pct) / 100.0 + sea_kg * $shift_pct / 100.0, 0),
+           ROUND((air_kg * (100 - $shift_pct) / 100.0 + sea_kg * $shift_pct / 100.0) / 1000, 2), sea_days,
+           ROUND(air_cost - (air_cost * (100 - $shift_pct) / 100.0 + shift_boxes * sea_rate), 2),
+           ROUND((air_kg - (air_kg * (100 - $shift_pct) / 100.0 + sea_kg * $shift_pct / 100.0)) / 1000, 2)
+    FROM m
+    ORDER BY corridor_id, cost_gbp DESC
   example:
-    shipment_weight_kg: 5000
+    shipment_weight_kg: 400000
+    origin: DAC
 - name: get_spot_container_rates_by_lane
   desc: Weekly spot rates for a 40ft container on a port pair over the last 12 weeks, newest first, with change since the start.
   kind: sql
@@ -1133,13 +1300,12 @@ tools:
     lane_id: VNSGN-GBFXT
     mode: sea
 - name: get_freight_rates_for_lane
-  desc: Return freight rates for lane with current spot and contract.
+  desc: 'Return freight rates for a lane: recent weekly spot rates with the contract rate, the month and year-on-year change, and the per-pallet equivalent for sea containers (20 pallet positions per 40ft).'
   kind: sql
   args:
     lane_id:
       type: str
       desc: Lane identifier
-      required: true
     mode:
       type: enum
       values:
@@ -1150,13 +1316,15 @@ tools:
       desc: Transport mode
   sql: |
     SELECT s.lane_id, s.rate_date, s.mode, s.rate_gbp, s.unit,
+           CASE WHEN s.unit LIKE 'per 40ft%' THEN ROUND(s.rate_gbp / 20.0, 2) END AS rate_per_pallet_gbp,
            s.transit_days, s.origin, s.destination,
-           c.rate_gbp AS contract_rate_gbp
+           c.rate_gbp AS contract_rate_gbp, h.rate_change_month, h.rate_change_year
     FROM spot_rates s
     LEFT JOIN (SELECT lane_id, mode, min(rate_gbp) AS rate_gbp FROM contract_rates
                WHERE rate_from <= CAST($as_of AS DATE) AND rate_to >= CAST($as_of AS DATE) GROUP BY lane_id, mode) c ON c.lane_id = s.lane_id AND c.mode = s.mode
-    WHERE s.lane_id = $lane_id
-      AND s.mode = $mode
+    LEFT JOIN rate_history h ON h.lane_id = s.lane_id AND h.mode = s.mode AND h.rate_date = s.rate_date
+    WHERE ($lane_id IS NULL OR UPPER(s.lane_id) = UPPER($lane_id))
+      AND ($mode IS NULL OR s.mode = $mode)
       AND s.rate_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
       AND s.rate_date <= CAST($as_of AS DATE)
     ORDER BY s.rate_date DESC
@@ -1227,7 +1395,7 @@ tools:
     lane_id: VNSGN-GBFXT
     mode: sea
 - name: get_ocean_freight_rates_for_lane
-  desc: Weekly spot rates for a port-pair lane over 12 weeks with the large-volume contract carrier and rate. Use for ocean freight cost comparisons.
+  desc: Weekly spot rates for a port-pair lane over 12 weeks with the contract carrier and rate (largest volume band available). Use for ocean freight cost comparisons.
   kind: sql
   args:
     lane_id:
@@ -1238,8 +1406,10 @@ tools:
     SELECT s.rate_id, s.lane_id, s.rate_date, s.rate_gbp, s.unit, s.transit_days, s.origin, s.destination,
            c.carrier_id, car.name AS carrier_name, c.rate_gbp AS contract_rate_gbp, c.volume_band
     FROM spot_rates s
-    LEFT JOIN contract_rates c ON c.lane_id = s.lane_id AND c.mode = 'sea'
-         AND c.rate_from <= CAST($as_of AS DATE) AND c.rate_to >= CAST($as_of AS DATE) AND c.volume_band = 'large'
+    LEFT JOIN (SELECT lane_id, carrier_id, rate_gbp, volume_band FROM contract_rates
+               WHERE mode = 'sea' AND rate_from <= CAST($as_of AS DATE) AND rate_to >= CAST($as_of AS DATE)
+               QUALIFY row_number() OVER (PARTITION BY lane_id ORDER BY CASE volume_band WHEN 'large' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, rate_gbp) = 1) c
+           ON c.lane_id = s.lane_id
     LEFT JOIN master.carriers car ON c.carrier_id = car.carrier_id
     WHERE s.mode = 'sea'
       AND UPPER(s.lane_id) = UPPER($lane_id)
