@@ -203,111 +203,103 @@
 
 - question: "01:8:Q4"
   story: >
-    ERP-WMS reconciliation. get_inventory_status_mapping explains status differences between WMS and ERP.
+    A quality hold put about 1.05m of DC3 and DC1 stock into quarantine; with damaged and expired stock about 1.2m is held in WMS but still booked by ERP. The status mapping explains why.
   checks:
+    - tool: get_wms_stock_by_sku
+      args: {status: held}
+      expect: ["1204615", "SKU-100819", "quarantine"]
     - tool: get_inventory_status_mapping
       args: {}
-      expect: ["wms_status", "erp_status", "definition"]
-
+      expect: ["quarantine", "erp_counts_in_book_stock"]
 - question: "01:8:Q5"
   story: >
-    Wave configuration analysis. get_wave_configuration shows the e-commerce wave: 6am release, 2pm cutoff, 3 waves a day.
+    DC2 e-commerce runs three scheduled waves a day (06:00, 10:00, 13:00) with a 15:00 cut-off and about 29 orders per wave.
   checks:
     - tool: get_wave_configuration
-      args: {site_id: DC1}
-      expect: ["wave", "cutoff", "channel"]
-
+      args: {site_id: DC2, channel: ecommerce}
+      expect: ["15:00", "06:00, 10:00, 13:00", "29"]
 - question: "02:14:Q7"
   story: >
-    Bonded warehouse opportunity. get_reexport_volumes_by_destination shows transfers by destination; get_stock_movements_for_reexport_goods
-    shows the movement trail for these goods.
+    UK DCs ship stock on to Ireland, Venlo and EU stores weekly; most is non-UK origin.
   checks:
     - tool: get_reexport_volumes_by_destination
-      args: {date_from: "-90d"}
-      expect: ["destination_site", "volume_units"]
+      args: {date_from: -120d}
+      expect: ["Ireland", "6713", "Netherlands", "16407"]
     - tool: get_stock_movements_for_reexport_goods
-      args: {date_from: "-90d"}
-      expect: ["transfer_id", "movement_type"]
-
+      args: {destination: IE, date_from: -120d}
+      expect: ["transfer_id", "IE"]
 - question: "03:22:Q1"
   story: >
-    Product stockout investigation. get_goods_receipts_for_product shows receipts for SKU-104991 (SUP-0072) and get_dc_stock_history_for_product
-    shows daily receipts, picks and net movement for SKU-100084 at DC1.
+    SKU-101904 sat in DC1 at 4282 units throughout the stockout while the only receipt in a year was 2807 units in March, so the stockout was allocation not supply.
   checks:
     - tool: get_goods_receipts_for_product
-      args: {sku: SKU-104991}
-      expect: ["receipt_id", "qty_received", "4576"]
+      args: {sku: SKU-101904, date_from: -400d}
+      expect: ["2807", "193"]
     - tool: get_dc_stock_history_for_product
-      args: {sku: SKU-100084, date_from: "-90d"}
-      expect: ["net_movement", "picks", "receipts"]
-
+      args: {sku: SKU-101904, date_from: -60d}
+      expect: ["4282", "closing_qty"]
 - question: "03:22:Q4"
   story: >
-    Stock rebalance decision. get_dc_stock_for_product shows where K-1700 is held (DC2) and create_stock_transfer creates a transfer.
+    SKU-104963 is held across DC1, DC2, DC4 and DC5 (about 13,000 units); a transfer to northern store ST145 is created.
   checks:
     - tool: get_dc_stock_for_product
-      args: {sku: K-1700}
-      expect: ["on_hand", "location_id", "DC2"]
+      args: {sku: SKU-104963}
+      expect: ["5184", "4651", "site_total_qty"]
     - tool: create_stock_transfer
-      args: {from_site_id: DC2, to_site_id: DC3, sku: K-1700, qty_requested: 1000, reason: rebalance}
-      expect: ["STR-", "draft"]
-
+      args: {from_site_id: DC2, to_site_id: ST145, sku: SKU-104963, qty_requested: 200, reason: rebalance}
+      expect: ["STR-", "draft", "ST145"]
 - question: "03:22:Q5"
   story: >
-    Out-of-stock analysis. get_dc_inbound_delays lists receipts days late against the PO due date.
+    SUP-0013 delivered PO-2026-004443 into DC2 18 days late.
   checks:
     - tool: get_dc_inbound_delays
-      args: {site_id: DC1, date_from: "-90d"}
-      expect: ["days_late", "receipt_id"]
-
+      args: {supplier_id: SUP-0013, date_from: -63d, days_late_threshold: 1}
+      expect: ["PO-2026-004443", "DC2", "18"]
+    - tool: get_dc_inbound_delays
+      args: {group_by: site, date_from: -45d, days_late_threshold: 1}
+      expect: ["late_receipts", "DC1"]
 - question: "03:25:Q5"
   story: >
-    Stock movement for weak stores. create_stock_transfer moves inventory from strong to weak stores.
+    Stock moves from weak store ST201 to strong store ST143.
   checks:
     - tool: create_stock_transfer
-      args: {from_site_id: DC1, to_site_id: DC2, sku: PF-220, qty_requested: 1000, reason: rebalance}
-      expect: ["STR-", "draft"]
-
+      args: {from_site_id: ST201, to_site_id: ST143, sku: SKU-100084, qty_requested: 30, reason: rebalance}
+      expect: ["STR-", "draft", "ST143"]
 - question: "03:29:Q2"
   story: >
-    Clearance outlet transfer. create_stock_transfer creates an outlet transfer.
+    Outlet transfer from DC3 to Sheffield Outlet ST154.
   checks:
     - tool: create_stock_transfer
-      args: {from_site_id: DC1, to_site_id: ST214, sku: PF-220, qty_requested: 500, reason: clearance}
-      expect: ["STR-", "draft"]
-
+      args: {from_site_id: DC3, to_site_id: ST154, sku: SKU-104277, qty_requested: 800, reason: outlet}
+      expect: ["STR-", "draft", "ST154"]
 - question: "03:31:Q4"
   story: >
-    Network efficiency. get_dc_utilisation shows occupied locations by DC and zone.
+    Leeds DC3 is underused at 55.3 percent of bins occupied against 88.5 at Northampton.
   checks:
     - tool: get_dc_utilisation
-      args: {site_id: DC1}
-      expect: ["utilisation_pct", "DC1", "zone"]
-
+      args: {group_by: site}
+      expect: ["DC3", "55.3", "88.5"]
 - question: "04:40:Q1"
   story: >
-    Packaging material evaluation. calculate_pallet_fill_by_pack_spec for PF-220 shows polybag spec: 4 units per pack, 100 packs per pallet, 400 units per pallet.
+    SKU-100532 has corrugated (250 per pallet), moulded pulp (200) and recycled plastic (400) pack specs.
   checks:
     - tool: calculate_pallet_fill_by_pack_spec
-      args: {sku: PF-220}
-      expect: ["units_per_pallet", "400"]
-
+      args: {sku: SKU-100532, annual_units: 400000}
+      expect: ["1600", "2000", "1000", "moulded_pulp"]
 - question: "04:40:Q3"
   story: >
-    Breakage analysis. get_warehouse_handling_damage_reports shows damage by item and carrier.
+    Own handling damage on small appliances is small and flat: 42 units in 12 weeks, mostly picking.
   checks:
     - tool: get_warehouse_handling_damage_reports
-      args: {site_id: DC1, date_from: "-30d"}
-      expect: ["damage_qty", "receipt_id"]
-
+      args: {category: Small Appliances, date_from: -90d, group_by: stage}
+      expect: ["picking", "24", "putaway"]
 - question: "07:67:Q4"
   story: >
-    Bonded warehouse opportunity for duty deferral. get_bonded_warehouse_volumes shows stock suitable for bonded storage.
+    Bonded-suitable on-hand stock by DC: DC2 holds the most.
   checks:
     - tool: get_bonded_warehouse_volumes
-      args: {site_id: DC2}
-      expect: ["on_hand_units", "stock_value_gbp"]
-
+      args: {group_by: site}
+      expect: ["DC2", "30397361.13", "pallets_needed"]
 - question: "07:69:Q3"
   story: >
     Shrink forecast. create_cycle_count_task for the highest-risk bin.
