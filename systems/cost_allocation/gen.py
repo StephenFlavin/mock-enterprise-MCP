@@ -6,7 +6,7 @@ from datetime import datetime
 
 # site: (units handled, [labour, space, equipment, overhead] cost per unit, pallet spaces, fixed-cost share of each component)
 DCS = {
-    "DC1": (62_000_000, [0.44, 0.22, 0.26, 0.125], 41_000),   # Northampton: ~18% above network average
+    "DC1": (62_000_000, [0.4375, 0.22, 0.26, 0.125], 41_000),   # Northampton: ~18% above network average
     "DC2": (54_000_000, [0.36, 0.16, 0.22, 0.10], 33_000),
     "DC3": (31_000_000, [0.33, 0.17, 0.19, 0.11], 21_000),
     "DC4": (24_000_000, [0.34, 0.15, 0.18, 0.10], 17_000),
