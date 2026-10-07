@@ -10,19 +10,19 @@ LANG = {"MKT-DE": 0, "MKT-FR": 1, "MKT-UK": 2}
 
 # (idx, parent idx, pim category, [DE name, FR name, UK name])
 NODES = [
-    (0, None, "home", ["Home & Living", "Maison", "Home & Living"]),
-    (1, 0, "kitchen", ["Kitchen & Dining", "Cuisine", "Kitchen & Dining"]),
-    (2, 1, "kitchen", ["Small Kitchen Appliances", "Petit electromenager", "Small Kitchen Appliances"]),
-    (3, 1, "kitchen", ["Cookware", "Batterie de cuisine", "Cookware"]),
-    (4, 1, "kitchen", ["Drinkware", "Verres et tasses", "Drinkware"]),
-    (5, 0, "bedding", ["Bedding & Bath", "Linge de maison", "Bedding & Bath"]),
-    (6, 5, "bedding", ["Bedding", "Literie", "Bedding"]),
-    (7, 5, "bedding", ["Towels", "Serviettes", "Towels"]),
-    (8, 0, "electrics", ["Electrics", "Electricite", "Electrics"]),
-    (9, 8, "electrics", ["Smart Home", "Maison connectee", "Smart Home"]),
-    (10, 8, "electrics", ["Lighting", "Eclairage", "Lighting"]),
-    (11, 8, "electrics", ["Fans & Heating", "Ventilateurs et chauffage", "Fans & Heating"]),
-    (12, 0, "home", ["Storage & Organisation", "Rangement", "Storage & Organisation"]),
+    (0, None, "home", ["Home & Living"]),
+    (1, 0, "kitchen", ["Kitchen & Dining"]),
+    (2, 1, "kitchen", ["Small Kitchen Appliances"]),
+    (3, 1, "kitchen", ["Cookware"]),
+    (4, 1, "kitchen", ["Drinkware"]),
+    (5, 0, "bedding", ["Bedding & Bath"]),
+    (6, 5, "bedding", ["Bedding"]),
+    (7, 5, "bedding", ["Towels"]),
+    (8, 0, "electrics", ["Electrics"]),
+    (9, 8, "electrics", ["Smart Home"]),
+    (10, 8, "electrics", ["Lighting"]),
+    (11, 8, "electrics", ["Fans & Heating"]),
+    (12, 0, "home", ["Storage & Organisation"]),
 ]
 LOCAL = {  # German / French local names where they differ from the English name
     "MKT-DE": ["Heim & Wohnen", "Kueche", "Kleine Kuechengeraete", "Kochgeschirr", "Trinkgefaesse", "Bettwaren & Bad",
@@ -89,11 +89,10 @@ def generate(g):
     categories = []
     for mkt, base in MARKETS:
         for idx, parent, pim, names in NODES:
-            li = LANG[mkt]
             categories.append({
                 "category_id": cat_id(base, idx), "marketplace_id": mkt,
                 "parent_category_id": cat_id(base, parent) if parent is not None else None,
-                "name": names[li], "local_name": LOCAL[mkt][idx] if mkt in LOCAL else names[li],
+                "name": names[0], "local_name": LOCAL[mkt][idx] if mkt in LOCAL else names[0],
                 "pim_category_match": pim,
             })
     base_of = dict(MARKETS)
