@@ -6,7 +6,8 @@ def generate(g):
     r = g.rng
 
     # Get stores from master data
-    stores = [s for s in g.master("sites") if s["type"] == "store"][:50]  # Use first 50 stores
+    all_stores = [s for s in g.master("sites") if s["type"] == "store"]
+    stores = all_stores[:220]  # Include stores up to ST220 for better coverage
     sites = [s for s in g.master("sites") if s["type"] in ("store", "dc")]  # All stores and DCs for energy
 
     energy = []
