@@ -150,7 +150,7 @@ def generate(g):
     esg_categories = ["Scope 2 emissions", "Scope 3 emissions", "Energy efficiency", "Water management", "Waste management"]
     finding_types = ["Data quality", "Methodology", "Boundary change", "Verification issue"]
     for i in range(1, 11):
-        audit_date = g.date_between("-180d", "-30d")
+        audit_date = g.date_between(180, 30)
         assurance_findings.append({
             "assurance_finding_id": f"ASSU-{i:06d}",
             "esg_category": g.pick(esg_categories),
