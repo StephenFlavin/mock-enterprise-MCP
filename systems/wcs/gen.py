@@ -21,7 +21,7 @@ def generate(g):
         cls = a["asset_class"]
         ctrl = a.get("software_version") or r.choices(["3.2", "3.3", "3.4"], [2, 5, 3])[0]
         dev = None if cls in ("shuttle", "sorter") else r.choices(["1.8", "1.9", "2.0"], [2, 4, 4])[0]
-        degraded = cls not in ("shuttle", "sorter", "conveyor") and r.random() < 0.04
+        degraded = a["site_id"] == "DC3" and cls in ("motor", "gearbox", "sensor") and r.random() < 0.08
         equipment.append({
             "asset_id": a["asset_id"], "site_id": a["site_id"], "asset_class": cls,
             "controller_software_version": ctrl, "device_firmware_version": dev,
