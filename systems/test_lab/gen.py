@@ -258,64 +258,66 @@ def generate(g):
             "updated_at": as_of - timedelta(days=r.randint(0, 7))
         })
 
-    # Generate test results
+    # Generate test results (background noise: routine lab tests on non-story products and lots)
     test_results = []
-    failure_modes = ["colourfastness", "brittleness", "poor adhesion", "shrinkage", "pilling",
-                     "seam failure", "zip failure", "water penetration", "abrasion damage", "tear"]
+    routine = ["TMT-0001", "TMT-0002", "TMT-0003", "TMT-0004", "TMT-0005", "TMT-0006", "TMT-0007", "TMT-0008",
+               "TMT-0010", "TMT-0011", "TMT-0012"]
+    routine_methods = [m for m in test_methods if m["test_method_id"] in routine]
+    mode_for = {"TMT-0001": "colour transfer", "TMT-0002": "excess shrinkage", "TMT-0003": "abrasion damage",
+                "TMT-0004": "tear", "TMT-0005": "zip failure", "TMT-0006": "seam failure",
+                "TMT-0007": "water penetration", "TMT-0008": "water penetration", "TMT-0010": "carton collapse",
+                "TMT-0011": "carton collapse", "TMT-0012": "carton collapse"}
 
-    # Track valid IDs - we'll generate 30 samples, so only reference those
+    # Track valid IDs - we generate 30 samples, so only reference those
     sample_ids_to_use = [f"SMU-{i+1:06d}" for i in range(30)]
     lot_ids_to_use = [f"LOT-{i+1:06d}" for i in range(40)]
 
     for i in range(200):
         test_result_id = f"RES-{i+1:06d}"
-        test_method = r.choice(test_methods)
+        test_method = r.choice(routine_methods)
+        mid = test_method["test_method_id"]
         sku = r.choice(skus) if r.random() > 0.3 else None
         sample_id = r.choice(sample_ids_to_use) if r.random() > 0.4 else None
         lot_id = r.choice(lot_ids_to_use) if r.random() > 0.3 else None
-        material_name = r.choice(["cotton", "polyester", "nylon", "recycled nylon", "wool", "silk"]) \
+        material_name = r.choice(["cotton", "nylon", "recycled nylon", "wool", "silk", "viscose"]) \
                        if r.random() > 0.4 else None
 
-        # Determine pass/fail
-        pass_fail = r.choices(["pass", "fail", "conditional"], [0.80, 0.15, 0.05])[0]
-        failure_mode = r.choice(failure_modes) if pass_fail == "fail" else None
-
-        # Generate appropriate test values
-        if test_method["test_method_id"] == "TMT-0002":  # Shrinkage
-            test_value = f"{round(r.gauss(2.5, 1.0), 1)}%"
-            spec_min = "1.0"
-            spec_max = "4.0"
-            spec_value = "≤3.0%"
-        elif test_method["test_method_id"] in ["TMT-0003", "TMT-0004"]:  # Strength tests
-            test_value = str(r.randint(20000, 40000))
-            spec_min = "25000"
-            spec_max = "50000"
-            spec_value = "≥25000 cycles"
-        elif test_method["test_method_id"] in ["TMT-0007", "TMT-0008"]:  # DWR
-            test_value = str(r.randint(60, 100))
-            spec_min = "70"
-            spec_max = "100"
-            spec_value = "≥70"
-        elif test_method["test_method_id"] in ["TMT-0005", "TMT-0006"]:  # Strength
-            test_value = f"{round(r.gauss(50, 10), 1)} N"
-            spec_min = "40"
-            spec_max = "100"
-            spec_value = "≥40N"
-        elif test_method["test_method_id"] in ["TMT-0010", "TMT-0011", "TMT-0012"]:  # Drop/crush
-            test_value = "Pass" if pass_fail == "pass" else "Fail - fracture"
-            spec_min = None
-            spec_max = None
+        fail = r.random() < 0.13
+        spec_min = spec_max = None
+        if mid == "TMT-0001":  # rubbing grade
+            test_value = str(r.choice([2, 2.5, 3]) if fail else r.choice([4, 4.5, 5]))
+            spec_min, spec_value = "4", "grade >=4"
+        elif mid == "TMT-0002":  # shrinkage %
+            test_value = f"{round(r.uniform(3.1, 4.5) if fail else r.uniform(0.8, 2.9), 1)}%"
+            spec_max, spec_value = "3.0", "<=3.0%"
+        elif mid == "TMT-0003":  # Martindale cycles
+            test_value = str(r.randint(15000, 24500) if fail else r.randint(26000, 45000))
+            spec_min, spec_value = "25000", ">=25000 cycles"
+        elif mid == "TMT-0004":  # tear N
+            test_value = f"{round(r.uniform(10, 17.5) if fail else r.uniform(18.5, 35), 1)} N"
+            spec_min, spec_value = "18", ">=18 N"
+        elif mid == "TMT-0005":  # zip strength N
+            test_value = f"{r.randint(70, 98) if fail else r.randint(105, 150)} N"
+            spec_min, spec_value = "100", ">=100 N"
+        elif mid == "TMT-0006":  # seam strength N
+            test_value = f"{r.randint(70, 115) if fail else r.randint(125, 220)} N"
+            spec_min, spec_value = "120", ">=120 N"
+        elif mid == "TMT-0007":  # spray rating
+            test_value = str(r.choice([50, 70]) if fail else r.choice([80, 90, 100]))
+            spec_min, spec_value = "80", ">=80"
+        elif mid == "TMT-0008":  # spray rating after washes
+            test_value = str(r.randint(50, 65) if fail else r.randint(70, 90))
+            spec_min, spec_value = "70", ">=70 after 20 washes"
+        else:  # drop / crush / drop and crush
+            test_value = "Fail - carton collapse" if fail else "Pass"
             spec_value = "No damage"
-        else:
-            test_value = "Pass" if pass_fail == "pass" else "Fail"
-            spec_min = None
-            spec_max = None
-            spec_value = "Pass"
+        pass_fail = "fail" if fail else "pass"
+        failure_mode = mode_for[mid] if fail else None
 
         test_results.append({
             "test_result_id": test_result_id,
             "test_request_id": f"TST-{r.randint(1, 40):06d}",
-            "test_method_id": test_method["test_method_id"],
+            "test_method_id": mid,
             "test_method_name": test_method["name"],
             "sku": sku,
             "sample_id": sample_id,
@@ -363,11 +365,12 @@ def generate(g):
     sample_submissions = []
     for i in range(30):
         sample_id = f"SMU-{i+1:06d}"
+        prod = r.choice([p for p in products[:60] if p["sku"] not in story_skus and p["style_id"] not in story_styles])
         sample_submissions.append({
             "sample_id": sample_id,
-            "style_id": r.choice(styles),
-            "sku": r.choice(skus),
-            "supplier_id": r.choice(suppliers),
+            "style_id": prod["style_id"],
+            "sku": prod["sku"],
+            "supplier_id": prod["supplier_id"],
             "round_number": r.randint(1, 4),
             "submission_date": as_of - timedelta(days=r.randint(5, 120)),
             "status": r.choice(["received", "in_testing", "testing_complete", "rejected", "approved"]),

@@ -56,6 +56,7 @@ tables:
     cols:
       impact_id: {type: str, desc: "Impact analysis, e.g. IMP-000123"}
       sku: {desc: "Product SKU"}
+      item_type: {type: enum, values: [slow_mover, fast_mover], desc: "Demand class of the SKU"}
       forecast_level: {type: enum, values: [store_sku, cluster, category], desc: "Forecasting level"}
       analysis_date: {type: date, desc: "Date of analysis"}
       mape_pct: {type: float, desc: "Mean absolute percentage error of forecast"}
@@ -69,107 +70,159 @@ tables:
 
 tools:
   - name: get_store_allocations_for_product
-    desc: Store allocations for a product by status and date range. Use to trace which stores got stock and when.
+    desc: Store allocation decisions for a SKU or style (qty allocated, received, status, source DC, reason). Use to trace which stores got stock and which allocations were cancelled.
     kind: sql
     args:
-      sku: {required: true}
-      status: {type: enum, values: [allocated, in_transit, received, cancelled, partial], desc: "Filter by allocation status (default all)"}
-      allocation_from: {col: allocation_date, op: ">=", type: date, default: "-90d", desc: "Allocations on or after"}
+      sku: {desc: "Product SKU, e.g. SKU-101904. Give sku or style_id"}
+      style_id: {desc: "Style id, e.g. STY-5520, covers all its SKUs"}
+      status: {type: enum, values: [allocated, in_transit, received, cancelled, partial], desc: "Allocation status (default all)"}
+      store_id: {desc: "Store receiving the allocation, e.g. ST214"}
+      allocation_from: {type: date, default: "-90d", desc: "Allocations made on or after"}
+      allocation_to: {type: date, desc: "Allocations made on or before"}
     sql: |
       SELECT a.allocation_id, a.sku, a.store_id, s.name AS store_name, s.region,
              a.qty_allocated, a.qty_received, a.allocation_date, a.source_dc, a.reason, a.status
       FROM store_allocations a
       JOIN master.sites s ON s.site_id = a.store_id
-      WHERE a.sku = $sku
+      JOIN master.products p ON p.sku = a.sku
+      WHERE ($sku IS NULL OR a.sku = $sku)
+        AND ($style_id IS NULL OR p.style_id = $style_id)
         AND ($status IS NULL OR a.status = $status)
+        AND ($store_id IS NULL OR a.store_id = $store_id)
         AND a.allocation_date >= CAST($allocation_from AS DATE)
+        AND ($allocation_to IS NULL OR a.allocation_date <= CAST($allocation_to AS DATE))
       ORDER BY a.allocation_date DESC, a.store_id
-    limit: 100
-    example: {sku: "SKU-101897"}
+    limit: 200
+    example: {style_id: STY-5520}
 
   - name: get_store_stock_and_sales_by_region
-    desc: Current stock and sales velocity by store region. Use to identify over/under-stocked regions for rebalancing.
+    desc: Latest store stock, weekly sales, days of cover and stockout stores per trading region for a SKU. Use to find under- and over-stocked regions before rebalancing.
     kind: sql
     args:
       sku: {required: true}
-      region: {type: str, desc: "Trading region (default all)"}
+      region: {type: str, desc: "Trading region, e.g. UK North (default all)"}
     sql: |
       SELECT r.region, r.store_count, r.total_on_hand, r.total_allocated, r.available_units,
-             r.days_of_cover, r.weekly_sales_units, r.out_of_stock_count,
+             round(r.available_units / (nullif(r.weekly_sales_units, 0) / 7.0), 1) AS days_of_cover,
+             r.weekly_sales_units, r.out_of_stock_count,
              round(r.total_on_hand * p.unit_cost_gbp, 2) AS value_at_cost_gbp,
-             CASE WHEN r.days_of_cover < 7 THEN 'at_risk' WHEN r.days_of_cover > 60 THEN 'overstocked' ELSE 'balanced' END AS status
+             CASE WHEN r.available_units / (nullif(r.weekly_sales_units, 0) / 7.0) < 7 THEN 'at_risk'
+                  WHEN r.available_units / (nullif(r.weekly_sales_units, 0) / 7.0) > 60 THEN 'overstocked'
+                  ELSE 'balanced' END AS status
       FROM regional_stock_summary r
       JOIN master.products p ON p.sku = r.sku
       WHERE r.sku = $sku
-        AND r.summary_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
-        AND ($region IS NULL OR r.region = $region)
-      ORDER BY r.days_of_cover ASC
+        AND r.summary_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        AND ($region IS NULL OR lower(r.region) = lower($region))
+      QUALIFY row_number() OVER (PARTITION BY r.region ORDER BY r.summary_date DESC) = 1
+      ORDER BY days_of_cover ASC
     limit: 20
     example: {sku: "K-1700"}
 
   - name: calculate_rebalance_benefit
-    desc: "Rebalance benefit analysis: transfer cost vs sales uplift potential. Returns inputs plus net benefit and ROI."
+    desc: Transfer cost versus sales captured if surplus stock moves to regions short of cover over the remaining selling weeks. Returns units, cost, sales, net benefit and ROI per destination region.
     kind: sql
     args:
       sku: {required: true}
-      scenario: {type: str, default: "standard", desc: "Scenario to analyze (e.g., standard, port_closure_2w, port_closure_4w)"}
+      region_from: {type: str, desc: "Supplying region, e.g. UK South (default every region with surplus)"}
+      region_to: {type: str, desc: "Receiving region, e.g. UK North (default every region below max_cover_days)"}
+      selling_weeks: {type: float, default: 16, desc: "Selling weeks left in the season"}
+      max_cover_days: {type: float, default: 7, desc: "Only receive into regions with less cover than this many days"}
+      cost_per_unit_gbp: {type: float, default: 0.45, desc: "Transfer cost per unit in GBP, including handling"}
     sql: |
-      SELECT a.analysis_id, a.sku, a.scenario_name, a.region_from, a.region_to,
-             a.units_to_transfer, a.transfer_cost_gbp, a.potential_sales_impact_gbp,
-             a.net_benefit_gbp, a.benefit_pct,
-             CASE WHEN a.net_benefit_gbp > 0 THEN 'YES' ELSE 'NO' END AS recommend_rebalance,
-             CASE WHEN a.transfer_cost_gbp > 0 THEN round(a.potential_sales_impact_gbp / a.transfer_cost_gbp, 1) ELSE 0 END AS roi_multiple,
-             'net_benefit = potential_sales_impact - transfer_cost' AS formula
-      FROM rebalance_analysis a
-      WHERE a.sku = $sku
-        AND a.scenario_name LIKE '%' || $scenario || '%'
-        AND a.analysis_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
-      ORDER BY a.analysis_date DESC, a.net_benefit_gbp DESC
-      LIMIT 5
-    limit: 5
-    example: {sku: "SKU-101897", scenario: "standard"}
+      WITH latest AS (
+        SELECT r.region, r.available_units, r.weekly_sales_units, p.retail_price_gbp, p.unit_cost_gbp
+        FROM regional_stock_summary r JOIN master.products p ON p.sku = r.sku
+        WHERE r.sku = $sku AND r.summary_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        QUALIFY row_number() OVER (PARTITION BY r.region ORDER BY r.summary_date DESC) = 1
+      ), calc AS (
+        SELECT *, r_cover.cover_days,
+               greatest(0, weekly_sales_units * $selling_weeks - available_units) AS shortfall,
+               greatest(0, available_units - weekly_sales_units * $selling_weeks) AS surplus
+        FROM latest,
+             LATERAL (SELECT available_units / (nullif(weekly_sales_units, 0) / 7.0) AS cover_days) r_cover
+      ), src AS (
+        SELECT sum(surplus) AS pool, string_agg(region, ', ') AS from_regions
+        FROM calc WHERE surplus > 0 AND ($region_from IS NULL OR lower(region) = lower($region_from))
+      ), dst AS (
+        SELECT * FROM calc
+        WHERE shortfall > 0 AND (lower(region) = lower($region_to) OR ($region_to IS NULL AND cover_days < $max_cover_days))
+      ), tot AS (SELECT sum(shortfall) AS total_shortfall FROM dst)
+      SELECT $sku AS sku, src.from_regions AS region_from, d.region AS region_to,
+             round(d.cover_days, 1) AS cover_days_before, d.shortfall AS units_short_over_season,
+             CAST(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) AS INTEGER) AS units_to_transfer,
+             round(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * $cost_per_unit_gbp, 2) AS transfer_cost_gbp,
+             round(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * d.retail_price_gbp, 2) AS sales_captured_gbp,
+             round(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * (d.retail_price_gbp - d.unit_cost_gbp), 2) AS margin_captured_gbp,
+             round(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * d.retail_price_gbp
+                   - floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * $cost_per_unit_gbp, 2) AS net_benefit_gbp,
+             round(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * d.retail_price_gbp
+                   / nullif(floor(least(d.shortfall, src.pool * d.shortfall / tot.total_shortfall)) * $cost_per_unit_gbp, 0), 1) AS roi_multiple,
+             $selling_weeks AS selling_weeks,
+             'net_benefit = units x retail price - units x transfer cost; units = min(shortfall over selling weeks, surplus share)' AS formula
+      FROM dst d, src, tot
+      WHERE src.pool > 0
+      ORDER BY d.cover_days
+    limit: 10
+    example: {sku: "K-1700"}
 
   - name: calculate_stock_reallocation_plan
-    desc: Optimal stock reallocation plan across network for a scenario (e.g. port closure). Shows transfer quantities and impact.
+    desc: Planned stock moves between regions for a disruption scenario such as port_closure_2w or port_closure_4w, by SKU or product category. Returns units, cost, sales protected and net benefit per route.
     kind: sql
     args:
-      sku: {required: true}
-      scenario: {type: str, default: "standard", desc: "Scenario name (e.g. port_closure_2w, port_closure_4w)"}
+      scenario: {type: str, default: "port_closure_2w", desc: "Scenario: port_closure_2w, port_closure_4w or standard"}
+      category: {type: str, desc: "Product category, e.g. Smart Home"}
+      sku: {desc: "Product SKU, e.g. SKU-101484"}
     sql: |
-      SELECT a.region_from, a.region_to, sum(a.units_to_transfer) AS total_units,
+      SELECT a.scenario_name, a.region_from, a.region_to, count(DISTINCT a.sku) AS sku_count,
+             sum(a.units_to_transfer) AS total_units,
              round(sum(a.transfer_cost_gbp), 2) AS total_transfer_cost_gbp,
-             round(sum(a.potential_sales_impact_gbp), 2) AS total_sales_uplift_gbp,
+             round(sum(a.potential_sales_impact_gbp), 2) AS total_sales_protected_gbp,
              round(sum(a.net_benefit_gbp), 2) AS total_net_benefit_gbp,
-             count(*) AS route_count,
-             'Total benefit from all rebalance moves in scenario' AS formula
+             count(*) AS move_count,
+             'net benefit = sales protected - transfer cost, summed over the moves on the route' AS formula
       FROM rebalance_analysis a
-      WHERE a.sku = $sku
-        AND a.scenario_name LIKE '%' || $scenario || '%'
+      JOIN master.products p ON p.sku = a.sku
+      WHERE lower(a.scenario_name) = lower($scenario)
+        AND ($sku IS NULL OR a.sku = $sku)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
         AND a.status IN ('proposed', 'approved', 'executed')
-        AND a.analysis_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
-      GROUP BY a.region_from, a.region_to
-      ORDER BY a.region_from, total_net_benefit_gbp DESC
+        AND a.analysis_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      GROUP BY a.scenario_name, a.region_from, a.region_to
+      ORDER BY total_net_benefit_gbp DESC
     limit: 20
-    example: {sku: "SKU-101897", scenario: "port_closure_2w"}
+    example: {scenario: "port_closure_2w", category: "Smart Home"}
 
   - name: calculate_replenishment_impact
-    desc: Replenishment performance by forecast level (store-SKU vs cluster vs category). Shows accuracy, costs and stockout risk trade-offs.
+    desc: Replenishment outcome by forecast level (store_sku, cluster, category) for one SKU or all slow movers - MAPE, safety stock, dead stock, stockouts, lost sales and total cost.
     kind: sql
     args:
-      sku: {required: true}
-      include_all_levels: {type: bool, default: true, desc: "Show all forecast levels or just recommended (default all)"}
+      sku: {desc: "Product SKU, e.g. SKU-102898 (default all SKUs of the item type)"}
+      item_type: {type: enum, values: [slow_mover, fast_mover], default: slow_mover, desc: "Demand class to compare when no sku is given"}
+      include_all_levels: {type: bool, default: true, desc: "False returns only the lowest-cost level"}
     sql: |
-      SELECT f.forecast_level, f.mape_pct, f.replenishment_frequency_days,
-             f.total_safety_stock, f.total_dead_stock, f.stockout_incidents, f.lost_sales_gbp,
-             round(f.carrying_cost_gbp, 2) AS carrying_cost_gbp,
-             round(f.total_cost_gbp, 2) AS total_cost_gbp,
-             CASE WHEN f.forecast_level = 'store_sku' THEN 'Most accurate but highest effort'
-                  WHEN f.forecast_level = 'cluster' THEN 'Moderate accuracy & effort'
+      WITH agg AS (
+        SELECT f.forecast_level, count(DISTINCT f.sku) AS sku_count, round(avg(f.mape_pct), 1) AS mape_pct,
+               round(avg(f.replenishment_frequency_days), 1) AS replenishment_cycle_days,
+               sum(f.total_safety_stock) AS total_safety_stock, sum(f.total_dead_stock) AS total_dead_stock,
+               sum(f.stockout_incidents) AS stockout_incidents, round(sum(f.lost_sales_gbp), 2) AS lost_sales_gbp,
+               round(sum(f.carrying_cost_gbp), 2) AS carrying_cost_gbp, round(sum(f.total_cost_gbp), 2) AS total_cost_gbp
+        FROM forecast_level_impact f
+        WHERE ($sku IS NULL OR f.sku = $sku)
+          AND ($sku IS NOT NULL OR f.item_type = $item_type)
+          AND f.analysis_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
+        GROUP BY f.forecast_level
+      )
+      SELECT forecast_level, sku_count, mape_pct,
+             round(mape_pct - max(mape_pct) FILTER (WHERE forecast_level = 'store_sku') OVER (), 1) AS mape_pts_vs_store_sku,
+             replenishment_cycle_days, total_safety_stock, total_dead_stock, stockout_incidents, lost_sales_gbp,
+             carrying_cost_gbp, total_cost_gbp,
+             CASE WHEN forecast_level = 'store_sku' THEN 'Most accurate but highest effort'
+                  WHEN forecast_level = 'cluster' THEN 'Moderate accuracy and effort'
                   ELSE 'Least accurate but lowest effort' END AS trade_off,
              'total_cost = lost_sales + carrying_cost' AS formula
-      FROM forecast_level_impact f
-      WHERE f.sku = $sku
-        AND f.analysis_date >= CAST($as_of AS DATE) - INTERVAL 30 DAY
-      ORDER BY f.total_cost_gbp ASC
+      FROM agg
+      QUALIFY $include_all_levels OR row_number() OVER (ORDER BY total_cost_gbp) = 1
+      ORDER BY total_cost_gbp ASC
     limit: 10
-    example: {sku: "SKU-101897"}
+    example: {item_type: slow_mover}

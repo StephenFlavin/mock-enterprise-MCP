@@ -182,7 +182,7 @@ def generate(g):
     # ------------------------------------------------------------------ management cost per supplier
     for s in live:
         sid, spend = s["supplier_id"], float(s["annual_spend_gbp"])
-        heavy = 2.3 if sid in ("SUP-0005", "SUP-0048", "SUP-0045", "SUP-0043") else 1.0
+        heavy = 1.7 if sid in ("SUP-0005", "SUP-0048", "SUP-0045", "SUP-0043") else 1.0
         hours = int((70 + 26 * (spend / 1e5) ** 0.5 + r.randint(-12, 18)) * heavy)
         audit = round((1800 + 140 * (spend / 1e5) ** 0.5) * (1.8 if heavy > 1 else 1) + r.randint(0, 900), -1)
         far = s["country"] in ("CN", "VN", "IN", "BD")

@@ -392,7 +392,7 @@ tools:
     example: {category_focus: Womenswear}
 
   - name: calculate_supplier_segmentation_score
-    desc: Score suppliers 0-100 for invest, maintain or exit from performance, spend and management cost. Leave supplier blank to rank all; filter by recommendation.
+    desc: Score suppliers 0-100 for invest, maintain or exit from performance, spend and management cost. Exit means performance under 70 and small or costly. Leave supplier blank to rank all.
     kind: sql
     args:
       supplier_id: {required: false}
@@ -401,8 +401,10 @@ tools:
     sql: |
       WITH perf AS (
         SELECT supplier_id, AVG(overall_score) AS perf_score, AVG(on_time_delivery_pct) AS otd
-        FROM supplier_scorecards
-        QUALIFY row_number() OVER (PARTITION BY supplier_id ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
+        FROM (
+          SELECT * FROM supplier_scorecards
+          QUALIFY row_number() OVER (PARTITION BY supplier_id ORDER BY scorecard_month DESC) <= CAST($months_back AS INT)
+        ) recent
         GROUP BY supplier_id
       ),
       base AS (
@@ -426,7 +428,7 @@ tools:
              CASE WHEN perf_score < 70 AND (spend_rank_pct < 50 OR cost_pct > 5) THEN 'Exit'
                   WHEN perf_score >= 82 AND spend_rank_pct >= 50 THEN 'Invest'
                   ELSE 'Maintain' END AS recommendation,
-             'score = 0.5 x performance + 0.3 x spend rank + 0.2 x cost efficiency; Exit if performance < 70 and small or costly; Invest if performance >= 82 and above-median spend' AS formula
+             '0.5 x performance + 0.3 x spend rank + 0.2 x cost efficiency' AS formula
       FROM scored
       WHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)
         AND ($recommendation IS NULL OR $recommendation = CASE

@@ -1764,7 +1764,7 @@ tools:
   example:
     site_id: DC1
 - name: get_slow_moving_provision
-  desc: Slow-moving and obsolete provision balance by category with the prior-year balance and change, plus an ALL row. Use to compare with last year.
+  desc: Slow-moving and obsolete provision booked by category with policy provision, shortfall, prior-year balance and change, plus an ALL row.
   kind: sql
   args:
     site_id:
@@ -1791,21 +1791,23 @@ tools:
       WHERE ($site_id IS NULL OR m.site_id = $site_id) AND ($category IS NULL OR m.category = $category) GROUP BY m.category
     ), a AS (
       SELECT pr.category, sum(i.total_value_gbp) FILTER (WHERE i.status = 'slow_moving') AS slow_value,
-             sum(i.total_value_gbp) FILTER (WHERE i.status = 'obsolete') AS obs_value
+             sum(i.total_value_gbp) FILTER (WHERE i.status = 'obsolete') AS obs_value,
+             sum(CASE i.status WHEN 'slow_moving' THEN i.total_value_gbp * 0.15 WHEN 'obsolete' THEN i.total_value_gbp * 0.50 ELSE 0 END) AS policy_prov
       FROM inventory_by_site i JOIN master.products pr ON pr.sku = i.sku
       WHERE i.as_of_date = (SELECT max(as_of_date) FROM inventory_by_site WHERE as_of_date <= CAST($as_of_date AS DATE))
         AND ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR pr.category = $category) GROUP BY pr.category
     ), j AS (
       SELECT c.category, c.gross, c.prov, coalesce(a.slow_value, 0) AS slow_value, coalesce(a.obs_value, 0) AS obs_value,
-             coalesce(p.prov, 0) AS prior_prov, coalesce(p.gross, 0) AS prior_gross
+             coalesce(a.policy_prov, 0) AS policy_prov, coalesce(p.prov, 0) AS prior_prov, coalesce(p.gross, 0) AS prior_gross
       FROM c LEFT JOIN p ON p.category = c.category LEFT JOIN a ON a.category = c.category
     ), u AS (
-      SELECT 'ALL' AS category, sum(gross) AS gross, sum(prov) AS prov, sum(slow_value) AS slow_value, sum(obs_value) AS obs_value,
+      SELECT 'ALL' AS category, sum(gross) AS gross, sum(prov) AS prov, sum(slow_value) AS slow_value, sum(obs_value) AS obs_value, sum(policy_prov) AS policy_prov,
              sum(prior_prov) AS prior_prov, sum(prior_gross) AS prior_gross FROM j
       UNION ALL SELECT * FROM j
     )
     SELECT category, round(gross, 2) AS gross_value_gbp, round(slow_value, 2) AS slow_moving_value_gbp, round(obs_value, 2) AS obsolete_value_gbp,
            round(prov, 2) AS provision_gbp, round(prov / NULLIF(gross, 0) * 100, 2) AS provision_pct_of_value,
+           round(policy_prov, 2) AS policy_provision_gbp, round(policy_prov - prov, 2) AS shortfall_vs_policy_gbp,
            round(prior_prov, 2) AS prior_year_provision_gbp, round(prov - prior_prov, 2) AS change_vs_prior_year_gbp,
            round((prov / NULLIF(prior_prov, 0) - 1) * 100, 1) AS change_vs_prior_year_pct
     FROM u ORDER BY (category <> 'ALL'), provision_gbp DESC

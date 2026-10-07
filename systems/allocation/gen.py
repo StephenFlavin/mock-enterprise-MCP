@@ -1,6 +1,10 @@
 """Allocation data: store allocations, regional summaries, rebalance analysis, and replenishment impact."""
 from datetime import timedelta
 
+# Slow movers (network demand <= 20 units a week) that carry the forecast-level comparison story in seed/.
+SLOW_MOVERS = ["SKU-102898", "SKU-106034", "SKU-102289", "SKU-104130", "SKU-104053", "SKU-105936", "SKU-105985",
+               "SKU-101414", "SKU-100049", "SKU-105054", "SKU-106083", "SKU-100882", "SKU-106139"]
+
 
 def generate(g):
     r = g.rng
@@ -10,8 +14,13 @@ def generate(g):
     forecast_impacts = []
 
     stores = [s for s in g.master("sites") if s["type"] == "store"]
-    products = g.master("products")[:100]  # First 100 SKUs
-    regions = set(s["region"] for s in stores if s["region"])
+    # Story SKUs are planted from seed/*.csv; keep generated noise away from them (style 5520, K-1700, Smart Home
+    # lines used in the port-closure plan, and the slow movers used in the forecast-level comparison).
+    story_skus = {p["sku"] for p in g.master("products")
+                  if p["style_id"] == "STY-5520" or p["sku"] == "K-1700" or p["category"] == "Smart Home"}
+    story_skus |= set(SLOW_MOVERS)
+    products = [p for p in g.master("products")[:140] if p["sku"] not in story_skus][:100]
+    regions = sorted(set(s["region"] for s in stores if s["region"]))
     dcs = [s for s in g.master("sites") if s["type"] == "dc"]
 
     # Generate store allocations: one or more allocation decisions per store-product combo in past 90 days
@@ -46,14 +55,13 @@ def generate(g):
     for product in products[:40]:
         sku = product["sku"]
         for region in regions:
-            summary_date = g.as_of - timedelta(days=r.randint(0, 7))
+            summary_date = g.as_of - timedelta(days=r.randint(0, 6))
             region_stores = [s for s in stores if s["region"] == region]
             weekly_sales = r.randint(50, 500)
             on_hand = r.randint(100, 2000)
             allocated = r.randint(0, on_hand // 3)
             available = on_hand - allocated
             days_cover = available / max(1, weekly_sales / 7)
-            analysis_id = f"RSS-{len(regional_summaries) + 1:06d}"
             regional_summaries.append({
                 "sku": sku,
                 "region": region,
@@ -71,7 +79,7 @@ def generate(g):
     scenarios = ["standard", "port_closure_2w", "port_closure_4w"]
     for product in products[:30]:
         sku = product["sku"]
-        region_list = list(regions)
+        region_list = [x for x in regions if x != "US"]
         for scenario in scenarios:
             # 1-2 analyses per product-scenario in last 7 days
             for _ in range(r.choice([1, 1, 2])):
@@ -128,6 +136,7 @@ def generate(g):
             forecast_impacts.append({
                 "impact_id": impact_id,
                 "sku": sku,
+                "item_type": "fast_mover",
                 "forecast_level": level,
                 "analysis_date": analysis_date,
                 "mape_pct": round(mape, 1),
