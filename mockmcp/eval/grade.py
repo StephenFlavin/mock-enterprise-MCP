@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .. import bench
 from . import checks as C
+from . import derive as D
 from . import judge as J
 from .schema import CATEGORIES, OUTCOMES, PASSING, SEVERITY, TRAP_PASSING, modern
 
@@ -249,45 +250,223 @@ def compact_outputs(ref_out: list[dict], needles: list[str], strict: bool = Fals
     return out
 
 
-def grounding_of(checks: dict, answers: dict, trace: list[dict], task: dict) -> dict:
-    """ids and numbers in the answers that are in no tool result (checks), minus the numbers code derives from the
-    results (decompose.derivable); on traps also unreachable facts stated in the answer and absent from every result."""
-    from .judge.decompose import _sentences, derivable
-    texts = [t.get("text") or "" for t in answers.get("turns", [])]
-    results = [c.get("result") or "" for c in trace if not c.get("is_error")]
-    flagged, derived = list(checks.get("ids_not_in_results") or []), {}
-    for v in dict.fromkeys(n.rstrip(",") for n in checks.get("numbers_not_in_results") or []):
-        sents = [s for a in texts for s in _sentences(a) if v in s] or [v]
-        how = next((h for s in sents if (h := derivable(v, s, results))), None)
-        if how:
-            derived[v] = how
-        else:
-            flagged.append(v)
-    out = {"values_in_no_tool_result": flagged, "derived_by_code": derived}
-    if task.get("trap"):
-        text, res = "\n\n".join(texts), "\n".join(results)
-        un = [f for f in (task.get("reference") or {}).get("unreachable_facts") or []
-              if bench._has(f, text) and not bench._has(f, res, table=True)]
-        if un:
-            out["unreachable_facts_in_answer"] = un
+GROUND_ROWS_EACH, GROUND_ROWS_TOTAL, ROW_CHARS = 6, 12_000, 240   # trace rows shown per flagged value / in all / per row
+DATE_ARG = re.compile(r"date|from|_to$|until|since|start|end|period|days|weeks|months|year|quarter|window", re.I)
+
+
+def _where(v: str, texts: list[str]) -> tuple[int, str]:
+    """(turn, sentence) of the first place an answer states `v`."""
+    for i, a in enumerate(texts):
+        for s in D._sentences(a):
+            if v in s:
+                return i, s
+    return max(0, len(texts) - 1), v
+
+
+def _date_args(args: dict) -> dict:
+    return {k: v for k, v in (args or {}).items() if DATE_ARG.search(k)}
+
+
+def _value_rows(v: str, sentence: str, label: str, calls: list[tuple[int, dict]], limit: int = GROUND_ROWS_EACH) -> list[dict]:
+    """Trace rows / result lines that mention the value's neighbours (ids and figures in its sentence) or its label
+    words, best first, with the call's date-window args: what the judge needs to check a derivation by hand."""
+    near = [n.text for n in D.numbers(sentence) if n.text != v and len(re.sub(r"\D", "", n.text)) >= 2]
+    rx = [re.compile(r"(?<![\d.])" + re.escape(bench._norm(n).rstrip("kmbn")) + r"(?![\d])") for n in near]
+    ids = [i.lower() for i in bench.ID_RX.findall(sentence)]
+    words = {w for w in D.tokens(label + " " + sentence) if len(w) >= 4 and "#" not in w} - D.GENERIC
+    scored = []
+    for i, c in calls:
+        lines = (c.get("result") or "").splitlines()
+        for k, ln in enumerate(lines[1:], 1):
+            low = ln.lower()
+            s = 3 * sum(1 for x in ids if x in low) + 2 * sum(1 for r in rx if r.search(ln)) + \
+                sum(1 for w in words if w in low)
+            if s >= 2:
+                scored.append((-s, i, k, c, ln))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]))
+    out = []
+    for _, i, _, c, ln in scored[:limit]:
+        row = {"call": i, "tool": f"{c.get('server')}.{c['tool']}", "text": ln[:ROW_CHARS]}
+        if (da := _date_args(c.get("args"))):
+            row["args"] = da
+        out.append(row)
     return out
 
 
-def actions_of(task: dict, checks: dict) -> dict:
-    """Every write the model performed (its own catalogue description, whether it failed, matched an expected write, and
-    the timing rule code applied), the expected writes and the approval metadata."""
+def _label(v: str, sentence: str, text: str) -> str:
+    cx = D.context(v, sentence, text)
+    if cx is not None:
+        return cx.label[:80]
+    i = sentence.find(v)
+    return " ".join(re.findall(r"[A-Za-z][\w'%-]*", sentence[max(0, i - 60):max(0, i)])[-6:])
+
+
+def grounding_of(checks: dict, answers: dict, trace: list[dict], task: dict) -> dict:
+    """What code knows about the answer's figures and ids that are in no tool result (checks):
+    `cleared` {value: how}: restated (rounding, units, k/m), derived from tool rows or the answer's own figures (with the
+    operands), template ids and years in dates; `values`: the rest, with their sentence, turn, label and the trace rows
+    the judge needs to check them; `arithmetic_errors`: derived figures recomputed and found wrong (Rule A);
+    `external_claims`: sentences citing outside sources. `values_in_no_tool_result` / `derived_by_code` are the older
+    names of the uncleared ids and numbers / of `cleared`. On traps, unreachable facts stated in the answer."""
+    texts = [t.get("text") or "" for t in answers.get("turns", [])]
+    ok = [c for c in trace if not c.get("is_error")]
+    results = [c.get("result") or "" for c in ok]
+    calls = [(i, c) for i, c in enumerate(trace) if not c.get("is_error")]
+    cleared = dict(checks.get("values_skipped") or {})
+    pending = []
+    for v in checks.get("ids_not_in_results") or []:
+        turn, s = _where(v, texts)
+        if D.is_template_id(v, s):
+            cleared[v] = "template id"
+        else:
+            pending.append((v, "id", s, turn))
+    for v in dict.fromkeys(n.rstrip(",") for n in checks.get("numbers_not_in_results") or []):
+        turn, s = _where(v, texts)
+        how = D.derive(v, s, "\n\n".join(texts) or s, results, ok)
+        if how:
+            cleared[v] = how
+        else:
+            pending.append((v, "number", s, turn))
+    external, flagged = [], {p[0] for p in pending}
+    for turn, a in enumerate(texts):
+        for e in D.external_claims(a, results):   # its figures (any size) are in no tool result
+            external.append({"sentence": e["sentence"][:400], "turn": turn, "has_figures": e["has_figures"], "labelled": e["labelled"]})
+            pending = [(v, "external" if k == "number" and v in e["sentence"] else k, s, t) for v, k, s, t in pending]
+            for f in e["figures"]:
+                f = f.rstrip("%")
+                if f not in flagged and f not in cleared:
+                    flagged.add(f)
+                    pending.append((f, "external", e["sentence"], turn))
+    errors = [{**e, "turn": turn} for turn, a in enumerate(texts) for e in D.recompute(a, results)]
+    wrong = {e["value"] for e in errors}
+    pending = [p for p in pending if p[0] not in wrong]
+    cleared = {k: v for k, v in cleared.items() if k not in wrong}
+    if task.get("trap"):
+        text, res = "\n\n".join(texts), "\n".join(results)
+        for f in (task.get("reference") or {}).get("unreachable_facts") or []:
+            if bench._has(f, text) and not bench._has(f, res, table=True):
+                fs = f if isinstance(f, list) else [f]
+                v = next((str(x) for x in fs if str(x) in text), str(fs[0]))
+                turn, s = _where(v, texts)
+                pending.append((v, "unreachable", s, turn))
+    values, budget = [], GROUND_ROWS_TOTAL
+    for v, kind, s, turn in pending:
+        lab = _label(v, s, texts[turn] if texts else s)
+        rows = _value_rows(v, s, lab, calls) if budget > 0 else []
+        while rows and sum(len(r["text"]) for r in rows) > budget:
+            rows.pop()
+        budget -= sum(len(r["text"]) for r in rows)
+        values.append({"value": v, "kind": kind, "sentence": s[:400], "turn": turn, "label": lab, "rows": rows})
+    out = {"values_in_no_tool_result": [x["value"] for x in values if x["kind"] in ("id", "number")],
+           "derived_by_code": cleared, "values": values, "cleared": cleared, "arithmetic_errors": errors,
+           "external_claims": external}
+    un = [x["value"] for x in values if x["kind"] == "unreachable"]
+    if un:
+        out["unreachable_facts_in_answer"] = [f for f in (task.get("reference") or {}).get("unreachable_facts") or []
+                                              if any(str(x) in un for x in (f if isinstance(f, list) else [f]))]
+    return out
+
+
+FAILED_WRITE = re.compile(r"^\W*(?:error|failed|rejected|not allowed|denied|unknown|invalid|no (?:such|matching)|"
+                          r"cannot|can't|could not|nothing (?:to|was))", re.I)
+CONDITIONAL = re.compile(
+    r"\b(?:once|when|after|as soon as|if|only if|provided)\b[^.?!\n]{0,60}?\b(?:I|we)\b[^.?!\n]{0,30}?\b(?:confirm|approve|agree|"
+    r"say so|sign off|give (?:you )?the go|okay|ok|check|review|tell you|let you know|reply|come back)"
+    r"|\bonce (?:it|this|that|they|everything|the \w+) (?:looks?|is|are|seems?) (?:right|good|fine|ok|correct)"
+    r"|\b(?:ask|check with) me (?:first|before)|\bdon'?t\b[^.?!\n]{0,40}\buntil\b|\bwait (?:for|until) (?:my|I|me)\b", re.I)
+
+
+def _fixed(args: dict, said: str) -> dict:
+    """{arg: value} for args whose value the user stated in their own words."""
+    low, nums = said.lower(), [n.value for n in D.numbers(said)]
+    out = {}
+    for k, v in (args or {}).items():
+        vs = v if isinstance(v, list) else [v]
+        hit = []
+        for x in vs:
+            if isinstance(x, bool) or x is None:
+                continue
+            if isinstance(x, (int, float)) or re.fullmatch(r"-?\d+(?:\.\d+)?", str(x).strip()):
+                hit.append(any(abs(float(x) - n) < 1e-9 for n in nums))
+            elif bench._idlike(str(x)) or len(str(x).strip()) >= 4:
+                hit.append(str(x).strip().lower() in low)
+            else:
+                hit.append(False)
+        if hit and all(hit):
+            out[k] = v
+    return out
+
+
+def actions_of(task: dict, checks: dict, trace: list[dict] | None = None) -> dict:
+    """Every write the model performed (its own catalogue description, whether it failed or had no effect, matched an
+    expected write, the timing rule code applied, the user's own words asking for it and the args they fixed), the
+    expected writes (one acceptable way: `reference_is_one_way`) and the approval metadata."""
     from .judge.decompose import write_timing
     trap = task.get("trap") or {}
+    turns = task.get("turns", [])
+    wcalls = [c for c in trace or [] if c.get("rw") == "W"]
     perf = []
-    for w in checks.get("writes") or []:
+    for k, w in enumerate(checks.get("writes") or []):
         t = _tools_of(w.get("server") or "").get(w["tool"]) or {}
         timing = write_timing(w, task)
-        perf.append({"turn": w.get("turn", 0), "tool": f"{w.get('server')}.{w['tool']}", "description": t.get("description", ""),
+        turn = w.get("turn", 0)
+        asked = [i for i, u in enumerate(turns[:turn + 1]) if u.get("writes_requested")]
+        if asked and len((turns[asked[-1]].get("text") or "")) < 80 and len(asked) > 1:
+            asked = asked[-2:]
+        else:
+            asked = asked[-1:]
+        said = "\n\n".join(turns[i].get("text", "") for i in range(min(turn + 1, len(turns))))
+        res = (wcalls[k].get("result") or "") if k < len(wcalls) else ""
+        perf.append({"turn": turn, "tool": f"{w.get('server')}.{w['tool']}", "description": t.get("description", ""),
                      "args": w.get("args") or {}, "failed": bool(w.get("is_error")), "expected": bool(w.get("expected")),
-                     "code_timing": {"category": timing[0], "why": timing[1]} if timing else None})
+                     "code_timing": {"category": timing[0], "why": timing[1]} if timing else None,
+                     "user_wording": "\n\n".join(turns[i].get("text", "") for i in asked) or None,
+                     "fixed_by_user": _fixed(w.get("args") or {}, said),
+                     "had_effect": not w.get("is_error") and not FAILED_WRITE.search(res[:200]),
+                     "reference_is_one_way": True})
     exp = [{"turn": e.get("turn", 0), "tool": f"{e['system']}.{e['tool']}" if e.get("system") else e["tool"], "args": e.get("args") or {}}
            for e in (task.get("writes") or {}).get("expected") or []]
     return {"performed": perf, "expected": exp, "approval": trap.get("approval")}
+
+
+def conversation_of(task: dict, answers: dict, trace: list[dict]) -> list[dict]:
+    """The user turns and answers, with `conditional` (the turn asks for an action only on a condition, e.g. 'once I
+    confirm') and `ids_available` ({id: did a tool result or an earlier turn contain it}) when the turn names ids;
+    both are left out when false / empty."""
+    texts = [t.get("text") or "" for t in answers.get("turns", [])]
+    of_call = C.turn_of_calls(trace, answers) if trace else []
+    conv = []
+    for i, t in enumerate(task.get("turns", [])):
+        u = t.get("text", "")
+        c = {"turn": i, "user": u, "asks_for_action": bool(t.get("writes_requested")),
+             "approval_needed": bool(t.get("approval_needed")), "assistant": texts[i] if i < len(texts) else ""}
+        if CONDITIONAL.search(u):
+            c["conditional"] = True
+        ids = list(dict.fromkeys(bench.ID_RX.findall(u)))
+        if ids:
+            before = "\n".join(x.get("text", "") for x in task.get("turns", [])[:i]).lower() + "\n" + \
+                "\n".join((cl.get("result") or "") for cl, tn in zip(trace, of_call) if tn <= i and not cl.get("is_error")).lower()
+            c["ids_available"] = {x: x.lower() in before for x in ids}
+        conv.append(c)
+    return conv
+
+
+def fact_forms(facts: list[dict], ref_out: list[dict], answer: str) -> list[dict]:
+    """For each expected fact: the words the reference uses for it (its column and row in the reference outputs) and
+    accepted spellings: scaled (£0.13m for 129,444), roundings, dates written other ways, listed alternatives."""
+    outs = [o.get("output") or "" for o in ref_out if o.get("role", "reference") == "reference"]
+    out = []
+    for f in facts:
+        v = f["value"]
+        opts = v if isinstance(v, list) else [v]
+        forms, label = [], ""
+        for o in opts:
+            forms += [str(x) for x in bench._forms(o)]
+            if D._fact_num(o):
+                forms += D.scale_forms(o)
+                label = label or D.fact_label_text(o, outs)
+        out.append({"fact": v, "label": label, "forms": list(dict.fromkeys(forms))[:12]})
+    return out
 
 
 def build_judge_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict],
@@ -300,26 +479,43 @@ def build_judge_payload(task: dict, trace: list[dict], answers: dict, checks: di
     facts = _expected_facts(task)
     found = checks.get("facts_found") or []
     texts = [t.get("text") or "" for t in answers.get("turns", [])]
-    conv = [{"turn": i, "user": t.get("text", ""), "asks_for_action": bool(t.get("writes_requested")),
-             "approval_needed": bool(t.get("approval_needed")), "assistant": texts[i] if i < len(texts) else ""}
-            for i, t in enumerate(task.get("turns", []))]
+    text = "\n\n".join(texts)
+    refs = [o.get("output") or "" for o in ref_out if o.get("role", "reference") == "reference"]
+    if refs:   # label-aware matching against the words the reference outputs use for each fact
+        found = [f["value"] for f in facts if C.fact_found(f["value"], text, refs)]
+    conv = conversation_of(task, answers, trace)
     needles = _needles([f["value"] for f in facts], trap)
     reach = [s for s in (task.get("reference") or {}).get("slices", []) if s.get("reachable", True)]
     p = {"mode": "judge", "conversation": conv,
          "expected": {"facts": facts, "facts_found_by_code": [f["value"] for f in facts if f["value"] in found],
+                      "fact_forms": fact_forms(facts, ref_out, text),
                       "tools": list(dict.fromkeys(f"{s['system']}.{r['tool']}" for s in reach for r in s.get("ref", []))),
                       "outputs": compact_outputs(ref_out, needles)},
          "grounding": grounding_of(checks, answers, trace, task),
-         "actions": actions_of(task, checks),
+         "actions": actions_of(task, checks, trace),
          "trap": {k: v for k, v in trap.items() if k not in TRAP_DROP} if trap else None,
          "harness_error": checks.get("harness_error") or None}
+    if trap:
+        res = "\n".join(c.get("result") or "" for c in trace if not c.get("is_error"))
+        p["trap"]["unreachable_in_answer"] = [{"fact": f, "returned_by_loaded_tool": bench._has(f, res, table=True)}
+                                              for f in (task.get("reference") or {}).get("unreachable_facts") or []
+                                              if bench._has(f, text)]
     if prompt_chars is None:
         prompt_chars = len(J.claude_code.prompt_for("judge"))
     size = lambda: est_tokens(len(json.dumps(p, indent=1, default=str)) + prompt_chars)
     trimmed = []
+    gv = p["grounding"].get("values") or []
+    if size() > JUDGE_SHRINK_AT and any(len(v["rows"]) > 2 for v in gv):
+        for v in gv:
+            v["rows"] = v["rows"][:2]
+        trimmed.append("grounding.values: 2 rows each")
     if size() > JUDGE_SHRINK_AT:
         p["expected"]["outputs"] = compact_outputs(ref_out, needles, strict=True)
         trimmed.append("expected.outputs: fact rows only")
+    if size() > JUDGE_SHRINK_AT and any(v["rows"] for v in gv):
+        for v in gv:
+            v["rows"] = []
+        trimmed.append("grounding.values: rows left out")
     while size() > JUDGE_SHRINK_AT:
         c = max(conv, key=lambda c: len(c["assistant"]))
         a = c["assistant"]
