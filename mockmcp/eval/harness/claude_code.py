@@ -28,7 +28,7 @@ DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900}
 
 def system_prompt(task: dict) -> str:
     """The full system prompt (replaces Claude Code's own; see base.SYSTEM_PROMPT)."""
-    return _system_prompt(task, date.today())
+    return _system_prompt(task)
 
 
 def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, max_turns: int, system: str) -> list[str]:

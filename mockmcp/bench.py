@@ -230,7 +230,7 @@ def run_case(sid: str, case: dict, model: str, timeout: int = 300) -> dict:
         cmd = ["claude", "-p", case["prompt"], "--model", model, "--mcp-config", str(work / "mcp.json"),
                "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{sid}", "--setting-sources", "",
                "--output-format", "stream-json", "--verbose", "--max-turns", "15",
-               "--append-system-prompt", SYSTEM.format(company=WORLD["company"], today=date.today().isoformat())]
+               "--append-system-prompt", SYSTEM.format(company=WORLD["company"], today=WORLD["as_of"])]
         try:
             out = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=timeout).stdout
         except subprocess.TimeoutExpired as e:

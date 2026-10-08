@@ -2,6 +2,7 @@
 from datetime import date
 from pathlib import Path
 
+from ... import spec
 from ...spec import WORLD
 
 # The whole system prompt the model under test sees. Deliberately no hints: nothing about tools, honesty or what to do when
@@ -21,7 +22,7 @@ def persona_line(task: dict) -> str:
 
 
 def system_prompt(task: dict, today: date | None = None) -> str:
-    return SYSTEM_PROMPT.format(company=WORLD["company"], today=(today or date.today()).isoformat(),
+    return SYSTEM_PROMPT.format(company=WORLD["company"], today=(today or spec.today()).isoformat(),  # the world's today, not the clock
                                 persona=persona_line(task)).strip()
 
 

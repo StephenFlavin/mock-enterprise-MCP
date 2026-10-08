@@ -457,7 +457,7 @@ def _write_task(d: Path, task: dict, recipe: dict, harness) -> None:
     d.mkdir(parents=True, exist_ok=True)
     from .harness.base import system_prompt
     (d / "prompt.json").write_text(json.dumps({
-        "turns": [t["text"] for t in task["turns"]], "system": system_prompt(task, date.today())},
+        "turns": [t["text"] for t in task["turns"]], "system": system_prompt(task)},
         indent=1, ensure_ascii=False))
     if harness:
         harness.write_task(d, task, recipe)

@@ -15,14 +15,23 @@ SHIFT_DAYS = 0                                # set by set_today(); applied to e
 
 
 def set_today(today: date | None = None):
-    """Re-anchor the mock world to `today` (default: real today, or MOCKMCP_TODAY=YYYY-MM-DD).
-    Data moves by whole weeks so weekdays (e.g. Monday week starts) are preserved."""
+    """Re-anchor the mock world near `today` (default: real today, or MOCKMCP_TODAY=YYYY-MM-DD).
+    Data moves by whole weeks so weekdays (e.g. Monday week starts) are preserved, and the world's "today" moves WITH
+    the data: it is the anchor date (world.yaml as_of) plus the same whole weeks, i.e. always the same weekday as the
+    anchor and up to 6 days before the real date. Every relative date in the data and in the questions ("yesterday",
+    "this week", "last 30 days", "on Friday") therefore holds exactly as authored, on whatever weekday a run happens."""
     global SHIFT_DAYS
     env = os.environ.get("MOCKMCP_TODAY")
     data = date.fromisoformat(WORLD["data_as_of"])
-    today = today or (data if env == "data" else date.fromisoformat(env) if env else date.today())
-    SHIFT_DAYS = (today - data).days // 7 * 7
-    WORLD["as_of"] = today.isoformat()
+    real = today or (data if env == "data" else date.fromisoformat(env) if env else date.today())
+    SHIFT_DAYS = (real - data).days // 7 * 7
+    WORLD["real_today"] = real.isoformat()
+    WORLD["as_of"] = (data + timedelta(days=SHIFT_DAYS)).isoformat()
+
+
+def today() -> date:
+    """The mock world's today (see set_today). Use this, never date.today(), for anything the model or a tool sees."""
+    return date.fromisoformat(WORLD["as_of"])
 
 
 set_today()
