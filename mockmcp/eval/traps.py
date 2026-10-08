@@ -191,8 +191,70 @@ def _systems(slices) -> list[str]:
     return sorted({s["system"] for s in slices})
 
 
+def _norm_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _kept_turns(base: dict, turns: list) -> set:
+    """Indices of the base scenario's turns that the trap keeps: a trap turn that is that turn's text, or starts with it
+    (a complex trap appends "Also, ..." to turn 0)."""
+    texts = [_norm_text(x["text"]) for x in turns if x]
+    return {i for i, bt in enumerate(base["turns"]) if any(x.startswith(_norm_text(bt["text"])) for x in texts)}
+
+
+def _turn_asked(base: dict, s: dict, kept: set) -> list:
+    """The facts of the base scenario's slice `s` that the kept turns ask for (or that no turn can be told for)."""
+    m = T.fact_turns(base).get(s["case_id"]) or {}
+    return [f for f in s["facts"] if not m.get(repr(f)) or set(m[repr(f)]) & kept]
+
+
+def _scope_to_turns(slices: list, base: dict | None, turns: list) -> list:
+    """A trap that keeps only some turns of its base scenario requires only the facts those turns ask for (Rule C): the
+    reachable base slices whose prompt is not itself a trap turn lose the facts only a dropped turn asks for (kept on the
+    slice as `later_facts`), and a slice left with none is not part of the trap (no kept turn asks for it, so not calling
+    its tools is no missed step). Idempotent, so authored entries kept from the file can be re-scoped."""
+    if not base or base.get("kind") != "scenario" or not (kept := _kept_turns(base, turns)):
+        return slices
+    texts, ids, out = [_norm_text(x["text"]) for x in turns if x], {s["case_id"] for s in base["reference"]["slices"]}, []
+    for s in slices:
+        if s.get("reachable", True) and s["case_id"] in ids and not any(_norm_text(s["prompt"]) in x for x in texts):
+            keep = _turn_asked(base, s, kept)
+            if len(keep) < len(s["facts"]):
+                s = {**s, "facts": keep, "later_facts": T._dedupe(list(s.get("later_facts") or []) + [f for f in s["facts"] if f not in keep])}
+            if not s["facts"] and s.get("later_facts"):
+                continue
+        out.append(s)
+    return out
+
+
+def _refacts(t: dict) -> dict:
+    """reference.facts / answerable_facts / unreachable_facts from the slices."""
+    slices = t["reference"]["slices"]
+    reach = [s for s in slices if s.get("reachable", True)]
+    facts = T._dedupe([f for s in slices for f in s["facts"]])
+    ok = {repr(f) for s in reach for f in s["facts"]}
+    t["reference"].update(facts=facts, answerable_facts=T._dedupe([f for s in reach for f in s["facts"]]),
+                          unreachable_facts=[f for f in facts if repr(f) not in ok])
+    return t
+
+
+def _rescope(t: dict, by_id: dict) -> dict:
+    """_scope_to_turns for a finished trap (authored entries kept verbatim from the file)."""
+    base = by_id.get((t.get("trap") or {}).get("base_task"))
+    slices = _scope_to_turns(t["reference"]["slices"], base, t["turns"])
+    if slices == t["reference"]["slices"]:
+        return t
+    t = copy.deepcopy(t)
+    t["reference"]["slices"] = copy.deepcopy(slices)
+    _refacts(t)
+    t["features"], t["strata"] = features(t), []
+    t["strata"] = strata(t)
+    return json.loads(json.dumps(t))
+
+
 def _task(tid: str, base: dict | None, persona: dict, domain: str, turns: list, required: list, slices: list, notes: list,
           trap: dict, authored: bool = False, expected: list = ()) -> dict:
+    slices = _scope_to_turns(slices, base, turns)
     reach = [s for s in slices if s.get("reachable", True)]
     facts = T._dedupe([f for s in slices for f in s["facts"]])
     ok = {repr(f) for s in reach for f in s["facts"]}
@@ -301,7 +363,12 @@ def _read_scns(bank: list[dict]) -> list[tuple]:
         if t["turns"][0]["writes_requested"] or any(w["turn"] == 0 for w in _asked(t)):
             continue
         reads = [s for s in t["reference"]["slices"] if not _is_w(s)]
-        if reads and all(s["facts"] for s in reads):  # a turn with nothing to check (facts dropped by Rule C) is no base
+        if not reads or not all(s["facts"] for s in reads):  # a turn with nothing to check (facts dropped by Rule C) is no base
+            continue
+        # the read slices the first turn asks something of: one only a later follow-up asks for is not part of a trap
+        # built on the first turn (and does not make it multi-system)
+        reads = [s for s in reads if _turn_asked(t, s, {0})]
+        if reads:
             out.append((t, reads))
     return out
 
@@ -357,7 +424,8 @@ def _missing_server_cands(bank: list[dict]) -> list[dict]:
             dep = [s for s in t["reference"]["slices"] if s["system"] != sid and sid in (s.get("inputs_from") or [])]
             others = {repr(f) for s in t["reference"]["slices"] if s["system"] != sid and s not in dep for f in s["facts"]}
             uniq = [f for s in sl for f in s["facts"] if repr(f) not in others]
-            reads = [s for s in t["reference"]["slices"] if s["system"] != sid and not _is_w(s) and s not in dep]
+            reads = [s for s in t["reference"]["slices"] if s["system"] != sid and not _is_w(s) and s not in dep
+                     and _turn_asked(t, s, {0})]  # what turn 0 (the trap's only turn here) asks of the loaded systems
             if uniq and reads:
                 dep = [{**s, "facts": T._dedupe(s["facts"] + s.get("dropped_facts", []))} for s in dep]
                 out.append({"task": t, "missing": sid, "slices": sl, "facts": uniq, "reads": reads, "dependent": dep})
@@ -405,7 +473,8 @@ def _missing_server(c: dict, tier: str) -> dict | None:
     t, sid = c["task"], c["missing"]
     sl, shown = _drop_shown(c["slices"], c["reads"])  # facts a loaded read also returns are not unreachable
     c = {**c, "slices": sl, "shown": shown, "facts": [f for f in c["facts"] if f not in shown]}
-    if not c["facts"]:
+    asked = {repr(f) for s in sl for f in _turn_asked(t, s, {0})}
+    if not any(repr(f) in asked for f in c["facts"]):  # turn 0 never needs the missing system: no trap
         return None
     name, remaining = _short_name(sid), _systems(c["reads"])
     q, what = _first(t["turns"][0]["text"]), _first(c["slices"][0]["prompt"], 170)
@@ -781,6 +850,8 @@ def _hidden_complex(c: dict) -> dict | None:
     t, h, reads = c["task"], c["h"], c["reads"]
     rw = _tool_rows()[(h["system"], h["ref"][0]["tool"])]["rw"]
     if rw == "R":
+        if not _turn_asked(t, h, {0}):  # only a later turn needs the hidden tool: turn 0 alone is no trap
+            return None
         text, left, extra = t["turns"][0]["text"], reads, []
     else:
         text, left, extra = t["turns"][0]["text"].rstrip() + " After that: " + h["prompt"], reads, [h["system"]]
@@ -2042,6 +2113,8 @@ def build(bank: list[dict], existing: list[dict], seed: int = SEED) -> list[dict
     kept = [t for t in existing if t.get("authored") and (t.get("trap") or {}).get("difficulty", "standard") == "standard"]
     for t in kept:  # entries written before trap bank v3
         t["trap"].setdefault("difficulty", "standard")
+    by_id = {t["id"]: t for t in bank}
+    kept = [_rescope(t, by_id) for t in kept]
     have = {t["id"] for t in kept}
     fresh = [t for t in authored(bank) if t["id"] not in have]
     return sorted(generate(bank, seed) + kept + fresh + hard(bank, seed), key=lambda t: (t["trap"]["type"], t["id"]))

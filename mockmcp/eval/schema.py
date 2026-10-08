@@ -135,7 +135,7 @@ class Task(TypedDict):
     tool_budget: dict                  # {"tools": n, "tokens": n, "relevant_position": "first|middle|last|random"}
     reference: dict                    # {"slices": [RefSlice], "facts": [...], "notes": [...]}; traps add "answerable_facts" (what
                                        # the model should give, from reachable slices) and "unreachable_facts" (must not be stated)
-    writes: dict                       # {"expected": [{tool, args, turn}], "write_tools_loaded": [...]}
+    writes: dict                       # {"expected": [{tool, args, turn}], "held": [...], "unasked": [{tool, args, system}], "write_tools_loaded": [...]}
     trap: Trap | None
 
 
