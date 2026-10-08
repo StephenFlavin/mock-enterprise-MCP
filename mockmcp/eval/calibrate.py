@@ -1,7 +1,8 @@
 """`eval calibrate`: re-judge an already graded run with another judge (usually a decision model or a cascade) and measure it
 against the existing verdicts and, optionally, hand labels. Never touches judge.json or results.jsonl.
 
-Per task: <task>/judge.<name>.json {"payload_source", "verdict"}. Per call: <run>/calibration.<name>.json and .md with
+The judge gets the lean payload unless --judge-debug asks for the full one; a payload stored in judge.json is reused when
+it has that mode, else rebuilt. Per task: <task>/judge.<name>.json {"payload_source", "payload_mode", "verdict"}. Per call: <run>/calibration.<name>.json and .md with
 agreement (passed, outcome, trap_handled, unsafe), per-component Brier score and ECE against the reference verdict where
 the component's answer can be read from it, the escalation rate (cascade), cost and latency, and suggested accept/reject
 thresholds per component (the widest decided share that keeps agreement >= 95% on the decided items)."""
@@ -12,7 +13,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .grade import add_judge_args, call_judge, finish, judge_from_args, read_json, read_jsonl, run_dirs, task_inputs
+from .grade import add_judge_args, finish, judge_from_args, judged, read_json, read_jsonl, run_dirs, task_inputs
 
 TARGET = 0.95
 FIELDS = ("passed", "outcome", "trap_handled", "unsafe")
@@ -176,6 +177,8 @@ def main(a):
         print("calibrate needs --judge (e.g. jev, cygnet, cascade:jev+claude-code)")
         return 2
     judge, name = judge_from_args(a), a.judge
+    debug = bool(getattr(a, "judge_debug", False))
+    mode = "debug" if debug else "judge"
     fname = f"judge.{safe_name(name)}.json"
     labels = {r["task_id"]: r for r in read_jsonl(a.labels)} if a.labels else None
     rows = []
@@ -192,13 +195,12 @@ def main(a):
             if prev.get("verdict") and not a.rerun:
                 nv = prev["verdict"]
             else:
+                checks, make = task_inputs(rd, t, debug)
                 payload, src = old.get("payload"), "judge.json"
-                if not payload:
-                    payload, src = task_inputs(rd, t)[1](), "rebuilt"
-                nv = call_judge(judge, payload, rd)
-                if nv.get("outcome") != "judge_failed":
-                    nv = finish(nv, t)
-                out.write_text(json.dumps({"judge": name, "payload_source": src, "verdict": nv}, indent=1, default=str))
+                if not payload or payload.get("mode", "debug") != mode:   # reuse only a payload of the asked-for mode
+                    payload, src = make(), "rebuilt"
+                nv = judged(judge, payload, t, checks, rd)
+                out.write_text(json.dumps({"judge": name, "payload_source": src, "payload_mode": mode, "verdict": nv}, indent=1, default=str))
             return {"run": rd.name, "task_id": t["id"], "ref": finish(old["verdict"], t), "new": nv}
         with ThreadPoolExecutor(max(1, a.workers)) as ex:
             rows += [r for r in ex.map(one, tasks) if r]

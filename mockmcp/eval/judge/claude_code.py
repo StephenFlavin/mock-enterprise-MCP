@@ -1,4 +1,5 @@
-"""Default judge: headless Claude Code with no tools, instructions from prompt.md, payload on stdin, Verdict via --json-schema."""
+"""Default judge: headless Claude Code with no tools, instructions picked by the payload's mode (prompt.md for the lean
+"judge" payload, prompt-debug.md for the full "debug" one), payload on stdin, Verdict via --json-schema."""
 import json
 import re
 import subprocess
@@ -7,7 +8,16 @@ from pathlib import Path
 
 from .base import VERDICT_SCHEMA, Judge, register
 
-PROMPT = Path(__file__).with_name("prompt.md")
+PROMPTS = {"judge": Path(__file__).with_name("prompt.md"), "debug": Path(__file__).with_name("prompt-debug.md")}
+
+
+def prompt_path(mode: str | None) -> Path:
+    """The judge instructions for a payload mode; payloads without one (written before the lean payload) are "debug"."""
+    return PROMPTS.get(mode or "debug", PROMPTS["debug"])
+
+
+def prompt_for(mode: str | None) -> str:
+    return prompt_path(mode).read_text()
 
 
 def parse_json(text: str) -> dict | None:
@@ -57,7 +67,7 @@ class ClaudeCodeJudge(Judge):
         return (v if isinstance(v, dict) else parse_json(env.get("result") or "")), meta
 
     def judge(self, payload: dict) -> dict:
-        prompt = (PROMPT.read_text() + "\n\n# PAYLOAD\n\n```json\n" + json.dumps(payload, indent=1, default=str) + "\n```\n"
+        prompt = (prompt_for(payload.get("mode")) + "\n\n# PAYLOAD\n\n```json\n" + json.dumps(payload, indent=1, default=str) + "\n```\n"
                   "\nReturn ONLY the Verdict JSON object.\n")
         verdict, meta, cost, ms = None, {}, 0.0, 0
         for attempt in range(2):  # one retry on invalid / missing JSON
@@ -69,5 +79,5 @@ class ClaudeCodeJudge(Judge):
                               "unsupported_claims": [], "actions": [], "confidence": 0.0,
                               "rationale": f"judge failed: {meta.get('error', 'no valid verdict')}"}
         verdict["judge"] = {"backend": self.name, "model": self.model, "models_used": meta.get("models") or [],
-                            "cost_usd": cost, "duration_ms": ms}
+                            "cost_usd": cost, "duration_ms": ms, "prompt": prompt_path(payload.get("mode")).name}
         return verdict

@@ -1,12 +1,15 @@
 """`eval grade`: deterministic checks + judge for every task of a run folder (resume-safe).
 
 Per task with answers.json: checks.json, judge.json {"payload", "verdict"}; then results.jsonl for the run.
---no-judge derives a provisional verdict from the checks alone (marked "provisional": true)."""
+The judge gets the lean payload (build_judge_payload: judge the outcome, don't diagnose) unless --judge-debug asks for the
+full diagnostic one (build_payload). --no-judge derives a provisional verdict from the checks alone (marked "provisional": true)."""
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
+from .. import bench
 from . import checks as C
 from . import judge as J
 from .schema import CATEGORIES, OUTCOMES, PASSING, SEVERITY, TRAP_PASSING
@@ -109,7 +112,7 @@ def _verdict(outs, cats, actions, notes, checks) -> dict:
             "judge": {"backend": "rules", "model": "", "cost_usd": 0.0, "duration_ms": 0}}
 
 
-# ---------- judge payload ----------
+# ---------- debug judge payload (--judge-debug) ----------
 
 @lru_cache(maxsize=None)
 def _tools_of(server: str) -> dict:
@@ -157,11 +160,211 @@ def trace_for_judge(trace: list[dict], task: dict, turns: list[int] | None = Non
 
 
 def build_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict], turns: list[int] | None = None) -> dict:
-    """The judge payload (the same for every judge). `turns`: the user turn of each trace call (checks.turn_of_calls)."""
+    """The full diagnostic payload (`--judge-debug`, prompt-debug.md): the whole task, trace, tool catalogue and checks.
+    `turns`: the user turn of each trace call (checks.turn_of_calls)."""
     from .judge import RUBRIC
-    return {"task": task, "reference_outputs": ref_out, "trace": trace_for_judge(trace, task, turns),
+    return {"mode": "debug", "task": task, "reference_outputs": ref_out, "trace": trace_for_judge(trace, task, turns),
             "answers": [{"turn": i, "text": t.get("text", "")} for i, t in enumerate(answers.get("turns", []))],
             "checks": checks, "tools": tool_catalogue(task, trace), "rubric": RUBRIC}
+
+
+# ---------- lean judge payload (the default) ----------
+
+OUT_EACH, OUT_TOTAL = 2_500, 20_000          # chars of one / all expected outputs
+JUDGE_MAX_TOKENS, JUDGE_SHRINK_AT = 32_000, 28_000   # payload + prompt, estimated as chars / 2.7
+ANSWER_KEEP = 2_000                          # an answer is never cut below this many characters
+TRAP_DROP = ("job_terms", "job_rw", "decoy_refs", "overlap", "base_task", "fits_system", "approval")
+
+
+def est_tokens(chars: int) -> int:
+    return int(chars / 2.7) + 1
+
+
+def _expected_facts(task: dict) -> list[dict]:
+    """The expected answer: reference.facts (traps: answerable_facts), each with the turn that asks for it when known."""
+    ref = task.get("reference") or {}
+    facts = ref.get("answerable_facts") if task.get("trap") and "answerable_facts" in ref else \
+        ref.get("facts") or [f for s in ref.get("slices", []) for f in s.get("facts", [])]
+    turn = {repr(f): s["turn"] for s in ref.get("slices", []) if s.get("turn") is not None for f in s.get("facts", [])}
+    return [{"value": f, **({"turn": turn[repr(f)]} if repr(f) in turn else {})} for f in facts or []]
+
+
+def _needles(facts: list, trap: dict) -> list[str]:
+    vals = [x for f in facts for o in (f if isinstance(f, list) else [f]) for x in bench._forms(o)]
+    vals += [str(x) for x in (trap.get("right_figures") or []) + (trap.get("decoy_figures") or []) + (trap.get("missing_entities") or [])]
+    vals += [str(n.get(k)) for n in trap.get("near") or [] for k in ("id", "neighbour") if n.get(k)]
+    return [n for n in dict.fromkeys(bench._norm(v, table=True).strip() for v in vals) if n]
+
+
+def _rows(text: str, needles: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """(header lines, other lines, the other lines that mention a needle: a fact, a figure, an id)."""
+    lines = text.splitlines()
+    head = []
+    for ln in lines[:3]:
+        head.append(ln)
+        if ln.count(",") >= 2:
+            break
+    rx = [re.compile(r"(?<![\w.])" + re.escape(n) + r"(?!\d)") for n in needles]
+    rest = lines[len(head):]
+    return head, rest, [ln for ln in rest if any(r.search(bench._norm(ln, table=True)) for r in rx)]
+
+
+def _trim_output(text: str, needles: list[str], limit: int = OUT_EACH, strict: bool = False) -> str:
+    """Header lines + the rows that mention a needle, within `limit` characters. Not strict: short outputs stay whole and,
+    if no row matches, the first rows fill the budget."""
+    if not strict and len(text) <= limit:
+        return text
+    head, rest, hit = _rows(text, needles)
+    out, n = list(head), sum(len(x) + 1 for x in head)
+    for ln in hit or ([] if strict else rest):
+        if n + len(ln) + 1 > limit:
+            break
+        out.append(ln)
+        n += len(ln) + 1
+    cut = len(head) + len(rest) - len(out)
+    return "\n".join(out + ([f"[{cut} other lines not shown]"] if cut > 0 else []))
+
+
+def compact_outputs(ref_out: list[dict], needles: list[str], strict: bool = False) -> list[dict]:
+    """Reference outputs for the lean payload: deduplicated, each trimmed to OUT_EACH characters (header + fact rows),
+    OUT_TOTAL in all. `unreachable` and `decoy` outputs are always kept; reference outputs past the cap keep only their
+    fact rows, and are left out when they have none (a note says how many)."""
+    seen, out, total, dropped = set(), [], 0, 0
+    for o in ref_out:
+        key, text = (o.get("system"), o.get("tool"), o.get("output")), o.get("output") or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        role = o.get("role", "reference")
+        t = _trim_output(text, needles, strict=strict)
+        if role == "reference" and total + len(t) > OUT_TOTAL:
+            if not _rows(text, needles)[2]:
+                dropped += 1
+                continue
+            t = _trim_output(text, needles, strict=True)
+        total += len(t)
+        out.append({"role": role, "system": o.get("system"), "tool": o.get("tool"), "output": t})
+    if dropped:
+        out.append({"role": "note", "system": "", "tool": "", "output": f"{dropped} more reference outputs left out (no expected fact in them)"})
+    return out
+
+
+def grounding_of(checks: dict, answers: dict, trace: list[dict], task: dict) -> dict:
+    """ids and numbers in the answers that are in no tool result (checks), minus the numbers code derives from the
+    results (decompose.derivable); on traps also unreachable facts stated in the answer and absent from every result."""
+    from .judge.decompose import _sentences, derivable
+    texts = [t.get("text") or "" for t in answers.get("turns", [])]
+    results = [c.get("result") or "" for c in trace if not c.get("is_error")]
+    flagged, derived = list(checks.get("ids_not_in_results") or []), {}
+    for v in dict.fromkeys(n.rstrip(",") for n in checks.get("numbers_not_in_results") or []):
+        sents = [s for a in texts for s in _sentences(a) if v in s] or [v]
+        how = next((h for s in sents if (h := derivable(v, s, results))), None)
+        if how:
+            derived[v] = how
+        else:
+            flagged.append(v)
+    out = {"values_in_no_tool_result": flagged, "derived_by_code": derived}
+    if task.get("trap"):
+        text, res = "\n\n".join(texts), "\n".join(results)
+        un = [f for f in (task.get("reference") or {}).get("unreachable_facts") or []
+              if bench._has(f, text) and not bench._has(f, res, table=True)]
+        if un:
+            out["unreachable_facts_in_answer"] = un
+    return out
+
+
+def actions_of(task: dict, checks: dict) -> dict:
+    """Every write the model performed (its own catalogue description, whether it failed, matched an expected write, and
+    the timing rule code applied), the expected writes and the approval metadata."""
+    from .judge.decompose import write_timing
+    trap = task.get("trap") or {}
+    perf = []
+    for w in checks.get("writes") or []:
+        t = _tools_of(w.get("server") or "").get(w["tool"]) or {}
+        timing = write_timing(w, task)
+        perf.append({"turn": w.get("turn", 0), "tool": f"{w.get('server')}.{w['tool']}", "description": t.get("description", ""),
+                     "args": w.get("args") or {}, "failed": bool(w.get("is_error")), "expected": bool(w.get("expected")),
+                     "code_timing": {"category": timing[0], "why": timing[1]} if timing else None})
+    exp = [{"turn": e.get("turn", 0), "tool": f"{e['system']}.{e['tool']}" if e.get("system") else e["tool"], "args": e.get("args") or {}}
+           for e in (task.get("writes") or {}).get("expected") or []]
+    return {"performed": perf, "expected": exp, "approval": trap.get("approval")}
+
+
+def build_judge_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict],
+                        prompt_chars: int | None = None) -> dict:
+    """The lean judge payload (mode "judge"): the conversation, the expected answer, what code found, the writes performed,
+    the trap brief. No trace, tool catalogue or task metadata: diagnosis stays in checks.json. Kept under
+    JUDGE_MAX_TOKENS with the prompt: over JUDGE_SHRINK_AT the expected outputs shrink to their fact rows, then the
+    longest answers lose their middle (never start or end); what was cut is listed in `trimmed`."""
+    trap = task.get("trap") or {}
+    facts = _expected_facts(task)
+    found = checks.get("facts_found") or []
+    texts = [t.get("text") or "" for t in answers.get("turns", [])]
+    conv = [{"turn": i, "user": t.get("text", ""), "asks_for_action": bool(t.get("writes_requested")),
+             "approval_needed": bool(t.get("approval_needed")), "assistant": texts[i] if i < len(texts) else ""}
+            for i, t in enumerate(task.get("turns", []))]
+    needles = _needles([f["value"] for f in facts], trap)
+    reach = [s for s in (task.get("reference") or {}).get("slices", []) if s.get("reachable", True)]
+    p = {"mode": "judge", "conversation": conv,
+         "expected": {"facts": facts, "facts_found_by_code": [f["value"] for f in facts if f["value"] in found],
+                      "tools": list(dict.fromkeys(f"{s['system']}.{r['tool']}" for s in reach for r in s.get("ref", []))),
+                      "outputs": compact_outputs(ref_out, needles)},
+         "grounding": grounding_of(checks, answers, trace, task),
+         "actions": actions_of(task, checks),
+         "trap": {k: v for k, v in trap.items() if k not in TRAP_DROP} if trap else None,
+         "harness_error": checks.get("harness_error") or None}
+    if prompt_chars is None:
+        prompt_chars = len(J.claude_code.prompt_for("judge"))
+    size = lambda: est_tokens(len(json.dumps(p, indent=1, default=str)) + prompt_chars)
+    trimmed = []
+    if size() > JUDGE_SHRINK_AT:
+        p["expected"]["outputs"] = compact_outputs(ref_out, needles, strict=True)
+        trimmed.append("expected.outputs: fact rows only")
+    while size() > JUDGE_SHRINK_AT:
+        c = max(conv, key=lambda c: len(c["assistant"]))
+        a = c["assistant"]
+        excess = int((size() - JUDGE_SHRINK_AT) * 2.7) + 200
+        keep = max(ANSWER_KEEP, len(a) - excess)
+        if keep >= len(a) - 100:
+            break
+        h = keep // 2
+        c["assistant"] = a[:h] + f"\n[... {len(a) - 2 * h} characters cut from the middle to fit the judge's window ...]\n" + a[-h:]
+        trimmed.append(f"conversation[{c['turn']}].assistant: middle cut ({len(a) - 2 * h} chars)")
+    if trimmed:
+        p["trimmed"] = trimmed
+    return p
+
+
+def payload_info(payload: dict, prompt_chars: int = 0) -> dict:
+    """Mode and size of a judge payload, for verdict.judge."""
+    n = len(json.dumps(payload, indent=1, default=str))
+    return {"payload_mode": payload.get("mode", "debug"), "payload_chars": n, "payload_tokens": est_tokens(n),
+            "total_tokens": est_tokens(n + prompt_chars), **({"trimmed": payload["trimmed"]} if payload.get("trimmed") else {})}
+
+
+def code_categories(v: dict, task: dict, checks: dict) -> dict:
+    """Lean mode: after the judge, add the diagnostic categories code already knows to a verdict that did not pass:
+    missed_step (a reachable reference tool never called), wrong_server (with a distractor server used), bad_args, and
+    wrong_tool on a vague trap whose decoy tool was called and that was not handled. Marked in judge.code_categories."""
+    if v.get("passed") or v.get("provisional"):
+        return v
+    ref = task.get("reference") or {}
+    reach = {r["tool"] for s in ref.get("slices", []) if s.get("reachable", True) for r in s.get("ref", [])}
+    add = []
+    if any(t in reach for t in checks.get("required_tools_missing") or []):
+        add.append("missed_step")
+        if checks.get("distractor_servers_used"):
+            add.append("wrong_server")
+    if any(b.split(" ")[0] in reach for b in checks.get("bad_args") or []):
+        add.append("bad_args")
+    trap = task.get("trap") or {}
+    if trap.get("type") == "vague" and v.get("trap_handled") is False and \
+            any(d.split(".")[-1] in (checks.get("tools_called") or []) for d in trap.get("decoy_tools") or []):
+        add.append("wrong_tool")
+    new = [c for c in add if c not in v.get("categories", [])]
+    v = {**v, "categories": list(v.get("categories") or []) + new}
+    v["judge"] = {**(v.get("judge") or {}), "code_categories": new}
+    return v
 
 
 # ---------- one task ----------
@@ -218,19 +421,33 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
             "judge_escalated": (bool((verdict.get("judge") or {}).get("escalated")) if "escalated" in (verdict.get("judge") or {}) else None)}
 
 
-def task_inputs(run_dir: Path, task: dict):
+def task_inputs(run_dir: Path, task: dict, debug: bool = False):
     """(checks, make_payload) for one task: the deterministic checks now, the judge payload (which re-runs the reference
-    calls) on demand."""
+    calls) on demand: the lean one by default, today's full diagnostic one with `debug`."""
     d = run_dir / task["id"]
     answers, trace = read_json(d / "answers.json", {}), read_jsonl(d / "trace.jsonl")
     system = (read_json(d / "prompt.json", {}) or {}).get("system", "")
     transcript = read_jsonl(d / "transcript.jsonl")
     checks = C.compute(task, trace, answers, transcript, system)
-    return checks, lambda: build_payload(task, trace, answers, checks, C.reference_outputs(task, C.run_today(run_dir, d)),
-                                         C.turn_of_calls(trace, answers, transcript))
+    ref = lambda: C.reference_outputs(task, C.run_today(run_dir, d))
+    if debug:
+        return checks, lambda: build_payload(task, trace, answers, checks, ref(), C.turn_of_calls(trace, answers, transcript))
+    return checks, lambda: build_judge_payload(task, trace, answers, checks, ref())
 
 
-def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | None:
+def judged(judge, payload: dict, task: dict, checks: dict, run_dir: Path) -> dict:
+    """The judge's verdict, finished (passed computed), with the payload's mode and size in verdict.judge and, for a lean
+    payload, the categories code adds; a `judge_failed` verdict is returned as it is."""
+    v = call_judge(judge, payload, run_dir)
+    if v.get("outcome") == "judge_failed":
+        return v
+    mode = payload.get("mode", "debug")
+    v["judge"] = {**(v.get("judge") or {}), **payload_info(payload, len(J.claude_code.prompt_for(mode)))}
+    v = finish(v, task)
+    return code_categories(v, task, checks) if mode == "judge" else v
+
+
+def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False, debug: bool = False) -> dict | None:
     d = run_dir / task["id"]
     if not (d / "answers.json").exists():
         return None
@@ -239,18 +456,17 @@ def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | 
     keep_judged = judge is None and ov and not ov.get("provisional")  # --no-judge never overwrites a real verdict
     if ov and (keep_judged or not rerun and (judge is None or not ov.get("provisional"))):
         return result_for(d, task, finish(ov, task), run_dir)
-    checks, make_payload = task_inputs(run_dir, task)
+    checks, make_payload = task_inputs(run_dir, task, debug)
     (d / "checks.json").write_text(json.dumps(checks, indent=1, default=str))
     verdict = None
     payload = old.get("payload") if ov and not rerun else None
     if judge is not None:
         payload = make_payload()
-        verdict = call_judge(judge, payload, run_dir)
+        verdict = judged(judge, payload, task, checks, run_dir)
         if verdict.get("outcome") == "judge_failed":
             verdict = None
     if verdict is None:
-        verdict = provisional(task, checks)
-    verdict = finish(verdict, task)
+        verdict = finish(provisional(task, checks), task)
     (d / "judge.json").write_text(json.dumps({"payload": payload, "verdict": verdict}, indent=1, default=str))
     return result_for(d, task, verdict, run_dir)
 
@@ -271,6 +487,8 @@ def add_judge_args(p, default: str | None = "claude-code"):
     p.add_argument("--decision-model", default=None, help="cascade only: System One model of the decision side")
     p.add_argument("--judge-url", default=None, help="decision judges: System One base URL (e.g. https://openrouter.ai/api, "
                    "http://127.0.0.1:8010); a jev URL on OpenRouter or LLM Gateway switches to that backend profile")
+    p.add_argument("--judge-debug", action="store_true", help="give the judge the full diagnostic payload (trace, tool catalogue, "
+                   "task metadata) and prompt-debug.md instead of the lean judge payload")
 
 
 def judge_from_args(a):
@@ -291,10 +509,10 @@ def add_args(p):
     p.add_argument("--no-judge", action="store_true", help="deterministic checks only; provisional verdicts from rules")
 
 
-def grade_run(run_dir: Path, judge, workers: int = 4, only: str | None = None, rerun: bool = False) -> list[dict]:
+def grade_run(run_dir: Path, judge, workers: int = 4, only: str | None = None, rerun: bool = False, debug: bool = False) -> list[dict]:
     tasks = [t for t in read_jsonl(run_dir / "tasks.jsonl") if not only or only in t["id"]]
     with ThreadPoolExecutor(workers) as ex:
-        results = [r for r in ex.map(lambda t: grade_task(run_dir, t, judge, rerun), tasks) if r]
+        results = [r for r in ex.map(lambda t: grade_task(run_dir, t, judge, rerun, debug), tasks) if r]
     if not only:
         (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in results))
     return results
@@ -303,7 +521,7 @@ def grade_run(run_dir: Path, judge, workers: int = 4, only: str | None = None, r
 def main(a):
     judge = None if a.no_judge else judge_from_args(a)
     for rd in run_dirs(a.run_dir):
-        results = grade_run(rd, judge, a.workers, a.only, a.rerun)
+        results = grade_run(rd, judge, a.workers, a.only, a.rerun, getattr(a, "judge_debug", False))
         n = len(results)
         print(f"{rd}: graded {n} tasks, {sum(r['passed'] for r in results)} passed"
               + (" (provisional, no judge)" if judge is None else f", judge cost ${sum(r['judge_cost_usd'] for r in results):.2f}"))

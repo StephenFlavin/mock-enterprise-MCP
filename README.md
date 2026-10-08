@@ -38,7 +38,7 @@ Point any MCP client at a server URL, or paste the `profile` output into its con
 
 ## Benchmarking LLMs
 
-`python -m mockmcp eval` builds tasks from the persona questions and runs them against recording copies of the servers. The agent harness is pluggable; headless Claude Code is the one built. Each task is graded by deterministic checks plus a judge: an LLM judge (headless Claude Code), a decision-model judge (Jev or a local Cygnet over the System One API) that answers small closed questions combined in code, or a cascade of the two (`--judge cascade:jev+claude-code`); `eval calibrate` measures a judge against existing verdicts.
+`python -m mockmcp eval` builds tasks from the persona questions and runs them against recording copies of the servers. The agent harness is pluggable; headless Claude Code is the one built. Each task is graded by deterministic checks plus a judge: an LLM judge (headless Claude Code), a decision-model judge (Jev or a local Cygnet over the System One API) that answers small closed questions combined in code, or a cascade of the two (`--judge cascade:jev+claude-code`). The judge sees a lean payload (the conversation, the expected answer, what code found, the writes made; no trace) and only judges; diagnosis stays in code (`--judge-debug` hands it the full trace instead). `eval calibrate` measures a judge against existing verdicts.
 
 Tasks include:
 - **Scenarios:** a question plus its follow-ups, graded as one pass/fail.

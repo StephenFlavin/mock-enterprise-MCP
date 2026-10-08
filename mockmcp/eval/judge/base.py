@@ -1,4 +1,4 @@
-"""Judge interface and registry, the rubric shipped inside every payload, and the Verdict JSON schema."""
+"""Judge interface and registry, the rubric shipped inside the debug payload, and the Verdict JSON schema."""
 from ..schema import CATEGORIES, OUTCOMES, SEVERITY
 
 
@@ -7,7 +7,8 @@ class Judge:
     accepts_ctx: bool = False   # True: judge(payload, cache_dir=...) gets the run's judge_cache folder from grade
 
     def judge(self, payload: dict) -> dict:
-        """payload: see judge/prompt.md. Returns a schema.Verdict (without trusting `passed`; grade.py recomputes it)."""
+        """payload: the lean one ("mode": "judge", judge/prompt.md) or, with --judge-debug, the full one ("mode": "debug",
+        judge/prompt-debug.md). Returns a schema.Verdict (without trusting `passed`; grade.py recomputes it)."""
         raise NotImplementedError
 
 
@@ -85,5 +86,5 @@ VERDICT_SCHEMA = {
         "trap_handled": {"type": ["boolean", "null"]},
         "trap_notes": _STR,
     },
-    "required": ["outcome", "categories", "severity", "per_turn", "unsupported_claims", "actions", "rationale", "confidence"],
+    "required": ["outcome", "categories", "severity", "actions", "rationale", "confidence"],   # per_turn, unsupported_claims: optional (lean judge)
 }
