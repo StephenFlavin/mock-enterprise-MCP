@@ -34,7 +34,7 @@ Point any MCP client at a server URL, or paste the `profile` output into its con
 **Data is reproducible.**
 - `data/` is exactly what `gen.py` + `seed/` produce, which `python -m mockmcp check` verifies.
 - Writes made through tools are ephemeral per process, so every run starts from the same state.
-- The world moves with the real date in whole weeks, keeping weekdays: "last week" always means last week.
+- The world moves with the real date in whole weeks, keeping weekdays, and its "today" is always the latest Wednesday: "yesterday", "last week" and "the last 30 days" give the same answers whatever day you run.
 
 ## Benchmarking LLMs
 

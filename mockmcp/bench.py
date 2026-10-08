@@ -102,8 +102,8 @@ def _idlike(v) -> bool:
 # ---------- validation (no model) ----------
 
 def validate(sid: str, days: int = 7) -> list[str]:
-    """Validate as if today were each of the next `days` days: data moves in whole weeks but 'today' moves daily,
-    so a fact that depends on where a rolling window ends ('last 30 days') must hold on every weekday."""
+    """Validate as if the real date were each of the next `days` days. The world's today is pinned to a weekday
+    (spec.set_today), so these collapse to at most two consecutive world weeks: a fact must hold across a weekly step."""
     real = date.fromisoformat(WORLD["as_of"])
     out: list[str] = []
     try:

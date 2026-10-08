@@ -573,7 +573,11 @@ Differences of a few tasks between models on scale-80, or on a single trap type 
 - **Same data everywhere.** The CSVs are the committed `mockmcp gen` output (`mockmcp check` lints the systems and runs their examples). Every task gets a fresh hub process, so no task sees another's writes.
 - **Ephemeral write state.** Writes go to a per-process temp directory removed on exit. The runner clears `MOCKMCP_STATE` and `MOCKMCP_RECORD` for its hubs, so a stale persistent overlay can never leak into a run.
 - **Same tasks.** The task bank is deterministic and every random choice derives from the recipe seed (default `1`), so the same recipe, seed and commit give an identical `tasks.jsonl`. The commit is recorded in `manifest.json`. Ladder recipes and distractor placement use hashes of (seed, task id), so they are also stable when the bank grows.
-- **Dates.** The mock world moves to the real today in whole weeks (so weekdays are preserved); ids and values stay the same. The model is told today's date from `prompt.json`, written when the recipe is built, while the hub shifts by the day it runs, so build and run in the same week. Reference calls and facts are shifted the same way when grading.
+- **Dates.** The mock world moves in whole weeks (so weekdays are preserved); ids and values stay the same.
+  - The world's "today" moves with the data. It is always the latest Wednesday on or before the real date: `world.yaml` `as_of` plus whole weeks plus `today_offset_days`, the weekday every system's scenarios are checked at.
+  - So relative dates in the data and the questions ("yesterday", "this week", "the last 30 days") give identical answers whatever weekday a run happens. Before 2026-10-08 "today" followed the real date, which shifted day-level windows by up to 6 days through the week.
+  - The model is told that date (`prompt.json`, written when the recipe is built), and the hub uses the same one. Build and run within the same Wednesday-to-Tuesday week.
+  - Reference calls and facts are shifted the same way when grading.
 - **Not deterministic:** the model under test and the judge. Compare runs by pass rate over many tasks, not by single verdicts; judge a changed result with `grade --rerun` before believing it.
 
 ## 9. Extending

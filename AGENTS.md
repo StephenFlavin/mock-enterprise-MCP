@@ -31,7 +31,7 @@ Known flaky test: `tests/test_systems.py::test_system[itsm]` (scenario 01:10:Q5 
 - **Master ids are shared.**
   - Sites, products, suppliers, carriers, POs and so on live in `systems/_master/`; systems reuse them, never invent their own.
   - Changing master data can shift stories in many systems: run the full `check` and fix every system it breaks.
-- **One world.** Company facts, the calendar (FY starts 1 Feb) and DCs come from `world.yaml`. The world is re-anchored to the real date in whole weeks at load time (`spec.set_today`), so tools always speak relative to "today".
+- **One world.** Company facts, the calendar (FY starts 1 Feb) and DCs come from `world.yaml`. The world is re-anchored in whole weeks at load time (`spec.set_today`). The world's "today" moves with the data: the latest Wednesday (`as_of` plus whole weeks plus `today_offset_days`) on or before the real date, so every relative date holds exactly as authored on whatever weekday a run happens. Use `spec.today()` / `WORLD["as_of"]`, never `date.today()`, for anything a model or tool sees; `check` validates scenarios at that same weekday.
 - **Writes are ephemeral.** Tool writes go to a per-process temp overlay (`MOCKMCP_STATE` persists it; `python -m mockmcp reset` clears it). Never commit `state/`.
 - **Cross-system consistency.** The same fact (a supplier's spend, a shipment's ETA) must agree in every system that shows it. Known gaps are tracked in GitHub issue #3. When you fix a figure, search the other systems for it.
 
