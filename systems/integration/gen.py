@@ -85,16 +85,35 @@ def generate(g):
                 add_msg(mt, r.choice(suppliers), at, "failed", cat, detail)
             else:
                 add_msg(mt, r.choice(suppliers), at, "processed")
-    # PO_ACK map v1.1 went live the evening before: suppliers' acknowledgements overnight
-    night = today
-    causes = ([("mapping", "Mapping error: ACK_STATUS code not in PO_ACK map v1.1 code list (expected AC, AP or RJ)")] * 171
-              + [("format", "XML validation failed: invalid date format in DTM segment")] * 17
-              + [("partner_side", "Partner endpoint returned HTTP 500")] * 12)
-    r.shuffle(causes)
+    # quiet traffic from the data date up to the world's today (own rng streams, so nothing above or below shifts)
+    world_today = today + timedelta(days=int(g.world.get("today_offset_days", 0)))
+    for back in range((world_today - today).days - 1, -1, -1):
+        day = world_today - timedelta(days=back)
+        rd = g.rng_for("edi-bg", day)
+        for _ in range(0 if day.weekday() >= 5 else rd.randint(18, 28)):
+            at = _dt(day, rd.randint(6, 18), rd.randint(0, 59), rd.randint(0, 59))
+            if back == 0 and at.hour >= 9:
+                continue
+            edi_messages.append({
+                "message_id": f"EDI-{len(edi_messages) + 1:06d}", "message_type": rd.choices(types, weights)[0],
+                "supplier_id": rd.choice(suppliers), "sent_at": at, "status": "processed", "error_category": None,
+                "error_details": None, "line_count": rd.randint(1, 120),
+                "processing_time_seconds": round(max(0.4, rd.gauss(2.5, 0.8)), 2),
+                "updated_at": at + timedelta(seconds=rd.randint(5, 900))})
+            edi_messages[-1]["map_id"] = map_id_for[edi_messages[-1]["message_type"]]
+    # PO_ACK map v1.1 went live the evening before: suppliers' acknowledgements fail overnight, in the early hours of the
+    # world's today (the night the user means by "overnight"). Same failures per supplier as wholesale_edi: mapping over
+    # all 38 suppliers, format on 17 of them, partner-side HTTP 500s only from SUP-0004, SUP-0015 and SUP-0030.
+    night = world_today
     story_sups = suppliers[:38]
-    for i, (cat, detail) in enumerate(causes):
+    jobs = ([(story_sups[i % 38], "mapping", "Mapping error: ACK_STATUS code not in PO_ACK map v1.1 code list (expected AC, AP or RJ)")
+             for i in range(171)]
+            + [(story_sups[(i * 2) % 38], "format", "XML validation failed: invalid date format in DTM segment") for i in range(17)]
+            + [(story_sups[[3, 14, 29][i % 3]], "partner_side", "Partner endpoint returned HTTP 500") for i in range(12)])
+    r.shuffle(jobs)
+    for i, (sup, cat, detail) in enumerate(jobs):
         at = _dt(night, 1, 20) + timedelta(seconds=int(i * (3 * 3600 + 30 * 60) / 200) + r.randint(0, 40))
-        add_msg("PO_ACK", story_sups[i % len(story_sups)], at, "failed", cat, detail, lines=r.randint(5, 60))
+        add_msg("PO_ACK", sup, at, "failed", cat, detail, lines=r.randint(5, 60))
         if cat == "partner_side":
             edi_messages[-1]["map_id"] = None
     for _ in range(14):
