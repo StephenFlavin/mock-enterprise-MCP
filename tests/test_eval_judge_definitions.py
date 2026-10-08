@@ -284,3 +284,11 @@ def test_merged_grounding_questions_keep_every_label():
     b = {"qid": "ground:1", "needles": [], "parts": {"model_answer": [{"turn": 0, "text": "b"}], "label": ["units", "rent"]}}
     st = D._merge([a, b], "full")
     assert st["label"] == ["rent", "units"] and len(st["model_answer"]) == 2
+
+
+def test_a_rounder_figure_later_does_not_correct_an_arithmetic_error():
+    """Rule A: '12.2' where the mean is 11.17 is not corrected by an earlier or coarser '11'; only an equally precise
+    later figure ('11.2') is."""
+    err = {"value": "12.2", "computed": 11.1667, "turn": 0, "sentence": "Excluding it, they average 12.2 days."}
+    assert not D._corrected(err, ["11 days per PO. Excluding it, they average 12.2 days. Sample of 11 POs."])
+    assert D._corrected(err, ["Excluding it, they average 12.2 days. Correction: it is 11.2 days."])

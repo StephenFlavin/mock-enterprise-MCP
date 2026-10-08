@@ -333,7 +333,8 @@ def _fact_question(f: dict, ff: dict | None) -> dict:
     return _noul(f"Does the assistant's answer (`model_answer`) state this reference value, or an equivalent value? "
                  f"Reference value: {_fact_text(f['value'])}.",
                  "The answer gives this value or an equivalent one: rounded, in another unit, scale (k, m) or format, a "
-                 "synonym, or a date written another way.",
+                 "synonym, a date written another way, or a short name that identifies the same record (\"shuttle 03\" for "
+                 "AST-DC2-SHT-03).",
                  "The answer does not give it, gives a different value, or says it could not find it.")
 
 
@@ -351,6 +352,9 @@ def _corrected(err: dict, answers: list[str]) -> bool:
             k = a.find(s)
             later.append(a[k + len(s):] if s and k >= 0 else "")
     forms = (_derive.scale_forms(comp) if _derive and hasattr(_derive, "scale_forms") else []) or [comp]
+    sig = lambda x: len(re.sub(r"\D", "", str(x)).lstrip("0"))
+    # a correction is at least as precise as the wrong figure: "11" does not correct "12.2" (the right mean is 11.17)
+    forms = [f for f in forms if sig(f) >= sig(err.get("value", ""))] or forms[:1]
     return any(bench._has(f, "\n".join(later)) for f in forms)
 
 
