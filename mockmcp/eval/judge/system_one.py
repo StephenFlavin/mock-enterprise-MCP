@@ -26,6 +26,8 @@ RETRYABLE = {408, 429, 529}
 # is a separate pass, so only this applies). state_tokens: per-question state budget after question text and margin.
 # confidence: how the backend's own `confidence` is defined (Jev: top-prob / distance-aware; Cygnet: (K*p_max-1)/(K-1)).
 # concurrency: requests in flight per process. thresholds: (reject_at_or_below, accept_at_or_above), until calibrated.
+# benefit_of_doubt: families whose uncertain answers resolve in the model's favour when judging alone (still undecided,
+# so a cascade escalates them).
 PROFILES = {
     "jev": {"base_url": "https://api.typesafe.ai", "model": "jev-1.13.0", "key_env": "TYPESAFE_API_KEY",
             "context_tokens": 64000, "pass_tokens": 32000, "state_tokens": 28000, "per_pass": False, "confidence": "jev",
@@ -40,7 +42,11 @@ PROFILES = {
                        "thresholds": {"default": [0.25, 0.75]}},
     "cygnet": {"base_url": "http://127.0.0.1:8010", "model": "cygnet", "key_env": "CYGNET_API_KEY",
                "context_tokens": 16384, "pass_tokens": 16384, "state_tokens": 12000, "per_pass": True, "confidence": "cygnet",
-               "concurrency": 2, "precision": "bf16", "usd_per_m_input": 0.0, "thresholds": {"default": [0.25, 0.75]}},
+               "concurrency": 2, "precision": "bf16", "usd_per_m_input": 0.0,
+               # grounding: whether an unmatched figure is derived needs arithmetic the model is not asked to do; on 80 gold
+               # labels its rejections were 10 of 13 wrong (code catches provable errors), so it never rejects there and an
+               # uncertain answer is resolved in the model's favour alone but escalated in a cascade
+               "thresholds": {"default": [0.25, 0.75], "grounding": [0.0, 0.5]}, "benefit_of_doubt": ["grounding"]},
 }
 
 

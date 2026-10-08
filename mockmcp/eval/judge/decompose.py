@@ -725,6 +725,7 @@ def thresholds_for(it: dict, th: dict) -> list:
 
 def _decisions(plan_: dict, answers: dict, profile: dict) -> dict:
     th = profile.get("thresholds") or {}
+    doubt = set(profile.get("benefit_of_doubt") or ())
     out = {}
     for qid, it in plan_["items"].items():
         a = answers.get(qid)
@@ -746,7 +747,8 @@ def _decisions(plan_: dict, answers: dict, profile: dict) -> dict:
         state = "unfittable" if qid in plan_["unfittable"] else "missing" if p is None else \
             "accepted" if p >= hi else "rejected" if p <= lo else "uncertain"
         out[qid] = {"component": it["component"], "family": it.get("family") or it["component"], "type": it["question"].get("type"),
-                    "p": p, "state": state, "label": it["label"], "ref": it["ref"], **extra}
+                    "p": p, "state": state, "label": it["label"], "ref": it["ref"], **extra,
+                    **({"benefit_of_doubt": True} if state == "uncertain" and (it.get("family") or it["component"]) in doubt else {})}
     return out
 
 
@@ -774,6 +776,8 @@ def _evaluate(payload: dict, plan_: dict, dec: dict, mode: str, flip: str | None
             v = d["state"] == "accepted"
         elif d["state"] in ("unfittable", "missing") and mode == "best":
             v = it["default"]
+        elif mode == "best" and d.get("benefit_of_doubt"):
+            v = not it["bad"]   # a family the backend cannot reject reliably: uncertain stays undecided (a cascade escalates)
         elif mode == "best":
             v = d["p"] >= 0.5
         else:

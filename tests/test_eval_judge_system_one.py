@@ -421,3 +421,18 @@ def test_report_shows_judge_breakdown(fake, tmp_path):
 
 def teardown_module():
     _REGISTRY.pop("stub-llm", None)
+
+
+def test_benefit_of_doubt_family_passes_alone_but_stays_undecided(fake):
+    """A profile can list families its backend cannot reject reliably (Cygnet: grounding): an uncertain answer there
+    resolves in the model's favour when the decision judge is alone, and the verdict is marked undecided so a cascade
+    hands it to the LLM judge."""
+    t = task(facts=("Bearing failure",))
+    tr = [call("list_unplanned_stoppages", {}, "asset_id,cause,cost\nA-1,Bearing failure,1200\n")]
+    p = payload(t, tr, ans("Bearing failure: 1200. Another figure: 4,321."))
+    j = jev(fake(answers={r"ground:.*": 0.2}))
+    j.profile = {**j.profile, "thresholds": {"default": [0.25, 0.75], "grounding": [0.0, 0.5]}, "benefit_of_doubt": ["grounding"]}
+    v = j.judge(p)
+    assert grade.finish(v, t)["outcome"] == "pass" and v["judge"]["undecided"]
+    j.profile = {**j.profile, "benefit_of_doubt": []}
+    assert grade.finish(j.judge(p), t)["outcome"] == "fabricated"
