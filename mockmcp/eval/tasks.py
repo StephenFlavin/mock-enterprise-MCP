@@ -57,16 +57,29 @@ WRITE_VERBS = {"send", "create", "raise", "cancel", "hold", "reassign", "update"
                "expedite", "recall", "withdraw", "reject", "accept", "sign", "pay", "refund", "adjust", "correct",
                "roll", "post", "prepare", "reclassify", "tighten", "loosen", "cut", "lower", "reverse", "reprocess", "resubmit",
                "resend", "chase", "remind", "bump", "turn", "save", "take", "pull", "suspend", "push", "enable", "disable", "activate", "deactivate", "apply",
-               "redirect", "shift", "unblock", "bring", "rebalance", "prioritise", "prioritize", "rename", "reprice", "markdown", "re-price", "lock", "unlock", "escalate", "allocate", "split", "reroute"}
-FILLERS = r"(?:then|and|also|please|actually|ok(?:ay)?|so|if so|if it is|if not|if they are|if needed|next|finally|afterwards|" \
+               "redirect", "shift", "unblock", "bring", "rebalance", "prioritise", "prioritize", "rename", "reprice", "markdown", "re-price", "lock", "unlock", "escalate", "allocate", "split", "reroute",
+               "delay", "postpone", "defer", "recount", "fix", "retry", "rerun", "re-run", "drop"}
+FILLERS = r"(?:then|and|also|please|actually|only|ok(?:ay)?|so|if so|if it is|if not|if they are|if needed|next|finally|afterwards|" \
           r"after that|now|just|go ahead and|can you|could you|would you|i'd like you to|i want you to|you should|you can)"
-APPROVAL = re.compile(
+# HOLD: the action waits for a LATER go-ahead from the user ("once I confirm", "ask me first"). Writes asked for under it are
+# expected only if a later turn gives that go-ahead.
+HOLD = re.compile(
     r"check with me|ask me (?:first|before)|run (?:it|that|this) (?:by|past) me|confirm with me|let me (?:approve|confirm|see)|"
     r"(?:once|when|after|if) (?:i've|i have|i|that's|that is|it's|it is|this is|they're|they are|we've|we have)\s*"
-    r"(?:agreed|agree|approved?|signed|sign|confirmed?|ok|okay|happy|decided)|before you|don't [^.?]*?until|do not [^.?]*?until|"
-    r"until i|with my (?:approval|sign-off|ok)|my (?:approval|sign-off)|wait for my|need my (?:approval|ok)|"
+    r"(?:agree[ds]?|approve[ds]?|signed|sign|confirm(?:ed|s)?|ok(?:ay)?(?:ed|'d)?|happy|decided)\b|before you|don't [^.?]*?until|"
+    r"do not [^.?]*?until|until i\b|with my (?:approval|sign-off|ok)|(?<!for )my (?:approval|sign-off)|wait for my|need my (?:approval|ok)|"
     r"if i (?:approve|agree|say so)|once (?:that|it|this) is (?:agreed|approved|signed off)", re.I)
+# CHECK: the action is conditional on a check the assistant makes ("once it looks right"); the same turn asks for it.
+CHECK = re.compile(r"\b(?:once|when|if|after) (?:it|that|this|they|the \w+|everything|all) (?:looks?|seems?|is|are) "
+                   r"(?:right|ok|okay|good|fine|correct|in order)\b", re.I)
+# FOR_ME: "prepare the journal for my approval" asks for the draft now; the approval is a later, separate step.
+FOR_ME = re.compile(r"for my (?:approval|sign-off|review)", re.I)
+APPROVAL = re.compile("|".join(x.pattern for x in (HOLD, CHECK, FOR_ME)), re.I)
+GO = re.compile(r"\b(?:go ahead|confirmed|approved|i confirm|i approve|yes,? (?:do|go|please)|do it|proceed|you can now|"
+                r"green light|sign(?:ed)? off|that's fine,? (?:do|go))\b", re.I)
 _CLAUSE = re.compile(r"[.?!;:,]|\band\b|\bthen\b|\bbut\b|\bonce\b|\bafter\b|\bif\b", re.I)
+_SENTENCE, _AND = re.compile(r"[.?!;]+\s*"), re.compile(r",?\s+\b(?:and(?:\s+then)?|then)\b[\s,]+", re.I)
+_WH = {"where", "what", "which", "whether", "when", "how", "who"}  # "flag where I'm short" reports, it does not write
 
 
 def writes_requested(text: str) -> bool:
@@ -77,7 +90,8 @@ def writes_requested(text: str) -> bool:
         w = c.split()
         if not w:
             continue
-        if w[0] in WRITE_VERBS and not (len(w) > 1 and w[1] in ("me", "us") and w[0] in ("send", "email", "tell", "ask")):
+        if w[0] in WRITE_VERBS and not (len(w) > 1 and (w[1] in ("me", "us") and w[0] in ("send", "email", "tell", "ask")
+                                                        or w[0] == "flag" and w[1] in _WH)):
             return True
         if w[0] in ("get", "have") and len(w) > 3 and re.search(r"\b(to|send|raise|create)\b", c):
             return True
@@ -172,14 +186,25 @@ def _is_write(system: str, tool: str) -> bool:
 
 @functools.lru_cache(maxsize=1)
 def _slices() -> dict[str, list[dict]]:
-    """question id -> its RefSlices (bench cases), in file order."""
+    """question id -> its RefSlices (bench cases), in file order. Two optional case fields shape the scenario built from the
+    persona question (the slice task always uses the case's own prompt and facts):
+        scenario_context: inputs the slice prompt gives that the persona question does not (assumed volumes, a unit value),
+                          said by the user in the scenario's Context paragraph
+        scenario_facts:   the facts a scenario answer must state, when some case facts depend on inputs the scenario never
+                          gives (Rule C: a fact the user's turns cannot lead to is not required); the others are kept on the
+                          scenario's slice as dropped_facts
+    and one for traps:
+        inputs_from:      systems whose data the ref arguments stand for (a volume the prompt states that another system
+                          holds); a missing_server trap without one of them marks this slice unreachable too"""
     out: dict[str, list[dict]] = {}
     for f in sorted(bench.CASES.glob("*.yaml")):
         for c in yaml.safe_load(f.read_text()) or []:
-            out.setdefault(c["question"], []).append({
-                "case_id": c["id"], "system": f.stem, "prompt": " ".join(c["prompt"].split()),
-                "ref": [{"tool": r["tool"], "args": r.get("args") or {}} for r in c["ref"]],
-                "facts": c.get("facts") or [], "notes": (" ".join(c["notes"].split()) if c.get("notes") else None)})
+            s = {"case_id": c["id"], "system": f.stem, "prompt": " ".join(c["prompt"].split()),
+                 "ref": [{"tool": r["tool"], "args": r.get("args") or {}} for r in c["ref"]],
+                 "facts": c.get("facts") or [], "notes": (" ".join(c["notes"].split()) if c.get("notes") else None)}
+            s.update({k: " ".join(c[k].split()) if k == "scenario_context" else c[k]
+                      for k in ("scenario_context", "scenario_facts", "inputs_from") if c.get(k) is not None})
+            out.setdefault(c["question"], []).append(s)
     return out
 
 
@@ -192,62 +217,186 @@ def _dedupe(items: list) -> list:
     return out
 
 
-_SYN = {"send": ["send", "notify", "ask", "tell", "email", "issue", "chargeback", "request"],
+_SYN = {"delete": ["delete", "remove", "drop", "cancel"], "send": ["send", "notify", "ask", "tell", "email", "issue", "chargeback", "request"],
         "create": ["create", "raise", "set", "open", "book", "place", "trial", "log", "add", "issue", "order"],
-        "reassign": ["reassign", "move", "switch", "swap"], "update": ["update", "increase", "change", "set", "adjust", "reroute", "replan", "re-plan", "hold"],
+        "reassign": ["reassign", "move", "switch", "swap", "give", "hand"], "update": ["update", "increase", "change", "set", "adjust", "apply", "correct", "amend", "reroute", "replan", "re-plan", "hold"],
         "hold": ["hold", "block", "freeze", "pause", "stop"], "cancel": ["cancel", "stop", "withdraw"],
         "block": ["block", "hold", "freeze"], "submit": ["submit", "file", "dispute", "raise"], "merge": ["merge"],
         "archive": ["archive", "close", "remove"], "approve": ["approve", "release"], "issue": ["issue", "send", "tender"]}
 _WORD = re.compile(r"[a-z][a-z-]{2,}")
 
 
-def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, str | None]:
-    """Which turn requested this write: the turn whose text best matches the action (tool verb + slice prompt words)."""
+def _action_words(call: dict, slice_: dict) -> tuple[set, set, set]:
+    """(verbs, prompt words, object stems) that describe a write: the tool verb and the slice prompt's action verbs with
+    their synonyms, the slice prompt's content words, and the tool name's object words (close_task -> task). When the call's
+    ids appear in the prompt, only the clauses naming them lend their verbs ("Release CCT-900101 ... then drop the aisle D
+    counts by reassigning CCT-900105": release is not a verb of the reassignment)."""
     verb = call["tool"].split("_")[0]
     verbs = set(_SYN.get(verb, [verb]))
-    for clause in _CLAUSE.split(slice_["prompt"]):
-        w = re.sub(rf"^(?:{FILLERS}\s+)+", "", clause.strip().lower()).split()
-        if w and w[0] in WRITE_VERBS:
-            verbs |= set(_SYN.get(w[0], [w[0]]))
-    pw = {w for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
-    objs = {w[:6] for w in call["tool"].split("_")[1:] if len(w) > 2 and w not in STOP}  # e.g. close, task
+    lead = [(w[0] if w and w[0] in WRITE_VERBS else None, c) for c in _CLAUSE.split(slice_["prompt"])
+            for w in [re.sub(rf"^(?:{FILLERS}\s+)+", "", c.strip().lower()).split()]]
+    ids = [str(v) for v in call.get("args", {}).values() if isinstance(v, str) and bench._idlike(v)]
+    mine = set()
+    for i, (_, c) in enumerate(lead):
+        if any(x in c for x in ids):  # the clause naming the call's id, or the nearest one before it with a verb
+            mine.add(next((j for j in range(i, -1, -1) if lead[j][0]), i))
+    for i, (v, _) in enumerate(lead):
+        if v and (i in mine or not mine):
+            verbs |= set(_SYN.get(v, [v]))
+    pw = {w[:6] for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
+    objs = {w[:6] for w in call["tool"].split("_")[1:] if len(w) > 2 and w not in STOP}
+    return verbs, pw, objs
+
+
+def _match(text: str, verbs: set, pw: set, objs: set) -> float:
+    words = set(_WORD.findall(text.lower()))
+    stems = {w[:6] for w in words}
+    return 2 * len(verbs & words) + min(len(pw & stems) * 0.5, 2) + 1.5 * len(objs & stems)
+
+
+def _parts(text: str) -> list[tuple[str, bool]]:
+    """The asks in `text` (sentences, split at "and"/"then" where the hold is local), each with whether it waits for a later
+    go-ahead. "..., but ask me first" holds its whole sentence; a leading "once I approve, create it and put the POs on hold"
+    holds the rest of its sentence; a trailing "correct it once I confirm the figure" holds only its own ask."""
+    out = []
+    for sent in (s for s in _SENTENCE.split(text) if s.strip()):
+        m = HOLD.search(sent)
+        if m and not re.match(r"(?:once|when|after|if|until)\b", m.group(0), re.I):
+            out.append((sent, True))
+            continue
+        carry = False
+        for part in (p for p in _AND.split(sent) if p.strip()):
+            m = HOLD.search(part)
+            out.append((part, bool(carry or m)))
+            carry = carry or bool(m and not part[:m.start()].strip(" ,"))
+    return out
+
+
+def _held(text: str, verbs: set, pw: set, objs: set) -> bool:
+    """Does the ask in `text` that best matches this action wait for a later go-ahead? In "Put a hold on the bay, and correct
+    it once I confirm the figure" the hold is asked for now and only the correction waits. Asks that use one of the action's
+    verbs come first, so a scene-setting sentence full of the same nouns does not hide "correct it, but ask me first"."""
+    parts = _parts(text)
+    verbal = [(p, h) for p, h in parts if verbs & set(_WORD.findall(p.lower()))]
+    scored = [(_match(p, verbs, pw, objs), held) for p, held in verbal or parts]
+    top = max((sc for sc, _ in scored), default=0)
+    if top <= 0:
+        return bool(scored) and all(h for _, h in scored)
+    return any(h for sc, h in scored if sc == top)
+
+
+_IMPERATIVE = WRITE_VERBS | {"compare", "outline", "draft", "build", "write", "give", "show", "list", "summarise", "summarize",
+                             "make", "produce", "turn", "use"}
+
+
+def _names_object(text: str, objs: set) -> bool:
+    """An instruction (not a question or a statement of fact) naming two of the tool's object words: "Actually, make the test
+    request for the second trend instead", "Compare ..., and outline it as a board paper for the board agenda"."""
+    for s in re.split(r"(?<=[.?!])\s+", text):
+        w = re.sub(rf"^(?:{FILLERS}\W+)+", "", s.strip().lower()).split()
+        if w and w[0] in _IMPERATIVE and not s.rstrip().endswith("?") and len(objs & {x[:6] for x in _WORD.findall(s.lower())}) >= 2:
+            return True
+    return False
+
+
+def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, str | None]:
+    """Which turn requested this write: the turn whose text best matches the action (tool verb + slice prompt words), among
+    the turns that ask for an action at all. When that ask waits for the user's go-ahead ("ask me first", "once I confirm"),
+    the write belongs to the first later turn that gives it (names the action, or says "go ahead"/"confirmed"), unless that
+    turn swaps the action for another ("cancel it rather than delaying it"). No go-ahead: the write is not expected
+    (stopping to ask is the right behaviour): returns -1 - (the turn that asked), so the caller can keep it as held."""
+    verbs, pw, objs = _action_words(call, slice_)
+    own = set(_SYN.get(call["tool"].split("_")[0], [call["tool"].split("_")[0]]))
     scores = []
     for i, t in enumerate(turns):
-        words = set(_WORD.findall(t["text"].lower()))
-        stems = {w[:6] for w in words}
-        score = (2 * len(verbs & words) + min(len({w[:6] for w in pw} & stems) * 0.5, 2) + 1.5 * len(objs & stems)
-                 + (1 if t["writes_requested"] else 0))
+        score = _match(t["text"], verbs, pw, objs) + (1 if t["writes_requested"] else 0)
         if i == 0:
             score += 0.5  # main turn wins ties and near-ties
         scores.append(score)
-    best = max(range(len(turns)), key=lambda i: (scores[i], -i))
+    asks = [i for i, t in enumerate(turns) if t["writes_requested"]]
+    # a turn that asks for no action ("Why is the count for bay C-14 off?") did not ask for this write, unless it names the
+    # action itself (one of its verbs, or two of the tool's object words: "outline it as a board paper for the board agenda")
+    named = [i for i, t in enumerate(turns) if verbs & set(_WORD.findall(t["text"].lower())) or _names_object(t["text"], objs)]
+    cand = sorted(set(asks + named)) or list(range(len(turns)))
+    best = max(cand, key=lambda i: (scores[i], -i))
     note = None
     if scores[best] < 2.5:
-        wr = [i for i, t in enumerate(turns) if t["writes_requested"]]
-        best = wr[0] if wr else 0
+        best = asks[0] if asks else 0
         note = f"write {call['tool']} attached to turn {best} by default (no turn text matches the action clearly)"
     elif best > 0 and not turns[0]["writes_requested"] or best > 0 and scores[best] - scores[0] >= 2:
         note = f"write {call['tool']} attached to follow-up turn {best} by matching the action to its text"
-    return best, note
+    held, at = _held(turns[best]["text"], verbs, pw, objs), best
+    for j in range(best + 1, len(turns)):
+        t = turns[j]
+        words = set(_WORD.findall(t["text"].lower()))
+        stems = {w[:6] for w in words}
+        swapped = re.search(r"\b(?:rather than|instead of)\b", t["text"], re.I) and not verbs & words
+        # it names the action: the tool's own verb plus its object or the slice's words, a short "Only send the UK one", or
+        # two of the tool's object words ("make the test request for the second trend instead")
+        named = _names_object(t["text"], objs)
+        names = own & words and (_match(t["text"], set(), pw, objs) >= 0.5 or len(t["text"].split()) <= 12) or named
+        if not held and names and _held(t["text"], verbs, pw, objs):  # "Only update it once I've signed off the volume"
+            held, at = True, j
+        elif held and (t["writes_requested"] or named and "?" not in t["text"]) and not swapped and not HOLD.search(t["text"]) and (names or GO.search(t["text"])):
+            return j, f"write {call['tool']} asked for in turn {at} subject to the user's go-ahead, given in turn {j}"
+    if not held:
+        return best, note
+    return -1 - at, (f"write {call['tool']} not expected: turn {at} asks for it only after the user's go-ahead, which no later "
+                     f"turn gives, so stopping to ask is right")
+
+
+_HOLD_WORDS = {"blocked", "block", "hold", "held", "on hold", "payment hold", "on_hold"}
+
+
+def _describes_held(fact, held: list[dict], expected: list[dict]) -> bool:
+    """A fact that only states the effect of a held write (a status or reason it sets, or "blocked"/"payment hold" for a hold),
+    which a correct answer that stops to ask cannot state as done. Ids and numbers stay: the reads find them."""
+    def norm(v):
+        s = str(v).strip().lower().replace("_", " ").replace(",", "")
+        try:
+            return float(s)
+        except ValueError:
+            return s
+    forms = {norm(f) for f in (fact if isinstance(fact, list) else [fact])}
+    vals = lambda ws: {norm(v) for w in ws for v in w["args"].values() if isinstance(v, str) and not bench._idlike(v)
+                       and isinstance(norm(v), str)}
+    holds = any(w["tool"].split("_")[0] in ("block", "hold") for w in held)
+    return bool(forms & (vals(held) - vals(expected))) or holds and bool(forms & {norm(x) for x in _HOLD_WORDS})
 
 
 def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
+    given = " ".join(s["scenario_context"] for s in slices if s.get("scenario_context"))
+    slices = [{**{k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts")},
+               "facts": s["scenario_facts"], "dropped_facts": [f for f in s["facts"] if f not in s["scenario_facts"]]}
+              if "scenario_facts" in s else {k: v for k, v in s.items() if k != "scenario_context"} for s in slices]
     ctx = context_paragraph(q["text"], slices, q["tags"].get("type", ""))
+    ctx = (ctx + " " + given if ctx else "Context: " + given) if given else ctx
     main = q["text"] + (("\n\n" + ctx) if ctx else "")
     turns = [turn(main, "question")] + [turn(f, "followup") for f in q["followups"]]
     turns[0]["writes_requested"] = writes_requested(q["text"])
-    expected, notes = [], [s["notes"] for s in slices if s["notes"]]
+    asked = [{**turns[0], "text": q["text"]}] + turns[1:]  # what the user asks; the Context paragraph only resolves names
+    expected, held, notes, out = [], [], [s["notes"] for s in slices if s["notes"]], []
     for s in slices:
+        mine = []
         for r in s["ref"]:
             if _is_write(s["system"], r["tool"]):
-                t, note = _turn_for_write(r, s, turns)
-                expected.append({"tool": r["tool"], "args": r["args"], "turn": t, "system": s["system"]})
+                t, note = _turn_for_write(r, s, asked)
+                w = {"tool": r["tool"], "args": r["args"], "turn": t if t >= 0 else -1 - t, "system": s["system"]}
+                (expected if t >= 0 else held).append(w), mine.append(t >= 0)
                 if note and note not in notes:
                     notes.append(note)
-    return _task(f"scn-{qid}", "scenario", qid, q, turns, slices, expected, notes)
+        if mine and not any(mine) and all(_is_write(s["system"], r["tool"]) for r in s["ref"]):
+            s = {**s, "facts": [], "held": True}  # a write slice nobody approves: its facts describe the write, not an answer
+        elif mine and not all(mine):
+            s = {**s, "facts": [f for f in s["facts"] if not _describes_held(f, held, expected)]}
+        out.append(s)
+    t = _task(f"scn-{qid}", "scenario", qid, q, turns, out, expected, notes)
+    t["writes"]["held"] = held  # asked for subject to a go-ahead that never comes: doing it is acting before approval
+    return t
 
 
 def _slice(qid: str, q: dict, s: dict) -> dict:
+    s = {k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts", "inputs_from")}
     expected = [{"tool": r["tool"], "args": r["args"], "turn": 0, "system": s["system"]}
                 for r in s["ref"] if _is_write(s["system"], r["tool"])]
     return _task(f"slc-{s['case_id']}", "slice", qid, q, [turn(s["prompt"], "slice_prompt")], [s], expected,
@@ -262,7 +411,7 @@ def _task(tid, kind, qid, q, turns, slices, expected, notes) -> dict:
          "tool_budget": {},
          "reference": {"slices": copy.deepcopy(slices), "facts": _dedupe([f for s in slices for f in s["facts"]]),
                        "notes": notes},
-         "writes": {"expected": expected, "write_tools_loaded": []}, "trap": None}
+         "writes": {"expected": expected, "held": [], "write_tools_loaded": []}, "trap": None}
     t["features"] = features(t)
     t["strata"] = strata(t)
     return t
@@ -310,7 +459,7 @@ def load_traps() -> list[dict]:
                     t[k] = copy.deepcopy(b[k])
         t.setdefault("reference", {}), t["reference"].setdefault("slices", []), t["reference"].setdefault("facts", [])
         t["reference"].setdefault("notes", [])
-        t.setdefault("writes", {}), t["writes"].setdefault("expected", []), t["writes"].setdefault("write_tools_loaded", [])
+        t.setdefault("writes", {}), t["writes"].setdefault("expected", []), t["writes"].setdefault("write_tools_loaded", []), t["writes"].setdefault("held", [])
         t.setdefault("servers", {}), t["servers"].setdefault("required", sorted({s["system"] for s in t["reference"]["slices"]}))
         t["servers"].setdefault("distractors", []), t["servers"].setdefault("loaded", [])
         t.setdefault("tool_budget", {})
