@@ -297,12 +297,12 @@ def test_a_rounder_figure_later_does_not_correct_an_arithmetic_error():
 
 def test_experiment_variants_change_only_the_fact_questions(fake):
     """SYSTEMONE_VARIANTS: facts_evidence adds the reference rows holding the fact; facts_choice asks a Choice whose fine
-    options are present / named_differently. Off by default."""
+    options are present / named_differently. Cygnet's profile turns on facts_evidence and snip_first; the rest are off."""
     t = task(facts=("AST-DC2-SHT-03",))
     out = [{"case_id": "c", "role": "reference", "system": "wcs-01", "tool": "list_faults",
             "output": "asset_id,events\nAST-DC2-SHT-01,4\nAST-DC2-SHT-03,9\n"}]
     p = payload(t, [call("list_faults", {}, "asset_id,events\nAST-DC2-SHT-03,9\n")], ans("Shuttle 03 has the most faults (9)."), out)
-    base = D.plan(p, S.PROFILES["cygnet"])["items"]["fact:0"]
+    base = D.plan(p, {**S.PROFILES["cygnet"], "variants": []})["items"]["fact:0"]
     assert base["question"]["type"] == "noul" and "reference_rows" not in base["parts"]
     it = D.plan(p, {**S.PROFILES["cygnet"], "variants": ["facts_evidence", "facts_choice"]})["items"]["fact:0"]
     assert it["question"]["type"] == "choice" and it["fine"] == D.FACT_FINE

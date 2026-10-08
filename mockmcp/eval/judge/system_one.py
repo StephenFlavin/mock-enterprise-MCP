@@ -46,7 +46,10 @@ PROFILES = {
                # grounding: whether an unmatched figure is derived needs arithmetic the model is not asked to do; on 80 gold
                # labels its rejections were 10 of 13 wrong (code catches provable errors), so it never rejects there and an
                # uncertain answer is resolved in the model's favour alone but escalated in a cascade
-               "thresholds": {"default": [0.25, 0.75], "grounding": [0.0, 0.5]}, "benefit_of_doubt": ["grounding"]},
+               "thresholds": {"default": [0.25, 0.75], "grounding": [0.0, 0.5]}, "benefit_of_doubt": ["grounding"],
+               # measured on 240 answers (decompose.VARIANTS): showing the rows that hold a fact cut the facts Brier from
+               # 0.38 to 0.29 (gold) and 0.51 to 0.18 (Sonnet verdicts); snippets saved ~5% tokens with no verdict change
+               "variants": ["facts_evidence", "snip_first"]},
 }
 
 
@@ -218,7 +221,7 @@ class SystemOneJudge(Judge):
         elif isinstance(thresholds, dict):
             th.update(thresholds)
         p["thresholds"] = th
-        if os.environ.get("SYSTEMONE_VARIANTS"):  # experiments: decompose.VARIANTS, comma-separated
+        if os.environ.get("SYSTEMONE_VARIANTS") is not None:  # experiments: decompose.VARIANTS, comma-separated ("" = none)
             p["variants"] = [v.strip() for v in os.environ["SYSTEMONE_VARIANTS"].split(",") if v.strip()]
         self.profile, self.model = p, p["model"]
         # requests in flight per process: the server batches what is in flight, so a GPU server wants more than its default
