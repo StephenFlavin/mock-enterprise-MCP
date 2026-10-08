@@ -364,6 +364,102 @@ def _describes_held(fact, held: list[dict], expected: list[dict]) -> bool:
     return bool(forms & (vals(held) - vals(expected))) or holds and bool(forms & {norm(x) for x in _HOLD_WORDS})
 
 
+# ---------- Rule C review: slice facts the scenario's turns may never ask for ----------
+
+_LABEL_NOISE = set("gbp pct id code no num number per avg average total count name qty value rate amount units unit level "
+                   "flag status type is has days day date at week weeks month months year current new old score".split())
+_SUFFIX = re.compile(r"(?:ies|es|s|ing|ed|ly|al)$")
+UNASKED_COVERAGE = 0.2  # an ask sharing less than this share of its words with the scenario's turns is the slice's own
+
+
+def _stems(text: str) -> set:
+    return {_SUFFIX.sub("", w)[:5] for w in re.findall(r"[a-z]{2,}", text.lower()) if w not in STOP}
+
+
+def _fact_columns(cases: dict) -> dict:
+    """{system: {case ids}} -> {case id: {repr(fact): [(tool, column), ...]}}: where each fact of these cases sits in its
+    reference output (column '' for text output). Runs the reference calls like bench --validate: writes go to a throwaway
+    state, and a case after a write starts from a clean one."""
+    import tempfile
+    from pathlib import Path
+    from .. import args as A, db
+    from ..kinds import RUNNERS
+    from ..server import Engine
+    out, old, tmp = {}, db.STATE, tempfile.TemporaryDirectory()
+    try:
+        for sid, ids in sorted(cases.items()):
+            eng = None
+            for c in (c for c in bench.load(sid) if c["id"] in ids):
+                if eng is None:
+                    db.STATE = Path(tempfile.mkdtemp(dir=tmp.name))
+                    eng = Engine([sid])
+                found = out[c["id"]] = {repr(f): [] for f in c["facts"]}
+                for r in c["ref"]:
+                    tool = eng.tools.get((sid, r["tool"]))
+                    if not tool:
+                        continue
+                    s, a = eng.systems[sid], eng.args[(sid, r["tool"])]
+                    try:
+                        vals, _ = A.prepare(eng.db, s, eng.master, tool, a, bench._shift_args(r.get("args") or {}))
+                        rows = RUNNERS[tool.kind](eng, s, tool, a, vals)[0]
+                    except Exception:
+                        continue
+                    for f in c["facts"]:
+                        hit = lambda v: bench._has(f, str(v), True) or bench._has(f, str(v))
+                        if isinstance(rows, str):
+                            found[repr(f)] += [(r["tool"], "")] if hit(rows) else []
+                        else:
+                            found[repr(f)] += [(r["tool"], col) for col in dict.fromkeys(
+                                k for row in rows or [] for k, v in dict(row).items() if v is not None and hit(v))]
+                if any(t.writes for r in c["ref"] if (t := eng.tools.get((sid, r["tool"])))):
+                    eng = None
+    finally:
+        db.STATE = old
+        tmp.cleanup()
+    return out
+
+
+def unasked_facts(qids=None) -> list[dict]:
+    """Facts a scenario would require only because its slice prompt asks for them (Rule C). A scenario takes the union of its
+    slices' facts, but a slice prompt often asks more than the persona question ("Which single write-off was the highest
+    value?", "on which till?"). A fact is flagged when its value is not named in any turn, neither its reference columns'
+    words (cost_per_unit_pence -> cost) nor its tool's object words occur in the turns, and every sentence of the slice
+    prompt that uses those column words is the slice's own (shares under UNASKED_COVERAGE of its words with the turns).
+    Lexical, so a review list rather than a filter: a flagged case gets an explicit `scenario_facts` that decides what the
+    scenario asks, and tests/test_eval_recipe.py keeps this list empty. Slices with an explicit `scenario_facts` and held
+    write slices are skipped. Runs the reference calls of the slices that have an ask of their own (about a minute)."""
+    split = lambda p: [a for a in re.split(r"(?<=[.?!;:])\s+", p) if a.strip()]
+    qs, out, todo = questions(), [], []
+    for t in _bank():
+        if t["kind"] != "scenario" or qids is not None and t["question_id"] not in qids:
+            continue
+        q = qs[t["question_id"]]
+        turns = " ".join([q["text"]] + q["followups"])
+        ts = _stems(turns)
+        for s in t["reference"]["slices"]:
+            own = [a for a in split(s["prompt"]) if (st := _stems(a)) and len(st & ts) / len(st) < UNASKED_COVERAGE]
+            if own and s["facts"] and "dropped_facts" not in s and not s.get("held"):
+                todo.append((t["question_id"], s, turns, own))
+    cases: dict = {}
+    for _, s, _, _ in todo:
+        cases.setdefault(s["system"], set()).add(s["case_id"])
+    cols = _fact_columns(cases)
+    for qid, s, turns, own in todo:
+        ts, shared = _stems(turns), [a for a in split(s["prompt"]) if a not in own]
+        for f in s["facts"]:
+            if any(not re.fullmatch(r"-?[\d.,]+", str(x)) and bench._has(x, turns) for x in (f if isinstance(f, list) else [f])):
+                continue  # a turn names it
+            locs = cols.get(s["case_id"], {}).get(repr(f), [])
+            words = lambda ws: _stems(" ".join(w for w in ws if w not in _LABEL_NOISE))
+            lab = set().union(set(), *(words(c.split("_")) for _, c in locs if c))
+            tool = set().union(set(), *(words(t.split("_")[1:]) for t, _ in locs))
+            asks = [a for a in own if _stems(a) & lab]
+            if asks and not (lab | tool) & ts and not any(_stems(a) & lab for a in shared):
+                out.append({"question_id": qid, "case_id": s["case_id"], "fact": f,
+                            "columns": sorted({c for _, c in locs if c}), "asked_by": asks})
+    return out
+
+
 def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
     given = " ".join(s["scenario_context"] for s in slices if s.get("scenario_context"))
     slices = [{**{k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts")},
