@@ -2,7 +2,8 @@
 
 Each task is a conversation: turn 0 is `claude -p <text> --session-id <uuid>`, every follow-up `claude -p <text> --resume <uuid>`
 (verified on 2.1.293: both work together with -p; the system prompt is re-sent on each resume). The model sees only the system
-prompt and the turn texts; MCP servers come from mcp.json (HTTP, one per loaded server, in load order).
+prompt and the turn texts; MCP servers come from mcp.json (HTTP, one per loaded server, in load order). `--system-prompt`
+REPLACES Claude Code's built-in agent prompt, so the model gets no instructions beyond base.SYSTEM_PROMPT.
 
 Tool search: Claude Code defers MCP tool definitions behind a search tool when many are loaded. It is controlled by the env var
 ENABLE_TOOL_SEARCH (found in the 2.1.x binary and the settings docs): `false` = every tool definition is in context,
@@ -22,12 +23,12 @@ from pathlib import Path
 from .base import Harness, register, system_prompt as _system_prompt
 
 TOOL_SEARCH = {"off": "false", "auto": "auto"}
-DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900, "system_prompt": "default"}
+DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900}
 
 
-def system_prompt(variant: str = "default") -> str:
-    """The appended system prompt (harness_options.system_prompt: default | neutral, see base.SYSTEM_PROMPTS)."""
-    return _system_prompt(variant, date.today())
+def system_prompt(task: dict) -> str:
+    """The full system prompt (replaces Claude Code's own; see base.SYSTEM_PROMPT)."""
+    return _system_prompt(task, date.today())
 
 
 def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, max_turns: int, system: str) -> list[str]:
@@ -36,7 +37,7 @@ def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, 
             "--mcp-config", str(mcp), "--strict-mcp-config", "--tools", "",
             "--allowedTools", *[f"mcp__{s}" for s in servers], "--setting-sources", "",
             "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
-            "--append-system-prompt", system]
+            "--system-prompt", system]  # replaces Claude Code's built-in agent prompt: no hints
 
 
 def _session_id(task: dict) -> str:
@@ -81,9 +82,9 @@ class ClaudeCode(Harness):
     def write_task(self, task_dir: Path, task: dict, recipe: dict) -> None:
         task_dir.mkdir(parents=True, exist_ok=True)
         opts = {**DEFAULTS, **(recipe.get("harness_options") or {})}
-        system = system_prompt(opts["system_prompt"])
+        system = system_prompt(task)
         turns = [t["text"] for t in task["turns"]]
-        (task_dir / "prompt.json").write_text(json.dumps({"system": system, "system_prompt": opts["system_prompt"], "turns": turns}, indent=2))
+        (task_dir / "prompt.json").write_text(json.dumps({"system": system, "turns": turns}, indent=2))
         servers = {s: {"type": "http", "url": f"http://127.0.0.1:{{PORT}}/{s}/mcp"} for s in task["servers"]["loaded"]}
         (task_dir / "mcp.json").write_text(json.dumps({"mcpServers": servers}, indent=2))
         sid = _session_id(task)
@@ -93,7 +94,6 @@ class ClaudeCode(Harness):
                        + (["--inject", shlex.quote(f"{trap['inject']['tool']}={trap['inject']['text']}")] if trap.get("inject") else []))
         lines = ["#!/usr/bin/env bash",
                  f"# Re-run one task by hand. Needs a hub:  {hub}",
-                 f"# System prompt: {opts['system_prompt']}",
                  "# Usage: PORT=8800 MODEL=haiku ./run.sh   (conversation turns run in order, resumed by session id)",
                  "set -u", 'cd "$(dirname "$0")"', 'PORT="${PORT:-8800}"', 'MODEL="${MODEL:-haiku}"',
                  f"export ENABLE_TOOL_SEARCH={TOOL_SEARCH[opts['tool_search']]}",

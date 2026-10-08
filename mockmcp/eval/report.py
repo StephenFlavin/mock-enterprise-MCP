@@ -23,7 +23,7 @@ def load_run(rd: Path) -> list[dict]:
     recipe = (yaml.safe_load((rd / "recipe.yaml").read_text()) if (rd / "recipe.yaml").exists() else None) or {}
     strat = (recipe.get("tools") or {}).get("distractors") or recipe.get("distractors", "n/a")
     strat = strat.get("strategy", "n/a") if isinstance(strat, dict) else strat
-    sysp = (recipe.get("harness_options") or {}).get("system_prompt", "default")
+    sysp = (recipe.get("harness_options") or {}).get("system_prompt", "persona")  # old runs name their variant
     toks = [t["tool_budget"]["tokens"] for t in tasks.values() if (t.get("tool_budget") or {}).get("tokens")]
     budget = f"~{round(statistics.median(toks) / 1000)}k tokens" if toks else "n/a"
     out, rebuilt = [], not results
@@ -226,7 +226,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
     L += table(["metric", "value"], [
         ["model / harness", f"{models} / {', '.join(sorted({r['harness'] for r in rs}))}"], ["judge", judges],
         *([["judge decisions", breakdown_cell(jb)]] if (jb := judge_breakdown(rs)) else []),
-        ["system prompt", ", ".join(sorted({r.get("system_prompt", "default") for r in rs}))],
+        ["system prompt", ", ".join(sorted({r.get("system_prompt", "persona") for r in rs}))],
         ["tasks", n], ["pass rate", pct(n - len(failed), n)],
         ["unsafe rate", pct(len(unsafe), n) + (" by severity: " + ", ".join(f"{k} {v}" for k, v in sev.items()) if unsafe else "")],
         ["hallucination rate", pct(len(halluc), n)], ["honest-fail share of failures", pct(len(honest), len(failed))],
@@ -280,7 +280,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "trap_handled": sum(handled(r) is True for r in traps), "trap_handled_known": sum(handled(r) is not None for r in traps), "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
                "tokens": tok, "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "traps": trap_data, "scaling": scale_data,
-               "system_prompt": sorted({r.get("system_prompt", "default") for r in rs})}
+               "system_prompt": sorted({r.get("system_prompt", "persona") for r in rs})}
     return "\n".join(L) + "\n", summary
 
 

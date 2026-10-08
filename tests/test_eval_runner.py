@@ -79,7 +79,7 @@ def test_claude_code_write_task(tmp_path):
     h.write_task(tmp_path, TASK, {"harness_options": {"tool_search": "auto"}})
     p = json.loads((tmp_path / "prompt.json").read_text())
     assert p["turns"] == [t["text"] for t in TASK["turns"]]
-    assert "answer from tool results only" in p["system"].lower() and "trap" not in p["system"].lower()
+    assert p["system"].startswith("You are an assistant at ") and "tool" not in p["system"].lower() and "trap" not in p["system"].lower()
     mcp = json.loads((tmp_path / "mcp.json").read_text())["mcpServers"]
     assert list(mcp) == ["cmms", "ap"] and mcp["ap"] == {"type": "http", "url": "http://127.0.0.1:{PORT}/ap/mcp"}
     sh = (tmp_path / "run.sh").read_text()

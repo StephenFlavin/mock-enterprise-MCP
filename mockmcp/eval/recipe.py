@@ -29,7 +29,7 @@ DEFAULTS = {
     "name": "run", "seed": 1, "kind": "scenario", "tasks": 12, "mix": {}, "filter": None, "followups": "all", "traps": 0,
     "trap_types": None, "strict": False, "presets": {}, "ladder": None,
     "tools": {"budget": None, "distractors": "adjacent", "position": "random", "toolset": "per_task"},
-    "harness": "claude-code", "harness_options": {"tool_search": "off", "max_turns": 25, "timeout_s": 600, "system_prompt": "default"},
+    "harness": "claude-code", "harness_options": {"tool_search": "off", "max_turns": 25, "timeout_s": 600},
 }
 DISTRACTORS = ("random", "adjacent", "persona", "none")
 POSITIONS = ("first", "middle", "last", "random")
@@ -64,9 +64,9 @@ def resolve(recipe) -> dict:
     ts = r["harness_options"].get("tool_search")
     if isinstance(ts, bool):  # YAML 1.1 reads an unquoted on/off as true/false
         r["harness_options"]["tool_search"] = "on" if ts else "off"
-    from .harness.base import SYSTEM_PROMPTS
-    if r["harness_options"].get("system_prompt") not in SYSTEM_PROMPTS:
-        raise ValueError(f"harness_options.system_prompt must be one of {sorted(SYSTEM_PROMPTS)}, got {r['harness_options'].get('system_prompt')!r}")
+    if "system_prompt" in r["harness_options"]:
+        raise ValueError("harness_options.system_prompt is gone: every task uses the one system prompt in "
+                         "harness/base.py (company, today, who the assistant is talking to; no hints). Remove the key.")
     from .harness import available
     if r["harness"] not in available():
         raise ValueError(f"harness must be one of {available()}, got {r['harness']!r}")
@@ -456,9 +456,8 @@ def _harness(name: str):
 def _write_task(d: Path, task: dict, recipe: dict, harness) -> None:
     d.mkdir(parents=True, exist_ok=True)
     from .harness.base import system_prompt
-    variant = recipe["harness_options"].get("system_prompt", "default")
     (d / "prompt.json").write_text(json.dumps({
-        "turns": [t["text"] for t in task["turns"]], "system": system_prompt(variant, date.today()), "system_prompt": variant},
+        "turns": [t["text"] for t in task["turns"]], "system": system_prompt(task, date.today())},
         indent=1, ensure_ascii=False))
     if harness:
         harness.write_task(d, task, recipe)
@@ -510,7 +509,6 @@ def build(recipe_or_path, out_dir=None, dry_run: bool = False) -> dict:
 
 def _manifest(recipe, tasks, counts, warns, commit, lab, budget) -> dict:
     return {"name": recipe["name"], "seed": recipe["seed"], "git_commit": commit, "harness": recipe["harness"],
-            "system_prompt": recipe["harness_options"].get("system_prompt", "default"),
             "tasks": len(tasks), "kinds": dict(collections.Counter(t["kind"] for t in tasks)),
             "strata": counts, "warnings": warns, "budget": {"label": lab, "target": budget,
                                                              "tools": _spread([t["tool_budget"]["tools"] for t in tasks]),
@@ -569,7 +567,7 @@ def main(a):
 def show(plan: dict) -> None:
     r = plan["recipe"]
     print(f"recipe {r['name']}: seed {r['seed']}, {r['tasks']} tasks, kind {r['kind']}, followups {r['followups']}, "
-          f"harness {r['harness']}, system prompt {r['harness_options'].get('system_prompt', 'default')}, tools {r['tools']}")
+          f"harness {r['harness']}, tools {r['tools']}")
     print("\nstrata (requested / drawn / available in pool):")
     for k, c in plan["counts"].items():
         print(f"  {k:<28}{c['requested']:>4} /{c['drawn']:>4} /{c['available']:>5}")

@@ -52,6 +52,7 @@ Treat these as hard rules; the benchmark's credibility depends on them.
   - Scale recipes (`bench/recipes/scale*.yaml`) share one seeded ladder. Never edit one scale-N file independently; change `scale.yaml`.
   - Sampling and distractor placement hash (seed, task id). Keep it that way so runs stay comparable when the bank grows.
 - **Don't leak answers into prompts.** Task prompts, system prompts and tool descriptions must not hint at traps or grading.
+- **The model's system prompt is fixed and hint-free:** company, today's date and who it is talking to (`harness/base.py`). Never add guidance about tools, honesty or missing data; a harness must replace its own agent prompt with it, not append.
 - **`passed` is computed by the pipeline from the outcome, never trusted from the judge.** Judges return verdicts; `grade.finish` decides.
 
 ## Where things live
