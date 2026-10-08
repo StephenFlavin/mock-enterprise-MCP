@@ -6,6 +6,7 @@ STEPS = {
     "recipe": ("mockmcp.eval.recipe", "build a run folder from a recipe: tasks, per-task MCP configs, run scripts"),
     "run": ("mockmcp.eval.runner", "run every task of a run folder through a harness (default claude-code), recording tool calls"),
     "grade": ("mockmcp.eval.grade", "deterministic checks + judge for every task in a run folder"),
+    "calibrate": ("mockmcp.eval.calibrate", "re-judge a graded run with another judge (decision model / cascade) and measure agreement"),
     "report": ("mockmcp.eval.report", "write report.md (failure categories first) and results.jsonl"),
     "traps": ("mockmcp.eval.traps", "regenerate the trap bank (bench/traps.yaml)"),
 }

@@ -66,12 +66,12 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `bench/recipes/` | benchmark recipes | copy `example.yaml`; check with `eval recipe --dry-run` |
 | `mockmcp/eval/` | recipe → run → grade → report | `docs/BENCHMARKING.md` (§9 Extending) |
 | `mockmcp/eval/harness/` | agent harnesses (claude-code) | subclass `Harness`, `@register` |
-| `mockmcp/eval/judge/` | judges (claude-code) + `prompt.md` rubric | subclass `Judge`, `@register` |
+| `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` rubric; decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
 | `runs/` | benchmark output | git-ignored; never commit |
 
 ## Running models costs money: ask first
 
-`eval run`, `eval grade` (with a judge) and `mockmcp bench` call real models. Typical costs:
+`eval run`, `eval grade` (with a judge), `eval calibrate` and `mockmcp bench` call real models (decision-model judges call a paid API too, unless it is a local Cygnet). Typical costs:
 
 | Run | Approximate cost |
 |---|---|

@@ -15,7 +15,10 @@ Run folder layout (written by `mockmcp eval recipe`, filled by `run`, `grade`, `
         answers.json               {"turns": [{"text": "...", "usage": {...}, "cost_usd": 0.0, "duration_ms": 0}]}
         checks.json                deterministic findings (Checks)
         judge.json                 the judge's input payload ("payload") and its Verdict ("verdict")
+        judge.<name>.json          `eval calibrate`: another judge's verdict on the same payload (never used for results)
     <run>/results.jsonl            one Result per task
+    <run>/judge_cache/<backend>/   decision-model judges: request + response per sha256(base_url, model, state, questions)
+    <run>/calibration.<name>.*     `eval calibrate` summary (.json, .md)
     <run>/report.md                summary led by failure categories
 """
 from typing import Literal, TypedDict

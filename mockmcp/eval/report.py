@@ -175,6 +175,26 @@ def scaling(rs: list[dict]) -> tuple[list[str], dict]:
     return L, data
 
 
+def judge_breakdown(rs: list[dict]) -> dict:
+    """Who decided each verdict when decision-model judges were used: {judge: {"decided": n, "escalated": n, "failed": n}}
+    (`decided` = by the decision model, `escalated` = by the cascade's LLM judge). Empty when only LLM / rules judges ran."""
+    out = defaultdict(Counter)
+    for r in rs:
+        j = (r.get("verdict") or {}).get("judge") or {}
+        if j.get("cascade"):
+            backend = (j.get("decision") or {}).get("backend") or j.get("backend")
+            out[f"{j['cascade']} ({backend})"]["escalated" if j.get("escalated") else "decided"] += 1
+        elif "decisions" in j:
+            out[j.get("backend", "?")]["decided"] += 1
+    return {k: dict(v) for k, v in out.items()}
+
+
+def breakdown_cell(b: dict) -> str:
+    return "; ".join(f"{k}: {v.get('decided', 0)} decided by the decision model, {v.get('escalated', 0)} escalated"
+                     + (f" ({100 * v.get('escalated', 0) / (v.get('decided', 0) + v.get('escalated', 0)):.0f}%)" if v.get("escalated") else "")
+                     for k, v in b.items())
+
+
 def offending(r: dict) -> str:
     v = r["verdict"]
     bad = [a for a in v.get("actions", []) if not a.get("justified", True)]
@@ -205,6 +225,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
     L += ["## Headline", ""]
     L += table(["metric", "value"], [
         ["model / harness", f"{models} / {', '.join(sorted({r['harness'] for r in rs}))}"], ["judge", judges],
+        *([["judge decisions", breakdown_cell(jb)]] if (jb := judge_breakdown(rs)) else []),
         ["system prompt", ", ".join(sorted({r.get("system_prompt", "default") for r in rs}))],
         ["tasks", n], ["pass rate", pct(n - len(failed), n)],
         ["unsafe rate", pct(len(unsafe), n) + (" by severity: " + ", ".join(f"{k} {v}" for k, v in sev.items()) if unsafe else "")],
@@ -258,7 +279,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "trap_pass_rate": (sum(r["passed"] for r in traps) / len(traps)) if traps else None,
                "trap_handled": sum(handled(r) is True for r in traps), "trap_handled_known": sum(handled(r) is not None for r in traps), "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
-               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "traps": trap_data, "scaling": scale_data,
+               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "traps": trap_data, "scaling": scale_data,
                "system_prompt": sorted({r.get("system_prompt", "default") for r in rs})}
     return "\n".join(L) + "\n", summary
 

@@ -11,7 +11,7 @@ from . import checks as C
 from . import judge as J
 from .schema import CATEGORIES, OUTCOMES, PASSING, SEVERITY, TRAP_PASSING
 
-TRUNC_TOTAL, TRUNC_EACH = 200_000, 2_000
+TRUNC_TOTAL, TRUNC_EACH, TRUNC_REQUIRED = 160_000, 2_000, 4_000   # chars: ~60k tokens of trace at most
 EXTERNAL = ("cancel", "delete", "remove", "block", "send", "notify", "pay", "submit", "approve", "reject", "terminate", "close", "escalate")
 BENIGN = ("draft", "note", "log", "comment", "tag")
 
@@ -134,19 +134,32 @@ def tool_catalogue(task: dict, trace: list[dict]) -> list[dict]:
     return list(out.values())
 
 
-def trace_for_judge(trace: list[dict], task: dict) -> list[dict]:
+def trace_for_judge(trace: list[dict], task: dict, turns: list[int] | None = None) -> list[dict]:
+    """Trace rows for the judge (with the user turn of each call when known). Over TRUNC_TOTAL characters of results:
+    distractor results are cut to TRUNC_EACH; if still over, required-server results longer than TRUNC_REQUIRED are cut
+    to that, oldest calls first, until it fits. Calls are never dropped."""
     required = set((task.get("servers") or {}).get("required", []))
-    rows = [{"index": i, **c} for i, c in enumerate(trace)]
-    if sum(len(r.get("result", "")) for r in rows) > TRUNC_TOTAL:
+    rows = [{"index": i, **c, **({"turn": turns[i]} if turns and i < len(turns) else {})} for i, c in enumerate(trace)]
+    total = lambda: sum(len(r.get("result") or "") for r in rows)
+
+    def cut(r, n):
+        r["result"] = r["result"][:n] + f"\n[truncated: {len(r['result'])} chars in total]"
+    if total() > TRUNC_TOTAL:
         for r in rows:
-            if r["server"] not in required and len(r.get("result", "")) > TRUNC_EACH:
-                r["result"] = r["result"][:TRUNC_EACH] + f"\n[truncated: {len(r['result'])} chars in total]"
+            if r["server"] not in required and len(r.get("result") or "") > TRUNC_EACH:
+                cut(r, TRUNC_EACH)
+    for r in rows:
+        if total() <= TRUNC_TOTAL:
+            break
+        if r["server"] in required and len(r.get("result") or "") > TRUNC_REQUIRED + 100:
+            cut(r, TRUNC_REQUIRED)
     return rows
 
 
-def build_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict]) -> dict:
+def build_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict], turns: list[int] | None = None) -> dict:
+    """The judge payload (the same for every judge). `turns`: the user turn of each trace call (checks.turn_of_calls)."""
     from .judge import RUBRIC
-    return {"task": task, "reference_outputs": ref_out, "trace": trace_for_judge(trace, task),
+    return {"task": task, "reference_outputs": ref_out, "trace": trace_for_judge(trace, task, turns),
             "answers": [{"turn": i, "text": t.get("text", "")} for i, t in enumerate(answers.get("turns", []))],
             "checks": checks, "tools": tool_catalogue(task, trace), "rubric": RUBRIC}
 
@@ -201,7 +214,20 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
                        "cache_read": usage("cache_read_input_tokens", "cache_read"),
                        "cache_creation": usage("cache_creation_input_tokens", "cache_creation")},
             "tool_calls": len(read_jsonl(task_dir / "trace.jsonl")),
-            "judge_cost_usd": (verdict.get("judge") or {}).get("cost_usd", 0.0), "judge": (verdict.get("judge") or {}).get("backend", "")}
+            "judge_cost_usd": (verdict.get("judge") or {}).get("cost_usd", 0.0), "judge": (verdict.get("judge") or {}).get("cascade") or (verdict.get("judge") or {}).get("backend", ""),
+            "judge_escalated": (bool((verdict.get("judge") or {}).get("escalated")) if "escalated" in (verdict.get("judge") or {}) else None)}
+
+
+def task_inputs(run_dir: Path, task: dict):
+    """(checks, make_payload) for one task: the deterministic checks now, the judge payload (which re-runs the reference
+    calls) on demand."""
+    d = run_dir / task["id"]
+    answers, trace = read_json(d / "answers.json", {}), read_jsonl(d / "trace.jsonl")
+    system = (read_json(d / "prompt.json", {}) or {}).get("system", "")
+    transcript = read_jsonl(d / "transcript.jsonl")
+    checks = C.compute(task, trace, answers, transcript, system)
+    return checks, lambda: build_payload(task, trace, answers, checks, C.reference_outputs(task, C.run_today(run_dir, d)),
+                                         C.turn_of_calls(trace, answers, transcript))
 
 
 def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | None:
@@ -213,15 +239,13 @@ def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | 
     keep_judged = judge is None and ov and not ov.get("provisional")  # --no-judge never overwrites a real verdict
     if ov and (keep_judged or not rerun and (judge is None or not ov.get("provisional"))):
         return result_for(d, task, finish(ov, task), run_dir)
-    answers, trace = read_json(d / "answers.json", {}), read_jsonl(d / "trace.jsonl")
-    system = (read_json(d / "prompt.json", {}) or {}).get("system", "")
-    checks = C.compute(task, trace, answers, read_jsonl(d / "transcript.jsonl"), system)
+    checks, make_payload = task_inputs(run_dir, task)
     (d / "checks.json").write_text(json.dumps(checks, indent=1, default=str))
     verdict = None
     payload = old.get("payload") if ov and not rerun else None
     if judge is not None:
-        payload = build_payload(task, trace, answers, checks, C.reference_outputs(task, C.run_today(run_dir, d)))
-        verdict = judge.judge(payload)
+        payload = make_payload()
+        verdict = call_judge(judge, payload, run_dir)
         if verdict.get("outcome") == "judge_failed":
             verdict = None
     if verdict is None:
@@ -231,13 +255,37 @@ def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | 
     return result_for(d, task, verdict, run_dir)
 
 
+def call_judge(judge, payload: dict, run_dir: Path) -> dict:
+    """judge.judge(payload), handing judges that cache responses (decision models) the run's judge_cache folder."""
+    if getattr(judge, "accepts_ctx", False):
+        return judge.judge(payload, cache_dir=run_dir / "judge_cache")
+    return judge.judge(payload)
+
+
 # ---------- CLI ----------
+
+def add_judge_args(p, default: str | None = "claude-code"):
+    p.add_argument("--judge", default=default, help="claude-code | jev | jev-openrouter | jev-llmgateway | cygnet | cascade:<decision>+<llm>")
+    p.add_argument("--judge-model", default=None, help="LLM judge model (claude-code, default sonnet; for a cascade the LLM side); "
+                   "for a decision judge (jev, cygnet) it overrides the System One model")
+    p.add_argument("--decision-model", default=None, help="cascade only: System One model of the decision side")
+    p.add_argument("--judge-url", default=None, help="decision judges: System One base URL (e.g. https://openrouter.ai/api, "
+                   "http://127.0.0.1:8010); a jev URL on OpenRouter or LLM Gateway switches to that backend profile")
+
+
+def judge_from_args(a):
+    """The judge the CLI flags describe."""
+    opts = {k: v for k, v in (("model", a.judge_model), ("decision_model", getattr(a, "decision_model", None)),
+                              ("base_url", getattr(a, "judge_url", None))) if v}
+    if not a.judge.startswith("cascade:"):
+        opts.pop("decision_model", None)
+    return J.get(a.judge, **opts)
+
 
 def add_args(p):
     p.add_argument("run_dir", type=Path)
-    p.add_argument("--judge", default="claude-code")
-    p.add_argument("--judge-model", default="sonnet")
-    p.add_argument("--workers", type=int, default=4)
+    add_judge_args(p)
+    p.add_argument("--workers", type=int, default=4, help="tasks graded in parallel (decision judges also cap requests in flight per backend)")
     p.add_argument("--only", help="grade tasks whose id contains this")
     p.add_argument("--rerun", action="store_true", help="grade again even if judge.json exists")
     p.add_argument("--no-judge", action="store_true", help="deterministic checks only; provisional verdicts from rules")
@@ -253,7 +301,7 @@ def grade_run(run_dir: Path, judge, workers: int = 4, only: str | None = None, r
 
 
 def main(a):
-    judge = None if a.no_judge else J.get(a.judge, model=a.judge_model)
+    judge = None if a.no_judge else judge_from_args(a)
     for rd in run_dirs(a.run_dir):
         results = grade_run(rd, judge, a.workers, a.only, a.rerun)
         n = len(results)

@@ -4,6 +4,7 @@ from ..schema import CATEGORIES, OUTCOMES, SEVERITY
 
 class Judge:
     name: str = ""
+    accepts_ctx: bool = False   # True: judge(payload, cache_dir=...) gets the run's judge_cache folder from grade
 
     def judge(self, payload: dict) -> dict:
         """payload: see judge/prompt.md. Returns a schema.Verdict (without trusting `passed`; grade.py recomputes it)."""
@@ -19,6 +20,10 @@ def register(cls):
 
 
 def get(name: str, **opts) -> Judge:
+    """A registered judge, or `cascade:<decision>+<llm>` (e.g. cascade:jev+claude-code)."""
+    if name.startswith("cascade:"):
+        from .cascade import CascadeJudge
+        return CascadeJudge(name, **opts)
     if name not in _REGISTRY:
         raise KeyError(f"unknown judge {name!r}; available: {sorted(_REGISTRY)}")
     return _REGISTRY[name](**opts)
