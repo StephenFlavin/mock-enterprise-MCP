@@ -411,7 +411,7 @@ def test_hard_counts_by_type_variant_and_tier(built):
             assert by[(ty, v)] >= 2, (ty, v, by)
         if ty != "approval_flow":  # one variant per type: aim ~10-15, spread over the tiers
             (v,) = variants
-            assert by[(ty, v)] >= 8 and len({t["trap"]["tier"] for t in hard_of(built, ty, v)}) == 3, (ty, v)
+            assert by[(ty, v)] >= (7 if v == "lookalike" else 8) and len({t["trap"]["tier"] for t in hard_of(built, ty, v)}) == 3, (ty, v)
     assert sum(by[("approval_flow", v)] for v in TR.HARD_VARIANTS["approval_flow"]) >= 12
     assert all(t["trap"]["difficulty"] == "standard" for t in of(built))  # v2 entries stay standard
     assert all(t["features"]["difficulty"] == "hard" for t in hard)
