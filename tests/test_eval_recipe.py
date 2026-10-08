@@ -86,6 +86,45 @@ def test_write_turns_follow_the_asking_turn(bank):
         assert all(w["turn"] in asks for w in t["writes"]["expected"]) or not asks, t["id"]
 
 
+def test_a_write_no_turn_asks_for_is_not_expected(bank):
+    """scn-07:69:Q5 only asks why the WMS stock value differs from the ledger: the journal and the reversal its slice prompts
+    ask for are asked for by no turn, so they are not expected (doing them is unrequested) and their facts are not required.
+    A weak but real ask still counts, on the turn that first asks; a later turn naming the action gets its own writes."""
+    b = {t["id"]: t for t in bank}
+    t = b["scn-07:69:Q5"]
+    assert not t["writes"]["expected"] and not t["writes"]["held"]
+    assert sorted(w["tool"] for w in t["writes"]["unasked"]) == ["create_journal_entry", "reverse_inventory_adjustment"]
+    assert not {"INV-ADJ-900061", "reversed", "Duplicate posting"} & {str(f) for f in t["reference"]["facts"]}
+    assert all(s["unasked"] and not s["facts"] for s in t["reference"]["slices"] if s["case_id"] in ("gl-07:69:Q5-b", "ims-07:69:Q5"))
+    # "Hold 20% for click-and-collect" (turn 3) asks for the reservation; turn 4 only comes back to the hold
+    assert ("ims.create_stock_reservation_for_channel", 3) in _writes(b["scn-08:74:Q6"])
+    assert ("srm.send_supplier_engagement_invitation", 3) in _writes(b["scn-05:45:Q7"])  # "Send those ten an invitation"
+    assert ("budgeting.delete_forecast_scenario", 4) in _writes(b["scn-07:62:Q2"])  # "Actually, drop the upside scenario"
+    assert ("kb.archive_knowledge_base_article", 4) in _writes(b["scn-01:8:Q4"])  # "Archive the old reconciliation note"
+    # "put the allocation on the orders once I agree it", never agreed: held, not expected
+    assert [w["tool"] for w in b["scn-08:75:Q2"]["writes"]["held"]] == ["update_wholesale_order_allocation"]
+    for t in (t for t in bank if t["kind"] == "scenario"):
+        asked = {(w["system"], w["tool"], json.dumps(w["args"], sort_keys=True, default=str)) for w in t["writes"]["expected"] + t["writes"]["held"]}
+        assert not any((w["system"], w["tool"], json.dumps(w["args"], sort_keys=True, default=str)) in asked for w in t["writes"]["unasked"]), t["id"]
+
+
+def test_fact_turns_ties_facts_to_the_turns_that_ask_them(bank):
+    """Which turn of a scenario asks for each fact (a trap that keeps only the first turns requires only theirs)."""
+    b = {t["id"]: t for t in bank}
+    ft = T.fact_turns(b["scn-08:79:Q6"])
+    lp, ims = ft["loss_prevention-08:79:Q6-a"], ft["ims-08:79:Q6"]
+    assert 0 not in lp["'0.72'"] and 3 in lp["'0.72'"]  # "What would protect them at least cost?"
+    assert 0 not in lp["'theft'"] and 2 in lp["'theft'"]  # "Which are driven by theft versus damage or error?"
+    assert all(ts and 0 in ts for ts in ims.values())  # "What are our highest-loss products?"
+    ft = T.fact_turns(b["scn-02:19:Q1"])
+    assert ft["tms-02:19:Q1-a"] == {"'GBFXT'": [2], "'28.8'": [2]}  # "Where in the chain is the delay building up?"
+    assert all(0 in ts for ts in ft["ims-02:19:Q1"].values())
+    ft = T.fact_turns(b["scn-09:81:Q3"])["data_warehouse-09:81:Q3"]
+    assert ft["88.2"] == ft["2.63"] == [1] and 0 in ft["23.4"]  # turn_facts: last December's peak is the follow-up's
+    sl = T._slices()["09:81:Q3"]
+    assert next(s for s in sl if s["case_id"] == "data_warehouse-09:81:Q3")["turn_facts"] == {1: [88.2, 2.63]}
+
+
 def test_scenario_gives_the_inputs_its_reference_needs(bank):
     """Rule C: a scenario's reference must not need inputs the user never gives. Cases either say them in the scenario's
     Context (scenario_context) or narrow the facts the scenario requires (scenario_facts); slice tasks keep the case as is."""

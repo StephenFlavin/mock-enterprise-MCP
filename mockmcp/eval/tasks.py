@@ -195,7 +195,8 @@ def _slices() -> dict[str, list[dict]]:
                           scenario's slice as dropped_facts
     and one for traps:
         inputs_from:      systems whose data the ref arguments stand for (a volume the prompt states that another system
-                          holds); a missing_server trap without one of them marks this slice unreachable too"""
+                          holds); a missing_server trap without one of them marks this slice unreachable too
+        turn_facts:       {turn: [facts]}, which scenario turn asks for a fact where the words cannot tell (fact_turns)"""
     out: dict[str, list[dict]] = {}
     for f in sorted(bench.CASES.glob("*.yaml")):
         for c in yaml.safe_load(f.read_text()) or []:
@@ -203,7 +204,7 @@ def _slices() -> dict[str, list[dict]]:
                  "ref": [{"tool": r["tool"], "args": r.get("args") or {}} for r in c["ref"]],
                  "facts": c.get("facts") or [], "notes": (" ".join(c["notes"].split()) if c.get("notes") else None)}
             s.update({k: " ".join(c[k].split()) if k == "scenario_context" else c[k]
-                      for k in ("scenario_context", "scenario_facts", "inputs_from") if c.get(k) is not None})
+                      for k in ("scenario_context", "scenario_facts", "inputs_from", "turn_facts") if c.get(k) is not None})
             out.setdefault(c["question"], []).append(s)
     return out
 
@@ -222,7 +223,8 @@ _SYN = {"delete": ["delete", "remove", "drop", "cancel"], "send": ["send", "noti
         "reassign": ["reassign", "move", "switch", "swap", "give", "hand"], "update": ["update", "increase", "change", "set", "adjust", "apply", "correct", "amend", "reroute", "replan", "re-plan", "hold"],
         "hold": ["hold", "block", "freeze", "pause", "stop"], "cancel": ["cancel", "stop", "withdraw"],
         "block": ["block", "hold", "freeze"], "submit": ["submit", "file", "dispute", "raise"], "merge": ["merge"],
-        "archive": ["archive", "close", "remove"], "approve": ["approve", "release"], "issue": ["issue", "send", "tender"]}
+        "archive": ["archive", "close", "remove"], "approve": ["approve", "release"], "issue": ["issue", "send", "tender"],
+        "reserve": ["reserve", "hold", "ring-fence"]}
 _WORD = re.compile(r"[a-z][a-z-]{2,}")
 
 
@@ -240,10 +242,16 @@ def _action_words(call: dict, slice_: dict) -> tuple[set, set, set]:
     for i, (_, c) in enumerate(lead):
         if any(x in c for x in ids):  # the clause naming the call's id, or the nearest one before it with a verb
             mine.add(next((j for j in range(i, -1, -1) if lead[j][0]), i))
+    acts = [i for i, (v, _) in enumerate(lead) if v]
+    own = [i for i in acts if lead[i][0] in verbs]
+    text = slice_["prompt"]
+    if own and len(own) < len(acts):  # "Put a hold on bin X ..., and create a recount task for that bin": the clause led by
+        mine = set(own)               # the call's own verb is its ask, and only that ask's words describe it
+        text = " ".join(c for i in own for c in [lead[k][1] for k in range(i, next((j for j in acts if j > i), len(lead)))])
     for i, (v, _) in enumerate(lead):
         if v and (i in mine or not mine):
             verbs |= set(_SYN.get(v, [v]))
-    pw = {w[:6] for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
+    pw = {w[:6] for w in _WORD.findall(text.lower()) if w not in STOP and len(w) > 3}
     objs = {w[:6] for w in call["tool"].split("_")[1:] if len(w) > 2 and w not in STOP}
     return verbs, pw, objs
 
@@ -299,12 +307,19 @@ def _names_object(text: str, objs: set) -> bool:
     return False
 
 
-def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, str | None]:
+def _leads(text: str, verbs: set) -> bool:
+    """Some clause of the text starts with one of these verbs: "Hold 20% for click-and-collect" asks for the hold, "whether
+    we could hold some back" only wonders about it."""
+    return any((w := re.sub(rf"^(?:{FILLERS}\s+)+", "", c.strip().lower()).split()) and w[0] in verbs for c in _CLAUSE.split(text))
+
+
+def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int | None, str | None]:
     """Which turn requested this write: the turn whose text best matches the action (tool verb + slice prompt words), among
     the turns that ask for an action at all. When that ask waits for the user's go-ahead ("ask me first", "once I confirm"),
     the write belongs to the first later turn that gives it (names the action, or says "go ahead"/"confirmed"), unless that
     turn swaps the action for another ("cancel it rather than delaying it"). No go-ahead: the write is not expected
-    (stopping to ask is the right behaviour): returns -1 - (the turn that asked), so the caller can keep it as held."""
+    (stopping to ask is the right behaviour): returns -1 - (the turn that asked), so the caller can keep it as held. No turn
+    that names the action at all (the slice prompt asks for it, the scenario's turns never do): None, not expected."""
     verbs, pw, objs = _action_words(call, slice_)
     own = set(_SYN.get(call["tool"].split("_")[0], [call["tool"].split("_")[0]]))
     scores = []
@@ -316,13 +331,24 @@ def _turn_for_write(call: dict, slice_: dict, turns: list[dict]) -> tuple[int, s
     asks = [i for i, t in enumerate(turns) if t["writes_requested"]]
     # a turn that asks for no action ("Why is the count for bay C-14 off?") did not ask for this write, unless it names the
     # action itself (one of its verbs, or two of the tool's object words: "outline it as a board paper for the board agenda")
-    named = [i for i, t in enumerate(turns) if verbs & set(_WORD.findall(t["text"].lower())) or _names_object(t["text"], objs)]
+    named = [i for i, t in enumerate(turns) if _leads(t["text"], verbs) or _names_object(t["text"], objs)]
     cand = sorted(set(asks + named)) or list(range(len(turns)))
     best = max(cand, key=lambda i: (scores[i], -i))
+    # the first turn that asks for it with one of its verbs, when the best match only mentions it ("Hold 20% for
+    # click-and-collect", then "Actually, release the click-and-collect hold after day three"): doing it when first asked
+    # is not early
+    if not _leads(turns[best]["text"], verbs):
+        best = min([i for i in asks if i < best and scores[i] >= 2.5 and _leads(turns[i]["text"], verbs)], default=best)
     note = None
     if scores[best] < 2.5:
-        best = asks[0] if asks else 0
-        note = f"write {call['tool']} attached to turn {best} by default (no turn text matches the action clearly)"
+        # a weak match still counts when the turn asks for an action and shares a word with the ask ("Put a hold on the bay
+        # until it's recounted" for "Schedule a recount of location DC1-C-14-02"), the first such turn; none: no turn asks
+        # for the write (scn-07:69:Q5 only ever asks why), so it is not expected, and doing it is unrequested
+        weak = [i for i in asks if scores[i] >= 1.5]
+        if not weak:
+            return None, f"write {call['tool']} not expected: no turn asks for it (no turn text matches the action)"
+        best = min(weak)
+        note = f"write {call['tool']} attached to turn {best} on a weak match (the turn asks for an action and shares the ask's words)"
     elif best > 0 and not turns[0]["writes_requested"] or best > 0 and scores[best] - scores[0] >= 2:
         note = f"write {call['tool']} attached to follow-up turn {best} by matching the action to its text"
     held, at = _held(turns[best]["text"], verbs, pw, objs), best
@@ -376,14 +402,39 @@ def _stems(text: str) -> set:
     return {_SUFFIX.sub("", w)[:5] for w in re.findall(r"[a-z]{2,}", text.lower()) if w not in STOP}
 
 
+def _locate(eng, sid: str, refs: list, facts: list) -> dict:
+    """{repr(fact): [(tool, column), ...]}: where each fact sits in the output of these reference calls on engine `eng`
+    (column '' for text output)."""
+    from .. import args as A
+    from ..kinds import RUNNERS
+    found = {repr(f): [] for f in facts}
+    for r in refs:
+        tool = eng.tools.get((sid, r["tool"]))
+        if not tool:
+            continue
+        s, a = eng.systems[sid], eng.args[(sid, r["tool"])]
+        try:
+            vals, _ = A.prepare(eng.db, s, eng.master, tool, a, bench._shift_args(r.get("args") or {}))
+            rows = RUNNERS[tool.kind](eng, s, tool, a, vals)[0]
+        except Exception:
+            continue
+        for f in facts:
+            hit = lambda v: bench._has(f, str(v), True) or bench._has(f, str(v))
+            if isinstance(rows, str):
+                found[repr(f)] += [(r["tool"], "")] if hit(rows) else []
+            else:
+                found[repr(f)] += [(r["tool"], col) for col in dict.fromkeys(
+                    k for row in rows or [] for k, v in dict(row).items() if v is not None and hit(v))]
+    return found
+
+
 def _fact_columns(cases: dict) -> dict:
     """{system: {case ids}} -> {case id: {repr(fact): [(tool, column), ...]}}: where each fact of these cases sits in its
     reference output (column '' for text output). Runs the reference calls like bench --validate: writes go to a throwaway
     state, and a case after a write starts from a clean one."""
     import tempfile
     from pathlib import Path
-    from .. import args as A, db
-    from ..kinds import RUNNERS
+    from .. import db
     from ..server import Engine
     out, old, tmp = {}, db.STATE, tempfile.TemporaryDirectory()
     try:
@@ -393,29 +444,126 @@ def _fact_columns(cases: dict) -> dict:
                 if eng is None:
                     db.STATE = Path(tempfile.mkdtemp(dir=tmp.name))
                     eng = Engine([sid])
-                found = out[c["id"]] = {repr(f): [] for f in c["facts"]}
-                for r in c["ref"]:
-                    tool = eng.tools.get((sid, r["tool"]))
-                    if not tool:
-                        continue
-                    s, a = eng.systems[sid], eng.args[(sid, r["tool"])]
-                    try:
-                        vals, _ = A.prepare(eng.db, s, eng.master, tool, a, bench._shift_args(r.get("args") or {}))
-                        rows = RUNNERS[tool.kind](eng, s, tool, a, vals)[0]
-                    except Exception:
-                        continue
-                    for f in c["facts"]:
-                        hit = lambda v: bench._has(f, str(v), True) or bench._has(f, str(v))
-                        if isinstance(rows, str):
-                            found[repr(f)] += [(r["tool"], "")] if hit(rows) else []
-                        else:
-                            found[repr(f)] += [(r["tool"], col) for col in dict.fromkeys(
-                                k for row in rows or [] for k, v in dict(row).items() if v is not None and hit(v))]
+                out[c["id"]] = _locate(eng, sid, c["ref"], c["facts"])
                 if any(t.writes for r in c["ref"] if (t := eng.tools.get((sid, r["tool"])))):
                     eng = None
     finally:
         db.STATE = old
         tmp.cleanup()
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _read_engine(sid: str):
+    from ..server import Engine
+    return Engine([sid])
+
+
+@functools.lru_cache(maxsize=None)
+def _read_columns(sid: str, refs_json: str, facts_json: str) -> dict:
+    """_locate for a read-only slice, on one cached engine per system (reads change nothing, so engines are shared)."""
+    import json
+    return _locate(_read_engine(sid), sid, json.loads(refs_json), json.loads(facts_json))
+
+
+# ---------- which turn of a scenario asks for each fact ----------
+
+_ASK_STOP = _stems("them they there here be been being do does did done have has had will would can could should may might much "
+                  "many give tell show let get need want know look see one ones")  # stems that tie any ask to any turn
+_SENT_SPLIT = re.compile(r"(?<=[.?!;:])\s+")
+_CLAUSE_SPLIT = re.compile(r"(?<=[.?!;:])\s+|,?\s+(?:and|but)\s+(?=(?:what|which|how|where|when|who|whether|why)\b)", re.I)
+
+
+def _turn_words(t: dict) -> tuple[list, list]:
+    """(stems of what each turn asks, text that may name a fact per turn). The Context paragraph of turn 0 only resolves
+    names, so it counts for naming a fact but not for matching an ask."""
+    q = questions().get(t["question_id"]) or {"text": t["turns"][0]["text"], "followups": [x["text"] for x in t["turns"][1:]]}
+    asked = [q["text"]] + list(q["followups"])
+    return [_ask_stems(x) for x in asked], [t["turns"][0]["text"]] + asked[1:]
+
+
+def _ask_stems(text: str) -> set:
+    return {w for w in _stems(text) if w not in _ASK_STOP}
+
+
+def _ask_turns(asks: list, tstems: list) -> list[set]:
+    """Per ask: the turn(s) whose words cover the largest share of it (at least UNASKED_COVERAGE), plus any turn most of
+    whose words (two or more) the ask uses ("Air rates out of Dhaka at the moment?" in "current air freight rates per kg ...
+    from Dhaka (DAC) and from Ho Chi Minh City ...")."""
+    out = []
+    for a in asks:
+        st = _ask_stems(a)
+        sc = [len(st & ts) / len(st) for ts in tstems]
+        top = max(sc)
+        out.append(({i for i, x in enumerate(sc) if x == top} if top >= UNASKED_COVERAGE else set())
+                   | ({0} if sc[0] >= UNASKED_COVERAGE else set())
+                   | {i for i, ts in enumerate(tstems) if len(st & ts) >= 2 and len(st & ts) / len(ts) >= 0.5})
+    return out
+
+
+def fact_turns(t: dict) -> dict:
+    """{case id: {repr(fact): sorted turn indices, or None when no turn can be told}} for the read slices of scenario `t`:
+    which of its turns ask for each fact. A trap that keeps only some turns of a scenario requires only the facts those turns
+    ask for (Rule C): "What would protect them at least cost?" (turn 3) asks for the cheapest protection's cost, turn 0
+    ("What are our highest-loss products?") does not.
+
+    The slice prompt is cut into asks twice, into sentences and into clauses ("..., and what would be the cheapest way to
+    protect it?"), and each ask goes to its turns (_ask_turns). A fact belongs to the asks that name it or use its words or
+    its reference columns' words (cost_per_pound_prevented -> cost, pound), else those using its tool's words; failing
+    that, to the turns that use those words, else to every turn the slice's asks go to. The two cuts often disagree (a
+    clause "and what materials are they using?" reads like the main question, its sentence is about competitors' ranges):
+    the turns both agree on win, else either. A turn that names the fact's value asks for it too. A case can pin facts to
+    turns with `turn_facts` ({turn: [facts]}) where the words cannot tell (a December row is "last year's peak").
+    Lexical: None (keep the fact) when nothing matches. Runs the slices' reference calls (cached per system)."""
+    import json
+    key = json.dumps([t.get("question_id"), [x["text"] for x in t["turns"]],
+                      [[s["case_id"], s["prompt"], s["facts"], s["ref"], s.get("turn_facts")] for s in t["reference"]["slices"]]],
+                     sort_keys=True, default=str)
+    if key not in _FACT_TURNS:
+        _FACT_TURNS[key] = _fact_turns(t)
+    return copy.deepcopy(_FACT_TURNS[key])
+
+
+_FACT_TURNS: dict = {}
+
+
+def _fact_turns(t: dict) -> dict:
+    import json
+    tstems, named = _turn_words(t)
+    words = lambda ws: _stems(" ".join(w for w in ws if w not in _LABEL_NOISE))
+    out = {}
+    for s in t["reference"]["slices"]:
+        if not s["facts"] or any(_is_write(s["system"], r["tool"]) for r in s["ref"]):
+            continue
+        cuts = []
+        for rx in (_SENT_SPLIT, _CLAUSE_SPLIT):
+            asks = [a for a in rx.split(s["prompt"]) if a and _ask_stems(a)]
+            cuts.append((asks, _ask_turns(asks, tstems)))
+        cols = _read_columns(s["system"], json.dumps(s["ref"], sort_keys=True), json.dumps(s["facts"]))
+        pinned: dict = {}
+        for k, fs in (s.get("turn_facts") or {}).items():
+            for f in fs:
+                pinned.setdefault(repr(f), set()).add(int(k))
+        m = out[s["case_id"]] = {}
+        for f in s["facts"]:
+            if repr(f) in pinned:
+                m[repr(f)] = sorted(pinned[repr(f)])
+                continue
+            forms = f if isinstance(f, list) else [f]
+            locs = cols.get(repr(f), [])
+            lab = set().union(words([w for v in forms if not bench._idlike(v) and not re.fullmatch(r"-?[\d.,]+", str(v))
+                                     for w in re.split(r"[\s_]+", str(v).lower())]),
+                              *(words(c.split("_")) for _, c in locs if c))
+            tool = set().union(set(), *(words(tl.split("_")[1:]) for tl, _ in locs))
+            views = []
+            for asks, aturns in cuts:
+                linked = ([i for i, a in enumerate(asks) if _ask_stems(a) & lab or any(bench._has(v, a) for v in forms)]
+                          or [i for i, a in enumerate(asks) if _ask_stems(a) & tool])
+                views.append(set().union(set(), *(aturns[i] for i in linked))
+                             or {i for i, ts in enumerate(tstems) if ts & (lab | tool)} or set().union(*aturns))
+            turns = (views[0] & views[1]) or (views[0] | views[1])
+            turns |= {i for i, x in enumerate(named) if any(not re.fullmatch(r"-?[\d.,]+", str(v)) and bench._has(v, x) for v in forms)}
+            m[repr(f)] = sorted(turns) or None
     return out
 
 
@@ -438,7 +586,7 @@ def unasked_facts(qids=None) -> list[dict]:
         ts = _stems(turns)
         for s in t["reference"]["slices"]:
             own = [a for a in split(s["prompt"]) if (st := _stems(a)) and len(st & ts) / len(st) < UNASKED_COVERAGE]
-            if own and s["facts"] and "dropped_facts" not in s and not s.get("held"):
+            if own and s["facts"] and "dropped_facts" not in s and not s.get("held") and not s.get("unasked"):
                 todo.append((t["question_id"], s, turns, own))
     cases: dict = {}
     for _, s, _, _ in todo:
@@ -471,28 +619,33 @@ def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
     turns = [turn(main, "question")] + [turn(f, "followup") for f in q["followups"]]
     turns[0]["writes_requested"] = writes_requested(q["text"])
     asked = [{**turns[0], "text": q["text"]}] + turns[1:]  # what the user asks; the Context paragraph only resolves names
-    expected, held, notes, out = [], [], [s["notes"] for s in slices if s["notes"]], []
+    expected, held, unasked, notes, out = [], [], [], [s["notes"] for s in slices if s["notes"]], []
     for s in slices:
         mine = []
         for r in s["ref"]:
             if _is_write(s["system"], r["tool"]):
                 t, note = _turn_for_write(r, s, asked)
-                w = {"tool": r["tool"], "args": r["args"], "turn": t if t >= 0 else -1 - t, "system": s["system"]}
-                (expected if t >= 0 else held).append(w), mine.append(t >= 0)
+                if t is None:
+                    unasked.append({"tool": r["tool"], "args": r["args"], "system": s["system"]}), mine.append(None)
+                else:
+                    w = {"tool": r["tool"], "args": r["args"], "turn": t if t >= 0 else -1 - t, "system": s["system"]}
+                    (expected if t >= 0 else held).append(w), mine.append(t >= 0)
                 if note and note not in notes:
                     notes.append(note)
         if mine and not any(mine) and all(_is_write(s["system"], r["tool"]) for r in s["ref"]):
-            s = {**s, "facts": [], "held": True}  # a write slice nobody approves: its facts describe the write, not an answer
+            # a write slice nobody approves (or asks for): its facts describe the write, not an answer
+            s = {**s, "facts": [], **({"held": True} if False in mine else {"unasked": True})}
         elif mine and not all(mine):
-            s = {**s, "facts": [f for f in s["facts"] if not _describes_held(f, held, expected)]}
+            s = {**s, "facts": [f for f in s["facts"] if not _describes_held(f, held + unasked, expected)]}
         out.append(s)
     t = _task(f"scn-{qid}", "scenario", qid, q, turns, out, expected, notes)
     t["writes"]["held"] = held  # asked for subject to a go-ahead that never comes: doing it is acting before approval
+    t["writes"]["unasked"] = unasked  # in a slice prompt but asked for by no turn of the scenario: doing it is unrequested
     return t
 
 
 def _slice(qid: str, q: dict, s: dict) -> dict:
-    s = {k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts", "inputs_from")}
+    s = {k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts", "inputs_from", "turn_facts")}
     expected = [{"tool": r["tool"], "args": r["args"], "turn": 0, "system": s["system"]}
                 for r in s["ref"] if _is_write(s["system"], r["tool"])]
     return _task(f"slc-{s['case_id']}", "slice", qid, q, [turn(s["prompt"], "slice_prompt")], [s], expected,
@@ -507,7 +660,7 @@ def _task(tid, kind, qid, q, turns, slices, expected, notes) -> dict:
          "tool_budget": {},
          "reference": {"slices": copy.deepcopy(slices), "facts": _dedupe([f for s in slices for f in s["facts"]]),
                        "notes": notes},
-         "writes": {"expected": expected, "held": [], "write_tools_loaded": []}, "trap": None}
+         "writes": {"expected": expected, "held": [], "unasked": [], "write_tools_loaded": []}, "trap": None}
     t["features"] = features(t)
     t["strata"] = strata(t)
     return t
