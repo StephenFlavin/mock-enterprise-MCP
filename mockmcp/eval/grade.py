@@ -426,6 +426,7 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
             "tokens": tokens_of(usage),
             "wall_ms": int(sum(max(0.0, (t.get("finished_at") or 0) - (t.get("started_at") or 0)) for t in turns) * 1000),
             "tool_calls": len(read_jsonl(task_dir / "trace.jsonl")),
+            "features": task.get("features") or {},  # every task feature (kind, ladder_cell, systems, calls, complexity, trap_type...) so results can be cut any way
             "judge_cost_usd": (verdict.get("judge") or {}).get("cost_usd", 0.0), "judge": (verdict.get("judge") or {}).get("cascade") or (verdict.get("judge") or {}).get("backend", ""),
             "judge_escalated": (bool((verdict.get("judge") or {}).get("escalated")) if "escalated" in (verdict.get("judge") or {}) else None)}
 

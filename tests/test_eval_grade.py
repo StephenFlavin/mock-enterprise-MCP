@@ -214,3 +214,20 @@ def test_metrics_count_cached_input_and_wall_time():
     assert m["input_tokens"]["total"] == 1100  # older results without input_total are summed from their parts
     assert m["seconds"]["total"] == 42.0       # wall time when recorded, else the harness duration
     assert m["cost_per_pass_usd"] == 0.08 and m["cost_usd"]["total"] == 0.08
+
+
+def test_export_flat_table(tmp_path):
+    import csv, json, types
+    from mockmcp.eval import export
+    run = tmp_path / "r"
+    run.mkdir()
+    task = {"id": "t1", "kind": "scenario", "features": {"complexity": "complex", "system_ids": ["a", "b"], "calls": 4}}
+    (run / "tasks.jsonl").write_text(json.dumps(task) + "\n")
+    res = {"task_id": "t1", "kind": "scenario", "outcome": "partial", "passed": False, "categories": ["incomplete"], "severity": "none",
+           "cost_usd": 0.01, "tokens": {"input": 1, "cache_read": 9, "output": 3}, "wall_ms": 2500, "tool_calls": 2,
+           "tool_budget": {"label": "tokens-0", "tools": 5}, "features": task["features"]}
+    (run / "results.jsonl").write_text(json.dumps(res) + "\n")
+    export.main(types.SimpleNamespace(runs=[str(run)], out=str(tmp_path / "o.csv")))
+    (row,) = list(csv.DictReader(open(tmp_path / "o.csv")))
+    assert row["f_complexity"] == "complex" and row["f_system_ids"] == "a;b" and row["cat_incomplete"] == "1"
+    assert row["input_total"] == "10" and row["wall_s"] == "2.5" and row["passed"] == "0" and row["budget"] == "tokens-0"

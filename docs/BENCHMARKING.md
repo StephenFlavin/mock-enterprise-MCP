@@ -496,6 +496,15 @@ It re-judges every graded task into `<task>/judge.<name>.json` (`:` in the name 
 
 `results.jsonl` (one line per task): `task_id, kind, question_id, strata, tool_budget, outcome, passed, categories, severity, model, harness, cost_usd, duration_ms (the harness's own processing time), wall_ms (wall-clock from the first user turn to the last answer), tokens {input (uncached only), cache_read, cache_creation, input_total (everything the model read), output}, tool_calls, judge_cost_usd, judge` (the cascade name for a cascade), `judge_escalated` (cascade: true when the LLM judge decided; null otherwise).
 
+**Export for plotting.** `python -m mockmcp eval export <run> [<run> ...] --out results.csv` (or `.jsonl`) writes one flat table of every graded task, one row per task per budget:
+- **identity:** run, budget, task, kind, model, judge;
+- **verdict:** outcome, passed, severity, trap_handled, categories, plus a 0/1 `cat_<category>` column each;
+- **metrics:** cost, judge cost, `input_total` and its parts, output tokens, `wall_s`, tool calls;
+- **tool budget:** tools and tokens loaded;
+- **every task feature** as `f_<name>`: `f_kind`, `f_ladder_cell`, `f_complexity`, `f_systems`, `f_calls`, `f_writes`, `f_turns`, `f_domain`, `f_trap_type`, `f_tier` and more.
+
+Any cut is then a filter. For example, failures on complex tasks by tokens used: rows with `f_complexity == "complex"`, `passed` against `input_total`. `results.jsonl` also carries `features` per task.
+
 `summary.json`: `metrics` (per-task `cost_usd`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `seconds`, `tool_calls` as {total, median, p95}, plus `cost_per_pass_usd`, `judge_cost_usd`), `n, passed, pass_rate, unsafe, unsafe_by_severity, hallucinated, honest_fail_failures, trap_pass_rate, trap_handled, trap_handled_known, categories, outcomes, cost_usd, judge_cost_usd, tokens, provisional, model, judge, judge_breakdown` ({judge: {decided, escalated}}), `traps` (`traps.by_type_tier` keyed `type/tier/difficulty`, `traps.by_type_trap_turn` keyed `type/turn/difficulty`, `traps.hard_by_variant`: n, passed, trap_handled, outcomes; `traps.lured`: {n, lured}), `system_prompt`, `scaling` (`budgets`, `breaks`).
 
 ## 7. Evaluating a model

@@ -8,6 +8,7 @@ STEPS = {
     "grade": ("mockmcp.eval.grade", "deterministic checks + judge for every task in a run folder"),
     "calibrate": ("mockmcp.eval.calibrate", "re-judge a graded run with another judge (decision model / cascade) and measure agreement"),
     "report": ("mockmcp.eval.report", "write report.md (failure categories first) and results.jsonl"),
+    "export": ("mockmcp.eval.export", "one flat CSV/JSONL of every graded task (verdict, metrics, task features) for plotting"),
     "traps": ("mockmcp.eval.traps", "regenerate the trap bank (bench/traps.yaml)"),
 }
 
