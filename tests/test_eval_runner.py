@@ -132,3 +132,14 @@ def test_custom_harness_registers_and_is_selectable():
         assert "dummy-test" in harness.available() and isinstance(harness.get("dummy-test"), Dummy)
     finally:
         _REGISTRY.pop("dummy-test")
+
+
+def test_fake_clock_env(tmp_path, monkeypatch):
+    from mockmcp.eval.harness import claude_code as cc
+    lib = tmp_path / "libfaketime.so.1"
+    lib.write_text("")
+    monkeypatch.setattr(cc, "FAKETIME_LIBS", (str(lib),))
+    env = cc.clock_env("2026-10-07")
+    assert env["LD_PRELOAD"] == str(lib) and env["FAKETIME"].startswith("@2026-10-07 ") and env["FAKETIME_DISABLE_SHM"] == "1"
+    monkeypatch.setattr(cc, "FAKETIME_LIBS", (str(tmp_path / "missing.so"),))
+    assert cc.clock_env("2026-10-07") == {}

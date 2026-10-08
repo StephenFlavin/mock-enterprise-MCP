@@ -23,7 +23,23 @@ from pathlib import Path
 from .base import Harness, register, system_prompt as _system_prompt
 
 TOOL_SEARCH = {"off": "false", "auto": "auto"}
-DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900}
+DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900, "fake_clock": False}
+# Claude Code adds its own "Today's date is <real date>" reminder even with --system-prompt, and CLAUDE_CODE_OVERRIDE_DATE has no
+# effect in -p mode (tested on 2.1.x), so the model can see two dates when the world's today (spec.today(), a Wednesday) differs
+# from the real one. fake_clock: true runs claude under libfaketime set to the world's today, which removes the second date. It is
+# off by default: it needs libfaketime, and TLS fails where a proxy mints certificates dated today (as in sandboxes).
+FAKETIME_LIBS = ("/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1", "/usr/lib/faketime/libfaketime.so.1",
+                 "/usr/local/lib/faketime/libfaketime.so.1", "/opt/homebrew/lib/faketime/libfaketime.1.dylib")
+
+
+def clock_env(world_today: str) -> dict:
+    """Environment that makes claude's clock read the world's today (same time of day); {} if libfaketime is missing."""
+    lib = next((p for p in FAKETIME_LIBS if os.path.exists(p)), None)
+    if not lib:
+        return {}
+    key = "DYLD_INSERT_LIBRARIES" if lib.endswith(".dylib") else "LD_PRELOAD"
+    return {key: lib, "FAKETIME": f"@{world_today} {time.strftime('%H:%M:%S')}", "FAKETIME_DISABLE_SHM": "1",
+            "DONT_FAKE_MONOTONIC": "1"}
 
 
 def system_prompt(task: dict) -> str:
@@ -38,6 +54,13 @@ def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, 
             "--allowedTools", *[f"mcp__{s}" for s in servers], "--setting-sources", "",
             "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
             "--system-prompt", system]  # replaces Claude Code's built-in agent prompt: no hints
+
+
+def _world_today(task_dir: Path) -> str:
+    """The date the model is told (prompt.json), which is the world's today when the recipe was built."""
+    import re
+    m = re.search(r"\d{4}-\d\d-\d\d", json.loads((task_dir / "prompt.json").read_text()).get("system", ""))
+    return m.group() if m else date.today().isoformat()
 
 
 def _session_id(task: dict) -> str:
@@ -97,6 +120,7 @@ class ClaudeCode(Harness):
                  "# Usage: PORT=8800 MODEL=haiku ./run.sh   (conversation turns run in order, resumed by session id)",
                  "set -u", 'cd "$(dirname "$0")"', 'PORT="${PORT:-8800}"', 'MODEL="${MODEL:-haiku}"',
                  f"export ENABLE_TOOL_SEARCH={TOOL_SEARCH[opts['tool_search']]}",
+                 *([f"export {k}={shlex.quote(v)}" for k, v in clock_env(_world_today(task_dir)).items()] if opts.get("fake_clock") else []),
                  'WORK="$(mktemp -d)"; trap \'rm -rf "$WORK"\' EXIT',
                  'sed "s/{PORT}/$PORT/g" mcp.json > "$WORK/mcp.json"',
                  f"SYSTEM={shlex.quote(system)}", ""]
@@ -116,6 +140,11 @@ class ClaudeCode(Harness):
         sid, system = _session_id(task), json.loads((task_dir / "prompt.json").read_text())
         turns, answers, err = system["turns"], [], None
         env = {**os.environ, "ENABLE_TOOL_SEARCH": TOOL_SEARCH[opts["tool_search"]]}
+        if opts.get("fake_clock"):
+            fake = clock_env(_world_today(task_dir))
+            if not fake:
+                raise RuntimeError("harness_options.fake_clock is on but libfaketime is not installed (e.g. apt install faketime)")
+            env.update(fake)
         with tempfile.TemporaryDirectory(prefix="eval-") as work, open(task_dir / "transcript.jsonl", "w") as tf:
             mcp = Path(work) / "mcp.json"
             mcp.write_text((task_dir / "mcp.json").read_text().replace("{PORT}", str(port)))

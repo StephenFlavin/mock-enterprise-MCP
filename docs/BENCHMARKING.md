@@ -260,6 +260,7 @@ harness_options: {tool_search: off, max_turns: 25, timeout: 600}
 | `tool_search` | `off` | `off` sets `ENABLE_TOOL_SEARCH=false`: every tool definition is in context (what this benchmark is about). `auto` sets `ENABLE_TOOL_SEARCH=auto`: Claude Code defers MCP tool definitions behind its tool-search tool when they get large, which tests a different thing. |
 | `max_turns` | `25` | `--max-turns` per conversation turn |
 | `timeout` | `900` | seconds per conversation turn (`timeout_s` is accepted as an alias) |
+| `fake_clock` | `false` | run `claude` under libfaketime set to the world's today. Claude Code adds its own *real* date to the model's context, even with `--system-prompt`, so without this the model can see two dates (world Wednesday and real today). Needs libfaketime (`apt install faketime`, `brew install libfaketime`). It breaks TLS where a proxy issues certificates dated today, as in some sandboxes. |
 
 **System prompt.** There is one, and it has no options:
 
