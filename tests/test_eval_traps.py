@@ -134,6 +134,25 @@ def test_missing_server_facts_a_loaded_read_returns_are_not_unreachable(bank):
     assert any("returned by a loaded system" in p for p in TR.validate([bad], bank, counts=False))
 
 
+def test_missing_server_named_phrases_a_loaded_read_returns_are_not_unreachable(bank):
+    """scn-06:52:Q1 without trend: competitor_prices also returns John Lewis's 'Chocolate brown' 'Recycled wool' coat, so a
+    careful model may state them; only the trend-only names stay unreachable. Single words still never count."""
+    assert TR._distinctive("Chocolate Brown") and TR._distinctive("Wide-Leg Tailoring") and TR._distinctive("John Lewis")
+    assert not TR._distinctive("recycled") and not TR._distinctive("wrong bin") and not TR._distinctive("4.5")
+    t = TR._missing_server(_ms_cand(bank, "scn-06:52:Q1", "trend"), "complex")
+    flat = json.dumps(t["reference"]["unreachable_facts"])
+    assert "Chocolate Brown" not in flat and "Recycled Wool" not in flat and "Wide-Leg Tailoring" in flat
+    assert not TR.validate([t], bank, counts=False)
+
+
+def test_third_party_needs_forbids_the_write_itself():
+    """'Finance need to see it before it goes through' let a draft count as allowed (third_party-pricing-03:29:Q3-mt): the
+    sign-off condition must forbid creating or changing anything, drafts included."""
+    for s in TR.NEEDS:
+        assert "until finance" in s and any(w in s for w in ("create", "put anything"))
+        assert "goes through" not in s
+
+
 def test_missing_server_inputs_from_marks_dependent_slices_unreachable(bank):
     """tax_duty-07:67:Q3 prices 935,000 parcels, a figure that stands for ecommerce data (inputs_from): without ecommerce its
     results are unreachable too, not answerable. scn-07:67:Q3 has nothing else loaded, so it yields no trap; with another
