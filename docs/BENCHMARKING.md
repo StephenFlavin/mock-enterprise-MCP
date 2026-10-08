@@ -69,14 +69,16 @@ Useful flags: `run --only <substring>`, `run --limit N` (0 means no limit), `run
 
 ## 3. Recipes
 
-A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy it). Shipped recipes: `smoke.yaml` (6 tasks, end-to-end check), `context-pressure.yaml` (30 scenarios + 10% traps at three budgets: 5k, 25k, 100k tokens), `traps-tiers.yaml` (24 traps by type x tier: multi-turn, complex, missing tools, approval flows), `example.yaml`. The recipe is resolved (defaults filled in) and stored in the run folder as `recipe.yaml`.
+A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy it). For benchmarking a model, start with the **scale recipes** (next section). Other shipped recipes: `smoke.yaml` (6 tasks, end-to-end check), `context-pressure.yaml` (30 scenarios + 10% traps at three budgets: 5k, 25k, 100k tokens), `traps-tiers.yaml` (24 traps by type x tier: multi-turn, complex, missing tools, approval flows), `example.yaml`. The recipe is resolved (defaults filled in) and stored in the run folder as `recipe.yaml`.
 
 | key | default | meaning |
 |---|---|---|
 | `name` | `run` | label; default run folder is `runs/<name>` |
 | `seed` | `1` | every sampling, distractor and position choice derives from it |
 | `kind` | `scenario` | pool: `slice` (1,657 bench cases), `scenario` (441 questions with follow-ups), `any` (both), `trap` (only the trap bank) |
-| `tasks` | `12` | total number of tasks, traps included |
+| `tasks` | `12` | total number of tasks, traps included; `all` with a `ladder` |
+| `ladder` | none | nested sampling: ordered cell filters with weights (replaces `mix`/`traps`; see Scale recipes) |
+| `extends` | none | base recipe file to start from (relative path); this file's keys win, `tools`/`harness_options` merge |
 | `mix` | `{}` | stratified quotas (below) |
 | `filter` | none | pre-filter on the pool, same language as mix keys |
 | `presets` | `{}` | redefine presets, e.g. `{long: "total_words>=100"}` |
@@ -87,6 +89,46 @@ A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy 
 | `tools` | see below | tool budget, distractors, position, toolset |
 | `harness` | `claude-code` | which harness runs the tasks |
 | `harness_options` | see below | passed to the harness |
+
+### Scale recipes (the default benchmark)
+
+`scale-80.yaml`, `scale-160.yaml`, `scale-320.yaml` and `scale-all.yaml` (1,170 tasks) all extend `scale.yaml` and differ only in `tasks`.
+
+- **Fixed mix, nested questions.** `scale.yaml` defines a *ladder*: one deterministic ordering of the whole bank (seed 1) whose every prefix keeps this mix:
+
+  | Cell (first match wins) | Share |
+  |---|---|
+  | simple lookups (one-call slices) | 15% |
+  | single-system chained lookups | 10% |
+  | single-system actions | 10% |
+  | multi-turn scenarios that act | 15% |
+  | read-only scenarios over three or more systems | 15% |
+  | other read-only scenarios | 10% |
+  | hard traps | 10% |
+  | standard traps | 15% |
+
+  So scale-80's questions are exactly the first 80 of scale-160's, and so on. The mix holds exactly up to about 660 questions, where the three-or-more-systems cell runs out; after that the remaining cells share its weight, and `all` holds everything.
+- **Stable ordering.**
+  - A question's place depends only on the seed and its own id, so adding questions to the bank does not reshuffle the rest.
+  - Inside a cell the persona domains take turns, so even 80 questions cover every domain.
+  - At most one slice per persona question.
+- **Same tasks, more tools.** Every task runs at four budgets, one run folder each:
+  - `tokens-0`: only the servers the question needs, ~60 tools median
+  - `tokens-25000`: ~180 tools
+  - `tokens-50000`: ~340 tools
+  - `tokens-100000`: ~650 tools
+
+  A task's distractors at a smaller budget are a subset of its distractors at a bigger one, and loaded servers keep their relative order (a bigger budget only inserts servers). A task that passes at 25k and fails at 100k therefore failed because of what was added. The full catalogue is 96 servers, 2,031 tools, ~327k tokens.
+- **Report.** The scaling section shows pass, hallucination, unsafe and trap-handled rates per budget, and *Breaks under load*: the tasks that pass at the smallest budget and fail at a bigger one, with the first failing budget and its categories. It also shows pass rates on the ladder prefixes (first 80 / 160 / 320), so a bigger run can be compared with a smaller one on the questions they share.
+
+```
+python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80     # 4 budget folders x 80 tasks
+python -m mockmcp eval run    runs/scale-80 --model haiku --workers 6
+python -m mockmcp eval grade  runs/scale-80
+python -m mockmcp eval report runs/scale-80
+```
+
+Change `seed` for a different (equally nested) ladder.
 
 ### Question mix
 
@@ -296,7 +338,7 @@ Applies to unjustified writes; the verdict's `severity` is the worst of them (`n
 
 - **Same data everywhere.** The CSVs are the committed `mockmcp gen` output (`mockmcp check` lints the systems and runs their examples). Every task gets a fresh hub process, so no task sees another's writes.
 - **Ephemeral write state.** Writes go to a per-process temp directory removed on exit. The runner clears `MOCKMCP_STATE` and `MOCKMCP_RECORD` for its hubs, so a stale persistent overlay can never leak into a run.
-- **Same tasks.** The task bank is deterministic and every random choice derives from the recipe seed, so the same recipe, seed and commit give an identical `tasks.jsonl`. The commit is recorded in `manifest.json`.
+- **Same tasks.** The task bank is deterministic and every random choice derives from the recipe seed (default `1`), so the same recipe, seed and commit give an identical `tasks.jsonl`. The commit is recorded in `manifest.json`. Ladder recipes and distractor placement use hashes of (seed, task id), so they are also stable when the bank grows.
 - **Dates.** The mock world moves to the real today in whole weeks (so weekdays are preserved); ids and values stay the same. The model is told today's date from `prompt.json`, written when the recipe is built, while the hub shifts by the day it runs, so build and run in the same week. Reference calls and facts are shifted the same way when grading.
 - **Not deterministic:** the model under test and the judge. Compare runs by pass rate over many tasks, not by single verdicts; judge a changed result with `grade --rerun` before believing it.
 

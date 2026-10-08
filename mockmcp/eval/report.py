@@ -124,6 +124,57 @@ def trap_tables(traps: list[dict]) -> tuple[list[str], dict]:
     return L, data
 
 
+LADDER_CUTS = (80, 160, 320)
+
+
+def scaling(rs: list[dict]) -> tuple[list[str], dict]:
+    """Budget grid sub-runs compared on the SAME tasks: pass rate per budget, the tasks that pass with fewer tools and fail
+    with more (the point of a scale run), and, for ladder recipes, pass rates on the ladder prefixes (the first 80 / 160 /
+    320 questions), so a bigger run can be compared with a smaller one on the questions they share."""
+    runs = sorted({r["run"] for r in rs}, key=lambda run: statistics.median(
+        [x["task"].get("tool_budget", {}).get("tokens") or 0 for x in rs if x["run"] == run]))
+    if len(runs) < 2:
+        return [], {}
+    by = {run: {r["task_id"]: r for r in rs if r["run"] == run} for run in runs}
+    med = lambda run, k: statistics.median([r["task"].get("tool_budget", {}).get(k) or 0 for r in by[run].values()])
+    L = ["## Scaling: same tasks, more tools", "",
+         "Each budget runs the same tasks; a bigger budget adds distractor servers to a task's smaller-budget set and keeps "
+         "their order, so a task that passes at a small budget and fails at a bigger one failed because of what was added.", ""]
+    rows, data = [], {"budgets": {}}
+    for run in runs:
+        rr = list(by[run].values())
+        tr = [r for r in rr if r["kind"] == "trap"]
+        rows.append([run, f"{med(run, 'tools'):.0f}", f"{med(run, 'tokens') / 1000:.0f}k", len(rr), pct(sum(r["passed"] for r in rr), len(rr)),
+                     pct(sum(r["outcome"] == "hallucinated" for r in rr), len(rr)), pct(sum(r["outcome"] == "unsafe" for r in rr), len(rr)),
+                     handled_cell(tr) if tr else "-"])
+        data["budgets"][run] = {"tasks": len(rr), "passed": sum(r["passed"] for r in rr), "median_tools": med(run, "tools"), "median_tokens": med(run, "tokens")}
+    L += table(["budget", "median tools", "median tokens", "tasks", "pass rate", "hallucinated", "unsafe", "trap handled"], rows)
+    common = set.intersection(*(set(by[run]) for run in runs))
+    breaks = []
+    for tid in sorted(common):
+        seq = [by[run][tid]["passed"] for run in runs]
+        if seq[0] and not all(seq):
+            first = next(i for i, p in enumerate(seq) if not p)
+            r = by[runs[first]][tid]
+            breaks.append((tid, runs[first], r["outcome"], ", ".join(r["categories"]), "".join("✓" if p else "✗" for p in seq)))
+    passed_small = sum(by[runs[0]][t]["passed"] for t in common)
+    L += [f"### Breaks under load: {len(breaks)} of {passed_small} tasks that passed at {runs[0]} fail at a bigger budget", ""]
+    if breaks:
+        L += table(["task", "first failing budget", "outcome there", "categories", " ".join(runs)], [list(b) for b in breaks])
+    cats = Counter(c for b in breaks for c in b[3].split(", ") if c)
+    if cats:
+        L += ["Categories at the first failing budget: " + ", ".join(f"{c} {k}" for c, k in cats.most_common()), ""]
+    data["breaks"] = [{"task": b[0], "first_failing": b[1], "outcome": b[2], "pattern": b[4]} for b in breaks]
+    ranks = {tid: (by[runs[0]][tid]["task"].get("features") or {}).get("ladder_rank") for tid in common}
+    if all(v is not None for v in ranks.values()) and ranks:
+        n = len(ranks)
+        cuts = [c for c in LADDER_CUTS if c < n] + [n]
+        L += ["### Ladder prefixes (the first N questions are the whole of a smaller scale run)", ""]
+        L += table(["budget"] + [f"first {c}" for c in cuts],
+                   [[run] + [pct(sum(by[run][t]["passed"] for t in common if ranks[t] < c), sum(1 for t in common if ranks[t] < c)) for c in cuts] for run in runs])
+    return L, data
+
+
 def offending(r: dict) -> str:
     v = r["verdict"]
     bad = [a for a in v.get("actions", []) if not a.get("justified", True)]
@@ -164,6 +215,8 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
         ["cost (model / judge)", f"${cost:.2f} / ${jcost:.2f}"],
         ["tokens (in / out / cache read)", f"{tok['input']:,} / {tok['output']:,} / {tok['cache_read']:,}"],
         ["tool calls", sum(r["tool_calls"] for r in rs)]])
+    sl, scale_data = scaling(rs)
+    L += sl
     L += ["## Failures by category", ""]
     if cats:
         L += table(["category", "tasks", "% of tasks", "examples"], [
@@ -205,7 +258,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "trap_pass_rate": (sum(r["passed"] for r in traps) / len(traps)) if traps else None,
                "trap_handled": sum(handled(r) is True for r in traps), "trap_handled_known": sum(handled(r) is not None for r in traps), "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
-               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "traps": trap_data,
+               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "traps": trap_data, "scaling": scale_data,
                "system_prompt": sorted({r.get("system_prompt", "default") for r in rs})}
     return "\n".join(L) + "\n", summary
 

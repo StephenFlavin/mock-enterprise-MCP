@@ -4,6 +4,7 @@ bench/recipes/example.yaml. Deterministic: the same recipe and seed give an iden
 """
 import collections
 import copy
+import hashlib
 import json
 import random
 import re
@@ -22,7 +23,7 @@ ROOT = T.ROOT
 SIZES = "tool_sizes.json"
 DEFAULTS = {
     "name": "run", "seed": 1, "kind": "scenario", "tasks": 12, "mix": {}, "filter": None, "followups": "all", "traps": 0,
-    "trap_types": None, "strict": False, "presets": {},
+    "trap_types": None, "strict": False, "presets": {}, "ladder": None,
     "tools": {"budget": None, "distractors": "adjacent", "position": "random", "toolset": "per_task"},
     "harness": "claude-code", "harness_options": {"tool_search": "off", "max_turns": 25, "timeout_s": 600, "system_prompt": "default"},
 }
@@ -32,10 +33,27 @@ POSITIONS = ("first", "middle", "last", "random")
 
 # ---------- recipe ----------
 
+def load(path) -> dict:
+    """Read a recipe file, following `extends: <base.yaml>` (relative to the file); the file's own keys win, and `tools` /
+    `harness_options` are merged key by key. `extends` keeps recipe families (e.g. scale-80 / scale-320 / scale-all) on one
+    base so they cannot drift apart."""
+    path = Path(path)
+    r = yaml.safe_load(path.read_text()) or {}
+    base = r.pop("extends", None)
+    if not base:
+        return r
+    b = load(path.parent / base)
+    out = b | {k: v for k, v in r.items() if k not in ("tools", "harness_options")}
+    for k in ("tools", "harness_options"):
+        if k in b or k in r:
+            out[k] = (b.get(k) or {}) | (r.get(k) or {})
+    return out
+
+
 def resolve(recipe) -> dict:
     """Recipe path or dict -> full recipe with defaults filled in (what gets written to <run>/recipe.yaml)."""
     if not isinstance(recipe, dict):
-        recipe = yaml.safe_load(Path(recipe).read_text()) or {}
+        recipe = load(recipe)
     r = copy.deepcopy(DEFAULTS) | {k: v for k, v in recipe.items() if k not in ("tools", "harness_options")}
     r["tools"] = DEFAULTS["tools"] | (recipe.get("tools") or {})
     r["harness_options"] = DEFAULTS["harness_options"] | (recipe.get("harness_options") or {})
@@ -50,6 +68,12 @@ def resolve(recipe) -> dict:
         raise ValueError(f"tools: distractors {DISTRACTORS}, position {POSITIONS}, toolset per_task|shared; got {t}")
     if r["kind"] not in ("slice", "scenario", "any", "trap"):
         raise ValueError(f"kind must be slice | scenario | any, got {r['kind']}")
+    if not (r["tasks"] == "all" or str(r["tasks"]).isdigit()):
+        raise ValueError(f"tasks must be a number or 'all', got {r['tasks']!r}")
+    if r["tasks"] == "all" and not r["ladder"]:
+        raise ValueError("tasks: all needs a ladder (the whole ordered bank); see bench/recipes/scale.yaml")
+    if r["ladder"] and (r["mix"] or r["traps"]):
+        raise ValueError("ladder replaces mix and traps: put the trap share in the ladder cells")
     if not re.fullmatch(r"all|none|first_n:\d+", str(r["followups"])):
         raise ValueError(f"followups must be all | none | first_n:N, got {r['followups']}")
     return r
@@ -183,6 +207,21 @@ def _place(required: list, distractors: list, position: str, rng: random.Random)
     return distractors[:k] + required + distractors[k:]
 
 
+def _unit(seed, key: str) -> float:
+    return int(_h(seed, key)[:12], 16) / 16 ** 12
+
+
+def _place_stable(required: list, distractors: list, position: str, seed, task_id: str) -> list:
+    """Like _place, but every distractor has a fixed key in [0, 1) and the required block sits at a fixed key too, so a
+    bigger budget only inserts servers: the loaded order at a small budget is a subsequence of the order at a bigger one."""
+    at = {"first": -1.0, "last": 2.0, "middle": 0.5, "random": _unit(seed, f"{task_id}|pos")}[position]
+    keyed = [(_unit(seed, f"{task_id}|place|{s}"), 1, s) for s in distractors] + [(at, 0, None)]
+    out = []
+    for _, _, s in sorted(keyed):
+        out += required if s is None else [s]
+    return out
+
+
 # ---------- sampling ----------
 
 def _truncate(task: dict, mode: str, presets: dict) -> dict:
@@ -195,8 +234,93 @@ def _truncate(task: dict, mode: str, presets: dict) -> dict:
     return task
 
 
+# ---------- ladder (nested sampling) ----------
+
+def _h(seed, key: str) -> str:
+    return hashlib.sha1(f"{seed}|{key}".encode()).hexdigest()
+
+
+def ladder_order(recipe: dict) -> tuple[list[dict], dict, list[str]]:
+    """The whole bank in one deterministic order whose every prefix keeps the ladder's mix, so a run of N tasks is exactly
+    the first N of any bigger run with the same seed and ladder (80 ⊂ 160 ⊂ 320 ⊂ all).
+
+    - `ladder` maps cell filters to weights, e.g. {"kind=slice&calls=1&writes=0": 15, "trap&difficulty=hard": 10, ...};
+      cells are disjoint: a task belongs to the first cell it matches (tasks that match none are left out).
+    - Inside a cell, tasks are ordered by a hash of (seed, task id), so adding a question to the bank does not reshuffle the
+      others, and domains take turns so that even a small prefix spreads across them.
+    - The order interleaves cells by deficit: the next task comes from the cell furthest below weight x position.
+      When a cell runs out, the others share its weight.
+    - Slices: at most one per persona question (the first one reached), so a short ladder does not repeat a question as
+      several near-identical single-system lookups.
+    Returns (ordered tasks with features.ladder_rank / ladder_cell, counts per cell, warnings)."""
+    presets = F.merged_presets(recipe["presets"])
+    seed, cells = recipe["seed"], dict(recipe["ladder"])
+    bank = [t for t in T.build_bank() if recipe["kind"] in ("any", t["kind"])] + T.load_traps()
+    bank = [_truncate(t, recipe["followups"], presets) for t in bank]
+    if recipe["filter"]:
+        keep = F.compile_filter(recipe["filter"], presets)
+        bank = [t for t in bank if keep(t["features"])]
+    preds = {c: F.compile_filter(c, presets) for c in cells}
+    members = {c: [] for c in cells}
+    left_out = 0
+    for t in bank:
+        c = next((c for c in cells if preds[c](t["features"])), None)
+        if c is None:
+            left_out += 1
+        else:
+            members[c].append(t)
+    queues = {}
+    for c, ts in members.items():
+        by_dom = collections.defaultdict(list)
+        for t in sorted(ts, key=lambda t: _h(seed, t["id"])):
+            by_dom[t.get("domain") or ""].append(t)
+        doms = sorted(by_dom, key=lambda d: _h(seed, f"{c}|{d}"))
+        q, i = [], 0
+        while any(by_dom.values()):
+            d = doms[i % len(doms)]
+            if by_dom[d]:
+                q.append(by_dom[d].pop(0))
+            i += 1
+        queues[c] = collections.deque(q)
+    total_w = {c: float(w) for c, w in cells.items()}
+    taken = collections.Counter()
+    seen_q, order = set(), []
+    while any(queues.values()):
+        live = [c for c in cells if queues[c]]
+        w = sum(total_w[c] for c in live)
+        pos = sum(taken[c] for c in live) + 1
+        c = max(live, key=lambda c: (total_w[c] / w * pos - taken[c], -list(cells).index(c)))
+        t = queues[c].popleft()
+        if t["kind"] == "slice":
+            if t.get("question_id") in seen_q:
+                continue
+            seen_q.add(t.get("question_id"))
+        taken[c] += 1
+        t["features"]["ladder_rank"], t["features"]["ladder_cell"] = len(order), c
+        order.append(t)
+    counts = {c: {"weight": cells[c], "available": taken[c], "members": len(members[c])} for c in cells}
+    warns = [f"{left_out} bank tasks match no ladder cell and are left out"] if left_out else []
+    return order, counts, warns
+
+
+def sample_ladder(recipe: dict) -> tuple[list[dict], dict, list[str]]:
+    order, cell_counts, warns = ladder_order(recipe)
+    n = len(order) if recipe["tasks"] == "all" else int(recipe["tasks"])
+    if n > len(order):
+        warns.append(f"only {len(order)} tasks in the ladder, wanted {n}")
+        if recipe["strict"]:
+            raise ValueError(warns[-1])
+    head = order[:n]
+    got = collections.Counter(t["features"]["ladder_cell"] for t in head)
+    counts = {c: {"requested": round(len(head) * v["weight"] / sum(x["weight"] for x in cell_counts.values())),
+                  "drawn": got[c], "available": v["available"]} for c, v in cell_counts.items()}
+    return sorted(head, key=lambda t: t["id"]), counts, warns
+
+
 def sample(recipe: dict) -> tuple[list[dict], dict, list[str]]:
     """Stratified draw -> (tasks, counts per stratum {requested, drawn, available}, warnings)."""
+    if recipe["ladder"]:
+        return sample_ladder(recipe)
     presets = F.merged_presets(recipe["presets"])
     rng, warns, n = random.Random(recipe["seed"]), [], int(recipe["tasks"])
     pool = [] if recipe["kind"] == "trap" else [t for t in T.build_bank() if recipe["kind"] in ("any", t["kind"])]
@@ -291,9 +415,9 @@ def assign(chosen: list[dict], recipe: dict, sizes: dict, budget: dict | None) -
             cands = [u for u in universe if u not in set(required) | missing]
             order = graph.order(strategy, set(t["servers"]["required"]), t["persona"].get("file", ""), cands, rng)
             dist = _select(required, order, budget, sizes_t)
-            key = {s: rng.random() for s in dist}
-            dist.sort(key=key.get)
-            loaded = _place(required, dist, opts["position"], rng)
+            # placement depends only on (seed, task, server), never on the budget: a bigger budget adds servers around
+            # the same relative arrangement instead of reshuffling, so budgets of one task differ only in what was added
+            loaded = _place_stable(required, dist, opts["position"], seed, t["id"])
         tools, tokens = sum(sizes_t[s]["tools"] for s in loaded), sum(sizes_t[s]["tokens"] for s in loaded)
         t["servers"] = {"required": required, "distractors": [s for s in loaded if s not in required], "loaded": loaded}
         t["tool_budget"] = {"tools": tools, "tokens": tokens, "servers": len(loaded), "relevant_position": opts["position"],
@@ -399,7 +523,7 @@ def _kv(s: str) -> dict:
 def add_args(p):
     p.add_argument("recipe", help="recipe YAML (see bench/recipes/example.yaml)")
     p.add_argument("--out", help="run folder to write (default runs/<recipe name>)")
-    p.add_argument("--seed", type=int), p.add_argument("--tasks", type=int)
+    p.add_argument("--seed", type=int), p.add_argument("--tasks", help="number of tasks, or 'all' (ladder recipes)")
     p.add_argument("--mix", help="override the mix, e.g. 'simple: 25%%, write: 25%%, systems>=3: 10%%'")
     p.add_argument("--budget", help="override tools.budget, e.g. tokens=30000, tools=200, servers=10, tokens=5000,25000 (grid)")
     p.add_argument("--distractors", choices=DISTRACTORS)
@@ -407,10 +531,11 @@ def add_args(p):
 
 
 def main(a):
-    recipe = yaml.safe_load(Path(a.recipe).read_text()) or {}
-    for k in ("seed", "tasks"):
-        if getattr(a, k) is not None:
-            recipe[k] = getattr(a, k)
+    recipe = load(a.recipe)
+    if a.seed is not None:
+        recipe["seed"] = a.seed
+    if a.tasks is not None:
+        recipe["tasks"] = a.tasks if a.tasks == "all" else int(a.tasks)
     if a.mix:
         recipe["mix"] = yaml.safe_load(a.mix if a.mix.lstrip().startswith("{") else "{" + a.mix + "}")
     if a.budget or a.distractors:

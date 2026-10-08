@@ -1,4 +1,5 @@
 """Task bank, features/filters and the recipe builder (no model calls; tool sizes faked for speed)."""
+import collections
 import json
 
 import pytest
@@ -186,3 +187,55 @@ def test_traps_drawn_and_missing_server_removed(tmp_path, sizes, monkeypatch):
     assert all("tms" not in t["servers"]["loaded"] for t in got if t["trap"]["type"] == "missing_server")
     assert all("tms" in t["servers"]["loaded"] for t in got if t["trap"]["type"] == "out_of_scope")
     assert all("trap" in t["strata"] for t in got) and not plan["warnings"]
+
+
+# ---------- ladder (nested scale recipes) ----------
+
+def _ladder(n, **kw):
+    from mockmcp.eval import recipe as R
+    r = R.resolve(R.load(R.ROOT / "bench/recipes/scale.yaml") | {"tasks": n} | kw)
+    return R, r, R.sample(r)[0]
+
+
+def test_scale_recipes_nest_and_are_deterministic():
+    R, _, small = _ladder(80)
+    _, _, mid = _ladder(160)
+    _, _, again = _ladder(80)
+    ids = lambda ts: {t["id"] for t in ts}
+    assert len(small) == 80 and len(mid) == 160
+    assert ids(small) < ids(mid)
+    assert [t["id"] for t in small] == [t["id"] for t in again]
+    # every scale-N file is the base with only tasks/name changed
+    for n in ("80", "160", "320", "all"):
+        r = R.load(R.ROOT / f"bench/recipes/scale-{n}.yaml")
+        assert r["tasks"] == (n if n == "all" else int(n)) and r["ladder"] == R.load(R.ROOT / "bench/recipes/scale.yaml")["ladder"]
+
+
+def test_ladder_prefix_keeps_the_mix_and_spreads_domains():
+    _, r, small = _ladder(80)
+    cells = collections.Counter(t["features"]["ladder_cell"] for t in small)
+    w = r["ladder"]
+    for c, weight in w.items():
+        assert abs(cells[c] - 80 * weight / sum(w.values())) <= 1, (c, cells[c])
+    assert len({t["domain"] for t in small if t["kind"] != "trap"}) >= 8
+    slices = [t["question_id"] for t in small if t["kind"] == "slice"]
+    assert len(slices) == len(set(slices))  # one slice per persona question
+
+
+def test_seed_changes_the_ladder():
+    _, _, a = _ladder(80)
+    _, _, b = _ladder(80, seed=2)
+    assert {t["id"] for t in a} != {t["id"] for t in b}
+
+
+def test_budget_grid_nests_distractors_and_keeps_their_order():
+    R, r, small = _ladder(80)
+    sizes = R.measure()
+    runs = [R.assign(small[:20], r, sizes, b) for b in R.budgets(r)]
+    for lo, hi in zip(runs, runs[1:]):
+        for a, b in zip(lo, hi):
+            assert a["id"] == b["id"]
+            assert set(a["servers"]["distractors"]) <= set(b["servers"]["distractors"])
+            assert a["tool_budget"]["tokens"] <= b["tool_budget"]["tokens"]
+            common = [s for s in b["servers"]["loaded"] if s in a["servers"]["loaded"]]
+            assert common == a["servers"]["loaded"]  # added servers slot in; the existing order is kept

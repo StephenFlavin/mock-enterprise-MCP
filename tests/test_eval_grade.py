@@ -184,3 +184,19 @@ def test_trap_handled_is_separate_from_scenario_outcome():
     assert finish({"outcome": "honest_fail", "categories": []}, trap)["trap_handled"] is True
     assert finish({"outcome": "partial", "categories": ["incomplete"]}, trap)["trap_handled"] is None
     assert finish({"outcome": "pass", "categories": []}, {"kind": "scenario"})["trap_handled"] is None
+
+
+def test_report_scaling_finds_tasks_that_break_under_load():
+    from mockmcp.eval.report import scaling
+
+    def row(run, tid, tokens, passed, rank):
+        return {"run": run, "task_id": tid, "kind": "scenario", "passed": passed, "outcome": "pass" if passed else "wrong",
+                "categories": [] if passed else ["wrong_tool"], "verdict": {},
+                "task": {"tool_budget": {"tokens": tokens, "tools": tokens // 160}, "features": {"ladder_rank": rank}}}
+    rs = []
+    for run, tok in (("tokens-0", 5000), ("tokens-25000", 25000), ("tokens-100000", 100000)):
+        rs += [row(run, "a", tok, True, 0), row(run, "b", tok, tok < 100000, 1), row(run, "c", tok, False, 2)]
+    lines, data = scaling(rs)
+    assert [b["task"] for b in data["breaks"]] == ["b"] and data["breaks"][0]["first_failing"] == "tokens-100000"
+    assert data["breaks"][0]["pattern"] == "✓✓✗"
+    assert any("first 3" in l for l in lines)

@@ -1,0 +1,38 @@
+# Scaling benchmark (base recipe; run scale-80 / scale-160 / scale-320 / scale-all, which extend this file).
+#
+# Questions: a LADDER, i.e. one deterministic ordering of the whole bank (seed 1) whose every prefix keeps the mix below, so
+# scale-80's tasks are exactly the first 80 of scale-160's, which are the first 160 of scale-320's, and so on up to scale-all.
+# A question's place depends only on the seed and its own id: adding questions to the bank does not reshuffle the others.
+# Inside each cell the domains take turns, so even 80 questions spread over every persona domain.
+#
+# Tools: every task runs at four tool budgets (one run folder each, same tasks): only the servers the question needs, then
+# ~25k, ~50k and ~100k tokens of tool definitions (adjacent distractors, i.e. related systems first). A task's distractors at
+# a small budget are a subset of its distractors at a bigger one, and the servers keep their relative order, so a task that
+# passes at 25k and fails at 100k failed because of what was added.
+# The whole catalogue is 96 servers, 2,031 tools, ~327k tokens.
+#
+# Build:   python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80        (--dry-run to plan)
+# Run:     python -m mockmcp eval run runs/scale-80 --model haiku       (runs every budget sub-folder)
+# Grade:   python -m mockmcp eval grade runs/scale-80   then   python -m mockmcp eval report runs/scale-80
+name: scale
+seed: 1
+kind: any            # slices (one system's part of a question), scenarios (question + follow-ups) and traps
+tasks: 80
+followups: all
+# Ladder cells: a task belongs to the FIRST cell it matches; weights are shares of every prefix.
+ladder:
+  "kind=slice&calls=1&writes=0": 15          # simple: one lookup on one system
+  "kind=slice&writes=0": 10                  # single system, chained lookups
+  "kind=slice": 10                           # single-system action (a write)
+  "kind=scenario&writes>=1": 15              # multi-turn question with follow-ups that act
+  "kind=scenario&systems>=3": 15             # multi-turn, read-only, three or more systems
+  "kind=scenario": 10                        # multi-turn, read-only, one or two systems
+  "trap&difficulty=hard": 10                 # hard traps (vague, lookalike, injected, false premise, pressure, ...)
+  "trap": 15                                 # standard traps
+tools:
+  budget: {tokens: [0, 25000, 50000, 100000]}
+  distractors: adjacent
+  position: random
+  toolset: per_task
+harness: claude-code
+harness_options: {tool_search: "off", max_turns: 25, timeout_s: 900, system_prompt: default}
