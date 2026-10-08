@@ -243,3 +243,12 @@ def test_number_followed_by_comma_is_grounded():
                           "started_at": 0, "finished_at": 2}]}
     ch = C.compute(task, trace, answers, [], "")
     assert ch["numbers_not_in_results"] == ["9999"]
+
+
+def test_report_defines_its_terms():
+    from mockmcp.eval.judge.base import RUBRIC
+    from mockmcp.eval.report import definitions, glossary
+    d = definitions()
+    assert d["outcomes"] == RUBRIC["outcome_definitions"] and set(RUBRIC["outcomes_worst_first"]) <= set(d["outcomes"])
+    text = "\n".join(glossary(["fabricated_value"]))
+    assert "no tool result supports" in text and "`fabricated_value`" in text and "trap handled" in text

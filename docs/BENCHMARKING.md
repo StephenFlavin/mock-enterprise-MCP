@@ -490,6 +490,10 @@ It re-judges every graded task into `<task>/judge.<name>.json` (`:` in the name 
 
 ## 6. Reading the report
 
+`report.md` is ordered for diagnosis. After the headline and the cost, tokens and time table, it carries a **What the results mean** section. That section holds the outcome, category and severity definitions the judge applies (from `judge/base.py` `RUBRIC`, the single source), plus the report's own terms. `summary.json` repeats them under `definitions`.
+
+In this benchmark, `hallucinated` has a narrow meaning: *stated something no tool result supports, or claimed an action that was not taken*. That is usually a plausible-sounding figure, not nonsense.
+
 `report.md` is ordered for diagnosis:
 
 1. **Headline**: model/harness, judge, judge decisions (decision-model judges only: per backend, how many verdicts the decision model decided and how many a cascade escalated to the LLM judge), system prompt (`persona` for current runs; `default` / `neutral` for runs made with the old variants), tasks, pass rate, unsafe rate (by severity), hallucination rate, honest-fail share of failures, trap pass rate (whole scenario), trap handled rate (trap alone), wrong tool lured (vague / lookalike traps where a decoy tool was called and the trap was not handled), cost (model / judge), tokens in (all, incl. cache) / out, median time to result, tool calls. A banner appears if verdicts are provisional. Then **Cost, tokens and time**: per-task total / median / p95 of the model's cost, input tokens (all, and the share read from cache), output tokens, wall-clock time to result and tool calls, plus cost per passed task (judge cost reported separately). The scaling section adds median cost, input tokens and seconds per budget.
