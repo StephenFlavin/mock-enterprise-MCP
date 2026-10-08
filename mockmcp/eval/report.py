@@ -124,6 +124,47 @@ def trap_tables(traps: list[dict]) -> tuple[list[str], dict]:
     return L, data
 
 
+def _tok(r: dict) -> dict:
+    t = r.get("tokens") or {}
+    inp = t.get("input_total", (t.get("input") or 0) + (t.get("cache_read") or 0) + (t.get("cache_creation") or 0))
+    return {"input_total": inp, "input_uncached": t.get("input") or 0, "cache_read": t.get("cache_read") or 0,
+            "cache_creation": t.get("cache_creation") or 0, "output": t.get("output") or 0}
+
+
+def _secs(r: dict) -> float:
+    """Wall-clock seconds from the first user turn to the last answer (falls back to the harness's own duration)."""
+    return (r.get("wall_ms") or r.get("duration_ms") or 0) / 1000
+
+
+def metrics(rs: list[dict]) -> dict:
+    """Per-task cost, tokens and time of the model under test: totals, median, p95 (judge cost separate)."""
+    def stats(xs):
+        xs = sorted(xs)
+        return {"total": round(sum(xs), 4), "median": round(statistics.median(xs), 4) if xs else 0,
+                "p95": round(xs[min(len(xs) - 1, int(len(xs) * .95))], 4) if xs else 0}
+    passed = sum(r["passed"] for r in rs)
+    cost = [r.get("cost_usd") or 0 for r in rs]
+    return {"tasks": len(rs), "passed": passed, "cost_usd": stats(cost),
+            "cost_per_pass_usd": round(sum(cost) / passed, 4) if passed else None,
+            "judge_cost_usd": round(sum(r.get("judge_cost_usd") or 0 for r in rs), 4),
+            "input_tokens": stats([_tok(r)["input_total"] for r in rs]), "output_tokens": stats([_tok(r)["output"] for r in rs]),
+            "cache_read_tokens": stats([_tok(r)["cache_read"] for r in rs]),
+            "seconds": stats([_secs(r) for r in rs]), "tool_calls": stats([r.get("tool_calls") or 0 for r in rs])}
+
+
+def metrics_table(m: dict) -> list[str]:
+    k = lambda x: f"{x / 1000:,.1f}k"
+    rows = [["cost (model under test)", f"${m['cost_usd']['total']:.2f}", f"${m['cost_usd']['median']:.4f}", f"${m['cost_usd']['p95']:.4f}"],
+            ["input tokens (all, incl. cache)", k(m["input_tokens"]["total"]), k(m["input_tokens"]["median"]), k(m["input_tokens"]["p95"])],
+            ["  of which cache reads", k(m["cache_read_tokens"]["total"]), k(m["cache_read_tokens"]["median"]), k(m["cache_read_tokens"]["p95"])],
+            ["output tokens", k(m["output_tokens"]["total"]), k(m["output_tokens"]["median"]), k(m["output_tokens"]["p95"])],
+            ["time to result (s)", f"{m['seconds']['total']:,.0f}", f"{m['seconds']['median']:.1f}", f"{m['seconds']['p95']:.1f}"],
+            ["tool calls", f"{m['tool_calls']['total']:.0f}", f"{m['tool_calls']['median']:.0f}", f"{m['tool_calls']['p95']:.0f}"]]
+    return table(["per task", "total", "median", "p95"], rows) + [
+        f"Cost per passed task: {'$' + format(m['cost_per_pass_usd'], '.4f') if m['cost_per_pass_usd'] is not None else 'n/a (nothing passed)'}; "
+        f"judge cost ${m['judge_cost_usd']:.2f} (not included above). Time is wall-clock from the first user turn to the last answer.", ""]
+
+
 LADDER_CUTS = (80, 160, 320)
 
 
@@ -146,9 +187,12 @@ def scaling(rs: list[dict]) -> tuple[list[str], dict]:
         tr = [r for r in rr if r["kind"] == "trap"]
         rows.append([run, f"{med(run, 'tools'):.0f}", f"{med(run, 'tokens') / 1000:.0f}k", len(rr), pct(sum(r["passed"] for r in rr), len(rr)),
                      pct(sum(r["outcome"] == "hallucinated" for r in rr), len(rr)), pct(sum(r["outcome"] == "unsafe" for r in rr), len(rr)),
-                     handled_cell(tr) if tr else "-"])
-        data["budgets"][run] = {"tasks": len(rr), "passed": sum(r["passed"] for r in rr), "median_tools": med(run, "tools"), "median_tokens": med(run, "tokens")}
-    L += table(["budget", "median tools", "median tokens", "tasks", "pass rate", "hallucinated", "unsafe", "trap handled"], rows)
+                     handled_cell(tr) if tr else "-", f"${(m := metrics(rr))['cost_usd']['median']:.4f}",
+                     f"{m['input_tokens']['median'] / 1000:,.0f}k", f"{m['seconds']['median']:.0f}"])
+        data["budgets"][run] = {"tasks": len(rr), "passed": sum(r["passed"] for r in rr), "median_tools": med(run, "tools"),
+                                "median_tokens": med(run, "tokens"), "metrics": m}
+    L += table(["budget", "median tools", "median tokens", "tasks", "pass rate", "hallucinated", "unsafe", "trap handled",
+                "median cost", "median input tokens", "median s"], rows)
     common = set.intersection(*(set(by[run]) for run in runs))
     breaks = []
     for tid in sorted(common):
@@ -215,7 +259,9 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
     honest = [r for r in failed if r["outcome"] == "honest_fail"]
     prov = sum(bool(r["verdict"].get("provisional")) for r in rs)
     cost, jcost = sum(r["cost_usd"] for r in rs), sum(r.get("judge_cost_usd") or 0 for r in rs)
-    tok = {k: sum(r["tokens"].get(k, 0) for r in rs) for k in ("input", "output", "cache_read")}
+    tok = {k: sum(_tok(r)[k] for r in rs) for k in ("input_total", "input_uncached", "output", "cache_read", "cache_creation")}
+    tok["input"] = tok["input_uncached"]  # summary.json compatibility: `input` was always the uncached part
+    met = metrics(rs)
     models = ", ".join(sorted({r["model"] for r in rs}))
     judges = ", ".join(sorted({f"{r['verdict'].get('judge', {}).get('backend', '?')} {r['verdict'].get('judge', {}).get('model', '')}".strip() for r in rs}))
     sev = Counter(r["severity"] for r in unsafe)
@@ -234,8 +280,10 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
         ["trap handled rate (trap alone)", handled_cell(traps) if traps else "no traps"],
         ["wrong tool lured (vague / lookalike)", (lambda ls: pct(sum(ls), len(ls)) if ls else "n/a")([x for x in (lured(r) for r in traps) if x is not None])],
         ["cost (model / judge)", f"${cost:.2f} / ${jcost:.2f}"],
-        ["tokens (in / out / cache read)", f"{tok['input']:,} / {tok['output']:,} / {tok['cache_read']:,}"],
+        ["tokens in (all) / out", f"{tok['input_total']:,} / {tok['output']:,}"],
+        ["median time to result", f"{met['seconds']['median']:.1f} s"],
         ["tool calls", sum(r["tool_calls"] for r in rs)]])
+    L += ["## Cost, tokens and time", ""] + metrics_table(met)
     sl, scale_data = scaling(rs)
     L += sl
     L += ["## Failures by category", ""]
@@ -279,7 +327,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "trap_pass_rate": (sum(r["passed"] for r in traps) / len(traps)) if traps else None,
                "trap_handled": sum(handled(r) is True for r in traps), "trap_handled_known": sum(handled(r) is not None for r in traps), "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
-               "tokens": tok, "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "traps": trap_data, "scaling": scale_data,
+               "tokens": tok, "metrics": met, "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "traps": trap_data, "scaling": scale_data,
                "system_prompt": sorted({r.get("system_prompt", "persona") for r in rs})}
     return "\n".join(L) + "\n", summary
 

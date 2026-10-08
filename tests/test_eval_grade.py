@@ -200,3 +200,17 @@ def test_report_scaling_finds_tasks_that_break_under_load():
     assert [b["task"] for b in data["breaks"]] == ["b"] and data["breaks"][0]["first_failing"] == "tokens-100000"
     assert data["breaks"][0]["pattern"] == "✓✓✗"
     assert any("first 3" in l for l in lines)
+
+
+def test_metrics_count_cached_input_and_wall_time():
+    from mockmcp.eval.grade import tokens_of
+    from mockmcp.eval.report import metrics
+    use = {"input": 10, "output": 50, "cache_read": 900, "cache_creation": 90}
+    t = tokens_of(lambda *ks: sum(use.get(k, 0) for k in ks))
+    assert t["input"] == 10 and t["input_total"] == 1000 and t["output"] == 50
+    rs = [{"passed": True, "cost_usd": 0.02, "tokens": t, "wall_ms": 30000, "duration_ms": 9000, "tool_calls": 4},
+          {"passed": False, "cost_usd": 0.06, "tokens": {"input": 5, "output": 5, "cache_read": 95}, "duration_ms": 12000, "tool_calls": 2}]
+    m = metrics(rs)
+    assert m["input_tokens"]["total"] == 1100  # older results without input_total are summed from their parts
+    assert m["seconds"]["total"] == 42.0       # wall time when recorded, else the harness duration
+    assert m["cost_per_pass_usd"] == 0.08 and m["cost_usd"]["total"] == 0.08

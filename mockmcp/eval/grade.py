@@ -398,6 +398,16 @@ def trap_handled(v: dict, task: dict) -> bool | None:
     return True if v.get("outcome") in TRAP_PASSING else None
 
 
+def tokens_of(usage) -> dict:
+    """Token counts for a task. `input` is only the UNCACHED input a provider bills at full price; `input_total` is everything
+    the model read (uncached + cache reads + cache writes), which is the number to compare across models and budgets."""
+    t = {"input": usage("input_tokens", "input"), "output": usage("output_tokens", "output"),
+         "cache_read": usage("cache_read_input_tokens", "cache_read"),
+         "cache_creation": usage("cache_creation_input_tokens", "cache_creation")}
+    t["input_total"] = t["input"] + t["cache_read"] + t["cache_creation"]
+    return t
+
+
 def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None = None) -> dict:
     answers = read_json(task_dir / "answers.json", {}) or {}
     turns = answers.get("turns", [])
@@ -413,9 +423,8 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
             "harness": answers.get("harness") or info.get("harness") or "claude-code",
             "cost_usd": round(sum(t.get("cost_usd") or 0 for t in turns), 6),
             "duration_ms": int(sum(t.get("duration_ms") or 0 for t in turns)),
-            "tokens": {"input": usage("input_tokens", "input"), "output": usage("output_tokens", "output"),
-                       "cache_read": usage("cache_read_input_tokens", "cache_read"),
-                       "cache_creation": usage("cache_creation_input_tokens", "cache_creation")},
+            "tokens": tokens_of(usage),
+            "wall_ms": int(sum(max(0.0, (t.get("finished_at") or 0) - (t.get("started_at") or 0)) for t in turns) * 1000),
             "tool_calls": len(read_jsonl(task_dir / "trace.jsonl")),
             "judge_cost_usd": (verdict.get("judge") or {}).get("cost_usd", 0.0), "judge": (verdict.get("judge") or {}).get("cascade") or (verdict.get("judge") or {}).get("backend", ""),
             "judge_escalated": (bool((verdict.get("judge") or {}).get("escalated")) if "escalated" in (verdict.get("judge") or {}) else None)}
