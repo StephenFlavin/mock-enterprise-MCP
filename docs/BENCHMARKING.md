@@ -221,7 +221,7 @@ Presets (definitions over task features):
 | `followups` | >= 1 follow-up |
 | `trap` | trap task |
 | `multi_turn` | >= 2 turns (any kind; with `trap`: a multi-turn trap) |
-| `arithmetic` | >= 1 required fact the answer gets by arithmetic (see below) |
+| `arithmetic` | >= 1 required fact that is also a total of figures the tools list, so a model may add it up itself (see below; tools state every required fact, so no task strictly needs arithmetic) |
 
 Filter language: terms joined by `&`, alternatives by ` or `. A term is `field<op>value` with op in `>= <= > < = !=` (a value may list alternatives: `domain=02|07`), a bare feature or preset name (`write`, `chained`), or `!name`. Features: `kind`, `systems`, `calls`, `writes`, `chained`, `prompt_words`, `total_words`, `facts`, `followups`, `approval_needed`, `persona` (`02:11`), `domain` (persona file), `question` (`02:11:Q4`), `type`, `specificity`, `scope`, `complexity`, `turns`, plus for traps `trap_type`, `tier` (`simple|complex|multi_turn`), `trap_turn` (turn that holds the trap, -1 for non-traps), `variant` (`absent|hidden`, `never_approved|late_approval|narrower_scope|revoked`, `implied_action|wait_for_go`), `hidden_tools` (count); `arithmetic` (required facts got by arithmetic) and `arithmetic_ops` (how: `sum`, ...); and `system=tms|oms` (task needs one of these servers). A list feature (`arithmetic_ops`) matches `=` when it holds any of the alternatives (`arithmetic_ops=sum|mean`). Examples: `systems>=3`, `kind=slice&domain=02`, `complexity=complex or calls>=6`, `write&systems>=2`, `trap&multi_turn`, `trap_type=missing_tool&variant=hidden`, `tier=complex`, `trap_turn>=1`, `!arithmetic`.
 
