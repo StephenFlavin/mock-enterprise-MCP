@@ -86,7 +86,9 @@ def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict]
     seen = bench._norm("\n".join(t.get("text", "") for t in task.get("turns", [])) + "\n" + system) \
         + "\n" + bench._norm("\n".join(c[2] for c in calls), table=True)
     ids = sorted({i for i in bench.ID_RX.findall(text) if i.lower() not in seen})
-    nums = [n for n in bench.NUM_RX.findall(text) if len(re.sub(r"\D", "", n)) >= 3]
+    # NUM_RX keeps a trailing thousands-comma ("...October 2026, the") and a leading hyphen ("CVE-2024-5678"): strip both
+    # before looking the number up, or every number followed by a comma reads as "in no tool result"
+    nums = [n.rstrip(",") for n in bench.NUM_RX.findall(text) if len(re.sub(r"\D", "", n)) >= 3]
     loose = sorted({n for n in nums if bench._norm(n).lstrip("-") not in seen})
     required = set((task.get("servers") or {}).get("required", []))
     turns = turn_of_calls(trace, answers, transcript)

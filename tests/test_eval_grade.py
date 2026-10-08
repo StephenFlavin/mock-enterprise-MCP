@@ -231,3 +231,15 @@ def test_export_flat_table(tmp_path):
     (row,) = list(csv.DictReader(open(tmp_path / "o.csv")))
     assert row["f_complexity"] == "complex" and row["f_system_ids"] == "a;b" and row["cat_incomplete"] == "1"
     assert row["input_total"] == "10" and row["wall_s"] == "2.5" and row["passed"] == "0" and row["budget"] == "tokens-0"
+
+
+def test_number_followed_by_comma_is_grounded():
+    from mockmcp.eval import checks as C
+    task = {"id": "t", "kind": "slice", "turns": [{"text": "q"}], "reference": {"slices": [], "facts": []},
+            "servers": {"required": ["s"]}, "writes": {"expected": []}}
+    trace = [{"server": "s", "tool": "t", "args": {}, "rw": "R", "is_error": False, "ts": 1.0,
+              "result": "cve: CVE-2024-5678\\nwindow_end: 2026-10-07\\ntotal: 1234"}]
+    answers = {"turns": [{"text": "Patch CVE-2024-5678, then review. Up to 7 October 2026, the total was 1234, and 9999 more.",
+                          "started_at": 0, "finished_at": 2}]}
+    ch = C.compute(task, trace, answers, [], "")
+    assert ch["numbers_not_in_results"] == ["9999"]
