@@ -21,6 +21,10 @@ from . import tasks as T
 
 ROOT = T.ROOT
 SIZES = "tool_sizes.json"
+# Calibrated on claude-code + haiku (2026-10): a "reply OK" call with a task's servers loaded at three budgets gave real input
+# tokens = 1.48 x (compact json chars / 4) + ~3.7k fixed overhead, i.e. ~2.7 chars per token for these tool definitions
+# (ids, enums and JSON schema punctuation tokenise densely). Budgets are therefore real context tokens of tool definitions.
+CHARS_PER_TOKEN = 2.7
 DEFAULTS = {
     "name": "run", "seed": 1, "kind": "scenario", "tasks": 12, "mix": {}, "filter": None, "followups": "all", "traps": 0,
     "trap_types": None, "strict": False, "presets": {}, "ladder": None,
@@ -120,7 +124,8 @@ def label(b: dict | None) -> str:
 # ---------- tool measurement ----------
 
 def measure(out_dir: Path | None = None) -> dict:
-    """{system: {tools, tokens, per_tool, write_tools}} from the real MCP tool lists (json size / 4 ~ tokens). Cached in the run folder."""
+    """{system: {tools, tokens, per_tool, write_tools}} from the real MCP tool lists (compact json chars / CHARS_PER_TOKEN, calibrated
+    against Claude Code's real prompt size). Cached in the run folder."""
     cache = out_dir / SIZES if out_dir else None
     if cache and cache.exists():
         cached = json.loads(cache.read_text())
@@ -132,8 +137,8 @@ def measure(out_dir: Path | None = None) -> dict:
     for sid in eng.systems:
         tools = eng.mcp_tools(sid)
         each = {t.name: len(json.dumps(t.model_dump(mode="json", by_alias=True, exclude_none=True), separators=(",", ":"))) for t in tools}
-        sizes[sid] = {"tools": len(tools), "tokens": round(sum(each.values()) / 4),
-                      "per_tool": {k: round(v / 4) for k, v in each.items()},
+        sizes[sid] = {"tools": len(tools), "tokens": round(sum(each.values()) / CHARS_PER_TOKEN),
+                      "per_tool": {k: round(v / CHARS_PER_TOKEN) for k, v in each.items()},
                       "write_tools": sorted(t.name for t in tools if not (t.annotations and t.annotations.read_only_hint))}
     if cache and out_dir.exists():
         cache.write_text(json.dumps(sizes, indent=1))

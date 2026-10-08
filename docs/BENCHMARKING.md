@@ -112,17 +112,22 @@ A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy 
   - A question's place depends only on the seed and its own id, so adding questions to the bank does not reshuffle the rest.
   - Inside a cell the persona domains take turns, so even 80 questions cover every domain.
   - At most one slice per persona question.
-- **Same tasks, more tools.** Every task runs at four budgets, one run folder each:
+- **Same tasks, more tools.** Every task runs at five budgets, one run folder each:
   - `tokens-0`: only the servers the question needs, ~60 tools median
-  - `tokens-25000`: ~180 tools
-  - `tokens-50000`: ~340 tools
-  - `tokens-100000`: ~650 tools
+  - `tokens-25000`: ~145 tools
+  - `tokens-50000`: ~240 tools
+  - `tokens-100000`: ~450 tools
+  - `tokens-200000`: ~860 tools, 26 servers
 
-  A task's distractors at a smaller budget are a subset of its distractors at a bigger one, and loaded servers keep their relative order (a bigger budget only inserts servers). A task that passes at 25k and fails at 100k therefore failed because of what was added. The full catalogue is 96 servers, 2,031 tools, ~327k tokens.
+  Budgets are real context tokens of tool definitions. Sizes are measured as compact JSON characters ÷ 2.7, calibrated against Claude Code's actual prompt size: a 200k budget measured 206.7k real input tokens including Claude Code's ~4k fixed prompt.
+
+  A task's distractors at a smaller budget are a subset of its distractors at a bigger one, and loaded servers keep their relative order (a bigger budget only inserts servers). A task that passes at 25k and fails at 200k therefore failed because of what was added. The full catalogue is 96 servers, 2,031 tools, ~484k tokens.
+
+  Check that the model's context window fits the biggest budget plus the conversation. Drop the rung from `tools.budget` (or use `--budget tokens=0,25000,50000,100000`) for smaller windows.
 - **Report.** The scaling section shows pass, hallucination, unsafe and trap-handled rates per budget, and *Breaks under load*: the tasks that pass at the smallest budget and fail at a bigger one, with the first failing budget and its categories. It also shows pass rates on the ladder prefixes (first 80 / 160 / 320), so a bigger run can be compared with a smaller one on the questions they share.
 
 ```
-python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80     # 4 budget folders x 80 tasks
+python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80     # 5 budget folders x 80 tasks
 python -m mockmcp eval run    runs/scale-80 --model haiku --workers 6
 python -m mockmcp eval grade  runs/scale-80
 python -m mockmcp eval report runs/scale-80
@@ -168,7 +173,7 @@ tools:
   toolset: per_task
 ```
 
-Required servers are always loaded (except the `missing_server` ones of a trap). Distractor servers are added in strategy order until the budget is reached, and the server that crosses it is the last one added, so the real size is at or slightly above the target. The required servers count toward the budget; if they already exceed it, no distractors are added. Sizes are measured from the real MCP tool lists (JSON size / 4 ~ tokens), cached in `tool_sizes.json`; `manifest.json` records the min/median/max actually reached.
+Required servers are always loaded (except the `missing_server` ones of a trap). Distractor servers are added in strategy order until the budget is reached, and the server that crosses it is the last one added, so the real size is at or slightly above the target. The required servers count toward the budget; if they already exceed it, no distractors are added. Sizes are measured from the real MCP tool lists (compact JSON characters / 2.7, calibrated to real Claude Code input tokens), cached in `tool_sizes.json`; `manifest.json` records the min/median/max actually reached.
 
 - **Grid.** A list of values (`{tokens: [5000, 25000, 100000]}`, or `--budget tokens=5000,25000`) makes one full run folder per value under `<out>/<label>/` (for example `runs/x/tokens-5000/`), with identical tasks; the loaded server sets are nested (a smaller budget is a subset of a larger one). `grade` and `report` accept the parent folder and compare the sub-runs; `run` must be pointed at each sub-folder (section 9).
 - **Distractor strategies.** `adjacent` (default): servers that co-occur most with the required ones in the persona questions, then those used by the same persona file. `persona`: anything used by that persona file's questions first, then adjacent. `random`: seeded random. `none`: required servers only (budget ignored).
