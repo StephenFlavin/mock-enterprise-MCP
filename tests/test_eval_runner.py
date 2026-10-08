@@ -109,3 +109,26 @@ def test_run_task_records_harness_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(FileNotFoundError):  # runner.run_one turns this into answers.json "error"
         h.run_task(tmp_path, TASK, 1, "haiku", {})
+
+
+def test_harness_registry_and_recipe_flag(tmp_path):
+    from mockmcp.eval import harness, recipe as R
+    assert "claude-code" in harness.available()
+    assert harness.get("claude-code").name == "claude-code"
+    with pytest.raises(KeyError):
+        harness.get("nope")
+    with pytest.raises(ValueError):
+        R.resolve({"harness": "nope"})
+
+
+def test_custom_harness_registers_and_is_selectable():
+    from mockmcp.eval import harness
+    from mockmcp.eval.harness.base import _REGISTRY
+
+    @harness.register
+    class Dummy(harness.Harness):
+        name = "dummy-test"
+    try:
+        assert "dummy-test" in harness.available() and isinstance(harness.get("dummy-test"), Dummy)
+    finally:
+        _REGISTRY.pop("dummy-test")

@@ -19,7 +19,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from .base import Harness, system_prompt as _system_prompt
+from .base import Harness, register, system_prompt as _system_prompt
 
 TOOL_SEARCH = {"off": "false", "auto": "auto"}
 DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900, "system_prompt": "default"}
@@ -74,6 +74,7 @@ def parse_turn(stream: str) -> dict:
     return out
 
 
+@register
 class ClaudeCode(Harness):
     name = "claude-code"
 

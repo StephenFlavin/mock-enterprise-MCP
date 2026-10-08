@@ -22,8 +22,8 @@ from ..spec import ROOT
 
 def add_args(p):
     p.add_argument("run_dir")
-    p.add_argument("--model", default="haiku")
-    p.add_argument("--harness", default=None, help="default: the recipe's harness, else claude-code")
+    p.add_argument("--model", default="haiku", help="model under test, as the folder's harness names it "
+                   "(claude-code: an alias such as haiku / sonnet / opus, or a full model id); default haiku")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--only", help="tasks whose id contains this")
     p.add_argument("--limit", type=int, help="run at most n tasks")
@@ -114,7 +114,7 @@ def main(a):
     run = root
     tasks = [json.loads(l) for l in (run / "tasks.jsonl").read_text().splitlines() if l.strip()]
     recipe = yaml.safe_load((run / "recipe.yaml").read_text()) if (run / "recipe.yaml").exists() else {}
-    h = harnesses.get(a.harness or recipe.get("harness") or "claude-code")
+    h = harnesses.get(recipe.get("harness") or "claude-code")  # the harness the folder was written for (eval recipe --harness)
     opts = recipe.get("harness_options") or {}
     tasks = [t for t in tasks if not a.only or a.only in t["id"]]
     todo = [t for t in tasks if a.rerun or not (run / t["id"].replace("/", "_") / "answers.json").exists()]

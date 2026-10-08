@@ -67,6 +67,9 @@ def resolve(recipe) -> dict:
     from .harness.base import SYSTEM_PROMPTS
     if r["harness_options"].get("system_prompt") not in SYSTEM_PROMPTS:
         raise ValueError(f"harness_options.system_prompt must be one of {sorted(SYSTEM_PROMPTS)}, got {r['harness_options'].get('system_prompt')!r}")
+    from .harness import available
+    if r["harness"] not in available():
+        raise ValueError(f"harness must be one of {available()}, got {r['harness']!r}")
     t = r["tools"]
     if t["distractors"] not in DISTRACTORS or t["position"] not in POSITIONS or t["toolset"] not in ("per_task", "shared"):
         raise ValueError(f"tools: distractors {DISTRACTORS}, position {POSITIONS}, toolset per_task|shared; got {t}")
@@ -447,8 +450,7 @@ def _git() -> str | None:
 
 def _harness(name: str):
     from . import harness
-    getter = getattr(harness, "get", None)
-    return getter(name) if getter else None
+    return harness.get(name)
 
 
 def _write_task(d: Path, task: dict, recipe: dict, harness) -> None:
@@ -532,6 +534,10 @@ def add_args(p):
     p.add_argument("--mix", help="override the mix, e.g. 'simple: 25%%, write: 25%%, systems>=3: 10%%'")
     p.add_argument("--budget", help="override tools.budget, e.g. tokens=30000, tools=200, servers=10, tokens=5000,25000 (grid)")
     p.add_argument("--distractors", choices=DISTRACTORS)
+    from .harness import available
+    p.add_argument("--harness", choices=available(),
+                   help="agent harness the run folder is written for (mcp.json, run.sh, prompt.json in its format); "
+                        "default: the recipe's `harness`, else claude-code")
     p.add_argument("--dry-run", action="store_true", help="print the plan (strata, budgets, servers per task); write nothing")
 
 
@@ -539,6 +545,8 @@ def main(a):
     recipe = load(a.recipe)
     if a.seed is not None:
         recipe["seed"] = a.seed
+    if a.harness:
+        recipe["harness"] = a.harness
     if a.tasks is not None:
         recipe["tasks"] = a.tasks if a.tasks == "all" else int(a.tasks)
     if a.mix:

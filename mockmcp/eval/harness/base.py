@@ -17,7 +17,28 @@ def system_prompt(variant: str = "default", today: date | None = None) -> str:
     return SYSTEM_PROMPTS[variant].format(company=WORLD["company"], today=(today or date.today()).isoformat())
 
 
+_REGISTRY: dict[str, type] = {}
+
+
+def register(cls):
+    """Class decorator: make a Harness subclass selectable by its `name` (recipe `harness:` / `eval recipe --harness`)."""
+    _REGISTRY[cls.name] = cls
+    return cls
+
+
+def available() -> list[str]:
+    return sorted(_REGISTRY)
+
+
+def get(name: str) -> "Harness":
+    if name not in _REGISTRY:
+        raise KeyError(f"unknown harness {name!r}; available: {', '.join(available())}")
+    return _REGISTRY[name]()
+
+
 class Harness:
+    """One agent loop under test. The run folder is written for ONE harness (`write_task` at recipe time), and
+    `eval run` always runs it with that harness."""
     name: str
 
     def write_task(self, task_dir: Path, task: dict, recipe: dict) -> None:

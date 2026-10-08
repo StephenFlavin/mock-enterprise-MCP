@@ -48,7 +48,7 @@ budget tokens-20000: tools {'min': 108, 'median': 150.0, 'max': 185} tokens {'mi
 Then the four steps:
 
 ```
-python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke      # 1. tasks + mcp.json + run.sh per task
+python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke --harness claude-code   # 1. tasks + mcp.json + run.sh per task
 python -m mockmcp eval run    runs/smoke --model haiku --workers 4           # 2. model under test, hub records every call
 python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model sonnet   # 3. checks + judge
 python -m mockmcp eval report runs/smoke                                     # 4. report.md, summary.json
@@ -72,7 +72,7 @@ Useful flags: `run --only <substring>`, `run --limit N` (0 means no limit), `run
 This is the standard way to try a model on part of the scale benchmark: build all five budgets, run one.
 
 ```
-python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80      # 5 folders: tokens-0 ... tokens-200000
+python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80 --harness claude-code   # 5 folders: tokens-0 ... tokens-200000
 python -m mockmcp eval run    runs/scale-80/tokens-50000 --model haiku --workers 8 # one budget only
 python -m mockmcp eval grade  runs/scale-80/tokens-50000 --workers 8               # sonnet judge (default)
 python -m mockmcp eval report runs/scale-80/tokens-50000
@@ -464,12 +464,12 @@ Differences of a few tasks between models on scale-80, or on a single trap type 
 
 ## 9. Extending
 
-**Adding a harness** (`mockmcp/eval/harness/`). Subclass `Harness` (`harness/base.py`), set `name`, register it in `get()` in `harness/__init__.py`, and implement:
+**Adding a harness** (`mockmcp/eval/harness/`). The pipeline is harness-agnostic; `claude-code` is the only harness built so far. To add one: subclass `Harness` (`harness/base.py`), set `name`, decorate the class with `@register`, import its module in `harness/__init__.py` (it then appears in `eval recipe --harness` choices), and implement:
 
 - `write_task(task_dir, task, recipe)`: write `prompt.json` (`{"turns", "system"}`), `mcp.json` in the harness's own format (URLs use the `{PORT}` placeholder; one entry per `task["servers"]["loaded"]`, in that order) and a `run.sh` that reproduces the task by hand. Called when the recipe is built.
 - `run_task(task_dir, task, port, model, opts) -> dict`: a hub is already listening on `port`. Run every turn in order in one conversation, write `transcript.jsonl` (raw output) and `answers.json`, and return `{"turns": [{"text", "usage", "cost_usd", "duration_ms", "num_turns", "error", "started_at", "finished_at"}], "error": None | str, "model": ...}`. Never raise for model or harness failures; put them in `error`. Fill `started_at`/`finished_at` (epoch seconds): grading uses them to attribute tool calls to turns.
 
-Tool calls are recorded by the hub, not the harness, so a new harness gets `trace.jsonl` for free. Select it with `harness: <name>` in the recipe or `eval run --harness <name>`.
+Tool calls are recorded by the hub, not the harness, so a new harness gets `trace.jsonl` for free. Select it when building: `harness: <name>` in the recipe or `eval recipe ... --harness <name>`. A run folder is written for one harness, and `eval run` always runs it with that harness (from the folder's `recipe.yaml`), so to try another harness on the same tasks build a second folder with the same recipe and seed.
 
 **Adding a judge** (`mockmcp/eval/judge/`). Subclass `Judge` (`judge/base.py`), set `name`, decorate with `@register`, import it in `judge/__init__.py`, and implement `judge(payload) -> Verdict` (shape in `schema.py` and `VERDICT_SCHEMA`; `passed` is recomputed by the pipeline). Return `outcome: "judge_failed"` to fall back to the provisional verdict. Select with `--judge <name> --judge-model <model>`. The payload is the same for every judge. Decision-model judges are planned behind this interface (GitHub issue #4).
 
