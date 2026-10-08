@@ -594,13 +594,17 @@ def _factors(ev: Evidence, cx: Ctx, call: int | None = None) -> list[tuple[float
     return [(f, why) for f, why in win + GENERIC_FACTORS if not 0.9 < f < 1.1]
 
 
-def derive(value: str, sentence: str, answer_text: str, results: list[str], rows: list[dict] | None = None) -> str | None:
+def derive(value: str, sentence: str, answer_text: str, results: list[str], rows: list[dict] | None = None,
+           tol: float | None = None) -> str | None:
     """How a figure in the answer that is in no tool result can be restated or derived from the tool results or the
     answer's own figures, naming the operands; None when no plausible derivation is found. `rows`: the trace calls
-    (parallel to `results`) whose date-window args annualisation uses."""
+    (parallel to `results`) whose date-window args annualisation uses. `tol`: a wider tolerance than the figure's own
+    rounding (arithmetic.py: last-digit noise in tool totals)."""
     cx = context(value, sentence, answer_text)
     if cx is None:
         return None
+    if tol is not None and tol > cx.num.tol:
+        cx.num.tol = tol
     ev = evidence(results, rows)
     targets = _targets(cx)
     n = cx.num
