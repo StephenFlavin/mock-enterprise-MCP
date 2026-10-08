@@ -81,7 +81,10 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | Haiku on 80 tasks at one budget | ~$3 |
 | Sonnet judge for those 80 tasks | ~$10 |
 | Opus on 30 hard traps | ~$70 |
-| A full five-budget scale run | 5× those |
+| Haiku on 160 tasks: 0 / 25k / 50k / 100k tool budget | $4.46 / $4.35 / $7.66 / $57.82 |
+| A full five-budget scale run | 5× those, more at big budgets (below) |
+
+Budgets of 100k tokens and up cost far more than their size suggests: some models bill prompts over a threshold at a higher rate (Haiku 5.5: 5× above 100k tokens), and at a 100k budget every request crosses it. Check the model's long-context price before a big-budget run.
 
 Don't start model runs beyond a single-task smoke check unless the person asked for them. Prefer `--dry-run`, `--only`, `--limit` and `grade --no-judge` while developing. Report cost alongside results.
 

@@ -192,7 +192,7 @@ A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy 
 
   A task's distractors at a smaller budget are a subset of its distractors at a bigger one, and loaded servers keep their relative order (a bigger budget only inserts servers). A task that passes at 25k and fails at 200k therefore failed because of what was added. The full catalogue is 96 servers, 2,031 tools, ~484k tokens.
 
-  Check that the model's context window fits the biggest budget plus the conversation. Drop the rung from `tools.budget` (or use `--budget tokens=0,25000,50000,100000`) for smaller windows.
+  Check that the model's context window fits the biggest budget plus the conversation, and its long-context price: a model that bills prompts above a threshold at a higher rate pays that rate on every request once the budget crosses it (Haiku 5.5 bills prompts over 100k tokens at 5×, so on 160 tasks the 100k budget cost $57.82 against $7.66 at 50k). Drop the rung from `tools.budget` (or use `--budget tokens=0,25000,50000,100000`) for smaller windows.
 - **Report.** The scaling section shows pass, fabrication, unsafe and trap-handled rates per budget, and *Breaks under load*: the tasks that pass at the smallest budget and fail at a bigger one, with the first failing budget and its categories. It also shows pass rates on the ladder prefixes (first 80 / 160 / 320), so a bigger run can be compared with a smaller one on the questions they share.
 
 ```
