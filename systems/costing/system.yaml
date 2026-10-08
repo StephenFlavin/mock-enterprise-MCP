@@ -2256,7 +2256,7 @@ tools:
   example:
     sku: K-1700
 - name: get_costed_vs_actual_cost_by_product
-  desc: Costed versus actual unit cost per product with margin lost, worst first. Give a SKU for one product, or a category and season for a whole range.
+  desc: Costed versus actual unit cost per product with margin lost, worst first. Give a SKU, or a category and season. No supplier cost history means no actual cost.
   kind: sql
   args:
     sku:
@@ -2274,13 +2274,14 @@ tools:
       p.category,
       p.season,
       ROUND(p.total_cost_gbp, 2) AS costed_cost_gbp,
-      ROUND(COALESCE(h.actual_cost, p.total_cost_gbp), 2) AS actual_cost_gbp,
-      ROUND(COALESCE(h.actual_cost, p.total_cost_gbp) - p.total_cost_gbp, 2) AS variance_gbp,
-      ROUND((COALESCE(h.actual_cost, p.total_cost_gbp) - p.total_cost_gbp) / p.total_cost_gbp * 100, 1) AS variance_pct,
+      ROUND(h.actual_cost, 2) AS actual_cost_gbp,
+      ROUND(h.actual_cost - p.total_cost_gbp, 2) AS variance_gbp,
+      ROUND((h.actual_cost - p.total_cost_gbp) / p.total_cost_gbp * 100, 1) AS variance_pct,
       ROUND(p.retail_price_gbp, 2) AS retail_price_gbp,
       ROUND(p.gross_margin_pct, 1) AS costed_margin_pct,
-      ROUND((p.retail_price_gbp - COALESCE(h.actual_cost, p.total_cost_gbp)) / p.retail_price_gbp * 100, 1) AS actual_margin_pct,
-      ROUND(p.gross_margin_pct - (p.retail_price_gbp - COALESCE(h.actual_cost, p.total_cost_gbp)) / p.retail_price_gbp * 100, 1) AS margin_lost_pts
+      ROUND((p.retail_price_gbp - h.actual_cost) / p.retail_price_gbp * 100, 1) AS actual_margin_pct,
+      ROUND(p.gross_margin_pct - (p.retail_price_gbp - h.actual_cost) / p.retail_price_gbp * 100, 1) AS margin_lost_pts,
+      CASE WHEN h.sku IS NULL THEN 'no actual cost recorded (no supplier cost history)' ELSE 'supplier cost history' END AS actual_cost_source
     FROM product_costings p
     LEFT JOIN (SELECT sku, AVG(actual_cost_gbp) AS actual_cost FROM supplier_cost_history GROUP BY sku) h ON h.sku = p.sku
     WHERE p.status = 'active'
@@ -2288,7 +2289,7 @@ tools:
       AND ($category IS NULL OR lower(p.category) = lower($category))
       AND ($season IS NULL OR p.season = $season)
       AND ($sku IS NOT NULL OR h.sku IS NOT NULL)
-    ORDER BY variance_gbp DESC, p.sku
+    ORDER BY variance_gbp DESC NULLS LAST, p.sku
   limit: 30
   example:
     sku: K-1700
