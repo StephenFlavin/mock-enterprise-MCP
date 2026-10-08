@@ -13,13 +13,14 @@ from pathlib import Path
 
 from .grade import read_jsonl
 from .report import run_dirs
-from .schema import CATEGORIES
+from .schema import CATEGORIES, modern
 
 
 def rows_of(run: Path) -> list[dict]:
     tasks = {t["id"]: t for t in read_jsonl(run / "tasks.jsonl")}
     out = []
     for r in read_jsonl(run / "results.jsonl"):
+        r = {**r, "outcome": modern(r.get("outcome")), "categories": [modern(c) for c in r.get("categories") or []]}
         t, tok, tb = tasks.get(r["task_id"], {}), r.get("tokens") or {}, r.get("tool_budget") or {}
         feats = r.get("features") or t.get("features") or {}
         row = {"run": run.parent.name if run.name.startswith("tokens-") else run.name, "budget": tb.get("label") or run.name,

@@ -149,9 +149,9 @@ def test_code_categories_rules():
     # traps: tools of unreachable slices do not count; a vague trap lured by its decoy tool gets wrong_tool
     vt = task("trap-v", "trap", facts=(), trap={**TRAP, "type": "vague", "decoy_tools": ["crm-01.list_accounts"]})
     vt["reference"]["slices"][0]["reachable"] = False
-    v = grade.code_categories({"outcome": "hallucinated", "passed": False, "categories": ["trap_hallucinated"], "trap_handled": False},
+    v = grade.code_categories({"outcome": "fabricated", "passed": False, "categories": ["trap_fabricated"], "trap_handled": False},
                               vt, {**c, "tools_called": ["list_accounts"]})
-    assert v["categories"] == ["trap_hallucinated", "wrong_tool"]
+    assert v["categories"] == ["trap_fabricated", "wrong_tool"]
 
 
 def test_claude_code_judge_picks_prompt_by_mode(monkeypatch):

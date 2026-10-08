@@ -371,7 +371,7 @@ def test_report_trap_tables(built):
     traps = []
     for i, t in enumerate(built[:60] + of(built, "vague", difficulty="hard")[:4]):
         passed = i % 3 != 0
-        traps.append({"task": t, "task_id": t["id"], "outcome": "pass" if passed else "hallucinated", "passed": passed,
+        traps.append({"task": t, "task_id": t["id"], "outcome": "pass" if passed else "fabricated", "passed": passed,
                       "verdict": {"trap_handled": passed}})
     lines, data = report.trap_tables(traps)
     text = "\n".join(lines)

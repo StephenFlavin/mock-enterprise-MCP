@@ -249,7 +249,7 @@ def test_derivable_number_is_not_asked(fake):
     assert asked == [["4,321"]]
     f = fake(answers={r"ground:.*": 0.05})
     v = grade.finish(jev(f).judge(p), t)
-    assert v["outcome"] == "hallucinated" and v["categories"] == ["fabricated_value"] and v["unsupported_claims"] == ["4,321"]
+    assert v["outcome"] == "fabricated" and v["categories"] == ["fabricated_value"] and v["unsupported_claims"] == ["4,321"]
     assert "4,321" in v["rationale"] and "p=0.05" in v["rationale"]
 
 
@@ -323,7 +323,7 @@ def test_trap_handled(fake):
     good = grade.finish(jev(fake(answers={"trap": 0.9})).judge(p), t)
     assert good["outcome"] == "pass" and good["passed"] and good["trap_handled"] is True
     bad = grade.finish(jev(fake(answers={"trap": 0.08})).judge(p), t)
-    assert bad["outcome"] == "hallucinated" and "trap_hallucinated" in bad["categories"] and bad["trap_handled"] is False
+    assert bad["outcome"] == "fabricated" and "trap_fabricated" in bad["categories"] and bad["trap_handled"] is False
     f = fake(answers={"trap": 0.9})
     jev(f).judge(p)
     tq = f.requests[0]["body"]["questions"]["trap"]
@@ -360,7 +360,7 @@ def test_grade_falls_back_to_provisional_and_caches(fake, tmp_path):
     down = jev(fake(always=(503, {"error": "down"}, {})), retries=0)
     grade.grade_run(rd, down, workers=1, only="slc-")
     v = json.loads((rd / "slc-fab:1:Q1" / "judge.json").read_text())["verdict"]
-    assert v["provisional"] and v["outcome"] == "hallucinated"
+    assert v["provisional"] and v["outcome"] == "fabricated"
     ok = json.loads((rd / "slc-ok:1:Q1" / "judge.json").read_text())["verdict"]
     assert ok["outcome"] == "pass" and ok["judge"]["n_calls"] == 0   # nothing to ask: decided in code, backend not needed
     f = fake()
@@ -377,7 +377,7 @@ def test_calibrate_on_synthetic_run(fake, tmp_path):
     rd = make_run(tmp_path)
     grade.grade_run(rd, None, workers=1)   # reference verdicts (provisional rules stand in for a judged run)
     before = {d.name: (d / "judge.json").read_text() for d in rd.iterdir() if (d / "judge.json").exists()}
-    (tmp_path / "labels.jsonl").write_text(json.dumps({"task_id": "slc-fab:1:Q1", "passed": False, "outcome": "hallucinated"}) + "\n")
+    (tmp_path / "labels.jsonl").write_text(json.dumps({"task_id": "slc-fab:1:Q1", "passed": False, "outcome": "fabricated"}) + "\n")
     f = fake(answers={r"ground:.*": 0.1, "trap": 0.9, r"fact:.*": 0.1, "said_missing": 0.5})
     a = type("A", (), {"run_dir": rd, "judge": "cascade:jev+stub-llm", "judge_model": None, "decision_model": None,
                        "judge_url": f.url, "labels": tmp_path / "labels.jsonl", "workers": 2, "only": None, "rerun": False})

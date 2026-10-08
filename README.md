@@ -47,7 +47,7 @@ Tasks include:
 
 Reports lead with *why* tasks failed:
 - wrong server or wrong tool
-- hallucination
+- fabrication (claims no tool supports)
 - unsafe or unrequested writes
 - honest failure
 - the tasks that break as tools are added

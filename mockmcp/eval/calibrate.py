@@ -51,7 +51,7 @@ def ref_label(qid: str, d: dict, ref: dict) -> bool | None:
             return True if out == "honest_fail" else None
         return True if out == "pass" else None
     if comp == "grounding":
-        if out != "hallucinated":
+        if out != "fabricated":
             return True
         claims = " ".join(ref.get("unsupported_claims") or [])
         vals = (d.get("ref") or {}).get("values") or []
@@ -168,7 +168,7 @@ def render(name: str, res: dict) -> str:
         L.append(f"| {c} | {v['n']} | {v['brier']} | {v['ece']} | " + (f"{t['reject_at_or_below']} / {t['accept_at_or_above']} | {t['decided']} | {t['agreement']} |"
                                                                      if t else f"none reaches {TARGET:.0%} | - | - |"))
     return "\n".join(L + ["", "Reference labels per component are derived from the existing verdicts (pass => facts present, "
-                          "no hallucination => values grounded, actions' requested / justified, trap_handled...): they are "
+                          "no fabrication => values grounded, actions' requested / justified, trap_handled...): they are "
                           "silver labels; gold labels (`--labels`) are the real test.", ""])
 
 
