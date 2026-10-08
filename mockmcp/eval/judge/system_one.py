@@ -226,13 +226,19 @@ class SystemOneJudge(Judge):
 
         def one(c):
             return c, self.client.decide(c["state"], c["questions"], cdir)
-        try:
-            with ThreadPoolExecutor(max(1, min(len(plan["calls"]), self.max_workers))) as ex:
-                for c, r in ex.map(one, plan["calls"]):
+
+        def run(batch):
+            with ThreadPoolExecutor(max(1, min(len(batch), self.max_workers))) as ex:
+                for c, r in ex.map(one, batch):
                     answers.update(r["answers"])
                     calls.append({"qids": list(c["questions"]), "cache_key": r["cache_key"], "cached": r["cached"],
                                   "request_id": r.get("request_id"), "latency_ms": r.get("latency_ms", 0),
                                   "model": r.get("model"), "provider": r.get("provider"), "usage": r["usage"]})
+        try:
+            run(plan["calls"])
+            extra = D.followups(plan, answers, self.profile)   # close choice answers, asked again with the options reversed
+            if extra:
+                run(extra)
         except SystemOneError as e:
             err = e
         meta = {"backend": self.backend, "model": self.model, "base_url": self.profile["base_url"],

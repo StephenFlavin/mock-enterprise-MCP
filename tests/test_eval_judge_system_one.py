@@ -18,6 +18,9 @@ from test_eval_grade import GOOD, RESULT, TRAP, ans, call, make_run, task
 
 # ---------- fake System One server ----------
 
+GOOD_OPTIONS = set(J.base.GROUNDING_FINE) | {"as_asked"}
+
+
 class Fake:
     """answers: {qid regex: p (noul) | dict (raw answer)}, default noul p; errors: list of (status, body, headers) served
     first, one per request; style: "typesafe" | "cygnet" | "openrouter"; limit: tokens (est) above which it answers 422."""
@@ -53,6 +56,12 @@ class Fake:
                     elif q["type"] == "score":
                         out[qid] = {"type": "score", "score": 2.0, "legend": q["criteria"],
                                     "probabilities": {"0": 0.05, "1": 0.05, "2": 0.1, "3": 0.8}, "confidence": 0.7}
+                    elif q["type"] == "choice":   # p: the good side gets p (on its first option), the first bad option 1 - p
+                        good = [k for k in q["criteria"] if k in GOOD_OPTIONS]
+                        bad = [k for k in q["criteria"] if k not in GOOD_OPTIONS]
+                        ps = {k: 0.0 for k in q["criteria"]}
+                        ps[good[0]], ps[bad[0]] = a, round(1 - a, 6)
+                        out[qid] = {"type": "choice", "choice": max(ps, key=ps.get), "probabilities": ps}
                     else:
                         out[qid] = {"type": "noul", "noul": a}
                 n = S.est_tokens(body)
@@ -265,7 +274,8 @@ def test_grounding_question_uses_answer_and_reference_outputs(fake):
     q = next(q for r in f.requests for k, q in r["body"]["questions"].items() if k.startswith("ground:"))
     assert "trace" not in json.dumps(st) and "tool_result" not in st and [o["tool"] for o in st["reference_output"]] == ["cmms-01.list_unplanned_stoppages"]
     assert st["model_answer"][0]["text"] == "Another figure: 4,321." and st["other_figures_in_answer"][0]["text"] == "Bearing failure cost 1200."
-    assert "calculation from" in q["instructions"] and v["outcome"] == "pass"
+    assert q["type"] == "choice" and list(q["criteria"]) == list(J.RUBRIC["grounding_cases"]) and v["outcome"] == "pass"
+    assert "calculation from" in q["criteria"]["computed"] and J.RUBRIC["untrusted"] in q["instructions"]
 
 
 def test_debug_payload_still_works(fake):
