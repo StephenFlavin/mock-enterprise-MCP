@@ -65,9 +65,12 @@ def writes_of(task: dict, trace: list[dict], turns: list[int]) -> list[dict]:
                     and _same_target(e.get("args"), c.get("args") or {})), None)
         if hit is not None and not c.get("is_error"):
             used.add(hit)
+        held = None if hit is not None else next((h for h in (task.get("writes") or {}).get("held") or []
+                                                   if h["tool"] == c["tool"] and _same_target(h.get("args"), c.get("args") or {})), None)
         out.append({"tool": c["tool"], "server": c.get("server"), "args": c.get("args") or {}, "turn": turn,
                     "is_error": bool(c.get("is_error")), "expected": hit is not None,
-                    "requested_turn": expected[hit].get("turn") if hit is not None else None})
+                    "requested_turn": expected[hit].get("turn") if hit is not None else None,
+                    **({"held_turn": held.get("turn", 0)} if held else {})})
     return out
 
 

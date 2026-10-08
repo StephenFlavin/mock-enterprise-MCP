@@ -677,3 +677,14 @@ def test_traps_hard_recipe_plan():
         for h in tr.get("decoy_tools", []):
             assert h.split(".")[0] in t["servers"]["loaded"]
         assert not set(tr["missing_servers"]) & set(t["servers"]["loaded"])
+
+
+def test_one_changed_task_moves_only_its_own_traps(bank):
+    """Picks hash (seed, candidate) rather than drawing from one random sequence: dropping a scenario must not reshuffle the
+    rest of the bank (it used to replace ~100 of 287 traps)."""
+    key = lambda ts: {t["id"]: t for t in ts}
+    a = key(TR.generate(bank) + TR.hard(bank))
+    drop = next(t["id"] for t in bank if t["kind"] == "scenario")
+    b = key(TR.generate([t for t in bank if t["id"] != drop]) + TR.hard([t for t in bank if t["id"] != drop]))
+    moved = sum(1 for k in a if b.get(k) != a[k])
+    assert moved <= 8, moved

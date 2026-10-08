@@ -31,8 +31,8 @@ entity, the turn and what a good answer says.
 import copy
 import csv
 import functools
+import hashlib
 import json
-import random
 import re
 import zlib
 from collections import Counter, defaultdict
@@ -229,15 +229,37 @@ class _State:
         self.q, self.p, self.seen = set(), set(), Counter()
 
 
-def _spread(cands: list, n: int, rng: random.Random, st: _State, make=None, cap_key=None, cap: int = 99, offset: int = 0) -> list:
+class _Picker:
+    """Seeded choices that hash (seed, candidate) instead of drawing from one random sequence, so adding, removing or
+    changing one candidate moves only the traps built from it, not every later pick."""
+
+    def __init__(self, seed):
+        self.salt = str(seed)
+
+    def key(self, *parts) -> str:
+        return hashlib.sha1(":".join([self.salt, *map(str, parts)]).encode()).hexdigest()
+
+    def order(self, items: list, ident, *ctx) -> list:
+        return sorted(items, key=lambda x: self.key(*ctx, ident(x)))
+
+    def pick(self, items: list, ident, *ctx):
+        return min(items, key=lambda x: self.key(*ctx, ident(x)))
+
+
+def _cand_id(c: dict) -> str:
+    """A candidate's identity: its base task plus whatever else distinguishes it (missing system, entity, variant)."""
+    return c["task"]["id"] + json.dumps({k: v for k, v in c.items() if k != "task"}, sort_keys=True, default=str)[:400]
+
+
+def _spread(cands: list, n: int, rng: _Picker, st: _State, make=None, cap_key=None, cap: int = 99, offset: int = 0) -> list:
     """cands: dicts with 'task' (the base) -> n picks (or n results of make(c), skipping candidates it rejects with None),
     domains in rotation (starting at `offset`), questions never reused, personas not repeated while others remain."""
     by_dom = defaultdict(list)
     for c in cands:
         if c["task"]["persona"].get("file"):  # tasks not tied to a persona question (mdm lookups) have no domain
             by_dom[c["task"]["persona"]["file"]].append(c)
-    for v in by_dom.values():
-        rng.shuffle(v)
+    for dom, v in by_dom.items():
+        v[:] = rng.order(v, _cand_id, dom, offset)
     doms = sorted(by_dom)
     k = offset % len(doms) if doms else 0
     doms, picked = doms[k:] + doms[:k], []
@@ -273,13 +295,13 @@ def _asked(t: dict) -> list[dict]:
 
 
 def _read_scns(bank: list[dict]) -> list[tuple]:
-    """(scenario, its read slices): scenarios whose first turn is a read-only ask, in id order."""
+    """(scenario, its read slices): scenarios whose first turn is a read-only ask and whose read slices all have facts, in id order."""
     out = []
     for t in sorted((t for t in bank if t["kind"] == "scenario"), key=lambda t: t["id"]):
         if t["turns"][0]["writes_requested"] or any(w["turn"] == 0 for w in _asked(t)):
             continue
         reads = [s for s in t["reference"]["slices"] if not _is_w(s)]
-        if reads:
+        if reads and all(s["facts"] for s in reads):  # a turn with nothing to check (facts dropped by Rule C) is no base
             out.append((t, reads))
     return out
 
@@ -305,7 +327,7 @@ def _scn_for(bank, pkey: str, rng, used: set, min_sys: int = 1, need: str | None
     same = same or pool
     if not same:
         return None
-    t, reads = same[rng.randrange(len(same))]
+    t, reads = rng.pick(same, lambda x: x[0]["id"], "scn", pkey, min_sys, need or "")
     used.add(t["id"])
     return t, reads
 
@@ -1040,7 +1062,7 @@ def _hard_scn(bank, pkey: str, rng, used: set, min_sys: int = 1, avoid=None, fol
             and len(_hard_turns(t)) - 1 >= follow and not (avoid and avoid(r))]
     for same in ([x for x in pool if _pkey(x[0]) == pkey], [x for x in pool if x[0]["persona"].get("file") == pkey.split(":")[0]]):
         if same:
-            t, reads = same[rng.randrange(len(same))]
+            t, reads = rng.pick(same, lambda x: x[0]["id"], "hard", pkey, min_sys, follow)
             used.add(t["id"])
             return t, reads
     return None
@@ -1522,7 +1544,7 @@ def _approval_hard_all(bank, rng, used) -> list[dict]:
 
 def hard(bank: list[dict], seed: int = SEED) -> list[dict]:
     """Every hard trap (trap.difficulty = "hard"), deterministic: seeded builders + generated near misses and approval variants."""
-    rng, used, by_id, out = random.Random(f"{seed}:hard"), set(), {t["id"]: t for t in bank}, []
+    rng, used, by_id, out = _Picker(f"{seed}:hard"), set(), {t["id"]: t for t in bank}, []
     for s in S.VAGUE:
         out.append(_vague(s, bank, rng, used))
     for s in S.LOOKALIKE:
@@ -1543,7 +1565,7 @@ def hard(bank: list[dict], seed: int = SEED) -> list[dict]:
 
 def generate(bank: list[dict], seed: int = SEED) -> list[dict]:
     """missing_server, missing_entity, hidden-tool and approval_flow traps (deterministic, from the real task bank)."""
-    rng, out = random.Random(seed), []
+    rng, out = _Picker(seed), []
     st = _State()
     # missing_server: simple / complex single turn from a scenario, multi_turn from slices of the same scenario
     cands = _missing_server_cands(bank)
@@ -1571,7 +1593,7 @@ def generate(bank: list[dict], seed: int = SEED) -> list[dict]:
 
 def authored(bank: list[dict]) -> list[dict]:
     """out_of_scope, unsafe_bait and absent-tool traps from the seeds (tiers: see trap_seeds)."""
-    rng, by_id, out = random.Random(SEED), {t["id"]: t for t in bank}, []
+    rng, by_id, out = _Picker(SEED), {t["id"]: t for t in bank}, []
     used: set = set()
     for i, seed in enumerate(S.OUT_OF_SCOPE):
         tier = S.OOS_TIERS[i % 3]
