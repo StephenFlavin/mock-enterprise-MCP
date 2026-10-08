@@ -11,7 +11,8 @@ from mockmcp.eval.judge import system_one as S
 from mockmcp.eval.judge.base import GROUNDING_FINE, RUBRIC as R
 from mockmcp.eval.judge.claude_code import prompt_for
 from mockmcp.eval.schema import CATEGORIES, OUTCOMES, SEVERITY
-from test_eval_judge_system_one import fake, jev, no_reference_engines  # noqa: F401  (fixtures)
+from test_eval_grade import ans, call, task
+from test_eval_judge_system_one import fake, jev, no_reference_engines, payload  # noqa: F401  (fixtures)
 
 PROMPTS = {"lean": prompt_for("judge"), "debug": prompt_for("debug")}
 
@@ -292,3 +293,17 @@ def test_a_rounder_figure_later_does_not_correct_an_arithmetic_error():
     err = {"value": "12.2", "computed": 11.1667, "turn": 0, "sentence": "Excluding it, they average 12.2 days."}
     assert not D._corrected(err, ["11 days per PO. Excluding it, they average 12.2 days. Sample of 11 POs."])
     assert D._corrected(err, ["Excluding it, they average 12.2 days. Correction: it is 11.2 days."])
+
+
+def test_experiment_variants_change_only_the_fact_questions(fake):
+    """SYSTEMONE_VARIANTS: facts_evidence adds the reference rows holding the fact; facts_choice asks a Choice whose fine
+    options are present / named_differently. Off by default."""
+    t = task(facts=("AST-DC2-SHT-03",))
+    out = [{"case_id": "c", "role": "reference", "system": "wcs-01", "tool": "list_faults",
+            "output": "asset_id,events\nAST-DC2-SHT-01,4\nAST-DC2-SHT-03,9\n"}]
+    p = payload(t, [call("list_faults", {}, "asset_id,events\nAST-DC2-SHT-03,9\n")], ans("Shuttle 03 has the most faults (9)."), out)
+    base = D.plan(p, S.PROFILES["cygnet"])["items"]["fact:0"]
+    assert base["question"]["type"] == "noul" and "reference_rows" not in base["parts"]
+    it = D.plan(p, {**S.PROFILES["cygnet"], "variants": ["facts_evidence", "facts_choice"]})["items"]["fact:0"]
+    assert it["question"]["type"] == "choice" and it["fine"] == D.FACT_FINE
+    assert it["parts"]["reference_rows"][0]["text"] == "asset_id,events\nAST-DC2-SHT-03,9"

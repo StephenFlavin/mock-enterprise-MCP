@@ -218,6 +218,8 @@ class SystemOneJudge(Judge):
         elif isinstance(thresholds, dict):
             th.update(thresholds)
         p["thresholds"] = th
+        if os.environ.get("SYSTEMONE_VARIANTS"):  # experiments: decompose.VARIANTS, comma-separated
+            p["variants"] = [v.strip() for v in os.environ["SYSTEMONE_VARIANTS"].split(",") if v.strip()]
         self.profile, self.model = p, p["model"]
         self.max_workers = max_parallel or p["concurrency"]
         self.client = SystemOneClient(p["base_url"], p["model"], api_key or os.environ.get(p["key_env"]) or None,

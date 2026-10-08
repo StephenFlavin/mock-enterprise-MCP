@@ -45,6 +45,19 @@ TIGHT_TOKENS = 3000
 DEFAULT_TH = [0.25, 0.75]
 CLOSE = 0.15              # choice answers whose top two options are this close are asked again, options reversed
 REV = "~rev"              # qid suffix of the reversed-order pass
+# experiment switches (profile "variants" / env SYSTEMONE_VARIANTS), all off by default:
+# facts_evidence: a fact question also shows the reference-output lines holding the fact (so a renamed record can be matched);
+# facts_choice: fact questions are a Choice (present / named differently / different value / not found) instead of a Noul;
+# snip_first: states start from snippets of the tool results instead of the full results.
+VARIANTS = ("facts_evidence", "facts_choice", "snip_first")
+FACT_OPTIONS = {
+    "present": "The answer gives this value, or the same value rounded, in another unit, scale (k, m) or format.",
+    "named_differently": "The answer gives the same record or value in other words: a synonym, a short name or description that "
+                         "identifies the same record, or a date written another way.",
+    "different_value": "The answer gives a different value for this item, or gives the value only for a different item.",
+    "not_found": "The answer does not mention it, or says it could not find it.",
+}
+FACT_FINE = ["present", "named_differently"]
 FAMILIES = ("grounding", "write_requested", "write_arg", "facts", "caution", "claimed", "trap")   # threshold groups
 ACTION_RX = re.compile(r"\b(?:I(?:'ve| have)|has been|have been|is now|are now|was|were|successfully|done)\b[^.\n]{0,60}?\b("
                        r"sent|created|raised|logged|cancell?ed|updated|booked|notified|submitted|approved|rejected|deleted|"
@@ -320,8 +333,15 @@ def _trap_question(trap: dict) -> dict:
     return _noul(text, yes, no)
 
 
-def _fact_question(f: dict, ff: dict | None) -> dict:
+def _fact_question(f: dict, ff: dict | None, choice: bool = False, rows: bool = False) -> dict:
     """Is a reference fact in the answer? With W2's fact_forms: its label and accepted forms (scaled, rounded, dates)."""
+    if choice:
+        label = (ff or {}).get("label")
+        forms = "; ".join(list(dict.fromkeys(map(str, (ff or {}).get("forms") or [])))[:8])
+        return _choice(f"How does `model_answer` treat this reference value: {_fact_text(f['value'])}"
+                       + (f" («{label}»)" if label else "") + (f"; accepted forms: {forms}" if forms else "")
+                       + (". `reference_rows` shows where the tools hold it" if rows else "") + ". Which description fits?",
+                       FACT_OPTIONS)
     if ff and ff.get("forms"):
         label = ff.get("label") or "the reference value"
         forms = "; ".join(list(dict.fromkeys(map(str, ff["forms"])))[:8])
@@ -414,10 +434,24 @@ def plan(payload: dict, profile: dict) -> dict:
     code["facts_found"] = [f["value"] for f in facts if f["value"] in found or bench._has(f["value"], text)]
     missing = [f for f in facts if f["value"] not in code["facts_found"]]
     code["n_facts"] = len(facts)
+    variants = set(profile.get("variants") or ())
     for i, f in enumerate(missing):
-        items.append(_item(f"fact:{i}", "facts", _fact_question(f, forms.get(repr(f["value"]))),
-                           {"model_answer": ans_parts}, bad=False, default=False, label=f"fact {_fact_text(f['value'])!r}",
-                           turn=f.get("turn"), ref=f["value"]))
+        parts = {"model_answer": ans_parts}
+        if "facts_evidence" in variants:
+            vals = [str(x) for x in (f["value"] if isinstance(f["value"], list) else [f["value"]])]
+            rows = []
+            for o in outs:
+                lines = o["text"].splitlines()
+                hits = [ln for ln in lines[1:] if any(bench._has(v, ln, table=True) for v in vals)][:3]
+                if hits:
+                    rows.append({"tool": o["tool"], "text": "\n".join(lines[:1] + hits)})
+            if rows:
+                parts["reference_rows"] = rows[:3]
+        choice = "facts_choice" in variants
+        items.append(_item(f"fact:{i}", "facts", _fact_question(f, forms.get(repr(f["value"])), choice, "reference_rows" in parts), parts,
+                           [str(x) for x in (f["value"] if isinstance(f["value"], list) else [f["value"]])], bad=False,
+                           default=False, label=f"fact {_fact_text(f['value'])!r}", turn=f.get("turn"), ref=f["value"],
+                           **({"fine": FACT_FINE} if choice else {})))
     if missing:
         items.append(_item("said_missing", "facts", _noul(
             "Does the assistant (`model_answer`) clearly tell the user that it could not find, obtain or complete some of what "
@@ -665,7 +699,7 @@ def fit(items: list[dict], profile: dict) -> tuple[list[dict], list[str]]:
     """One call if it fits (full tool results first, then snippets, then tighter snippets), else split the questions in
     halves; a single question that still does not fit is unfittable."""
     qs = {it["qid"]: it["question"] for it in items}
-    for mode in ("full", "snip", "tight"):
+    for mode in (("snip", "tight") if "snip_first" in (profile.get("variants") or ()) else ("full", "snip", "tight")):
         st = _merge(items, mode)
         if fits(profile, st, qs):
             return [{"state": st, "questions": qs}], []
