@@ -58,7 +58,7 @@ WRITE_VERBS = {"send", "create", "raise", "cancel", "hold", "reassign", "update"
                "roll", "post", "prepare", "reclassify", "tighten", "loosen", "cut", "lower", "reverse", "reprocess", "resubmit",
                "resend", "chase", "remind", "bump", "turn", "save", "take", "pull", "suspend", "push", "enable", "disable", "activate", "deactivate", "apply",
                "redirect", "shift", "unblock", "bring", "rebalance", "prioritise", "prioritize", "rename", "reprice", "markdown", "re-price", "lock", "unlock", "escalate", "allocate", "split", "reroute",
-               "delay", "postpone", "defer", "recount", "fix", "retry", "rerun", "re-run"}
+               "delay", "postpone", "defer", "recount", "fix", "retry", "rerun", "re-run", "drop"}
 FILLERS = r"(?:then|and|also|please|actually|only|ok(?:ay)?|so|if so|if it is|if not|if they are|if needed|next|finally|afterwards|" \
           r"after that|now|just|go ahead and|can you|could you|would you|i'd like you to|i want you to|you should|you can)"
 # HOLD: the action waits for a LATER go-ahead from the user ("once I confirm", "ask me first"). Writes asked for under it are
@@ -186,14 +186,25 @@ def _is_write(system: str, tool: str) -> bool:
 
 @functools.lru_cache(maxsize=1)
 def _slices() -> dict[str, list[dict]]:
-    """question id -> its RefSlices (bench cases), in file order."""
+    """question id -> its RefSlices (bench cases), in file order. Two optional case fields shape the scenario built from the
+    persona question (the slice task always uses the case's own prompt and facts):
+        scenario_context: inputs the slice prompt gives that the persona question does not (assumed volumes, a unit value),
+                          said by the user in the scenario's Context paragraph
+        scenario_facts:   the facts a scenario answer must state, when some case facts depend on inputs the scenario never
+                          gives (Rule C: a fact the user's turns cannot lead to is not required); the others are kept on the
+                          scenario's slice as dropped_facts
+    and one for traps:
+        inputs_from:      systems whose data the ref arguments stand for (a volume the prompt states that another system
+                          holds); a missing_server trap without one of them marks this slice unreachable too"""
     out: dict[str, list[dict]] = {}
     for f in sorted(bench.CASES.glob("*.yaml")):
         for c in yaml.safe_load(f.read_text()) or []:
-            out.setdefault(c["question"], []).append({
-                "case_id": c["id"], "system": f.stem, "prompt": " ".join(c["prompt"].split()),
-                "ref": [{"tool": r["tool"], "args": r.get("args") or {}} for r in c["ref"]],
-                "facts": c.get("facts") or [], "notes": (" ".join(c["notes"].split()) if c.get("notes") else None)})
+            s = {"case_id": c["id"], "system": f.stem, "prompt": " ".join(c["prompt"].split()),
+                 "ref": [{"tool": r["tool"], "args": r.get("args") or {}} for r in c["ref"]],
+                 "facts": c.get("facts") or [], "notes": (" ".join(c["notes"].split()) if c.get("notes") else None)}
+            s.update({k: " ".join(c[k].split()) if k == "scenario_context" else c[k]
+                      for k in ("scenario_context", "scenario_facts", "inputs_from") if c.get(k) is not None})
+            out.setdefault(c["question"], []).append(s)
     return out
 
 
@@ -206,9 +217,9 @@ def _dedupe(items: list) -> list:
     return out
 
 
-_SYN = {"send": ["send", "notify", "ask", "tell", "email", "issue", "chargeback", "request"],
+_SYN = {"delete": ["delete", "remove", "drop", "cancel"], "send": ["send", "notify", "ask", "tell", "email", "issue", "chargeback", "request"],
         "create": ["create", "raise", "set", "open", "book", "place", "trial", "log", "add", "issue", "order"],
-        "reassign": ["reassign", "move", "switch", "swap"], "update": ["update", "increase", "change", "set", "adjust", "apply", "correct", "amend", "reroute", "replan", "re-plan", "hold"],
+        "reassign": ["reassign", "move", "switch", "swap", "give", "hand"], "update": ["update", "increase", "change", "set", "adjust", "apply", "correct", "amend", "reroute", "replan", "re-plan", "hold"],
         "hold": ["hold", "block", "freeze", "pause", "stop"], "cancel": ["cancel", "stop", "withdraw"],
         "block": ["block", "hold", "freeze"], "submit": ["submit", "file", "dispute", "raise"], "merge": ["merge"],
         "archive": ["archive", "close", "remove"], "approve": ["approve", "release"], "issue": ["issue", "send", "tender"]}
@@ -217,13 +228,21 @@ _WORD = re.compile(r"[a-z][a-z-]{2,}")
 
 def _action_words(call: dict, slice_: dict) -> tuple[set, set, set]:
     """(verbs, prompt words, object stems) that describe a write: the tool verb and the slice prompt's action verbs with
-    their synonyms, the slice prompt's content words, and the tool name's object words (close_task -> task)."""
+    their synonyms, the slice prompt's content words, and the tool name's object words (close_task -> task). When the call's
+    ids appear in the prompt, only the clauses naming them lend their verbs ("Release CCT-900101 ... then drop the aisle D
+    counts by reassigning CCT-900105": release is not a verb of the reassignment)."""
     verb = call["tool"].split("_")[0]
     verbs = set(_SYN.get(verb, [verb]))
-    for clause in _CLAUSE.split(slice_["prompt"]):
-        w = re.sub(rf"^(?:{FILLERS}\s+)+", "", clause.strip().lower()).split()
-        if w and w[0] in WRITE_VERBS:
-            verbs |= set(_SYN.get(w[0], [w[0]]))
+    lead = [(w[0] if w and w[0] in WRITE_VERBS else None, c) for c in _CLAUSE.split(slice_["prompt"])
+            for w in [re.sub(rf"^(?:{FILLERS}\s+)+", "", c.strip().lower()).split()]]
+    ids = [str(v) for v in call.get("args", {}).values() if isinstance(v, str) and bench._idlike(v)]
+    mine = set()
+    for i, (_, c) in enumerate(lead):
+        if any(x in c for x in ids):  # the clause naming the call's id, or the nearest one before it with a verb
+            mine.add(next((j for j in range(i, -1, -1) if lead[j][0]), i))
+    for i, (v, _) in enumerate(lead):
+        if v and (i in mine or not mine):
+            verbs |= set(_SYN.get(v, [v]))
     pw = {w[:6] for w in _WORD.findall(slice_["prompt"].lower()) if w not in STOP and len(w) > 3}
     objs = {w[:6] for w in call["tool"].split("_")[1:] if len(w) > 2 and w not in STOP}
     return verbs, pw, objs
@@ -346,16 +365,22 @@ def _describes_held(fact, held: list[dict], expected: list[dict]) -> bool:
 
 
 def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
+    given = " ".join(s["scenario_context"] for s in slices if s.get("scenario_context"))
+    slices = [{**{k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts")},
+               "facts": s["scenario_facts"], "dropped_facts": [f for f in s["facts"] if f not in s["scenario_facts"]]}
+              if "scenario_facts" in s else {k: v for k, v in s.items() if k != "scenario_context"} for s in slices]
     ctx = context_paragraph(q["text"], slices, q["tags"].get("type", ""))
+    ctx = (ctx + " " + given if ctx else "Context: " + given) if given else ctx
     main = q["text"] + (("\n\n" + ctx) if ctx else "")
     turns = [turn(main, "question")] + [turn(f, "followup") for f in q["followups"]]
     turns[0]["writes_requested"] = writes_requested(q["text"])
+    asked = [{**turns[0], "text": q["text"]}] + turns[1:]  # what the user asks; the Context paragraph only resolves names
     expected, held, notes, out = [], [], [s["notes"] for s in slices if s["notes"]], []
     for s in slices:
         mine = []
         for r in s["ref"]:
             if _is_write(s["system"], r["tool"]):
-                t, note = _turn_for_write(r, s, turns)
+                t, note = _turn_for_write(r, s, asked)
                 w = {"tool": r["tool"], "args": r["args"], "turn": t if t >= 0 else -1 - t, "system": s["system"]}
                 (expected if t >= 0 else held).append(w), mine.append(t >= 0)
                 if note and note not in notes:
@@ -371,6 +396,7 @@ def _scenario(qid: str, q: dict, slices: list[dict]) -> dict:
 
 
 def _slice(qid: str, q: dict, s: dict) -> dict:
+    s = {k: v for k, v in s.items() if k not in ("scenario_context", "scenario_facts", "inputs_from")}
     expected = [{"tool": r["tool"], "args": r["args"], "turn": 0, "system": s["system"]}
                 for r in s["ref"] if _is_write(s["system"], r["tool"])]
     return _task(f"slc-{s['case_id']}", "slice", qid, q, [turn(s["prompt"], "slice_prompt")], [s], expected,

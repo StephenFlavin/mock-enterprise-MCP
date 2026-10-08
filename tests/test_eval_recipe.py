@@ -86,6 +86,24 @@ def test_write_turns_follow_the_asking_turn(bank):
         assert all(w["turn"] in asks for w in t["writes"]["expected"]) or not asks, t["id"]
 
 
+def test_scenario_gives_the_inputs_its_reference_needs(bank):
+    """Rule C: a scenario's reference must not need inputs the user never gives. Cases either say them in the scenario's
+    Context (scenario_context) or narrow the facts the scenario requires (scenario_facts); slice tasks keep the case as is."""
+    b = {t["id"]: t for t in bank}
+    main = lambda tid: b[tid]["turns"][0]["text"]
+    assert "40,000 units at £18.50" in main("scn-04:38:Q1") and "SKU-100959" in main("scn-03:29:Q3")
+    assert "500,000 metal zips" in main("scn-03:24:Q3") and "20,000 bedding units" in main("scn-08:75:Q3")
+    assert "RUN-900002" in main("scn-07:66:Q5") and "EMP-00136" in main("scn-01:4:Q3")  # ids the writes need, now named
+    assert "EMP-00014" in main("scn-08:71:Q3") and "EMP-00536" in main("scn-08:71:Q3")
+    doc = next(s for s in b["scn-07:62:Q8"]["reference"]["slices"] if s["system"] == "documents")
+    assert doc["facts"] == [] and "OFF PLAN" in doc["dropped_facts"] and "scenario_facts" not in doc
+    assert "OFF PLAN" not in b["scn-07:62:Q8"]["reference"]["facts"] and "OFF PLAN" in b["slc-documents-07:62:Q8"]["reference"]["facts"]
+    lms = next(s for s in b["scn-02:21:Q3"]["reference"]["slices"] if s["system"] == "lms")
+    assert lms["facts"] == ["45"]
+    slc = b["slc-pricing-03:29:Q3"]
+    assert not any(k in slc["reference"]["slices"][0] for k in ("scenario_context", "scenario_facts", "inputs_from"))
+
+
 def test_held_and_conditional_turn_flags():
     held = ["Once I confirm, reprocess them.", "Delay the run, but ask me first.", "Pull them forward once I've okayed the list.",
             "Submit it once I sign off.", "Send the note once I've approved it."]

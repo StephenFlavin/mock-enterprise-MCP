@@ -115,6 +115,43 @@ def test_missing_server(bank, built):
     assert max(Counter(t["trap"]["missing_servers"][0] for t in ms).values()) <= 3
 
 
+def _ms_cand(bank, task_id, missing):
+    return next(c for c in TR._missing_server_cands(bank) if c["task"]["id"] == task_id and c["missing"] == missing)
+
+
+def test_missing_server_facts_a_loaded_read_returns_are_not_unreachable(bank):
+    """scn-06:60:Q1 without supplier_portal: costing also returns SUP-0079 / SUP-0057, test_lab even the capacities. The
+    multi_turn trap (compliance_db + costing loaded) may only forbid the capacities; the single-turn one (test_lab loaded
+    too) has nothing truly missing and is not built."""
+    c = _ms_cand(bank, "scn-06:60:Q1", "supplier_portal")
+    assert TR._missing_server(c, "simple") is None
+    t = TR._missing_server_mt(c)
+    assert sorted(t["reference"]["unreachable_facts"]) == ["400000", "60000"]
+    assert "SUP-0079" not in json.dumps(t["reference"]["unreachable_facts"]) and "SUP-0079" in " ".join(t["reference"]["notes"])
+    assert not TR.validate([t], bank, counts=False)
+    bad = copy.deepcopy(t)
+    bad["reference"]["unreachable_facts"].append("SUP-0079")
+    assert any("returned by a loaded system" in p for p in TR.validate([bad], bank, counts=False))
+
+
+def test_missing_server_inputs_from_marks_dependent_slices_unreachable(bank):
+    """tax_duty-07:67:Q3 prices 935,000 parcels, a figure that stands for ecommerce data (inputs_from): without ecommerce its
+    results are unreachable too, not answerable. scn-07:67:Q3 has nothing else loaded, so it yields no trap; with another
+    read slice added, the trap lists the tax_duty facts (kept as dropped_facts on the scenario) as unreachable."""
+    scn = next(t for t in bank if t["id"] == "scn-07:67:Q3")
+    tax = next(s for s in scn["reference"]["slices"] if s["system"] == "tax_duty")
+    assert tax["inputs_from"] == ["ecommerce"] and not tax["facts"] and "8347680" in tax["dropped_facts"]
+    assert not any(c["task"]["id"] == "scn-07:67:Q3" and c["missing"] == "ecommerce" for c in TR._missing_server_cands(bank))
+    other = next(s for t in bank if t["id"] == "scn-07:67:Q4" for s in t["reference"]["slices"] if s["system"] not in ("ecommerce", "tax_duty"))
+    fake = copy.deepcopy(scn)
+    fake["reference"]["slices"].append(copy.deepcopy(other))
+    c = next(c for c in TR._missing_server_cands([fake]) if c["missing"] == "ecommerce")
+    t = TR._missing_server(c, "simple")
+    assert {"8347680", "8417244", "7.44"} <= set(map(str, t["reference"]["unreachable_facts"]))
+    assert not any(s["system"] == "tax_duty" and s["reachable"] for s in t["reference"]["slices"])
+    assert "tax_duty" not in json.dumps(t["reference"]["answerable_facts"]) and "8347680" not in json.dumps(t["reference"]["answerable_facts"])
+
+
 def test_missing_entity(bank, built):
     ents = of(built, "missing_entity")
     assert Counter(t["trap"]["tier"] for t in ents) == {"simple": 11, "complex": 11, "multi_turn": 12}
