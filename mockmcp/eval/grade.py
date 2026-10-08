@@ -236,7 +236,7 @@ def grade_task(run_dir: Path, task: dict, judge, rerun: bool = False) -> dict | 
 def add_args(p):
     p.add_argument("run_dir", type=Path)
     p.add_argument("--judge", default="claude-code")
-    p.add_argument("--judge-model", default="opus")
+    p.add_argument("--judge-model", default="sonnet")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--only", help="grade tasks whose id contains this")
     p.add_argument("--rerun", action="store_true", help="grade again even if judge.json exists")

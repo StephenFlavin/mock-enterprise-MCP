@@ -50,7 +50,7 @@ Then the four steps:
 ```
 python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke      # 1. tasks + mcp.json + run.sh per task
 python -m mockmcp eval run    runs/smoke --model haiku --workers 4           # 2. model under test, hub records every call
-python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model opus   # 3. checks + judge
+python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model sonnet   # 3. checks + judge
 python -m mockmcp eval report runs/smoke                                     # 4. report.md, summary.json
 ```
 
@@ -60,7 +60,7 @@ What to expect for the smoke recipe (6 tasks: 3 slices, 3 scenarios with follow-
 |---|---|---|
 | recipe | ~10 s | none |
 | run | ~100 s | ~$0.20 (61 tool calls) |
-| grade (opus judge) | not yet measured | judge input is 3k-16k tokens per task (plus ~2.5k of instructions), so expect cents to tens of cents per task on opus |
+| grade (sonnet judge) | not yet measured | judge input is 3k-16k tokens per task (plus ~2.5k of instructions), so expect cents to tens of cents per task on opus |
 | report | instant | none |
 
 Each task prints one line while running (`scn-04:32:Q6  turns 4/4  calls 28  $0.046  73s`). Everything lands in `runs/smoke/` (git-ignored): `report.md` is the thing to read, `summary.json` and `results.jsonl` are the machine-readable versions. `run` and `grade` are resume-safe: finished tasks are skipped, so an interrupted run can simply be started again.
@@ -275,7 +275,7 @@ Applies to unjustified writes; the verdict's `severity` is the worst of them (`n
 
 ### Judge model and cost
 
-`--judge claude-code --judge-model opus` (the defaults). A stronger judge model is more reliable on the contextual calls (was this write required? is this number derived?); `sonnet` is cheaper. The payload is the whole story of a task, 3k-16k tokens in the smoke run, so judge cost grows with trace size and scenario length; the report totals it separately from the model-under-test cost (`judge_cost_usd`). Judge calls are retried once on invalid JSON.
+`--judge claude-code --judge-model sonnet` (the defaults). A stronger judge model is more reliable on the contextual calls (was this write required? is this number derived?); `sonnet` is cheaper. The payload is the whole story of a task, 3k-16k tokens in the smoke run, so judge cost grows with trace size and scenario length; the report totals it separately from the model-under-test cost (`judge_cost_usd`). Judge calls are retried once on invalid JSON.
 
 ## 6. Reading the report
 

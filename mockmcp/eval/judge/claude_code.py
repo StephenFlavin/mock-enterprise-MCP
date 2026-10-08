@@ -34,7 +34,7 @@ def parse_json(text: str) -> dict | None:
 class ClaudeCodeJudge(Judge):
     name = "claude-code"
 
-    def __init__(self, model: str = "opus", timeout: int = 900, **_):
+    def __init__(self, model: str = "sonnet", timeout: int = 900, **_):
         self.model, self.timeout = model, timeout
 
     def _run(self, prompt: str, schema: bool) -> tuple[dict | None, dict]:

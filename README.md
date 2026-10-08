@@ -8,7 +8,7 @@ An set of servers which mock enterprise scale tooling
 ```
 python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke
 python -m mockmcp eval run    runs/smoke --model haiku --workers 4
-python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model opus
+python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model sonnet
 python -m mockmcp eval report runs/smoke
 ```
 
