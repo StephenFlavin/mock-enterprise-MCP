@@ -221,7 +221,8 @@ class SystemOneJudge(Judge):
         if os.environ.get("SYSTEMONE_VARIANTS"):  # experiments: decompose.VARIANTS, comma-separated
             p["variants"] = [v.strip() for v in os.environ["SYSTEMONE_VARIANTS"].split(",") if v.strip()]
         self.profile, self.model = p, p["model"]
-        self.max_workers = max_parallel or p["concurrency"]
+        # requests in flight per process: the server batches what is in flight, so a GPU server wants more than its default
+        self.max_workers = max_parallel or int(os.environ.get("SYSTEMONE_CONCURRENCY") or 0) or p["concurrency"]
         self.client = SystemOneClient(p["base_url"], p["model"], api_key or os.environ.get(p["key_env"]) or None,
                                       timeout, retries, self.max_workers, backoff, p.get("usd_per_m_input"))
 

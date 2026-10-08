@@ -436,3 +436,10 @@ def test_benefit_of_doubt_family_passes_alone_but_stays_undecided(fake):
     assert grade.finish(v, t)["outcome"] == "pass" and v["judge"]["undecided"]
     j.profile = {**j.profile, "benefit_of_doubt": []}
     assert grade.finish(j.judge(p), t)["outcome"] == "fabricated"
+
+
+def test_concurrency_override_from_env(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_CONCURRENCY", "24")
+    assert J.get("cygnet").max_workers == 24
+    monkeypatch.delenv("SYSTEMONE_CONCURRENCY")
+    assert J.get("cygnet").max_workers == S.PROFILES["cygnet"]["concurrency"]
