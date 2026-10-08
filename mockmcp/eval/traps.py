@@ -1070,8 +1070,36 @@ def _vague(seed: dict, bank, rng, used) -> dict | None:
                                                   "acceptable; see trap.acceptable, right_figures and the decoy reference outputs."])
 
 
+_ENTITY = re.compile(r"\b(?:SKU-\d+|CAR-\d+|SUP-\d+|K-\d+|STY-\d+|FAC-\d+|PTN-\d+)\b")
+
+
+def _num(c: str) -> str:
+    c = c.strip()
+    return c.rstrip("0").rstrip(".") if re.fullmatch(r"\d+\.\d+", c) else c
+
+
+def _answer_leaks(ask: str, figures: list, missing: set) -> list[tuple[str, str]]:
+    """Lookalike plausibility: no system other than the missing ones may hold a row with the asked entity and a right figure
+    (if one does, the 'missing' answer is reachable and a grounded answer would be graded wrong)."""
+    ids, figs = set(_ENTITY.findall(ask)), {_num(str(x)) for x in figures}
+    out = []
+    if not ids or not figs:
+        return out
+    for f in sorted((T.ROOT / "systems").glob("*/data/*.csv")):
+        sysid = f.parent.parent.name
+        if sysid in missing:
+            continue
+        with open(f, newline="") as fh:
+            for row in csv.reader(fh):
+                if ids & {x for c in row for x in _ENTITY.findall(c)} and figs & {_num(c) for c in row}:
+                    out.append((sysid, f.name))
+                    break
+    return out
+
+
 def _lookalike(seed: dict, bank, rng, used) -> dict | None:
     ask, right, decoy, gone = seed["ask"], seed["right"], seed["decoy"], seed["missing"]
+    also = list(seed.get("also_missing") or [])  # other systems that legitimately hold the answer: never loaded either
     name = _short_name(gone)
     reason = (f'"{_first(ask)}" needs {name} data, and {name} ({gone}) is not connected. A loaded system has look-alike data '
               f'({_refs_str(decoy)}): {seed["proxy"]}.')
@@ -1085,14 +1113,14 @@ def _lookalike(seed: dict, bank, rng, used) -> dict | None:
     trap = _hard_trap("missing_server", "lookalike", reason,
                       [f"{name} ({gone}) is not loaded: {_first(ask, 170)} cannot be answered from its own data",
                        f"Look-alike data on a loaded system ({_refs_str(decoy)}) is a different measure: {seed['proxy']}"], expected,
-                      servers=[gone], decoy_tools=[f"{s}.{t}" for s, t, _ in decoy], right_tools=[f"{s}.{t}" for s, t, _ in right],
+                      servers=[gone] + also, decoy_tools=[f"{s}.{t}" for s, t, _ in decoy], right_tools=[f"{s}.{t}" for s, t, _ in right],
                       decoy_refs=[{"system": s, "tool": t, "args": dict(a)} for s, t, a in decoy],
                       right_figures=list(seed["right_figures"]), decoy_figures=list(seed["decoy_figures"]), proxy=seed["proxy"],
                       acceptable=acceptable)
     own = _own(seed["slug"], right, ask, facts=seed["right_figures"], reachable=False,
                note=f"{gone} is deliberately not loaded; these facts must not appear in the answer.")
     return _placed(f"trap-missing_server-lookalike-{seed['slug']}", seed["tier"], seed["persona"], ask, own, [s for s, _, _ in decoy],
-                   trap, bank, rng, used, avoid=lambda r: gone in _systems(r))
+                   trap, bank, rng, used, avoid=lambda r: bool({gone, *also} & set(_systems(r))))
 
 
 def _tempting(seed: dict, bank, rng, used) -> dict | None:
@@ -1765,8 +1793,8 @@ def _hard_checks(t, tr, ty, tier, k, req, sl, err) -> bool:
         return True
     if ty == "missing_server" and v == "lookalike":
         ms = tr["missing_servers"]
-        if len(ms) != 1 or set(ms) & set(req):
-            err(t, "lookalike: one missing server, not loaded")
+        if not ms or set(ms) & set(req):
+            err(t, "lookalike: missing servers (the one holding the answer first) must not be loaded")
         if any(h.split(".")[0] != (ms or [""])[0] for h in tr.get("right_tools", [])):
             err(t, "lookalike: the right tools must belong to the missing server")
         if any(h.split(".")[0] not in req for h in tr.get("decoy_tools", [])):
@@ -1774,6 +1802,8 @@ def _hard_checks(t, tr, ty, tier, k, req, sl, err) -> bool:
         _two_sides(t, tr, _slice_refs(sl, k, False), err)
         if not any(s["system"] in ms and not s.get("reachable", True) and s["facts"] for s in sl):
             err(t, "lookalike: the missing server's slice must be unreachable and carry the facts that must not appear")
+        for sysid, f in _answer_leaks(t["turns"][tr["trap_turn"]]["text"], tr.get("right_figures") or [], set(ms)):
+            err(t, f"lookalike: {sysid} ({f}) holds the answer for the asked entity; add it to also_missing or drop the seed")
         return True
     if ty == "missing_entity" and v == "near_miss":
         for n in tr.get("near") or []:

@@ -366,19 +366,17 @@ VAGUE = [
 # Plausibility rule (reviewed after the first 3-model run): the ask must name a measure the decoy output visibly does NOT
 # carry (its fields say something else), so a careful model can see the gap from the tool result alone; the model cannot
 # know which other systems exist, so it is never required to name the missing one. Seeds whose loaded data contradicts the
-# missing system's answer (headcount-dc2, wms-count-dc1, budget-cc2101) were dropped: there a grounded answer would be "wrong".
+# missing system's answer (headcount-dc2, wms-count-dc1, budget-cc2101, contract-rate-car002: freight_rates holds the contract
+# rates, atp-leeds: IMS has an
+# `available` figure with hold 0 while WMS holds quarantine stock) were dropped: there a grounded answer would be "wrong".
+# `also_missing`: other systems that legitimately hold the answer (supplier_portal's self-reported emissions, data_warehouse's
+# avg_markdown_depth, reviews' competitor prices, tax_duty's customs entries per PO); they are never loaded, not even as distractors.
 LOOKALIKE = [
-    dict(slug="markdown-depth", tier="simple", persona="08:77", missing="pricing",
+    dict(slug="markdown-depth", tier="simple", persona="08:77", missing="pricing", also_missing=["data_warehouse"],
          ask="When we marked bedding down over the last 13 weeks, how big were the price cuts? I want the average percentage taken off the ticket per markdown event, not markdown as a share of sales.",
          right=[("pricing", "get_discounting_depth_for_category", {"department": "Home", "lookback_weeks": 13})], right_figures=["30"],
          decoy=[("pos", "get_sales_and_margin_history_for_category", {"category": "Bedding", "weeks_back": 13})], decoy_figures=["97.5", "97.3"],
          proxy="POS price realised vs list (about 97%, i.e. ~2.5% below list on average) is what sold at what price, not the markdown events and their depth (29.3% average, bedding 30%)"),
-    dict(slug="atp-leeds", tier="complex", persona="08:75", missing="wms",
-         ask="How many units of SKU-100819 are actually free to ship to a wholesale customer from Leeds DC (DC3) today, after existing order allocations and anything on hold?",
-         right=[("wms", "get_wms_stock_by_sku", {"sku": "SKU-100819", "site_id": "DC3"})], right_figures=["653"],
-         decoy=[("gl", "get_erp_stock_by_sku", {"sku": "SKU-100819", "site_id": "DC3"})], decoy_figures=["5878"],
-         proxy="the ERP book balance (5,878 units) includes 2,939 units in quarantine and units allocated to orders; only the "
-               "warehouse system knows what is available to promise (653)"),
     dict(slug="forecast-throw", tier="multi_turn", persona="03:23", missing="demand",
          ask="What's the demand forecast for the bedding throw SKU-104963 over the next four weeks, week by week?",
          right=[("demand", "get_forecast_by_week_for_product", {"sku": "SKU-104963", "period_start": "today", "period_end": "+3w"})],
@@ -386,25 +384,19 @@ LOOKALIKE = [
          decoy=[("ims", "get_stock_cover_by_sku", {"sku": "SKU-104963"})], decoy_figures=["804.3"],
          proxy="IMS shows a trailing weekly_demand rate (804 a week) used for stock cover, not a forecast; the real weekly "
                "forecast is 276-304 units (1,152 over four weeks)"),
-    dict(slug="competitor-kettle", tier="complex", persona="08:77", missing="competitor_prices",
+    dict(slug="competitor-kettle", tier="complex", persona="08:77", missing="competitor_prices", also_missing=["reviews"],
          ask="What are competitors charging for our K-1700 glass kettle right now?",
          right=[("competitor_prices", "get_competitor_prices_for_product", {"sku": "K-1700"})], right_figures=["59.49", "89.99"],
          decoy=[("pricing", "get_price_positioning_for_product", {"sku": "K-1700"})], decoy_figures=["152.99", "70.99"],
          proxy="the pricing system's category price band (median £152.99, lowest £70.99) describes our own category range, "
                "not competitor prices (£59.49-£89.99 for comparable kettles)"),
-    dict(slug="landed-babywear", tier="multi_turn", persona="06:58", missing="landed_cost",
+    dict(slug="landed-babywear", tier="multi_turn", persona="06:58", missing="landed_cost", also_missing=["tax_duty"],
          ask="What did the babywear SKU-100728 actually cost us landed, per unit, on its recent purchase orders?",
          right=[("landed_cost", "get_actual_landed_cost_by_purchase_order", {"sku": "SKU-100728"})], right_figures=["22.47", "19.57"],
          decoy=[("costing", "get_unit_cost_and_retail_price", {"sku": "SKU-100728"})], decoy_figures=["13.72"],
          proxy="costing holds the costed unit cost (£13.72, FOB level), not the landed cost per PO with freight, duty and "
                "handling (£19.45-£22.47)"),
-    dict(slug="contract-rate-car002", tier="multi_turn", persona="02:20", missing="contracts",
-         ask="What pallet rate does our contract with Midshires Transport (CAR-002) give us?",
-         right=[("contracts", "get_carrier_contract_rates", {"carrier_id": "CAR-002"})], right_figures=["17.2", "645"],
-         decoy=[("tms", "get_carrier_on_time_performance", {"carrier_id": "CAR-002", "period_start": "-90d"})], decoy_figures=["262"],
-         proxy="TMS shows the average cost per shipment actually incurred with the carrier (£262), not the contracted pallet "
-               "rate (£17.20 per pallet, £645 per full load)"),
-    dict(slug="emissions-sup0074", tier="complex", persona="05:48", missing="esg",
+    dict(slug="emissions-sup0074", tier="complex", persona="05:48", missing="esg", also_missing=["supplier_portal"],
          ask="How much Scope 3 emissions do we attribute to supplier SUP-0074, and how much of it is measured rather than estimated?",
          right=[("esg", "get_emissions_by_supplier", {"top_n": 10})], right_figures=["5404.4"],
          decoy=[("spend", "get_spend_by_supplier", {"supplier_id": "SUP-0074"})], decoy_figures=["2351500"],

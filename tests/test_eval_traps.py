@@ -411,7 +411,7 @@ def test_hard_counts_by_type_variant_and_tier(built):
             assert by[(ty, v)] >= 2, (ty, v, by)
         if ty != "approval_flow":  # one variant per type: aim ~10-15, spread over the tiers
             (v,) = variants
-            assert by[(ty, v)] >= (7 if v == "lookalike" else 8) and len({t["trap"]["tier"] for t in hard_of(built, ty, v)}) == 3, (ty, v)
+            assert by[(ty, v)] >= (5 if v == "lookalike" else 8) and len({t["trap"]["tier"] for t in hard_of(built, ty, v)}) == 3, (ty, v)
     assert sum(by[("approval_flow", v)] for v in TR.HARD_VARIANTS["approval_flow"]) >= 12
     assert all(t["trap"]["difficulty"] == "standard" for t in of(built))  # v2 entries stay standard
     assert all(t["features"]["difficulty"] == "hard" for t in hard)
@@ -448,10 +448,16 @@ def test_vague_decoy_and_right_outputs_differ(built):
 def test_lookalike_and_missing_server(built):
     for t in hard_of(built, "missing_server", "lookalike"):
         tr = t["trap"]
-        (gone,) = tr["missing_servers"]
-        assert gone not in t["servers"]["required"] and all(h.split(".")[0] == gone for h in tr["right_tools"])
+        gone, *also = tr["missing_servers"]  # also: other systems that legitimately hold the answer, never loaded
+        assert not set(tr["missing_servers"]) & set(t["servers"]["required"]) and all(h.split(".")[0] == gone for h in tr["right_tools"])
         assert all(h.split(".")[0] in t["servers"]["required"] for h in tr["decoy_tools"]) and tr["proxy"]
         assert t["reference"]["unreachable_facts"]
+        assert not TR._answer_leaks(t["turns"][tr["trap_turn"]]["text"], tr["right_figures"], set(tr["missing_servers"]))
+
+
+def test_lookalike_leak_check_catches_a_reachable_answer():
+    # freight_rates holds CAR-002's contract rates: a "missing contracts system" trap on them would be unfair
+    assert ("freight_rates", "contract_rates.csv") in TR._answer_leaks("What pallet rate does our contract with CAR-002 give us?", ["17.2"], {"contracts"})
 
 
 def test_near_miss_ids_absent_with_real_neighbour(built):
