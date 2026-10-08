@@ -18,6 +18,8 @@ run.sh      trace     verdict    results.jsonl
 
 Ground truth comes from `bench/cases/<system>.yaml` (validated ref calls and facts per system slice, see `bench/AUTHORING.md`); a scenario stitches the slices of its question together.
 
+A scenario requires only the facts its own turns ask for (Rule C). A slice prompt often asks more than the persona question ("which till?", "the single highest write-off"), so a case can narrow what the scenario requires with `scenario_facts`; the other facts stay on the scenario's slice as `dropped_facts`. `tasks.unasked_facts()` lists slice facts whose value, reference columns and tool are never mentioned in the turns while the slice prompt asks for them in a sentence of its own; it is a lexical review list (about half of what it flags turned out to be asked in other words), so each flagged case gets an explicit, reviewed `scenario_facts` (equal to `facts` when the scenario does ask for them) and `tests/test_eval_recipe.py` keeps the list empty.
+
 ## 2. Quick start with Claude Code
 
 Prerequisites (run everything from the repo root):
@@ -661,3 +663,4 @@ Tiers (`trap.tier`, selectable as `tier=...`): `simple` is one turn about one sy
 - **Judge cost**: about $0.13 per task with the default Sonnet judge (scale-80 at 50k: $10.24 for 80 tasks, three times the cost of running Haiku), roughly double with Opus. On scale runs the judge, not the model under test, is usually the bigger bill.
 - **No cross-run or cross-model comparison command**; the report compares budget sub-runs only. Run each model into its own folder and compare `summary.json`.
 - The scenario's write-to-turn attribution (which follow-up asked for which write) is heuristic text matching; ambiguous cases are noted in the task's reference notes.
+- Scenario facts are not tied to a turn: a trap or recipe that keeps only a scenario's first turn still requires facts that only a later follow-up asks for (for example a port's dwell time asked by "Where in the chain is the delay building up?").

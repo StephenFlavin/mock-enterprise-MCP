@@ -104,6 +104,31 @@ def test_scenario_gives_the_inputs_its_reference_needs(bank):
     assert not any(k in slc["reference"]["slices"][0] for k in ("scenario_context", "scenario_facts", "inputs_from"))
 
 
+def test_scenarios_have_no_unasked_facts(bank):
+    """Rule C: a scenario takes the union of its slices' facts, so a fact only a slice prompt asks for ("which till?", "the
+    single highest write-off") must not become required. Every slice the lexical review flags carries an explicit
+    scenario_facts (a reviewed decision), so the flag list stays empty; a new case that trips it needs one too."""
+    assert T.unasked_facts() == []
+    b = {t["id"]: t for t in bank}
+    facts = lambda tid: {repr(f) for f in b[tid]["reference"]["facts"]}
+    assert "'24.2'" not in facts("scn-05:50:Q5") and "'24.2'" in facts("slc-supplier_risk-05:50:Q5")
+    assert "'Ochre Shirt S'" not in facts("scn-01:6:Q1") and "'rework'" in facts("scn-01:6:Q1")
+    assert {"'T03'", "'SKU-104746'"}.isdisjoint(facts("scn-07:68:Q5")) and "'EMP-00472'" in facts("scn-07:68:Q5")
+    assert "'GBFXT'" in facts("scn-02:19:Q1")  # "Where in the chain is the delay building up?" asks for the port
+    assert "'0.72'" in facts("scn-08:79:Q6")  # "What would protect them at least cost?"
+
+
+def test_unasked_facts_flags_slice_only_asks(monkeypatch):
+    """Without its reviewed scenario_facts, the supplier-spend slice of "What risks matter most?" is flagged for its share of
+    spend (a column the turns never mention), while the trend slice the turns ask about is not."""
+    qs, sl = T.questions(), T._slices()
+    raw = [{k: v for k, v in s.items() if k != "scenario_facts"} for s in sl["05:50:Q5"]]
+    monkeypatch.setattr(T, "_bank", lambda: (T._scenario("05:50:Q5", qs["05:50:Q5"], raw),))
+    got = {(x["case_id"], repr(x["fact"])) for x in T.unasked_facts()}
+    assert ("supplier_risk-05:50:Q5", "'24.2'") in got
+    assert not any(c.startswith(("trend-", "risk-")) for c, _ in got)
+
+
 def test_held_and_conditional_turn_flags():
     held = ["Once I confirm, reprocess them.", "Delay the run, but ask me first.", "Pull them forward once I've okayed the list.",
             "Submit it once I sign off.", "Send the note once I've approved it."]

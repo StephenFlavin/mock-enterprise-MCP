@@ -40,3 +40,10 @@ Numbers are compared without commas and £ signs; dates match ISO or "10 Novembe
 If the seeded story is weak (the planted rows drown in generated noise, a story value contradicts master
 data, the tool can't answer the question's part at all), add `notes: "..."` to the case. Do not edit the
 system's data, gen.py or system.yaml.
+
+## scenario_facts (optional)
+The persona question's scenario requires the union of its cases' facts. When your prompt asks for more than the
+question and its follow-ups do (a single highest item, a per-store figure, an input the scenario never gives), add
+`scenario_facts: [...]` with only the facts the scenario's turns ask for (`[]` for none) and a comment saying why.
+`python -m pytest -q tests/test_eval_recipe.py -k unasked` flags cases that look like this; review each one and
+set `scenario_facts` (to the full `facts` if the scenario does ask for them). Never drop a fact a turn asks for.
