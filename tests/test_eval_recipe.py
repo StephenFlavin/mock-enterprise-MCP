@@ -47,8 +47,55 @@ def test_scenarios_are_complete(bank):
         assert all(w["turn"] < len(t["turns"]) for w in t["writes"]["expected"])
         assert t["servers"]["required"] == sorted({s["system"] for s in t["reference"]["slices"]})
     s = next(t for t in bank if t["id"] == "scn-02:11:Q3")
-    assert [w["turn"] for w in s["writes"]["expected"]] == [3, 3, 3]  # the hold-and-reroute follow-up
+    # "Hold the three most exposed loads and reroute them, but check with me first." and no later go-ahead: held, not expected
+    assert not s["writes"]["expected"] and [w["turn"] for w in s["writes"]["held"]] == [3, 3, 3]
     assert s["turns"][3]["approval_needed"] and s["turns"][3]["writes_requested"]
+
+
+def _writes(t):
+    return sorted((w["system"] + "." + w["tool"], w["turn"]) for w in t["writes"]["expected"])
+
+
+def test_write_turns_follow_the_asking_turn(bank):
+    """Expected writes sit on the turn that asks for them (or approves them), never on a turn that asks for nothing, and a
+    write asked for "once I confirm" / "but ask me first" with no later go-ahead is held, not expected."""
+    b = {t["id"]: t for t in bank}
+    # the main turn only asks why the count is off; the recount is asked for with the hold in turn 3 (only the correction waits)
+    assert _writes(b["scn-01:4:Q1"]) == [("ims.create_cycle_count_task", 3), ("wms.block_location", 3),
+                                         ("wms.create_cycle_count_task", 3)]
+    assert not b["scn-01:4:Q1"]["turns"][0]["writes_requested"] and b["scn-01:4:Q1"]["turns"][3]["approval_needed"]
+    # "delay the non-critical payment run, but ask me first" is never approved; turn 3 asks to cancel instead
+    t = b["scn-07:66:Q5"]
+    assert _writes(t) == [("ap.cancel_payment_run", 3)] and t["turns"][0]["approval_needed"]
+    assert [(w["tool"], w["turn"]) for w in t["writes"]["held"]] == [("update_payment_run_date", 0)]
+    # "Flag where I'm short" reports; the rota approval is asked in turn 3, the task changes in turn 4
+    t = b["scn-08:71:Q3"]
+    assert not t["turns"][0]["writes_requested"] and t["turns"][3]["approval_needed"]
+    assert _writes(t) == [("store_ops.delete_task_from_store_week", 4), ("store_ops.reassign_task_to_employee", 4),
+                          ("store_wfm.approve_rota_for_store", 3), ("store_wfm.update_shift_for_employee", 3)]
+    # "Once I confirm, reprocess them." and the confirmation never comes: nothing expected, its write facts dropped
+    t = b["scn-09:83:Q1"]
+    assert t["turns"][0]["approval_needed"] and not t["writes"]["expected"]
+    assert [w["tool"] for w in t["writes"]["held"]] == ["submit_edi_message_reprocess"]
+    assert "Mapping corrected" not in str(t["reference"]["facts"])
+    # turns whose verb is not a write verb but which name the action as an instruction ("make the test request", "outline it
+    # as a board paper for the board agenda") are the only expected-write turns that do not read as asking for an action
+    named = {"scn-06:56:Q4", "scn-07:70:Q1"}
+    for t in (t for t in bank if t["kind"] == "scenario" and t["id"] not in named):
+        asks = {i for i, x in enumerate(t["turns"]) if x["writes_requested"]}
+        assert all(w["turn"] in asks for w in t["writes"]["expected"]) or not asks, t["id"]
+
+
+def test_held_and_conditional_turn_flags():
+    held = ["Once I confirm, reprocess them.", "Delay the run, but ask me first.", "Pull them forward once I've okayed the list.",
+            "Submit it once I sign off.", "Send the note once I've approved it."]
+    assert all(T.turn(x, "followup")["approval_needed"] for x in held)
+    assert all(T.HOLD.search(x) for x in held)
+    assert T.turn("Once it looks right, approve the rota.", "followup")["approval_needed"]
+    assert not T.HOLD.search("Once it looks right, approve the rota.")  # the assistant checks; the same turn asks
+    assert not T.HOLD.search("Prepare the journal for my approval.") and not T.HOLD.search("Hold the bay until it's recounted.")
+    assert not T.turn("Flag where I'm short or over by hour.", "followup")["writes_requested"]
+    assert T.turn("Only send the UK one for now.", "followup")["writes_requested"]
 
 
 def test_slice_writes_turn_zero(bank):
