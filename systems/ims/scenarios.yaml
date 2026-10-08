@@ -1,0 +1,918 @@
+- question: 01:4:Q1
+  story: Bay DC1-C-14 count is off because one SKU (SKU-100084, bin DC1-C-14-02) has repeated receiving/picking adjustments (36 over ASN put away to the wrong bin, short picks from the wrong bin). The -24 count variance from last Tuesday is in WMS only and is not yet corrected in IMS (the correction is raised once the figure is confirmed).
+  checks:
+  - tool: list_inventory_adjustments_for_location
+    args:
+      site_id: DC1
+      location_id: DC1-C-14
+      date_from: -100d
+    expect:
+    - SKU-100084
+    - picking_error
+    - receiving_variance
+    - DC1-C-14-02
+  - tool: create_cycle_count_task
+    args:
+      site_id: DC1
+      location_id: DC1-C-14-02
+      scheduled_date: +3d
+      reason: Recount after variance
+    expect:
+    - CC-
+  - tool: create_inventory_adjustment
+    args:
+      sku: SKU-100084
+      site_id: DC1
+      location_id: DC1-C-14-02
+      quantity_delta: -24
+      cause_code: cycle_count_variance
+      reason_notes: Correct to confirmed count
+      value_impact_gbp: -565.68
+    expect:
+    - INV-ADJ-
+- question: 01:4:Q2
+  story: Nine adjustments over 500 GBP at DC1 are 'other' on the night shift in mezzanine/bulk (INV-ADJ-900008..16); three cycle count corrections reversed within
+    48h should be excluded.
+  checks:
+  - tool: list_inventory_adjustments
+    args:
+      site_id: DC1
+      min_value_gbp: 500
+      date_from: -100d
+    expect:
+    - other
+    - night
+    - mezzanine
+    - hours_to_reversal
+  - tool: update_adjustment_cause_code
+    args:
+      adjustment_id: INV-ADJ-900008
+      cause_code: damage
+    expect:
+    - damage
+  - tool: approve_inventory_adjustment
+    args:
+      adjustment_id: INV-ADJ-900008
+    expect:
+    - posted
+- question: 01:4:Q3
+  story: DC1 bin values by location; bay C-14 bins hold the story SKUs.
+  checks:
+  - tool: get_location_inventory_value
+    args:
+      site_id: DC1
+      location_id: DC1-C-14
+    expect:
+    - DC1-C-14-02
+    - total_value_gbp
+- question: 01:6:Q1
+  story: 'DC1 damage and rework write-offs: September events are larger and more numerous than August.'
+  checks:
+  - tool: list_damage_write_offs
+    args:
+      site_id: DC1
+      date_from: -65d
+    expect:
+    - rework
+    - damage
+    - DC1
+- question: 02:19:Q1
+  story: Shipment SHP-0000102 (PO-2026-004121, delayed) carries SKU-103458, SKU-104438, SKU-104445 whose store cover is under two weeks.
+  checks:
+  - tool: list_skus_on_shipment
+    args:
+      shipment_id: SHP-0000102
+    expect:
+    - SKU-103458
+    - SKU-104438
+  - tool: get_store_stock_cover_by_sku
+    args:
+      sku: SKU-103458
+    expect:
+    - ST214
+    - weeks_cover
+  - tool: calculate_stockout_risk
+    args:
+      sku: SKU-103458
+    expect:
+    - high
+    - ST214
+  - tool: get_expected_lost_sales
+    args:
+      sku: K-1700
+    expect:
+    - K-1700
+    - lost_sales_units
+  - tool: list_mitigation_options
+    args:
+      sku: SKU-103458
+    expect:
+    - Transfer from
+- question: 02:19:Q3
+  story: Store cover for the shipment SKUs shows ST214 and ST150 run out first. Container CONT-000078 on the anchored vessel (container system) carries PF-220, K-1700 and SKU-103227; ST214 runs out first on PF-220 (2.6 weeks) and K-1700.
+  checks:
+  - tool: get_store_stock_cover_by_sku
+    args:
+      sku: SKU-103458
+    expect:
+    - ST214
+    - ST150
+  - tool: get_store_stock_cover_by_sku
+    args:
+      sku: PF-220
+    expect:
+    - ST214
+    - '2.6'
+  - tool: get_store_stock_cover_by_sku
+    args:
+      sku: SKU-103227
+    expect:
+    - ST186
+- question: 02:19:Q5
+  story: EU Central stores ST228..ST232 are low on Smart Home, so they are hit first by a northern Europe port closure.
+  checks:
+  - tool: get_stock_cover_by_category_and_store
+    args:
+      region: EU Central
+      category: Smart Home
+    expect:
+    - Smart Home
+    - EU Central
+- question: 03:22:Q1
+  story: SKU-101904 (style STY-5520) was out for 9 days in 40 stores although the DC held stock; cause allocation shortfall.
+  checks:
+  - tool: get_stockout_days_by_store
+    args:
+      style_id: STY-5520
+      date_from: -60d
+    expect:
+    - ST214
+    - allocation_shortfall
+    - '9'
+  - tool: update_safety_stock_for_sku
+    args:
+      sku: SKU-101904
+      site_id: ST214
+      safety_stock: 20
+    expect:
+    - '20'
+- question: 03:22:Q2
+  story: Ranked by weekly sales at risk, the lines about to run out are SKU-101260 (DC2, about 10.6 days), SKU-102884 (DC5, 13 days) and SKU-104536 (DC2, 16 days), the same lines po and supplier_portal chase; the planted store-level lines (SKU-105341 at ST214, SKU-102338 at ST165 ...) have under 3 days cover but far lower sales at risk.
+  checks:
+  - tool: list_projected_stockouts
+    args:
+      days_ahead: 28
+    expect:
+    - SKU-105341
+    - ST214
+    - weekly_sales_at_risk_gbp
+- question: 03:22:Q3
+  story: Reorder point and safety stock settings are visible and updatable.
+  checks:
+  - tool: get_inventory_cover_by_item
+    args:
+      sku: K-1700
+    expect:
+    - reorder_point
+    - K-1700
+  - tool: update_reorder_point_for_sku
+    args:
+      sku: K-1700
+      site_id: ST214
+      reorder_point: 90
+    expect:
+    - '90'
+  - tool: update_safety_stock_for_sku
+    args:
+      sku: K-1700
+      site_id: ST214
+      safety_stock: 20
+    expect:
+    - '20'
+- question: 03:22:Q4
+  story: Selling weeks left shows weeks of cover against weeks to season end.
+  checks:
+  - tool: get_remaining_selling_weeks
+    args:
+      sku: SKU-103472
+    expect:
+    - selling_weeks_left_in_season
+- question: 03:22:Q5
+  story: OOS rate rises from 4.0% to 6.5% over five weeks; supplier SUP-0013 persists, DC2 receiving delay and a promo spike are one-offs.
+  checks:
+  - tool: get_out_of_stock_rate_trend
+    args:
+      date_from: -60d
+    expect:
+    - '6.5'
+    - '4'
+  - tool: get_out_of_stock_rate_by_dimension
+    args:
+      dimension: supplier
+      date_from: -30d
+    expect:
+    - SUP-0013
+  - tool: list_stockout_root_causes
+    args:
+      date_from: -60d
+    expect:
+    - supplier_late
+    - one-off
+    - persistent
+- question: 03:23:Q5
+  story: Worst stockout SKUs last quarter ranked by lost demand with product status.
+  checks:
+  - tool: get_stockout_periods_by_sku
+    args:
+      date_from: -90d
+    expect:
+    - lost_demand_units
+    - product_status
+- question: 03:25:Q1
+  story: Knitwear shrink for the period.
+  checks:
+  - tool: get_shrink_by_category
+    args:
+      category: Knitwear
+      date_from: -30d
+    expect:
+    - Knitwear
+- question: 03:25:Q3
+  story: Closing stock projection and overstock lines; Bedding and Towels end heavy.
+  checks:
+  - tool: get_projected_closing_stock
+    args:
+      category: Bedding
+    expect:
+    - Bedding
+    - projected_close_units
+  - tool: list_lines_at_risk_of_overstock
+    args:
+      category: Bedding
+    expect:
+    - SKU-103472
+- question: 03:25:Q4
+  story: Bedding ends the season about 25% above its closing stock plan.
+  checks:
+  - tool: get_projected_closing_stock
+    args: {}
+    expect:
+    - Bedding
+  - tool: get_closing_stock_plan_gap_by_category
+    args: {}
+    expect:
+    - Bedding
+    - gap_units
+- question: 03:25:Q5
+  story: Availability by size for a style shows sizes per store.
+  checks:
+  - tool: get_availability_by_size_and_store
+    args:
+      style_id: STY-4056
+    expect:
+    - STY-4056
+    - In Stock
+- question: 03:27:Q1
+  story: Revenue and inventory impact of recovering lost sales for K-1700.
+  checks:
+  - tool: calculate_revenue_and_inventory_impact_of_changes
+    args:
+      sku: K-1700
+      change_type: availability_change
+    expect:
+    - revenue_impact_gbp
+- question: 03:28:Q1
+  story: Highest value SKUs by stock value.
+  checks:
+  - tool: list_highest_value_skus
+    args:
+      limit_skus: 50
+    expect:
+    - total_value_gbp
+  - tool: update_safety_stock_for_sku
+    args:
+      sku: K-1700
+      site_id: ST214
+      safety_stock: 22
+    expect:
+    - '22'
+- question: 03:28:Q2
+  story: Bedding (96 days) and Towels (87) carry the most cover, versus about 65-75 elsewhere; SKU-103472, SKU-103486 drive the excess.
+  checks:
+  - tool: get_days_of_cover_by_category
+    args:
+      category: Bedding
+    expect:
+    - Bedding
+    - days_of_cover
+  - tool: get_excess_stock_drivers
+    args:
+      category: Bedding
+    expect:
+    - SKU-103472
+    - main_driver
+  - tool: list_skus_by_excess_contribution
+    args:
+      category: Bedding
+    expect:
+    - SKU-103472
+    - cumulative_share_pct
+- question: 03:28:Q4
+  story: Long-tail lines (chain sales of about 140 units a week or less, from master sales) hold thousands of units in the DCs; SKU-102898, SKU-106034 and SKU-102289 hold the most, with over a hundred weeks of cover.
+  checks:
+  - tool: list_long_tail_skus
+    args:
+      max_units_per_week: 140
+    expect:
+    - SKU-102898
+    - SKU-106034
+    - SKU-102289
+    - weeks_cover
+- question: 03:28:Q5
+  story: Towels and Bedding value is ~47% above plan with much aged stock over 180 days; release plan for Bedding.
+  checks:
+  - tool: get_inventory_value_by_dimension
+    args:
+      dimension: category
+    expect:
+    - Towels
+    - Bedding
+  - tool: get_inventory_ageing
+    args: {}
+    expect:
+    - units_over_180_days
+  - tool: compare_inventory_value_to_baseline
+    args:
+      dimension: category
+    expect:
+    - Towels
+    - variance_pct
+  - tool: list_stock_release_options
+    args:
+      category: Bedding
+    expect:
+    - Markdown
+    - Transfer
+  - tool: create_stock_release_plan
+    args:
+      site_id: DC1
+      category: Bedding
+      planned_release_date: +14d
+      description: Clear overstock
+      estimated_units: 1500
+    expect:
+    - SRP-
+- question: 03:29:Q1
+  story: Men's jacket style STY-4102 after a 30% markdown. 33 of the 45 stores that carry it now have a broken size run (mostly only L left, M gone everywhere); 12 stores still have S, M and L.
+  checks:
+  - tool: get_size_run_breakage_for_product
+    args:
+      style_id: STY-4102
+    expect:
+    - broken
+    - '73.3'
+    - '33'
+    - 'L M'
+- question: 03:29:Q2
+  story: Aged clearance lines from aged_lines.xlsx. SKU-105558 sits at DC5 at about 180 days and SKU-104277 at Leeds DC3 at about 315 days (the DC the outlet transfer ships from); DC stock quantities and ages match the spreadsheet.
+  checks:
+  - tool: get_inventory_ageing_for_product
+    args:
+      sku: SKU-105558
+      age_days: 120
+    expect:
+    - DC5
+    - '217409.64'
+  - tool: get_inventory_ageing_for_product
+    args:
+      sku: SKU-104277
+      age_days: 150
+    expect:
+    - DC3
+    - '88264.4'
+- question: 03:29:Q5
+  story: Stock older than 180 days ranked by value at cost; SKU-105054 at DC4 (about 482k) and SKU-101253 at DC5 lead, then SKU-100658; the aged clearance lines are included.
+  checks:
+  - tool: list_aged_stock_over_threshold
+    args:
+      age_days: 180
+    expect:
+    - SKU-105054
+    - SKU-101253
+    - SKU-100658
+    - '482030'
+- question: 03:30:Q4
+  story: Slow movers (network demand of about 140 units a week or less, the old 20 scaled x6.8) are the same long-tail lines; SKU-102898 and SKU-106034 hold the most stock with over a hundred weeks of cover.
+  checks:
+  - tool: list_slow_moving_skus
+    args:
+      max_units_per_week: 140
+    expect:
+    - SKU-102898
+    - SKU-106034
+    - '135.7'
+- question: 04:35:Q4
+  story: Packaging supplier SUP-0081 (Calder Corrugated, the largest packaging supplier; cartons for every carton-packed item) has eight lines with less than six weeks of network cover, led by SKU-101260 (1.8 weeks), SKU-105964 (2.9) and SKU-100280 (3.4); a six-week failure empties these.
+  checks:
+  - tool: get_inventory_cover_by_item
+    args:
+      supplier_id: SUP-0081
+      max_weeks_cover: 6
+    expect:
+    - SKU-101260
+    - SKU-105964
+    - SKU-100280
+    - '1.8'
+- question: 05:42:Q1
+  story: Failed blouse lots BATCH-POL-PINK-004 (240 unshipped units at DC4) and BATCH-POL-PINK-007 (500 at DC2) of SKU-100007; a hold on the DC2 lot is placed with the hold tool.
+  checks:
+  - tool: get_stock_by_location_for_batch
+    args:
+      sku: SKU-100007
+    expect:
+    - BATCH-POL-PINK-004
+    - DC4
+    - BATCH-POL-PINK-007
+    - DC2
+  - tool: update_inventory_hold_status
+    args:
+      sku: SKU-100007
+      site_id: DC2
+      hold_qty: 500
+    expect:
+    - '500'
+- question: 05:42:Q5
+  story: Shoe SKU-100301 soles from BATCH-SHOE-002/003/004 separate; 700, 1170 and 1080 units of those batches are in the DCs, the rest in stores. Hold placed on the DC stock.
+  checks:
+  - tool: get_stock_by_location_for_batch
+    args:
+      sku: SKU-100301
+      batch_id: BATCH-SHOE-003
+    expect:
+    - DC4
+    - '1170'
+  - tool: update_inventory_hold_status
+    args:
+      sku: SKU-100301
+      site_id: DC4
+      hold_qty: 1220
+    expect:
+    - '1220'
+- question: 05:44:Q2
+  story: Leather bag SKU-101813 batch BATCH-LEATHER-002 failed chromium VI; 210 units are in DC3 and DC5 and 80 in eight stores (290 in total, out of the 300 units in the qms production lot). Hold placed on the DC3 stock.
+  checks:
+  - tool: get_stock_by_location_for_batch
+    args:
+      sku: SKU-101813
+      batch_id: BATCH-LEATHER-002
+    expect:
+    - DC3
+    - '150'
+    - '290'
+  - tool: update_inventory_hold_status
+    args:
+      sku: SKU-101813
+      site_id: DC3
+      hold_qty: 150
+    expect:
+    - '150'
+- question: 05:47:Q1
+  story: PF-220 batch BATCH-PF220-2509-A is in quarantine at DC2 and in stores; batch B is released.
+  checks:
+  - tool: get_stock_by_location_for_batch
+    args:
+      sku: PF-220
+      batch_id: BATCH-PF220-2509-A
+    expect:
+    - DC2
+    - quarantine
+    - ST214
+  - tool: update_inventory_hold_status
+    args:
+      sku: PF-220
+      site_id: DC2
+      hold_qty: 150
+    expect:
+    - '150'
+- question: 05:47:Q4
+  story: Stock of PF-220 batch BATCH-PF220-2509-A still held by us, 807 units in the DC and 4041 in stores, 4848 in all (of 18,000 recalled; the recall cost is mostly units already sold).
+  checks:
+  - tool: get_stock_by_location_for_batch
+    args:
+      sku: PF-220
+      batch_id: BATCH-PF220-2509-A
+    expect:
+    - batch_units_in_location_type
+    - '807'
+    - '4041'
+    - '4848'
+- question: 05:50:Q2
+  story: Vietnam-made lines by network cover, SKU-101260 (1.8 weeks), SKU-102884 (2.3), SKU-105964 (2.9), SKU-100280 (3.4), SKU-103521 (4.0) and SKU-101722 (4.6) run out first in a six-week closure.
+  checks:
+  - tool: get_stock_cover_by_sku
+    args:
+      country_of_origin: VN
+    expect:
+    - SKU-101260
+    - SKU-102884
+    - SKU-105964
+    - '1.8'
+- question: 06:52:Q2
+  story: Availability differs between products last season (the best and worst sellers of the data_warehouse SS ranking, whose in-stock column quotes the same rates). Best seller SKU-100651 (41.7%) and worst sellers SKU-103283 (58.3%) and SKU-103297 (50%) were in stock far less than
+    best seller SKU-100637 and worst seller SKU-104186 (100%), so their sales are depressed by stock-outs.
+  checks:
+  - tool: get_in_stock_rate_by_product_week
+    args:
+      skus: [SKU-100637, SKU-100651, SKU-104186, SKU-103283, SKU-103297]
+      date_from: -100d
+      by: sku
+    expect:
+    - SKU-100651
+    - '41.7'
+    - '58.3'
+    - '100'
+- question: 06:54:Q1
+  story: K-1700 availability falls week by week.
+  checks:
+  - tool: get_stock_availability_history_for_sku
+    args:
+      sku: K-1700
+      date_from: -90d
+    expect:
+    - in_stock_rate_pct
+  - tool: update_inventory_hold_status
+    args:
+      sku: K-1700
+      site_id: DC2
+      hold_qty: 20
+    expect:
+    - '20'
+- question: 06:56:Q7
+  story: In-stock rate by category.
+  checks:
+  - tool: get_in_stock_rate_by_category
+    args: {}
+    expect:
+    - Bedding
+    - in_stock_rate_pct
+- question: 07:63:Q3
+  story: Holding cost by site.
+  checks:
+  - tool: get_inventory_holding_cost
+    args:
+      site_id: DC1
+    expect:
+    - annual_holding_cost_gbp
+- question: 07:68:Q2
+  story: 'Counts: DC1 94.6%, DC2 97.8%, DC3 98.9% accuracy; DC1 weakest (agrees with the internal audit control tests: recounts skipped, variances accepted).'
+  checks:
+  - tool: get_stock_count_results
+    args:
+      date_from: -100d
+    expect:
+    - DC1
+    - '94.6'
+    - '97.8'
+    - '98.9'
+- question: 07:68:Q5
+  story: Leeds store (ST150 Leeds Shopping Centre) shrink tripled; evening stockroom theft adjustments posted after close under EMP-00472 (matches CCTV, store_wfm and loss prevention).
+  checks:
+  - tool: list_stock_adjustments_for_store
+    args:
+      site_id: ST150
+      date_from: -90d
+    expect:
+    - EMP-00472
+    - theft
+    - SKU-104746
+- question: 07:69:Q1
+  story: Units and value by category.
+  checks:
+  - tool: get_inventory_units_by_category
+    args: {}
+    expect:
+    - value_at_cost_gbp
+  - tool: list_inventory_adjustments
+    args:
+      date_from: -30d
+    expect:
+    - value_impact_gbp
+  - tool: list_inventory_adjustments
+    args:
+      min_value_gbp: 50000
+      date_from: -30d
+    expect:
+    - SKU-102555
+    - DC5
+    - '149975.28'
+- question: 07:69:Q2
+  story: Stock ageing by category and band.
+  checks:
+  - tool: get_stock_ageing
+    args:
+      category: Bedding
+      age_days: 180
+    expect:
+    - 181-365
+    - Bedding
+- question: 07:69:Q3
+  story: Cycle count for the highest-risk category (Small Appliances, as in gl and wms) at the Leeds Shopping Centre store ST150.
+  checks:
+  - tool: get_shrink_by_category
+    args:
+      category: Small Appliances
+      date_from: -90d
+    expect:
+    - Small Appliances
+    - shrink
+  - tool: create_cycle_count_task
+    args:
+      site_id: ST150
+      category: Small Appliances
+      reason: Year-end shrink risk
+      scheduled_date: +7d
+    expect:
+    - CC-
+- question: 07:69:Q5
+  story: Reverse an erroneous adjustment (the duplicated goods receipt INV-ADJ-900061 of SKU-102555 at DC5 posts the quantity twice; the ledger comparison in gl names the same SKU and site).
+  checks:
+  - tool: reverse_inventory_adjustment
+    args:
+      adjustment_id: INV-ADJ-900022
+      reversal_reason: Entry error
+    expect:
+    - reversed
+- question: 08:71:Q1
+  story: ST214 Dresses shrink is about 1.7% against a 0.7% peer rate; Saturday postings; receiving errors on K-1700.
+  checks:
+  - tool: get_stock_adjustments_for_store
+    args:
+      site_id: ST214
+      date_from: -90d
+    expect:
+    - shrink
+    - receiving_error
+  - tool: get_shrink_by_category_for_store
+    args:
+      site_id: ST214
+      date_from: -30d
+    expect:
+    - Dresses
+  - tool: compare_shrink_with_peer_stores
+    args:
+      site_id: ST214
+    expect:
+    - Dresses
+    - peer_avg_shrink_gbp
+  - tool: get_goods_receipt_discrepancies_for_store
+    args:
+      site_id: ST214
+    expect:
+    - K-1700
+    - receiving_error
+- question: 08:71:Q2
+  story: 'K-1700 at ST214: system shows 12 on hand, 8 available, but 7 stockout days in recent weeks lost 7 units (545.93 GBP); deliveries show a short shipment on
+    PF-220.'
+  checks:
+  - tool: get_stock_on_hand_by_product_and_location
+    args:
+      sku: K-1700
+      site_id: ST214
+    expect:
+    - '12'
+  - tool: calculate_lost_sales_from_availability_gaps
+    args:
+      sku: K-1700
+      site_id: ST214
+      date_from: -30d
+    expect:
+    - '545.93'
+  - tool: get_store_deliveries_for_product
+    args:
+      sku: PF-220
+      site_id: ST214
+      date_from: -60d
+    expect:
+    - short_shipped
+  - tool: get_stock_adjustments_for_product
+    args:
+      sku: K-1700
+    expect:
+    - receiving_error
+- question: 08:71:Q5
+  story: ST214 compared with its cluster on shrink and availability.
+  checks:
+  - tool: get_shrink_rate_by_store
+    args:
+      cluster: B
+      date_from: -90d
+    expect:
+    - ST214
+  - tool: get_availability_by_store
+    args:
+      cluster: B
+    expect:
+    - in_stock_rate_pct
+- question: 08:73:Q1
+  story: ST214 availability trend and stock position.
+  checks:
+  - tool: get_availability_trend_for_store
+    args:
+      site_id: ST214
+      date_from: -90d
+    expect:
+    - availability_rate_pct
+  - tool: get_stock_position_for_store
+    args:
+      site_id: ST214
+    expect:
+    - weeks_cover
+- question: 08:73:Q2
+  story: 'Stores needing attention: Leeds ST165 high shrink.'
+  checks:
+  - tool: get_availability_by_store
+    args: {}
+    expect:
+    - in_stock_rate_pct
+  - tool: get_shrink_rate_by_store
+    args:
+      region: UK North
+      date_from: -30d
+    expect:
+    - ST165
+- question: 08:73:Q3
+  story: Stock imbalance by store and a transfer request into ST143, the top-ranked UK North store.
+  checks:
+  - tool: get_stock_imbalance_by_store
+    args: {}
+    expect:
+    - understocked_skus
+  - tool: create_store_transfer_request
+    args:
+      sku: K-1700
+      from_site_id: ST165
+      to_site_id: ST143
+      quantity: 30
+      reason: Rebalance
+    expect:
+    - STR-
+- question: 08:74:Q1
+  story: Availability of top products now versus the previous period.
+  checks:
+  - tool: get_availability_rate_for_top_products
+    args:
+      limit_products: 50
+    expect:
+    - availability_pct
+    - previous_period_pct
+- question: 08:74:Q6
+  story: 'K-1700 reservations by channel: online 250, click_collect 40, promotion 60 active.'
+  checks:
+  - tool: get_stock_position_for_product_by_channel
+    args:
+      sku: K-1700
+    expect:
+    - click_collect
+    - online
+    - free_to_allocate
+  - tool: create_stock_reservation_for_channel
+    args:
+      sku: K-1700
+      site_id: DC2
+      channel: click_collect
+      quantity: 20
+      expiry_date: +3d
+    expect:
+    - RESV-
+  - tool: cancel_stock_reservation_for_channel
+    args:
+      reservation_id: RESV-900001
+    expect:
+    - released
+- question: 08:75:Q1
+  story: Stock position around an order date.
+  checks:
+  - tool: get_stock_position_at_order_date
+    args:
+      sku: K-1700
+      site_id: ST214
+    expect:
+    - quantity_available
+- question: 08:75:Q2
+  story: Available and sellable stock for a SKU.
+  checks:
+  - tool: get_available_stock_for_product
+    args:
+      sku: K-1700
+    expect:
+    - sellable
+    - DC2
+- question: 08:78:Q1
+  story: PROMO-900001 hero SKU-104949 had only part of its required stock confirmed.
+  checks:
+  - tool: get_hero_item_availability_during_promotion
+    args:
+      promotion_id: PROMO-900001
+    expect:
+    - SKU-104949
+    - availability_pct
+- question: 08:78:Q5
+  story: PROMO-900004 SKU-100707 is unconfirmed (400 units gap).
+  checks:
+  - tool: get_stock_confirmation_status_for_promotion
+    args: {}
+    expect:
+    - SKU-100707
+    - unconfirmed
+    - gap_units
+- question: 08:79:Q1
+  story: Region adjustments; Leeds Shopping Centre ST150 stands out with evening stockroom theft adjustments posted under EMP-00472 (matches CCTV and loss prevention).
+  checks:
+  - tool: get_stock_adjustments_for_region
+    args:
+      region: UK North
+      date_from: -30d
+    expect:
+    - ST150
+    - EMP-00472
+- question: 08:79:Q3
+  story: Shrink YTD by store and category.
+  checks:
+  - tool: get_shrink_year_to_date_by_store
+    args: {}
+    expect:
+    - ytd_shrink_value_gbp
+  - tool: get_shrink_by_category
+    args: {}
+    expect:
+    - shrink_value_gbp
+- question: 08:79:Q5
+  story: Self-checkout losses up in five stores; ST159 has a scanner fault.
+  checks:
+  - tool: get_self_checkout_shrink_by_store
+    args:
+      days: 30
+    expect:
+    - ST159
+    - scanner fault
+    - previous_incidents
+- question: 08:79:Q6
+  story: Highest loss products last 90 days led by SKU-102338, SKU-101834.
+  checks:
+  - tool: get_highest_loss_products
+    args:
+      limit_products: 5
+      date_from: -90d
+    expect:
+    - SKU-102338
+    - SKU-101834
+  - tool: get_product_loss_by_cause
+    args: {}
+    expect:
+    - theft
+  - tool: compare_product_loss_year_on_year
+    args:
+      sku: SKU-105341
+    expect:
+    - loss_units_prior_12m
+- question: 08:80:Q2
+  story: Franchise partner stock vs target.
+  checks:
+  - tool: get_franchise_stock_position
+    args:
+      partner_id: PTN-011
+    expect:
+    - target_stock
+    - on_hand
+- question: 09:81:Q2
+  story: Stock position at Daventry DC2 and its cut-off items (the 30-unit count correction INV-ADJ-900062 on SKU-103157 and the 50 units of SKU-100651 in transit to ST165), the same items data_warehouse reconciles.
+  checks:
+  - tool: get_stock_position_by_site
+    args:
+      site_id: DC2
+    expect:
+    - DC2
+  - tool: list_inventory_adjustments_and_cutoffs
+    args:
+      site_id: DC2
+    expect:
+    - adjustment
+- question: 09:83:Q5
+  story: Website sellable vs WMS available for K-1700 (reservations and holds).
+  checks:
+  - tool: get_website_vs_wms_stock_variance
+    args:
+      sku: K-1700
+      variance_pct_threshold: 0.1
+    expect:
+    - K-1700
+    - variance_units
+- question: 09:87:Q1
+  story: 'Inventory vs plan: Towels and Bedding about 47% above plan.'
+  checks:
+  - tool: get_inventory_vs_plan
+    args:
+      dimension: category
+    expect:
+    - Towels
+    - variance_pct

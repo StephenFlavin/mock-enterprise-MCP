@@ -1,0 +1,80 @@
+# One entry per question row that uses this system's tools
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string
+
+- question: "01:10:Q1"
+  story: >
+    The DC2 shuttle system (AST-DC2-SHT-01..16) had 14 unplanned stoppages in the weeks before today, matching the CMMS
+    stoppages STP-900001..14 (FLT-900001..FLT-900014). Ranked by throughput units lost, Seal degradation is top (1,362
+    units, 2 stoppages), then Mechanical wear (1,176) and Lubrication failure (958). Sensor and software faults were on
+    4.3.0 shuttles; shuttle aisle 3 (AST-DC2-SHT-03) stopped twice. Three older August shuttle faults sit outside the window.
+  checks:
+    - tool: get_throughput_loss_for_stoppage
+      args: {site_id: DC2, asset_class: shuttle, date_from: "-200d"}
+      expect: ["FLT-900033", "FLT-900014", "1834"]
+    - tool: get_throughput_loss_for_stoppage
+      args: {site_id: DC2, asset_class: shuttle, date_from: "-40d"}
+      expect: ["Seal degradation", "1362", "Mechanical wear", "1176", "Lubrication failure", "958", "6364"]
+    - tool: get_fault_log_entries
+      args: {site_id: DC2, asset_class: shuttle, date_from: "-200d", fault_code: SENSOR}
+      expect: ["AST-DC2-SHT-14", "AST-DC2-SHT-06", "4.3.0", "Position sensor"]
+    - tool: get_equipment_software_versions
+      args: {site_id: DC2, asset_class: shuttle}
+      expect: ["AST-DC2-SHT-03", "4.3.0", "4.2.1", "shuttle aisle 3"]
+
+- question: "01:10:Q2"
+  story: >
+    DC1 conveyor network and sorter fault history: the sorter AST-DC1-SRT (poor condition, degrading oil) stopped three
+    times (gearbox lubrication 450 min, roller wear 270 min, induction sensor 210 min) and conveyor motor AST-DC1-CNV-M08
+    had a bearing failure, then repeated vibration warnings. Gearbox AST-DC1-CNV-G01 shows rising oil-temperature
+    warnings, G02 one, M03 vibration and sensor AST-DC1-CNV-S09 intermittent blocked-signal alerts.
+  checks:
+    - tool: get_fault_log_entries
+      args: {site_id: DC1, date_from: "-300d", severity: critical}
+      expect: ["AST-DC1-SRT", "AST-DC1-CNV-M08", "Lubrication failure", "Mechanical wear", "Bearing failure"]
+    - tool: get_fault_log_entries
+      args: {site_id: DC1, date_from: "-300d", fault_code: GEARBOX, asset_class: gearbox}
+      expect: ["AST-DC1-CNV-G01", "AST-DC1-CNV-G02", "Gearbox oil temperature high"]
+    - tool: get_fault_log_entries
+      args: {site_id: DC1, date_from: "-300d", asset_id: AST-DC1-CNV-M08}
+      expect: ["FLT-900102", "Motor vibration above alarm threshold"]
+    - tool: get_equipment_software_versions
+      args: {site_id: DC1, status: degraded}
+      expect: ["AST-DC1-SRT", "7.1", "AST-DC1-CNV-G01", "3.2", "AST-DC1-CNV-M08"]
+
+- question: "01:10:Q3"
+  story: >
+    The AMR fleet is 15 robots: DC1 has 8 (robot-002, robot-005, robot-007 on firmware 4.7; the other five on 4.6), DC2 has
+    4 (robot-011 on 4.7) and DC3 has 3 (robot-013 on 4.7). Robots on 4.7 have fewer recent faults than robots on 4.6.
+  checks:
+    - tool: get_amr_fleet_firmware_versions
+      args: {site_id: DC1, firmware_version: "4.7"}
+      expect: ["robot-002", "robot-005", "robot-007"]
+    - tool: get_amr_fleet_firmware_versions
+      args: {site_id: DC1, firmware_version: "4.6"}
+      expect: ["robot-001", "robot-003", "robot-004", "robot-006", "robot-008"]
+    - tool: get_amr_fleet_firmware_versions
+      args: {}
+      expect: ["robot-011", "robot-013", "robot-015", "site_robots_on_version"]
+
+- question: "01:10:Q5"
+  story: >
+    DC1 throughput drops about 14% in the two hours of the 14:00-16:00 window (about 505 units an hour against about
+    598), with traffic density 72-74%, 17-18 congestion events and robots active falling to about 5. The 14:00-16:00
+    charging window CHG-900003 puts 4 of the 8 robots on charge at once. DC2 and DC3 charge overnight and show no dip.
+    WiFi faults are spread across all hours. Moving CHG-900003 to 18:00-20:00 is the test change.
+  checks:
+    - tool: get_robot_throughput_by_hour
+      args: {site_id: DC1}
+      expect: ["15:00", "16:00", "-14", "pct_vs_daily_hourly_avg"]
+    - tool: get_robot_traffic_congestion
+      args: {site_id: DC1}
+      expect: ["zone-A", "pick-area", "15:00", "16:00", "avg_congestion_events"]
+    - tool: get_fleet_charging_schedule
+      args: {site_id: DC1}
+      expect: ["CHG-900003", "14:00", "16:00", "site_fleet_size"]
+    - tool: update_fleet_charging_schedule
+      args: {schedule_id: CHG-900003, start_time: "18:00", end_time: "20:00"}
+      expect: ["18:00", "20:00"]
+    - tool: get_fleet_charging_schedule
+      args: {site_id: DC1}
+      expect: ["18:00-20:00", "CHG-900003"]

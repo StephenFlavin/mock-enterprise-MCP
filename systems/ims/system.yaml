@@ -1,0 +1,1820 @@
+id: ims
+name: Inventory Management System (IMS)
+instructions: >
+  Stock levels, adjustments, availability and shrink across stores and DCs.
+  Inventory adjustment ids look like INV-ADJ-000123, cycle count tasks like CC-000123,
+  stock reservations like RESV-000123, store transfers like STR-000123, and release plans like SRP-000123.
+
+tables:
+  inventory_positions:
+    key: [sku, site_id, location_id]
+    cols:
+      sku: {type: str, desc: "SKU, e.g. SKU-100007"}
+      site_id: {type: str, desc: "Site (DC or store), e.g. DC1 or ST214"}
+      location_id: {type: str, desc: "Location id (DC bin or store zone), e.g. DC1-C-14-02 or null for store"}
+      on_hand: {type: int, desc: "Units physically on hand"}
+      allocated: {type: int, desc: "Units allocated to orders or channels"}
+      available: {type: int, desc: "On hand minus allocated"}
+      hold_qty: {type: int, desc: "Units on quality/investigation hold"}
+      reorder_point: {type: int, desc: "Reorder point for replenishment"}
+      safety_stock: {type: int, desc: "Safety stock quantity"}
+      weekly_demand: {type: float, desc: "Average units sold or issued per week (basis of every cover figure)"}
+      received_date: {type: date, desc: "Date the current stock was received; stock age counts from here"}
+      updated_at: {type: timestamp, desc: "Last inventory movement"}
+
+  inventory_adjustments:
+    key: adjustment_id
+    cols:
+      adjustment_id: {type: str, desc: "Inventory adjustment, e.g. INV-ADJ-000123"}
+      sku: {type: str, desc: "SKU being adjusted"}
+      site_id: {type: str, desc: "Site where adjustment occurred"}
+      location_id: {type: str, desc: "DC location or store zone, if known"}
+      quantity_delta: {type: int, desc: "Change in units (positive or negative)"}
+      cause_code: {type: enum, values: [shrink, damage, expiry, loss, receiving_variance, cycle_count_variance, write_off, reclass, receiving_error, picking_error, markdown, sample, theft, other], desc: "Cause of adjustment"}
+      reference_id: {type: str, desc: "Related document id (PO, order, cycle count, etc)"}
+      status: {type: enum, values: [pending, posted, reversed], desc: "Adjustment status"}
+      user_id: {type: str, desc: "Employee who created it"}
+      reason_notes: {type: str, desc: "Free text explanation"}
+      value_impact_gbp: {type: float, desc: "Financial impact at standard cost (negative = loss)"}
+      created_at: {type: timestamp, desc: "When adjustment was created"}
+      posted_at: {type: timestamp, desc: "When adjustment was posted to stock"}
+      reversed_at: {type: timestamp, desc: "When the adjustment was reversed, if it was"}
+      reversal_reason: {type: str, desc: "Why it was reversed"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  cycle_count_tasks:
+    key: cycle_count_id
+    cols:
+      cycle_count_id: {type: str, desc: "Cycle count task, e.g. CC-000123"}
+      site_id: {type: str, desc: "Site (DC or store)"}
+      category: {type: str, desc: "Product category being counted, or null for whole location"}
+      location_id: {type: str, desc: "Specific location to count, or null for site-wide"}
+      scheduled_date: {type: date, desc: "Planned count date"}
+      status: {type: enum, values: [scheduled, in_progress, completed, cancelled], desc: "Count status"}
+      reason: {type: str, desc: "Why count was scheduled"}
+      counted_by: {type: str, desc: "Employee id who performed the count"}
+      counted_at: {type: timestamp, desc: "When count was performed"}
+      result_summary: {type: str, desc: "Summary of variances found"}
+      created_at: {type: timestamp, desc: "When task was created"}
+
+  cycle_count_results:
+    key: [cycle_count_id, sku, location_id]
+    cols:
+      cycle_count_id: {type: str, desc: "Cycle count task"}
+      sku: {type: str, desc: "SKU counted"}
+      location_id: {type: str, desc: "Location counted"}
+      system_qty: {type: int, desc: "System-held quantity before count"}
+      counted_qty: {type: int, desc: "Physical count result"}
+      variance: {type: int, desc: "Difference (counted - system)"}
+      variance_pct: {type: float, desc: "Variance as % of system qty"}
+
+  stock_reservations:
+    key: reservation_id
+    cols:
+      reservation_id: {type: str, desc: "Stock reservation, e.g. RESV-000123"}
+      sku: {type: str, desc: "SKU reserved"}
+      site_id: {type: str, desc: "Site holding the stock"}
+      channel: {type: enum, values: [click_collect, online, wholesale, franchise, marketplace, promotion], desc: "Channel holding the reservation"}
+      quantity: {type: int, desc: "Units reserved"}
+      status: {type: enum, values: [active, partially_released, released, expired], desc: "Reservation status"}
+      expiry_date: {type: date, desc: "When the reservation expires if not used"}
+      reference_id: {type: str, desc: "Related order/shipment id"}
+      created_at: {type: timestamp, desc: "When reservation was created"}
+      released_at: {type: timestamp, desc: "When reservation was released"}
+
+  store_transfers:
+    key: transfer_id
+    cols:
+      transfer_id: {type: str, desc: "Store transfer, e.g. STR-000123"}
+      sku: {type: str, desc: "SKU being transferred"}
+      from_site_id: {type: str, desc: "Sending store or DC"}
+      to_site_id: {type: str, desc: "Receiving store or DC"}
+      quantity: {type: int, desc: "Units requested"}
+      quantity_shipped: {type: int, desc: "Units actually shipped"}
+      reason: {type: str, desc: "Reason for transfer (rebalance, overstock, stockout, etc)"}
+      status: {type: enum, values: [requested, approved, shipped, received, cancelled], desc: "Transfer status"}
+      requested_by: {type: str, desc: "Employee id who requested it"}
+      requested_date: {type: date, desc: "Request date"}
+      shipped_date: {type: date, desc: "Date shipped"}
+      received_date: {type: date, desc: "Date received"}
+
+  stock_release_plans:
+    key: plan_id
+    cols:
+      plan_id: {type: str, desc: "Release plan, e.g. SRP-000123"}
+      site_id: {type: str, desc: "Site where stock is held"}
+      category: {type: str, desc: "Product category targeted"}
+      planned_release_date: {type: date, desc: "Target release date"}
+      status: {type: enum, values: [draft, approved, in_progress, completed, cancelled], desc: "Plan status"}
+      description: {type: str, desc: "What stock is being released and why"}
+      estimated_units: {type: int, desc: "Estimated units to be released"}
+      actual_units_released: {type: int, desc: "Units actually released"}
+      created_by: {type: str, desc: "Employee id who created it"}
+      created_at: {type: timestamp, desc: "When plan was created"}
+
+  shrink_analysis:
+    key: [site_id, category, analysis_week]
+    cols:
+      site_id: {type: str, desc: "Store or DC"}
+      category: {type: str, desc: "Product category"}
+      analysis_week: {type: date, desc: "Monday of the analysis week"}
+      shrink_units: {type: int, desc: "Units lost to shrink"}
+      shrink_value_gbp: {type: float, desc: "Shrink value at standard cost"}
+      shrink_rate_pct: {type: float, desc: "Shrink as % of sales"}
+      vs_peer_avg_pct: {type: float, desc: "Variance vs peer store average"}
+      main_cause: {type: str, desc: "Primary cause identified"}
+
+  availability_tracking:
+    key: [sku, site_id, tracking_date]
+    cols:
+      sku: {type: str, desc: "SKU"}
+      site_id: {type: str, desc: "Store or DC"}
+      tracking_date: {type: date, desc: "Week start (Monday) or stockout start date"}
+      available: {type: bool, desc: "False when the sku was out of stock at this site"}
+      quantity_available: {type: int, desc: "Units available"}
+      demand_units: {type: int, desc: "Demand (sales) that day"}
+      lost_sales: {type: int, desc: "Units lost to stockout"}
+      stockout_days: {type: int, desc: "Days out of stock in this record (0 when available)"}
+      stockout_cause: {type: str, desc: "Root cause of the stockout, e.g. supplier_late"}
+      forecast_available: {type: bool, desc: "System forecast showed available"}
+
+  lost_products:
+    key: loss_id
+    cols:
+      loss_id: {type: str, desc: "Loss record, e.g. LOSS-000123"}
+      sku: {type: str, desc: "SKU lost"}
+      site_id: {type: str, desc: "Site where loss occurred"}
+      loss_type: {type: enum, values: [damage, expiry, shrink, theft, unknown, markdown, rework, self_checkout], desc: "Type of loss"}
+      quantity: {type: int, desc: "Units lost"}
+      value_gbp: {type: float, desc: "Value at standard cost"}
+      identified_date: {type: date, desc: "When loss was discovered"}
+      batch_or_serial: {type: str, desc: "Batch/serial if tracked"}
+      notes: {type: str, desc: "Additional details"}
+
+  franchise_stock:
+    key: [partner_id, sku]
+    cols:
+      partner_id: {type: str, desc: "Franchise partner"}
+      sku: {type: str, desc: "SKU"}
+      on_hand: {type: int, desc: "Units at the partner"}
+      available: {type: int, desc: "Available units"}
+      target_stock: {type: int, desc: "Target stock level"}
+      is_core_range: {type: bool, desc: "Core range line"}
+
+  stock_batches:
+    key: [batch_id, sku, site_id]
+    cols:
+      batch_id: {type: str, desc: "Production batch, e.g. BATCH-PF220-2509-A"}
+      sku: {type: str, desc: "SKU"}
+      site_id: {type: str, desc: "Site holding the batch"}
+      location_id: {type: str, desc: "DC bin, blank for stores"}
+      on_hand: {type: int, desc: "Units of this batch on hand"}
+      received_date: {type: date, desc: "Receipt date"}
+      status: {type: enum, values: [released, quarantine, recalled], desc: "Batch status"}
+
+  stock_plan:
+    key: [site_id, category]
+    cols:
+      site_id: {type: str, desc: "Site"}
+      category: {type: str, desc: "Product category"}
+      plan_value_gbp: {type: float, desc: "Planned (normal) stock value at cost"}
+      plan_cover_weeks: {type: float, desc: "Target weeks of cover"}
+      plan_closing_units: {type: int, desc: "Planned closing stock units at season end"}
+      period_end: {type: date, desc: "Season end the closing plan refers to"}
+
+  promotion_stock:
+    key: [promotion_id, sku]
+    cols:
+      promotion_id: {type: str, desc: "Promotion, e.g. PROMO-900001"}
+      sku: {type: str, desc: "Promoted SKU"}
+      hero_item: {type: bool, desc: "Is a hero line of the promotion"}
+      promo_start: {type: date, desc: "Promotion start"}
+      promo_end: {type: date, desc: "Promotion end"}
+      required_units: {type: int, desc: "Units needed to support the plan"}
+      confirmed_units: {type: int, desc: "Units with confirmed stock or supply"}
+      status: {type: enum, values: [confirmed, partial, unconfirmed], desc: "Stock confirmation status"}
+
+tools:
+  # Stage 1 tools (23 total)
+
+  - name: approve_inventory_adjustment
+    desc: Approve a pending adjustment so it posts to stock. Returns approval status.
+    kind: update
+    table: inventory_adjustments
+    set: {status: posted, posted_at: "$as_of"}
+    args:
+      adjustment_id: {required: true}
+    example: {adjustment_id: INV-ADJ-900001}
+
+  - name: cancel_stock_reservation_for_channel
+    desc: Cancel a channel stock reservation and return the units to free stock.
+    kind: update
+    table: stock_reservations
+    set: {status: released, released_at: "$as_of"}
+    args:
+      reservation_id: {required: true}
+    example: {reservation_id: RESV-900001}
+
+  - name: create_cycle_count_task
+    desc: Schedule a cycle count for a category or location. Returns the new cycle count task.
+    kind: insert
+    table: cycle_count_tasks
+    id_prefix: CC-
+    defaults: {status: scheduled}
+    args:
+      site_id: {required: true}
+      category: {}
+      location_id: {}
+      scheduled_date: {required: true, type: date, desc: "Target date for count, e.g. next Monday"}
+      reason: {required: true}
+    example: {site_id: ST214, category: Dresses, scheduled_date: "+7d", reason: "High shrink anomaly"}
+
+  - name: create_inventory_adjustment
+    desc: Raise a stock adjustment with cause code against a location and SKU. It stays pending until approved.
+    kind: insert
+    table: inventory_adjustments
+    id_prefix: INV-ADJ-
+    defaults: {status: pending}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      quantity_delta: {required: true, type: int, desc: "Change in units (positive or negative)"}
+      cause_code: {required: true, values: [shrink, damage, expiry, loss, receiving_variance, cycle_count_variance, write_off, reclass, receiving_error, picking_error, markdown, sample, theft, other]}
+      location_id: {}
+      reason_notes: {required: true}
+      value_impact_gbp: {type: float, desc: "Value at standard cost, negative for a loss"}
+      user_id: {desc: "Employee raising it"}
+    example: {sku: SKU-100007, site_id: ST214, quantity_delta: -5, cause_code: damage, reason_notes: "Water damage from leak", value_impact_gbp: -144.75}
+
+  - name: create_stock_release_plan
+    desc: Creates a plan of actions to release stock for a site and category. Returns the new plan.
+    kind: insert
+    table: stock_release_plans
+    id_prefix: SRP-
+    defaults: {status: draft, actual_units_released: 0}
+    args:
+      site_id: {required: true}
+      category: {required: true}
+      planned_release_date: {required: true, type: date, desc: "Target release date"}
+      description: {required: true}
+      estimated_units: {required: true, type: int, desc: "Units expected to be released"}
+    example: {site_id: DC1, category: Bedding, planned_release_date: "+14d", description: "Clear overstock of summer range", estimated_units: 500}
+
+  - name: create_stock_reservation_for_channel
+    desc: Reserve a quantity of a product for a channel such as click-and-collect. Returns the new reservation.
+    kind: insert
+    table: stock_reservations
+    id_prefix: RESV-
+    defaults: {status: active}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      channel: {required: true, values: [click_collect, online, wholesale, franchise, marketplace, promotion]}
+      quantity: {required: true, type: int}
+      expiry_date: {required: true, type: date, desc: "When the reservation expires"}
+      reference_id: {}
+    example: {sku: K-1700, site_id: DC2, channel: click_collect, quantity: 10, expiry_date: "+7d"}
+
+  - name: create_store_transfer_request
+    desc: Raise a stock transfer request between two sites. Returns the new transfer request.
+    kind: insert
+    table: store_transfers
+    id_prefix: STR-
+    defaults: {status: requested, requested_date: "$as_of", quantity_shipped: 0}
+    args:
+      sku: {required: true}
+      from_site_id: {required: true}
+      to_site_id: {required: true}
+      quantity: {required: true, type: int}
+      reason: {required: true}
+    example: {sku: PF-220, from_site_id: ST214, to_site_id: ST215, quantity: 20, reason: "Rebalance for high demand"}
+
+  - name: get_availability_by_size_and_store
+    desc: Availability by size and store for a SKU or style. Shows stock, cover and an in-stock flag per size.
+    kind: sql
+    args:
+      sku: {}
+      style_id: {desc: "Style id, e.g. STY-4056, to see every size"}
+      size: {}
+      site_id: {}
+      region: {desc: "Site region, e.g. Scotland"}
+    sql: |
+      SELECT p.style_id, p.sku, p.size, i.site_id, i.location_id, s.region, i.on_hand, i.available,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover,
+             CASE WHEN i.available > 0 THEN 'In Stock' ELSE 'Out of Stock' END AS availability
+      FROM inventory_positions i
+      JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      WHERE ($sku IS NULL OR i.sku = $sku) AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($size IS NULL OR p.size = $size) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($region IS NULL OR s.region = $region)
+      ORDER BY i.site_id, p.size
+    limit: 200
+    example: {style_id: STY-4056}
+
+  - name: get_availability_by_store
+    desc: Availability by store over a period, from availability tracking. Shows in-stock rate and lost sales per store, lowest rate first.
+    kind: sql
+    args:
+      site_id: {}
+      cluster: {desc: "Store cluster letter, e.g. B, to compare similar stores"}
+      region: {desc: "Site region, e.g. UK North"}
+      min_records: {type: int, default: 12, desc: "Ignore stores with fewer tracked records than this, so thin samples do not distort rankings"}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT a.site_id, s.cluster, s.region,
+             count(*) AS records, sum(CASE WHEN NOT a.available THEN 1 ELSE 0 END) AS stockout_records,
+             round(100.0 * sum(CASE WHEN a.available THEN 1 ELSE 0 END) / count(*), 1) AS in_stock_rate_pct,
+             sum(a.lost_sales) AS lost_sales_units
+      FROM availability_tracking a
+      JOIN master.sites s USING (site_id)
+      WHERE s.type = 'store' AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($cluster IS NULL OR s.cluster = $cluster) AND ($region IS NULL OR s.region = $region)
+        AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY ALL HAVING count(*) >= $min_records ORDER BY in_stock_rate_pct
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_availability_rate_for_top_products
+    desc: Availability rate for the best-selling products over a period, with the previous period for comparison. A tracked week counts if any day falls in the period.
+    kind: sql
+    args:
+      category: {}
+      limit_products: {type: int, default: 20, desc: "Top N products by units sold"}
+      days: {type: int, default: 14, desc: "Length of the period in days"}
+    sql: |
+      WITH top_skus AS (
+        SELECT sku FROM master.sales_weekly
+        WHERE week_start >= CAST($as_of AS DATE) - INTERVAL 56 DAY
+        GROUP BY sku ORDER BY sum(store_units + online_units) DESC LIMIT $limit_products
+      )
+      SELECT p.sku, p.name, p.category,
+             round(100.0 * avg(CASE WHEN a.tracking_date >= CAST($as_of AS DATE) - to_days($days + 6) THEN CASE WHEN a.available THEN 1.0 ELSE 0.0 END END), 1) AS availability_pct,
+             round(100.0 * avg(CASE WHEN a.tracking_date < CAST($as_of AS DATE) - to_days($days + 6) THEN CASE WHEN a.available THEN 1.0 ELSE 0.0 END END), 1) AS previous_period_pct,
+             sum(CASE WHEN a.tracking_date >= CAST($as_of AS DATE) - to_days($days + 6) THEN a.lost_sales ELSE 0 END) AS lost_sales_units
+      FROM availability_tracking a
+      JOIN master.products p USING (sku) JOIN top_skus USING (sku)
+      WHERE a.tracking_date >= CAST($as_of AS DATE) - to_days(2 * $days + 6) AND ($category IS NULL OR p.category = $category)
+      GROUP BY ALL ORDER BY availability_pct
+    limit: 100
+    example: {limit_products: 50}
+
+  - name: get_availability_trend_for_store
+    desc: Weekly availability trend for a store (all categories together, or one category). Shows products tracked, in stock and in-stock rate per week.
+    kind: sql
+    args:
+      site_id: {required: true}
+      category: {}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+    sql: |
+      SELECT CAST(date_trunc('week', a.tracking_date) AS DATE) AS week_start, a.site_id, coalesce($category, 'all') AS category,
+             count(*) AS products_tracked,
+             count(CASE WHEN a.available THEN 1 END) AS products_in_stock,
+             round(100.0 * count(CASE WHEN a.available THEN 1 END) / count(*), 1) AS availability_rate_pct,
+             sum(a.lost_sales) AS lost_sales_units
+      FROM availability_tracking a
+      JOIN master.products p USING (sku)
+      WHERE a.site_id = $site_id AND a.tracking_date >= CAST($date_from AS DATE)
+        AND ($category IS NULL OR p.category = $category)
+      GROUP BY ALL ORDER BY week_start DESC
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_available_stock_for_product
+    desc: Available stock for a product across all sites, with holds and active channel reservations.
+    kind: sql
+    args:
+      sku: {required: true}
+      site_id: {}
+    sql: |
+      SELECT i.sku, i.site_id, i.on_hand, i.allocated, i.available, i.hold_qty,
+             COALESCE(r.reserved, 0) AS reserved_for_channel,
+             greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS sellable,
+             sum(greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0)) OVER () AS total_sellable_all_rows,
+             p.name, p.category
+      FROM inventory_positions i
+      JOIN master.products p USING (sku)
+      LEFT JOIN (SELECT sku, site_id, sum(quantity) AS reserved FROM stock_reservations WHERE status = 'active' GROUP BY ALL) r
+             ON r.sku = i.sku AND r.site_id = i.site_id
+      WHERE i.sku = $sku AND ($site_id IS NULL OR i.site_id = $site_id)
+      ORDER BY sellable DESC
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_closing_stock_plan_gap_by_category
+    desc: Projected closing stock at season end against the closing stock plan, by category. Positive gap means ending heavy.
+    kind: sql
+    args:
+      category: {}
+    sql: |
+      WITH proj AS (
+        SELECT p.category, sum(greatest(i.on_hand - i.weekly_demand * date_diff('day', CAST($as_of AS DATE), pl.period_end) / 7.0, 0)) AS close_units
+        FROM inventory_positions i JOIN master.products p USING (sku)
+        JOIN stock_plan pl ON pl.site_id = i.site_id AND pl.category = p.category
+        GROUP BY p.category
+      ), plan AS (SELECT category, sum(plan_closing_units) AS plan_units, max(period_end) AS period_end FROM stock_plan GROUP BY category)
+      SELECT pr.category, round(pr.close_units) AS projected_closing_units, pl.plan_units AS plan_closing_units,
+             round(pr.close_units) - pl.plan_units AS gap_units,
+             round(100.0 * (pr.close_units - pl.plan_units) / NULLIF(pl.plan_units, 0), 1) AS gap_pct, pl.period_end
+      FROM proj pr JOIN plan pl USING (category)
+      WHERE $category IS NULL OR pr.category = $category
+      ORDER BY gap_units DESC
+    limit: 50
+    example: {}
+
+  - name: get_days_of_cover_by_category
+    desc: Days of cover by category across the network or one site. Cover is available stock over weekly demand.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+    sql: |
+      SELECT p.category, sum(i.available) AS total_available_units,
+             round(sum(i.weekly_demand) / 7.0, 1) AS avg_daily_demand,
+             round(7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 0) AS days_of_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+      GROUP BY p.category ORDER BY days_of_cover DESC
+    limit: 50
+    example: {category: Bedding}
+
+  - name: get_excess_stock_drivers
+    desc: Why stock is overstocked, per SKU. Shows excess units, inbound orders, order minimum and demand trend as drivers.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+      min_weeks_of_cover: {type: float, default: 10.7, desc: "Cover above this many weeks counts as excess"}
+    sql: |
+      WITH t AS (
+        SELECT sku, avg(CASE WHEN week_start >= CAST($as_of AS DATE) - INTERVAL 28 DAY THEN store_units + online_units END) AS recent,
+               avg(CASE WHEN week_start < CAST($as_of AS DATE) - INTERVAL 28 DAY THEN store_units + online_units END) AS earlier
+        FROM master.sales_weekly GROUP BY sku
+      )
+      SELECT i.sku, p.name, p.category, i.site_id, i.available AS units_on_hand,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_of_cover,
+             round(i.available - $min_weeks_of_cover * i.weekly_demand) AS excess_units,
+             COALESCE(d.on_order, 0) AS inbound_units, p.moq,
+             CASE WHEN COALESCE(d.on_order, 0) > 0 THEN 'inbound order still arriving'
+                  WHEN t.recent < 0.85 * t.earlier THEN 'demand falling'
+                  WHEN p.moq > 12 * i.weekly_demand THEN 'order minimum above 12 weeks demand'
+                  ELSE 'over-buy / forecast bias' END AS main_driver, p.status AS product_status
+      FROM inventory_positions i
+      JOIN master.products p USING (sku)
+      LEFT JOIN master.dc_stock d ON d.sku = i.sku AND d.site_id = i.site_id
+      LEFT JOIN t ON t.sku = i.sku
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND i.weekly_demand > 0 AND i.available / i.weekly_demand >= $min_weeks_of_cover
+      ORDER BY excess_units * p.unit_cost_gbp DESC
+    limit: 50
+    example: {category: Bedding}
+
+  - name: get_expected_lost_sales
+    desc: Lost sales units and value from stockouts and availability gaps, by site and SKU.
+    kind: sql
+    args:
+      sku: {}
+      site_id: {}
+      category: {}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT a.site_id, p.category, p.sku, p.name,
+             sum(a.stockout_days) AS stockout_days, sum(a.lost_sales) AS lost_sales_units,
+             round(sum(a.lost_sales * p.retail_price_gbp), 2) AS lost_sales_value_gbp,
+             sum(a.demand_units) AS total_demand
+      FROM availability_tracking a JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR a.sku = $sku) AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($category IS NULL OR p.category = $category) AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY ALL HAVING sum(a.lost_sales) > 0 ORDER BY lost_sales_value_gbp DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_franchise_stock_position
+    desc: Stock position at a franchise partner, with target stock and over or under stock per SKU. Can be limited to core range lines or to low, ok or overstocked lines.
+    kind: sql
+    args:
+      partner_id: {required: true}
+      is_core_range: {desc: "true for core range lines only, false for non-core"}
+      status: {type: enum, values: [low, ok, overstocked], desc: "Only lines with this stock status"}
+    sql: |
+      SELECT f.sku, p.name, p.category, f.on_hand, f.available, f.target_stock, f.is_core_range,
+             f.on_hand - f.target_stock AS over_under_target,
+             CASE WHEN f.on_hand < 0.5 * f.target_stock THEN 'low' WHEN f.on_hand > 1.5 * f.target_stock THEN 'overstocked' ELSE 'ok' END AS status
+      FROM franchise_stock f JOIN master.products p USING (sku)
+      WHERE f.partner_id = $partner_id AND ($is_core_range IS NULL OR f.is_core_range = $is_core_range)
+        AND ($status IS NULL OR $status = CASE WHEN f.on_hand < 0.5 * f.target_stock THEN 'low' WHEN f.on_hand > 1.5 * f.target_stock THEN 'overstocked' ELSE 'ok' END)
+      ORDER BY f.is_core_range DESC, over_under_target
+    limit: 100
+    example: {partner_id: PTN-011}
+
+  - name: calculate_lost_sales_from_availability_gaps
+    desc: Calculates lost sales from availability gaps. Returns units and value lost to stockouts.
+    kind: sql
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT $sku AS sku, $site_id AS site_id, count(*) AS records, sum(a.stockout_days) AS stockout_days,
+             sum(a.lost_sales) AS lost_sales_units,
+             round(sum(a.lost_sales * p.retail_price_gbp), 2) AS lost_sales_value_gbp,
+             sum(a.demand_units) AS total_demand_units, max(p.retail_price_gbp) AS unit_price_gbp,
+             'lost_value = lost_sales_units * retail_price' AS formula
+      FROM availability_tracking a JOIN master.products p USING (sku)
+      WHERE a.sku = $sku AND a.site_id = $site_id AND a.tracking_date >= CAST($date_from AS DATE)
+    example: {sku: K-1700, site_id: ST214}
+
+  - name: calculate_revenue_and_inventory_impact_of_changes
+    desc: Revenue and inventory impact of a price, availability, demand or stock transfer change, for a SKU, a category or the whole network, from recent sales.
+    kind: sql
+    args:
+      sku: {}
+      category: {}
+      change_type: {values: [price_change, availability_change, demand_change, stock_transfer], required: true, desc: "Type of change; demand_change = demand moves by change_pct, e.g. -2.5 for 2.5% lower"}
+      change_pct: {type: float, default: 10, desc: "Price or demand change %, or units moved as % of stock"}
+      date_from: {type: date, default: "-30d", desc: "Sales period used as the base"}
+    sql: |
+      WITH pr AS (SELECT sku, unit_cost_gbp AS cost, retail_price_gbp AS price FROM master.products
+                  WHERE ($sku IS NULL OR sku = $sku) AND ($category IS NULL OR category = $category)),
+           s AS (SELECT sum(w.revenue_gbp) AS rev, sum(w.store_units + w.online_units) AS units FROM master.sales_weekly w JOIN pr USING (sku)
+                 WHERE w.week_start >= CAST($date_from AS DATE)),
+           l AS (SELECT COALESCE(sum(a.lost_sales), 0) AS lost, COALESCE(sum(a.lost_sales * pr.price), 0) AS lost_rev,
+                        COALESCE(sum(a.lost_sales * pr.cost), 0) AS lost_cost
+                 FROM availability_tracking a JOIN pr USING (sku) WHERE a.tracking_date >= CAST($date_from AS DATE)),
+           i AS (SELECT COALESCE(sum(v.on_hand), 0) AS oh, COALESCE(sum(v.on_hand * pr.cost), 0) AS oh_cost,
+                        COALESCE(sum(v.on_hand * pr.price), 0) AS oh_price, COALESCE(sum(CASE WHEN v.site_id LIKE 'ST%' THEN v.weekly_demand END), 0) AS wd,
+                        COALESCE(sum(CASE WHEN v.site_id LIKE 'ST%' THEN v.weekly_demand * pr.cost END), 0) AS wd_cost
+                 FROM inventory_positions v JOIN pr USING (sku))
+      SELECT COALESCE($sku, $category, 'network') AS scope, CAST($change_type AS TEXT) AS change_type, round(s.rev, 2) AS base_revenue_gbp, s.units AS base_units,
+             CASE $change_type WHEN 'price_change' THEN round(s.rev * $change_pct / 100.0, 2)
+                  WHEN 'demand_change' THEN round(s.rev * $change_pct / 100.0, 2)
+                  WHEN 'availability_change' THEN round(l.lost_rev, 2)
+                  ELSE round(i.oh_price * $change_pct / 100.0 * 0.5, 2) END AS revenue_impact_gbp,
+             CASE $change_type WHEN 'availability_change' THEN l.lost
+                  WHEN 'demand_change' THEN round(-i.wd * $change_pct / 100.0 * 8)
+                  ELSE round(i.oh * $change_pct / 100.0) END AS inventory_units_impact,
+             round(CASE $change_type WHEN 'availability_change' THEN l.lost_cost
+                  WHEN 'demand_change' THEN -i.wd_cost * $change_pct / 100.0 * 8
+                  ELSE i.oh_cost * $change_pct / 100.0 END, 2) AS inventory_value_impact_gbp,
+             'price/demand: base revenue*pct; availability: recovered lost units*price; demand also changes closing stock by -store weekly demand*pct*8 weeks; transfer: moved units sell at half rate' AS formula
+      FROM s, l, i
+    example: {sku: K-1700, change_type: availability_change}
+
+  - name: calculate_stockout_risk
+    desc: Stockout risk for SKUs by site. Returns risk level and days until stockout for at-risk items.
+    kind: sql
+    args:
+      sku: {}
+      site_id: {}
+      category: {}
+    sql: |
+      SELECT i.sku, i.site_id, p.category, p.name, i.available AS units_available, i.weekly_demand,
+             round(7.0 * i.available / NULLIF(i.weekly_demand, 0), 1) AS days_until_stockout,
+             CASE WHEN i.available = 0 THEN 'critical' WHEN 7.0 * i.available / i.weekly_demand < 7 THEN 'high'
+                  WHEN 7.0 * i.available / i.weekly_demand < 21 THEN 'medium' ELSE 'low' END AS risk_level
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR i.sku = $sku) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($category IS NULL OR p.category = $category) AND i.weekly_demand > 0
+        AND ($sku IS NOT NULL OR 7.0 * i.available / i.weekly_demand < 21)
+      ORDER BY days_until_stockout
+    limit: 100
+    example: {sku: SKU-103458}
+
+  - name: compare_inventory_value_to_baseline
+    desc: Compares stock value with the planned (baseline) value by category or site. Shows variance against normal.
+    kind: sql
+    args:
+      dimension: {values: [category, site], default: category, desc: "Group by category or site"}
+      site_id: {}
+      category: {}
+      baseline_value_gbp: {type: float, desc: "Optional override for the baseline total value"}
+    sql: |
+      WITH cur AS (
+        SELECT CASE WHEN $dimension = 'site' THEN i.site_id ELSE p.category END AS area, round(sum(i.on_hand * p.unit_cost_gbp), 2) AS current_value_gbp
+        FROM inventory_positions i JOIN master.products p USING (sku)
+        WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category) GROUP BY ALL
+      ), base AS (
+        SELECT CASE WHEN $dimension = 'site' THEN site_id ELSE category END AS area, round(sum(plan_value_gbp), 2) AS baseline_gbp
+        FROM stock_plan WHERE ($site_id IS NULL OR site_id = $site_id) AND ($category IS NULL OR category = $category) GROUP BY ALL
+      )
+      SELECT cur.area, cur.current_value_gbp,
+             CASE WHEN $baseline_value_gbp IS NOT NULL THEN $baseline_value_gbp ELSE base.baseline_gbp END AS baseline_value_gbp,
+             round(cur.current_value_gbp - CASE WHEN $baseline_value_gbp IS NOT NULL THEN $baseline_value_gbp ELSE base.baseline_gbp END, 2) AS variance_gbp,
+             round(100.0 * (cur.current_value_gbp / NULLIF(CASE WHEN $baseline_value_gbp IS NOT NULL THEN $baseline_value_gbp ELSE base.baseline_gbp END, 0) - 1), 1) AS variance_pct,
+             'variance = current value at cost - planned value' AS formula
+      FROM cur LEFT JOIN base USING (area) ORDER BY variance_gbp DESC
+    limit: 60
+    example: {dimension: category}
+
+  - name: compare_product_loss_year_on_year
+    desc: Compares product losses in the last 12 months with the 12 months before, per SKU or for all SKUs.
+    kind: sql
+    args:
+      sku: {}
+    sql: |
+      SELECT l.sku, p.name,
+             sum(CASE WHEN l.identified_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY THEN l.quantity ELSE 0 END) AS loss_units_last_12m,
+             sum(CASE WHEN l.identified_date < CAST($as_of AS DATE) - INTERVAL 365 DAY THEN l.quantity ELSE 0 END) AS loss_units_prior_12m,
+             round(sum(CASE WHEN l.identified_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY THEN l.value_gbp ELSE 0 END), 2) AS loss_value_last_12m_gbp,
+             round(sum(CASE WHEN l.identified_date < CAST($as_of AS DATE) - INTERVAL 365 DAY THEN l.value_gbp ELSE 0 END), 2) AS loss_value_prior_12m_gbp,
+             'yoy_change = last_12m - prior_12m' AS formula
+      FROM lost_products l JOIN master.products p USING (sku)
+      WHERE $sku IS NULL OR l.sku = $sku
+      GROUP BY l.sku, p.name ORDER BY loss_value_last_12m_gbp DESC
+    limit: 30
+    example: {sku: SKU-105341}
+
+  - name: compare_shrink_with_peer_stores
+    desc: Compares a store's shrink with its cluster peers by category. Shows store versus peer average value and rate.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+    sql: |
+      WITH me AS (SELECT cluster FROM master.sites WHERE site_id = $site_id),
+      agg AS (
+        SELECT s.site_id, s.category, sum(s.shrink_value_gbp) AS v, avg(s.shrink_rate_pct) AS rate, sum(s.shrink_units) AS u
+        FROM shrink_analysis s JOIN master.sites st USING (site_id)
+        WHERE st.cluster = (SELECT cluster FROM me) AND s.analysis_week >= CAST($date_from AS DATE) GROUP BY ALL
+      )
+      SELECT a.category, round(max(CASE WHEN a.site_id = $site_id THEN a.v END), 2) AS store_shrink_gbp,
+             round(avg(CASE WHEN a.site_id <> $site_id THEN a.v END), 2) AS peer_avg_shrink_gbp,
+             round(max(CASE WHEN a.site_id = $site_id THEN a.rate END), 2) AS store_rate_pct,
+             round(avg(CASE WHEN a.site_id <> $site_id THEN a.rate END), 2) AS peer_avg_rate_pct,
+             count(DISTINCT CASE WHEN a.site_id <> $site_id THEN a.site_id END) AS peer_stores
+      FROM agg a GROUP BY a.category HAVING max(CASE WHEN a.site_id = $site_id THEN a.v END) IS NOT NULL
+      ORDER BY store_shrink_gbp DESC
+    example: {site_id: ST214}
+
+  - name: get_stock_adjustments_for_product
+    desc: Retrieves stock adjustments for product. Shows all adjustments by cause and location.
+    kind: select
+    from: inventory_adjustments
+    filters:
+      sku: {required: true}
+      cause_code: {}
+      date_from: {col: created_at, op: ">=", type: date, default: "-90d", desc: "From this date"}
+    columns: [adjustment_id, sku, site_id, location_id, quantity_delta, cause_code, reason_notes, value_impact_gbp, created_at, status]
+    order: created_at DESC
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_stock_adjustments_for_region
+    desc: Retrieves stock adjustments for region. Shows adjustments across the region's stores by cause, with the employee who raised each and the hour of day.
+    kind: sql
+    args:
+      region: {required: true}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT a.adjustment_id, a.sku, a.site_id, s.region, a.cause_code,
+             a.quantity_delta, a.value_impact_gbp, a.user_id, hour(a.created_at) AS hour_of_day, a.reason_notes, a.created_at
+      FROM inventory_adjustments a
+      JOIN master.sites s ON a.site_id = s.site_id
+      WHERE s.region = $region AND s.type = 'store' AND a.created_at >= CAST($date_from AS DATE)
+      ORDER BY a.created_at DESC
+    limit: 1000
+    example: {region: "UK North"}
+
+  - name: get_stock_adjustments_for_store
+    desc: Retrieves stock adjustments for store. Shows adjustments with cause codes by date and category.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+      cause_code: {}
+    sql: |
+      SELECT a.adjustment_id, a.sku, a.quantity_delta, a.cause_code, p.category,
+             a.reason_notes, a.value_impact_gbp, a.user_id, a.created_at, dayname(a.created_at) AS day_of_week, a.status
+      FROM inventory_adjustments a
+      JOIN master.products p USING (sku)
+      WHERE a.site_id = $site_id AND a.created_at >= CAST($date_from AS DATE)
+        AND ($cause_code IS NULL OR a.cause_code = $cause_code)
+      ORDER BY a.created_at DESC
+    limit: 500
+    example: {site_id: ST214}
+
+  - name: get_shrink_by_category
+    desc: Shrink by category over a period, from shrink analysis, for the network, a region or one store.
+    kind: sql
+    args:
+      category: {}
+      site_id: {}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+      date_to: {type: date, default: "$as_of", desc: "To this date"}
+    sql: |
+      SELECT s.category, sum(s.shrink_units) AS shrink_units, round(sum(s.shrink_value_gbp), 2) AS shrink_value_gbp,
+             round(avg(s.shrink_rate_pct), 2) AS avg_shrink_rate_pct, round(avg(s.vs_peer_avg_pct), 2) AS avg_vs_peer_pct,
+             mode(s.main_cause) AS main_cause, count(DISTINCT s.site_id) AS stores
+      FROM shrink_analysis s
+      WHERE s.analysis_week >= CAST($date_from AS DATE) AND s.analysis_week <= CAST($date_to AS DATE)
+        AND ($category IS NULL OR s.category = $category) AND ($site_id IS NULL OR s.site_id = $site_id)
+      GROUP BY s.category ORDER BY shrink_value_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_shrink_by_category_for_store
+    desc: Retrieves shrink by category for store. Shows shrink performance vs plan.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT s.site_id, s.category, s.analysis_week,
+             s.shrink_units, round(s.shrink_value_gbp, 2) AS shrink_value_gbp,
+             round(s.shrink_rate_pct, 2) AS shrink_rate_pct,
+             s.main_cause
+      FROM shrink_analysis s
+      WHERE s.site_id = $site_id AND s.analysis_week >= CAST($date_from AS DATE)
+      ORDER BY s.analysis_week DESC, s.shrink_value_gbp DESC
+    example: {site_id: ST214}
+
+  - name: get_shrink_rate_by_store
+    desc: Shrink value and rate by store over a period, for a region or cluster, highest rate first.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+      region: {}
+      cluster: {desc: "Store cluster letter"}
+      site_id: {}
+    sql: |
+      SELECT s.site_id, st.cluster, st.region, round(sum(s.shrink_value_gbp), 2) AS total_shrink_value_gbp,
+             round(avg(s.shrink_rate_pct), 2) AS avg_shrink_rate_pct, sum(s.shrink_units) AS total_shrink_units
+      FROM shrink_analysis s JOIN master.sites st USING (site_id)
+      WHERE s.analysis_week >= CAST($date_from AS DATE) AND ($region IS NULL OR st.region = $region)
+        AND ($cluster IS NULL OR st.cluster = $cluster) AND ($site_id IS NULL OR s.site_id = $site_id)
+      GROUP BY ALL ORDER BY avg_shrink_rate_pct DESC
+    limit: 100
+    example: {}
+
+  - name: get_shrink_year_to_date_by_store
+    desc: Retrieves shrink year to date by store. Shows YTD shrink performance.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-270d", desc: "From this date"}
+    sql: |
+      WITH st AS (
+        SELECT s.site_id,
+               round(sum(s.shrink_value_gbp), 2) AS ytd_shrink_value_gbp,
+               sum(s.shrink_units) AS ytd_shrink_units,
+               round(avg(s.shrink_rate_pct), 1) AS avg_shrink_rate_pct
+        FROM shrink_analysis s
+        WHERE s.analysis_week >= CAST($date_from AS DATE)
+        GROUP BY ALL
+      )
+      SELECT st.*, round(sum(st.ytd_shrink_value_gbp) OVER (), 2) AS network_ytd_shrink_value_gbp,
+             round(avg(st.avg_shrink_rate_pct) OVER (), 2) AS network_avg_shrink_rate_pct
+      FROM st ORDER BY ytd_shrink_value_gbp DESC
+    example: {}
+
+  - name: get_self_checkout_shrink_by_store
+    desc: Self-checkout losses by store this period against the previous period of the same length.
+    kind: sql
+    args:
+      days: {type: int, default: 30, desc: "Period length in days"}
+    sql: |
+      SELECT l.site_id,
+             sum(CASE WHEN l.identified_date >= CAST($as_of AS DATE) - to_days($days) THEN 1 ELSE 0 END) AS incidents,
+             sum(CASE WHEN l.identified_date >= CAST($as_of AS DATE) - to_days($days) THEN l.value_gbp ELSE 0 END) AS loss_value_gbp,
+             sum(CASE WHEN l.identified_date < CAST($as_of AS DATE) - to_days($days) THEN 1 ELSE 0 END) AS previous_incidents,
+             sum(CASE WHEN l.identified_date < CAST($as_of AS DATE) - to_days($days) THEN l.value_gbp ELSE 0 END) AS previous_loss_value_gbp,
+             string_agg(DISTINCT l.notes, '; ') AS notes
+      FROM lost_products l
+      WHERE l.loss_type = 'self_checkout' AND l.identified_date >= CAST($as_of AS DATE) - to_days(2 * $days)
+      GROUP BY l.site_id ORDER BY loss_value_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_highest_loss_products
+    desc: Highest loss products by value lost over a period, optionally by loss type or site.
+    kind: sql
+    args:
+      loss_type: {}
+      site_id: {}
+      limit_products: {type: int, default: 20, desc: "Top N products"}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+    sql: |
+      SELECT l.sku, p.name, p.category, sum(l.quantity) AS loss_units, round(sum(l.value_gbp), 2) AS total_loss_value_gbp,
+             count(DISTINCT l.site_id) AS sites_affected, string_agg(DISTINCT l.loss_type, ', ') AS loss_types
+      FROM lost_products l JOIN master.products p USING (sku)
+      WHERE ($loss_type IS NULL OR l.loss_type = $loss_type) AND ($site_id IS NULL OR l.site_id = $site_id)
+        AND l.identified_date >= CAST($date_from AS DATE)
+      GROUP BY ALL ORDER BY total_loss_value_gbp DESC LIMIT $limit_products
+    limit: 100
+    example: {}
+
+  - name: get_stock_on_hand_by_product_and_location
+    desc: Stock on hand, allocated and held for a SKU at a site or location. Use to check what the system shows in a store.
+    kind: select
+    from: inventory_positions
+    filters:
+      sku: {required: true}
+      site_id: {}
+      location_id: {}
+    columns: [sku, site_id, location_id, on_hand, allocated, available, hold_qty, updated_at]
+    order: site_id, location_id
+    limit: 200
+    example: {sku: K-1700}
+
+  - name: get_goods_receipt_discrepancies_for_store
+    desc: Goods receipt discrepancies for a store, from receiving adjustments. Shows variance between expected and received.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+    sql: |
+      SELECT a.site_id, a.adjustment_id, a.sku, p.name, a.quantity_delta, a.cause_code, a.reason_notes, a.created_at
+      FROM inventory_adjustments a JOIN master.products p USING (sku)
+      WHERE a.site_id = $site_id AND a.cause_code IN ('receiving_variance','receiving_error')
+        AND a.created_at >= CAST($date_from AS DATE)
+      ORDER BY a.created_at DESC
+    limit: 100
+    example: {site_id: ST214}
+
+  - name: get_hero_item_availability_during_promotion
+    desc: Availability of a promotion's hero items during the promotion window, with stock confirmed and lost sales.
+    kind: sql
+    args:
+      promotion_id: {}
+      sku: {}
+    sql: |
+      SELECT ps.promotion_id, ps.sku, p.name, ps.hero_item, ps.promo_start, ps.promo_end, ps.required_units, ps.confirmed_units,
+             count(a.sku) AS tracked_records,
+             round(100.0 * avg(CASE WHEN a.available THEN 1.0 ELSE 0.0 END), 1) AS availability_pct,
+             COALESCE(sum(a.lost_sales), 0) AS lost_sales_units
+      FROM promotion_stock ps JOIN master.products p USING (sku)
+      LEFT JOIN availability_tracking a ON a.sku = ps.sku AND a.tracking_date BETWEEN ps.promo_start - INTERVAL 7 DAY AND ps.promo_end
+      WHERE ($promotion_id IS NULL OR ps.promotion_id = $promotion_id) AND ($sku IS NULL OR ps.sku = $sku)
+      GROUP BY ALL ORDER BY ps.hero_item DESC, ps.sku
+    limit: 100
+    example: {promotion_id: PROMO-900001}
+
+  - name: get_in_stock_rate_by_category
+    desc: In-stock rate by category from current positions, across the network or one site.
+    kind: sql
+    args:
+      category: {}
+      site_id: {}
+    sql: |
+      SELECT p.category, count(*) AS positions, sum(CASE WHEN i.available > 0 THEN 1 ELSE 0 END) AS in_stock,
+             round(100.0 * sum(CASE WHEN i.available > 0 THEN 1 ELSE 0 END) / count(*), 1) AS in_stock_rate_pct
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
+      GROUP BY p.category ORDER BY in_stock_rate_pct
+    limit: 50
+    example: {category: Bedding}
+
+  - name: get_inventory_vs_plan
+    desc: Inventory value against plan and cover target, by category, site or region.
+    kind: sql
+    args:
+      dimension: {values: [category, site, region], default: category, desc: "Group by"}
+      site_id: {}
+      category: {}
+    sql: |
+      WITH cur AS (
+        SELECT CASE $dimension WHEN 'site' THEN i.site_id WHEN 'region' THEN s.region ELSE p.category END AS area,
+               round(sum(i.on_hand * p.unit_cost_gbp)) AS actual_value_gbp, sum(i.available) AS units, sum(i.weekly_demand) AS demand
+        FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+        WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category) GROUP BY ALL
+      ), pl AS (
+        SELECT CASE $dimension WHEN 'site' THEN pl.site_id WHEN 'region' THEN s.region ELSE pl.category END AS area, round(sum(plan_value_gbp)) AS plan_value_gbp, max(plan_cover_weeks) AS target_cover_weeks
+        FROM stock_plan pl JOIN master.sites s ON s.site_id = pl.site_id
+        WHERE ($site_id IS NULL OR pl.site_id = $site_id) AND ($category IS NULL OR pl.category = $category) GROUP BY ALL
+      )
+      SELECT cur.area, cur.actual_value_gbp, pl.plan_value_gbp, cur.actual_value_gbp - pl.plan_value_gbp AS variance_gbp,
+             round(100.0 * (cur.actual_value_gbp / NULLIF(pl.plan_value_gbp, 0) - 1), 1) AS variance_pct,
+             round(cur.units / NULLIF(cur.demand, 0), 1) AS cover_weeks, pl.target_cover_weeks
+      FROM cur LEFT JOIN pl USING (area) ORDER BY variance_gbp DESC
+    limit: 60
+    example: {site_id: DC1}
+
+  - name: get_location_inventory_value
+    desc: Stock value at standard cost by bin for a DC (highest first), or one site-level total for a store. Filter by aisle or minimum value to pick locations to count.
+    kind: sql
+    args:
+      site_id: {required: true}
+      location_id: {op: like}
+      aisle: {type: str, desc: "DC aisle letter, e.g. D"}
+      min_value_gbp: {type: float, desc: "Only locations holding at least this stock value in GBP"}
+    sql: |
+      SELECT i.site_id, COALESCE(NULLIF(i.location_id, ''), '(site level)') AS location_id, l.aisle, l.zone,
+             count(DISTINCT i.sku) AS unique_skus, sum(i.on_hand) AS total_units,
+             round(sum(i.on_hand * p.unit_cost_gbp), 2) AS total_value_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      LEFT JOIN master.locations l ON l.location_id = i.location_id
+      WHERE i.site_id = $site_id AND ($location_id IS NULL OR i.location_id ILIKE '%' || $location_id || '%')
+        AND ($aisle IS NULL OR upper(l.aisle) = upper($aisle))
+      GROUP BY ALL
+      HAVING $min_value_gbp IS NULL OR sum(i.on_hand * p.unit_cost_gbp) >= $min_value_gbp
+      ORDER BY total_value_gbp DESC
+    limit: 50
+    example: {site_id: DC1, location_id: DC1-C-14}
+
+  - name: get_stock_position_for_store
+    desc: Stock position for a store by category, with units, value and weeks of cover.
+    kind: sql
+    args:
+      site_id: {required: true}
+      category: {}
+    sql: |
+      SELECT i.site_id, p.category, sum(i.on_hand) AS on_hand_units, sum(i.available) AS available_units,
+             sum(i.hold_qty) AS on_hold_units, round(sum(i.on_hand * p.unit_cost_gbp), 2) AS value_at_cost_gbp,
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE i.site_id = $site_id AND ($category IS NULL OR p.category = $category)
+      GROUP BY ALL ORDER BY p.category
+    limit: 50
+    example: {site_id: ST214}
+
+  - name: get_stock_imbalance_by_store
+    desc: Stock imbalance by store. Counts SKUs with over 8 weeks cover and under 2 weeks cover per store.
+    kind: sql
+    args:
+      category: {}
+      region: {}
+      site_id: {}
+    sql: |
+      SELECT i.site_id, s.region, count(*) AS skus,
+             sum(CASE WHEN i.available / NULLIF(i.weekly_demand, 0) > 8 THEN 1 ELSE 0 END) AS overstocked_skus,
+             sum(CASE WHEN i.available / NULLIF(i.weekly_demand, 0) < 2 THEN 1 ELSE 0 END) AS understocked_skus,
+             sum(CASE WHEN i.available = 0 THEN 1 ELSE 0 END) AS out_of_stock_skus,
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS avg_weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      WHERE s.type = 'store' AND ($category IS NULL OR p.category = $category) AND ($region IS NULL OR s.region = $region)
+        AND ($site_id IS NULL OR i.site_id = $site_id)
+      GROUP BY i.site_id, s.region ORDER BY understocked_skus DESC, overstocked_skus DESC
+    limit: 50
+    example: {}
+
+  - name: list_inventory_adjustments
+    desc: Network or DC inventory adjustments in a period with value, cause, zone, shift, weekday and user. Filter by value.
+    kind: sql
+    args:
+      site_id: {}
+      cause_code: {}
+      status: {}
+      min_value_gbp: {type: float, desc: "Only adjustments whose absolute value is above this"}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+      date_to: {type: date, default: "$as_of", desc: "To this date"}
+    sql: |
+      SELECT a.adjustment_id, a.sku, a.site_id, a.location_id, l.zone, a.quantity_delta, a.cause_code,
+             a.value_impact_gbp, a.status, a.user_id, a.created_at,
+             CASE WHEN hour(a.created_at) < 14 THEN 'early' WHEN hour(a.created_at) < 22 THEN 'late' ELSE 'night' END AS shift,
+             dayname(a.created_at) AS day_of_week, a.reversed_at,
+             CASE WHEN a.reversed_at IS NOT NULL THEN round(date_diff('minute', a.created_at, a.reversed_at) / 60.0, 1) END AS hours_to_reversal,
+             a.reason_notes
+      FROM inventory_adjustments a LEFT JOIN master.locations l ON l.location_id = a.location_id
+      WHERE ($site_id IS NULL OR a.site_id = $site_id) AND ($cause_code IS NULL OR a.cause_code = $cause_code)
+        AND ($status IS NULL OR a.status = $status) AND ($min_value_gbp IS NULL OR abs(a.value_impact_gbp) > $min_value_gbp)
+        AND a.created_at >= CAST($date_from AS DATE) AND a.created_at < CAST($date_to AS DATE) + INTERVAL 1 DAY
+      ORDER BY abs(a.value_impact_gbp) DESC
+    limit: 200
+    example: {site_id: DC1, min_value_gbp: 500, date_from: "-100d"}
+
+  - name: list_inventory_adjustments_and_cutoffs
+    desc: Posted adjustments plus in-transit store transfers around a period end, flagging adjustments posted in a later month than raised.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT 'adjustment' AS item_type, a.adjustment_id AS ref, a.sku, a.site_id, a.quantity_delta AS units,
+             a.value_impact_gbp AS value_gbp, a.cause_code AS detail, a.created_at AS item_date,
+             a.posted_at AS posted_at, date_trunc('month', a.posted_at) > date_trunc('month', a.created_at) AS posted_in_later_period,
+             a.reason_notes AS notes
+      FROM inventory_adjustments a
+      WHERE ($site_id IS NULL OR a.site_id = $site_id) AND a.created_at >= CAST($date_from AS DATE) AND a.status = 'posted'
+      UNION ALL
+      SELECT 'in_transit_transfer', t.transfer_id, t.sku, t.to_site_id, t.quantity_shipped,
+             round(t.quantity_shipped * p.unit_cost_gbp, 2), 'shipped from ' || t.from_site_id, t.shipped_date,
+             NULL, NULL, t.reason
+      FROM store_transfers t JOIN master.products p USING (sku)
+      WHERE t.status = 'shipped' AND ($site_id IS NULL OR t.to_site_id = $site_id OR t.from_site_id = $site_id)
+      ORDER BY item_date DESC
+    limit: 200
+    example: {site_id: DC1}
+
+  - name: list_inventory_adjustments_for_location
+    desc: Stock adjustments with cause codes posted against a location or bay. A bay id such as DC1-C-14 matches all its bins.
+    kind: select
+    from: inventory_adjustments
+    filters:
+      site_id: {required: true}
+      location_id: {op: like}
+      cause_code: {}
+      date_from: {col: created_at, op: ">=", type: date, default: "-90d", desc: "From this date"}
+    columns: [adjustment_id, sku, location_id, quantity_delta, cause_code, status, reason_notes, value_impact_gbp, created_at, user_id]
+    order: created_at DESC
+    limit: 100
+    example: {site_id: DC1, location_id: DC1-C-14}
+
+  - name: reverse_inventory_adjustment
+    desc: Reverses a posted inventory adjustment. Marks it reversed with the reason and returns the old and new status.
+    kind: update
+    table: inventory_adjustments
+    set: {status: reversed, reversed_at: "$as_of"}
+    args:
+      adjustment_id: {required: true, desc: "Adjustment to reverse"}
+      reversal_reason: {required: true}
+    example: {adjustment_id: INV-ADJ-900001, reversal_reason: "Entry error, reversing"}
+
+  - name: update_adjustment_cause_code
+    desc: Change the cause code on an existing adjustment. Returns the old and new codes.
+    kind: update
+    table: inventory_adjustments
+    args:
+      adjustment_id: {required: true}
+      cause_code: {required: true, values: [shrink, damage, expiry, loss, receiving_variance, cycle_count_variance, write_off, reclass, receiving_error, picking_error, markdown, sample, theft, other]}
+    example: {adjustment_id: INV-ADJ-900001, cause_code: cycle_count_variance}
+
+  - name: update_inventory_hold_status
+    desc: Place or release stock holds. Returns the hold status.
+    kind: update
+    table: inventory_positions
+    set: {hold_qty: "$hold_qty"}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      location_id: {default: ""}
+      hold_qty: {required: true, type: int, desc: "Units to hold, 0 releases the hold"}
+    example: {sku: K-1700, site_id: DC2, hold_qty: 50}
+
+  - name: update_reorder_point_for_sku
+    desc: Changes the reorder point on a SKU so replenishment triggers earlier or later.
+    kind: update
+    table: inventory_positions
+    set: {reorder_point: "$reorder_point"}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      location_id: {default: ""}
+      reorder_point: {required: true, type: int, desc: "New reorder point units"}
+    example: {sku: K-1700, site_id: DC2, reorder_point: 500}
+
+  - name: update_safety_stock_for_sku
+    desc: Changes the safety stock quantity held on a SKU (optionally by location).
+    kind: update
+    table: inventory_positions
+    set: {safety_stock: "$safety_stock"}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      location_id: {default: ""}
+      safety_stock: {required: true, type: int, desc: "New safety stock units"}
+    example: {sku: K-1700, site_id: DC2, safety_stock: 400}
+
+  - name: get_stock_position_by_site
+    desc: Operational stock units and value by site and status (on hand, allocated, available, on hold, and units shipped out but not yet received). Shows overall inventory position.
+    kind: sql
+    args:
+      site_id: {}
+    sql: |
+      SELECT i.site_id,
+             sum(i.on_hand) AS total_on_hand,
+             sum(i.allocated) AS total_allocated,
+             sum(i.available) AS total_available,
+             sum(i.hold_qty) AS total_on_hold,
+             round(sum(i.on_hand * COALESCE(p.unit_cost_gbp, 0)), 2) AS total_value_gbp,
+             COALESCE(max(t.units), 0) AS units_in_transit_out,
+             COALESCE(max(t.value), 0) AS value_in_transit_out_gbp
+      FROM inventory_positions i
+      LEFT JOIN master.products p USING (sku)
+      LEFT JOIN (SELECT t.from_site_id AS site_id, sum(t.quantity_shipped) AS units, round(sum(t.quantity_shipped * q.unit_cost_gbp), 2) AS value
+                 FROM store_transfers t JOIN master.products q USING (sku) WHERE t.status = 'shipped' GROUP BY ALL) t
+             ON t.site_id = i.site_id
+      WHERE $site_id IS NULL OR i.site_id = $site_id
+      GROUP BY ALL
+    example: {site_id: DC1}
+
+  - name: get_website_vs_wms_stock_variance
+    desc: Compares stock the website can sell with WMS available stock. Website excludes holds and active channel reservations.
+    kind: sql
+    args:
+      site_id: {}
+      sku: {}
+      variance_pct_threshold: {type: float, default: 1.0, desc: "Only show variances above this %"}
+    sql: |
+      SELECT i.sku, i.site_id, i.available AS wms_available,
+             greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS website_sellable,
+             i.hold_qty AS hold_qty, COALESCE(r.reserved, 0) AS reserved_for_channel,
+             i.available - greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0) AS variance_units,
+             round(100.0 * (i.available - greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0)) / NULLIF(i.available, 0), 1) AS variance_pct,
+             i.updated_at AS wms_last_movement
+      FROM inventory_positions i
+      LEFT JOIN (SELECT sku, site_id, sum(quantity) AS reserved FROM stock_reservations WHERE status = 'active' GROUP BY ALL) r
+             ON r.sku = i.sku AND r.site_id = i.site_id
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($sku IS NULL OR i.sku = $sku) AND i.available > 0
+        AND 100.0 * (i.available - greatest(i.available - i.hold_qty - COALESCE(r.reserved, 0), 0)) / i.available >= $variance_pct_threshold
+      ORDER BY variance_units DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_in_stock_rate_by_product_week
+    desc: In-stock rate for SKUs or a category across tracked sites, by week or one figure per SKU. Use to allow for availability when comparing products.
+    kind: sql
+    args:
+      sku: {}
+      skus: {type: list, desc: "Several SKUs at once, e.g. SKU-100007,SKU-100014"}
+      category: {}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+      by: {type: str, values: [week, sku], default: week, desc: "week = one row per SKU and week; sku = one row per SKU over the whole period"}
+    sql: |
+      SELECT a.sku, CASE WHEN $by = 'week' THEN date_trunc('week', a.tracking_date) END AS week_start, count(*) AS records,
+             sum(CASE WHEN a.available THEN 1 ELSE 0 END) AS in_stock_records,
+             round(100.0 * sum(CASE WHEN a.available THEN 1 ELSE 0 END) / count(*), 1) AS in_stock_rate_pct
+      FROM availability_tracking a JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR a.sku = $sku) AND ($skus IS NULL OR list_contains($skus, a.sku)) AND ($category IS NULL OR p.category = $category)
+        AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY ALL ORDER BY a.sku, week_start DESC
+    limit: 200
+    example: {sku: K-1700}
+
+  - name: get_out_of_stock_rate_by_dimension
+    desc: Out-of-stock rate by category, supplier, region or site over a period. Use site_type dc for DCs.
+    kind: sql
+    args:
+      dimension: {values: [category, supplier, region, site], default: category, desc: "Dimension for analysis"}
+      site_type: {values: [dc, store], desc: "Limit to DCs or stores"}
+      date_from: {type: date, default: "-30d", desc: "From this date"}
+    sql: |
+      SELECT CASE $dimension WHEN 'supplier' THEN p.supplier_id WHEN 'region' THEN s.region WHEN 'site' THEN a.site_id ELSE p.category END AS dimension_value,
+             count(*) AS records, sum(CASE WHEN NOT a.available THEN 1 ELSE 0 END) AS oos_records,
+             round(100.0 * sum(CASE WHEN NOT a.available THEN 1 ELSE 0 END) / count(*), 1) AS oos_rate_pct,
+             sum(a.lost_sales) AS lost_sales_units
+      FROM availability_tracking a JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = a.site_id
+      WHERE a.tracking_date >= CAST($date_from AS DATE) AND ($site_type IS NULL OR s.type = $site_type)
+      GROUP BY ALL HAVING count(*) >= 5 ORDER BY oos_rate_pct DESC
+    limit: 60
+    example: {dimension: category}
+
+  - name: get_inventory_ageing
+    desc: Age profile of stock on hand by site and category, in units and value, from receipt date.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+    sql: |
+      SELECT p.category, sum(i.on_hand) AS total_units, round(sum(i.on_hand * p.unit_cost_gbp)) AS total_value_gbp,
+             sum(CASE WHEN date_diff('day', i.received_date, CAST($as_of AS DATE)) <= 90 THEN i.on_hand ELSE 0 END) AS units_0_90_days,
+             sum(CASE WHEN date_diff('day', i.received_date, CAST($as_of AS DATE)) BETWEEN 91 AND 180 THEN i.on_hand ELSE 0 END) AS units_91_180_days,
+             sum(CASE WHEN date_diff('day', i.received_date, CAST($as_of AS DATE)) > 180 THEN i.on_hand ELSE 0 END) AS units_over_180_days,
+             round(sum(CASE WHEN date_diff('day', i.received_date, CAST($as_of AS DATE)) > 180 THEN i.on_hand * p.unit_cost_gbp ELSE 0 END)) AS value_over_180_days_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+      GROUP BY p.category ORDER BY value_over_180_days_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_inventory_ageing_for_product
+    desc: Age of a SKU's stock by site in days since receipt, optionally only stock older than a threshold.
+    kind: sql
+    args:
+      sku: {required: true}
+      age_days: {type: int, default: 0, desc: "Only stock older than this many days"}
+    sql: |
+      SELECT i.sku, i.site_id, i.on_hand, round(i.on_hand * p.unit_cost_gbp, 2) AS value_gbp,
+             date_diff('day', i.received_date, CAST($as_of AS DATE)) AS days_in_stock,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE i.sku = $sku AND i.on_hand > 0 AND date_diff('day', i.received_date, CAST($as_of AS DATE)) >= $age_days
+      ORDER BY days_in_stock DESC
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_inventory_holding_cost
+    desc: Inventory holding cost by site at 25% a year of stock value. Shows weekly and annual cost.
+    kind: sql
+    args:
+      site_id: {}
+      region: {}
+    sql: |
+      SELECT i.site_id, s.region, sum(i.on_hand) AS total_units, round(sum(i.on_hand * p.unit_cost_gbp)) AS total_value_gbp,
+             round(sum(i.on_hand * p.unit_cost_gbp) * 0.25 / 52.0) AS weekly_holding_cost_gbp,
+             round(sum(i.on_hand * p.unit_cost_gbp) * 0.25) AS annual_holding_cost_gbp, '25% annual rate on stock at cost' AS formula
+      FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($region IS NULL OR s.region = $region)
+      GROUP BY ALL ORDER BY total_value_gbp DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_inventory_units_by_category
+    desc: Units on hand and value by category for the network or a site.
+    kind: sql
+    args:
+      site_id: {}
+    sql: |
+      SELECT p.category, sum(i.on_hand) AS on_hand_units, sum(i.available) AS available_units, count(DISTINCT i.sku) AS unique_skus,
+             round(sum(i.on_hand * p.unit_cost_gbp)) AS value_at_cost_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE $site_id IS NULL OR i.site_id = $site_id
+      GROUP BY p.category ORDER BY on_hand_units DESC
+    limit: 50
+    example: {}
+
+  - name: get_inventory_value_by_dimension
+    desc: Inventory value at cost by category, department, supplier, region or site.
+    kind: sql
+    args:
+      dimension: {values: [category, department, supplier, region, site], default: category, desc: "Dimension for analysis"}
+    sql: |
+      SELECT CASE $dimension WHEN 'department' THEN p.department WHEN 'supplier' THEN p.supplier_id WHEN 'region' THEN s.region
+                  WHEN 'site' THEN i.site_id ELSE p.category END AS dimension_value,
+             sum(i.on_hand) AS units, round(sum(i.on_hand * p.unit_cost_gbp)) AS total_value_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      GROUP BY ALL ORDER BY total_value_gbp DESC
+    limit: 60
+    example: {dimension: category}
+
+  - name: get_inventory_cover_by_item
+    desc: Weeks of cover by item across all sites or one site, lowest first, with reorder point and safety stock. Filter by supplier for impact; packaging suppliers cover their pack type.
+    kind: sql
+    args:
+      sku: {}
+      site_id: {}
+      supplier_id: {}
+      category: {}
+      max_weeks_cover: {type: float, desc: "Only items whose cover is at or below this many weeks"}
+    sql: |
+      SELECT i.sku, p.name, p.category, p.supplier_id, count(*) AS positions, sum(i.available) AS available_units,
+             round(sum(i.weekly_demand), 1) AS weekly_demand, round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_of_cover,
+             sum(i.reorder_point) AS reorder_point, sum(i.safety_stock) AS safety_stock
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR i.sku = $sku) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id
+             OR (p.launch_date <= CAST($as_of AS DATE)
+                 AND p.pack_type IN (SELECT d.pack_type FROM (VALUES ('SUP-0081', 'carton'), ('SUP-0082', 'polybag')) AS d(supplier_id, pack_type)
+                                     WHERE d.supplier_id = $supplier_id)))
+        AND ($category IS NULL OR p.category = $category)
+      GROUP BY i.sku, p.name, p.category, p.supplier_id
+      HAVING ($max_weeks_cover IS NULL OR sum(i.available) / NULLIF(sum(i.weekly_demand), 0) <= $max_weeks_cover)
+      ORDER BY weeks_of_cover
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_out_of_stock_rate_trend
+    desc: Out-of-stock rate by week for the network or a site. Shows the trend and lost sales.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-60d", desc: "From this date"}
+    sql: |
+      SELECT date_trunc('week', a.tracking_date) AS week_start, count(*) AS records,
+             sum(CASE WHEN NOT a.available THEN 1 ELSE 0 END) AS oos_records,
+             round(100.0 * sum(CASE WHEN NOT a.available THEN 1 ELSE 0 END) / count(*), 1) AS oos_rate_pct,
+             sum(a.lost_sales) AS lost_sales_units
+      FROM availability_tracking a
+      WHERE ($site_id IS NULL OR a.site_id = $site_id) AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY 1 ORDER BY 1
+    example: {}
+
+  - name: get_product_loss_by_cause
+    desc: Product losses by cause (damage, theft, expiry, rework and so on) with units and value.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+      site_id: {}
+      sku: {}
+    sql: |
+      SELECT l.loss_type, sum(l.quantity) AS loss_units, round(sum(l.value_gbp), 2) AS loss_value_gbp, count(*) AS incident_count
+      FROM lost_products l
+      WHERE l.identified_date >= CAST($date_from AS DATE) AND ($site_id IS NULL OR l.site_id = $site_id) AND ($sku IS NULL OR l.sku = $sku)
+      GROUP BY ALL ORDER BY loss_value_gbp DESC
+    example: {}
+
+  - name: get_projected_closing_stock
+    desc: Projected closing stock at season end by category for a site or the network, after forecast demand.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+      product_season: {type: str, desc: "Product season code, e.g. AW26 for the autumn range"}
+    sql: |
+      SELECT p.category, count(DISTINCT i.sku) AS skus, sum(i.on_hand) AS current_on_hand,
+             round(sum(i.weekly_demand * date_diff('day', CAST($as_of AS DATE), pl.period_end) / 7.0)) AS forecast_demand_to_season_end,
+             round(sum(greatest(i.on_hand - i.weekly_demand * date_diff('day', CAST($as_of AS DATE), pl.period_end) / 7.0, 0))) AS projected_close_units,
+             round(sum(greatest(i.on_hand - i.weekly_demand * date_diff('day', CAST($as_of AS DATE), pl.period_end) / 7.0, 0) * p.unit_cost_gbp)) AS projected_close_value_gbp,
+             max(pl.period_end) AS season_end
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      JOIN stock_plan pl ON pl.site_id = i.site_id AND pl.category = p.category
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND ($product_season IS NULL OR p.season = $product_season)
+      GROUP BY p.category ORDER BY projected_close_value_gbp DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_remaining_selling_weeks
+    desc: Remaining selling weeks for a SKU by site, from cover and the weeks left in its season. Filter by region or maximum cover to find stores selling out or overstocked.
+    kind: sql
+    args:
+      sku: {required: true}
+      site_id: {}
+      region: {desc: "Site region, e.g. UK North"}
+      max_weeks_cover: {type: float, desc: "Only sites with at most this many weeks of cover, e.g. 1"}
+    sql: |
+      WITH se AS (SELECT min(date) AS season_end FROM master.calendar WHERE date > CAST($as_of AS DATE)
+                  AND season <> (SELECT season FROM master.calendar WHERE date = CAST($as_of AS DATE)))
+      SELECT i.sku, i.site_id, s.region, i.available, i.weekly_demand,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_of_cover,
+             round(date_diff('day', CAST($as_of AS DATE), se.season_end) / 7.0, 1) AS selling_weeks_left_in_season,
+             greatest(round(i.available - i.weekly_demand * date_diff('day', CAST($as_of AS DATE), se.season_end) / 7.0), 0) AS unsold_units_at_season_end
+      FROM inventory_positions i JOIN master.sites s ON s.site_id = i.site_id, se
+      WHERE i.sku = $sku AND ($site_id IS NULL OR i.site_id = $site_id) AND ($region IS NULL OR s.region = $region)
+        AND ($max_weeks_cover IS NULL OR i.available / NULLIF(i.weekly_demand, 0) <= $max_weeks_cover)
+      ORDER BY weeks_of_cover
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_stock_availability_history_for_sku
+    desc: Weekly availability history for a SKU with in-stock rate, stockout days and lost sales across tracked sites.
+    kind: sql
+    args:
+      sku: {required: true}
+      site_id: {}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+    sql: |
+      SELECT date_trunc('week', a.tracking_date) AS week_start, count(*) AS records,
+             round(100.0 * sum(CASE WHEN a.available THEN 1 ELSE 0 END) / count(*), 1) AS in_stock_rate_pct,
+             sum(a.stockout_days) AS stockout_days, sum(a.lost_sales) AS lost_sales_units
+      FROM availability_tracking a
+      WHERE a.sku = $sku AND ($site_id IS NULL OR a.site_id = $site_id) AND a.tracking_date >= CAST($date_from AS DATE)
+      GROUP BY 1 ORDER BY 1 DESC
+    example: {sku: K-1700}
+
+  - name: get_stock_cover_by_category_and_store
+    desc: Stock cover in days by category and site, lowest first. Set closure_days to see which run out if no stock arrives for that long.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+      region: {desc: "Site region, e.g. EU Central"}
+      closure_days: {type: int, default: 0, desc: "Days with no receipts to test, e.g. 14 for a two-week port closure"}
+    sql: |
+      SELECT p.category, i.site_id, s.region, sum(i.available) AS available_units,
+             round(sum(i.weekly_demand) / 7.0, 2) AS avg_daily_sales,
+             round(7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS days_of_cover,
+             CAST($closure_days AS INTEGER) AS closure_days,
+             round(greatest(CAST($closure_days AS DOUBLE) - 7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 0), 1) AS days_out_of_stock_in_closure,
+             CASE WHEN 7.0 * sum(i.available) / NULLIF(sum(i.weekly_demand), 0) < $closure_days THEN 'runs out' ELSE 'holds' END AS closure_outcome
+      FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND ($region IS NULL OR s.region = $region) AND i.weekly_demand > 0
+      GROUP BY ALL ORDER BY days_of_cover
+    limit: 50
+    example: {region: EU Central}
+
+  - name: get_stock_cover_by_sku
+    desc: Network stock cover in weeks per SKU (DCs and stores together), lowest first. Filter by SKU, country of origin, supplier or category to see which run out first.
+    kind: sql
+    args:
+      sku: {}
+      country_of_origin: {desc: "Country the product is made in, e.g. VN"}
+      supplier_id: {}
+      category: {}
+    sql: |
+      SELECT i.sku, p.name, p.category, p.country_of_origin, p.supplier_id, sum(i.available) AS available_units,
+             sum(CASE WHEN i.site_id LIKE 'DC%' THEN i.available ELSE 0 END) AS dc_units,
+             round(sum(i.weekly_demand), 1) AS weekly_demand, round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_of_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR i.sku = $sku) AND ($country_of_origin IS NULL OR p.country_of_origin = upper($country_of_origin))
+        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id) AND ($category IS NULL OR p.category = $category)
+      GROUP BY i.sku, p.name, p.category, p.country_of_origin, p.supplier_id
+      ORDER BY weeks_of_cover
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_stockout_days_by_store
+    desc: Stockout days by store for a SKU or style over a period, with lost sales and the recorded cause.
+    kind: sql
+    args:
+      sku: {}
+      style_id: {desc: "Style id, e.g. STY-5520"}
+      site_id: {}
+      date_from: {type: date, default: "-60d", desc: "From this date"}
+    sql: |
+      SELECT a.site_id, p.style_id, a.sku, sum(a.stockout_days) AS stockout_days, sum(a.lost_sales) AS lost_sales_units,
+             round(sum(a.lost_sales * p.retail_price_gbp), 2) AS lost_sales_value_gbp,
+             min(a.tracking_date) AS first_stockout, max(a.stockout_cause) AS cause,
+             bool_and(a.forecast_available) AS forecast_showed_available
+      FROM availability_tracking a JOIN master.products p USING (sku)
+      WHERE NOT a.available AND a.tracking_date >= CAST($date_from AS DATE) AND ($sku IS NULL OR a.sku = $sku)
+        AND ($style_id IS NULL OR p.style_id = $style_id) AND ($site_id IS NULL OR a.site_id = $site_id)
+        AND ($sku IS NOT NULL OR $style_id IS NOT NULL OR $site_id IS NOT NULL)
+      GROUP BY ALL ORDER BY stockout_days DESC, lost_sales_units DESC
+    limit: 100
+    example: {style_id: STY-5520}
+
+  - name: get_stockout_periods_by_sku
+    desc: Stockout periods by SKU over a period, worst first. Shows sites hit, stockout days and lost units of demand.
+    kind: sql
+    args:
+      sku: {}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+      date_to: {type: date, default: "$as_of", desc: "To this date"}
+    sql: |
+      SELECT a.sku, p.name, p.status AS product_status, count(DISTINCT a.site_id) AS sites_hit, sum(a.stockout_days) AS stockout_days,
+             sum(a.lost_sales) AS lost_demand_units, min(a.tracking_date) AS first_stockout, max(a.tracking_date) AS last_stockout
+      FROM availability_tracking a JOIN master.products p USING (sku)
+      WHERE NOT a.available AND a.tracking_date >= CAST($date_from AS DATE) AND a.tracking_date <= CAST($date_to AS DATE)
+        AND ($sku IS NULL OR a.sku = $sku)
+      GROUP BY ALL ORDER BY lost_demand_units DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_store_stock_cover_by_sku
+    desc: Weeks of stock cover by store for a SKU, lowest first, or all SKUs at one store.
+    kind: sql
+    args:
+      sku: {}
+      site_id: {}
+    sql: |
+      SELECT i.sku, p.name, i.site_id, i.available, i.weekly_demand,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku) JOIN master.sites s ON s.site_id = i.site_id
+      WHERE s.type = 'store' AND ($sku IS NULL OR i.sku = $sku) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($sku IS NOT NULL OR $site_id IS NOT NULL)
+      ORDER BY weeks_cover
+    limit: 100
+    example: {sku: SKU-103458}
+
+  - name: get_store_deliveries_for_product
+    desc: Deliveries and transfers of a SKU to stores, with requested, shipped and received quantities and dates.
+    kind: sql
+    args:
+      sku: {required: true}
+      site_id: {}
+      date_from: {type: date, default: "-60d", desc: "From this date"}
+    sql: |
+      SELECT t.transfer_id, t.sku, t.from_site_id, t.to_site_id AS site_id, t.quantity AS requested, t.quantity_shipped AS shipped,
+             t.quantity - t.quantity_shipped AS short_shipped, t.status, t.shipped_date, t.received_date
+      FROM store_transfers t
+      WHERE t.sku = $sku AND ($site_id IS NULL OR t.to_site_id = $site_id) AND t.requested_date >= CAST($date_from AS DATE)
+      ORDER BY t.requested_date DESC
+    limit: 50
+    example: {sku: K-1700, site_id: ST214}
+
+  - name: get_size_run_breakage_for_product
+    desc: Size run breakage for a style or SKU. Shows sizes in stock and missing per store, and the share of stores with a broken run.
+    kind: sql
+    args:
+      style_id: {desc: "Style id, e.g. STY-4102"}
+      sku: {}
+    sql: |
+      WITH st AS (SELECT style_id FROM master.products WHERE sku = $sku UNION SELECT $style_id WHERE $style_id IS NOT NULL),
+      sz AS (SELECT DISTINCT size FROM master.products WHERE style_id IN (SELECT style_id FROM st)),
+      have AS (SELECT i.site_id, p.size, sum(i.available) AS units FROM inventory_positions i JOIN master.products p USING (sku)
+               JOIN master.sites s ON s.site_id = i.site_id
+               WHERE p.style_id IN (SELECT style_id FROM st) AND s.type = 'store' GROUP BY ALL),
+      grid AS (SELECT DISTINCT h.site_id, z.size FROM have h CROSS JOIN sz z),
+      per AS (SELECT g.site_id, count(*) FILTER (WHERE COALESCE(h.units, 0) > 0) AS sizes_in_stock, count(*) AS sizes_in_style,
+                     string_agg(CASE WHEN COALESCE(h.units, 0) = 0 THEN g.size END, ' ' ORDER BY g.size) AS sizes_missing,
+                     sum(COALESCE(h.units, 0)) AS units
+              FROM grid g LEFT JOIN have h ON h.site_id = g.site_id AND h.size = g.size GROUP BY g.site_id)
+      SELECT site_id, sizes_in_stock, sizes_in_style, sizes_missing, CASE WHEN sizes_in_stock < sizes_in_style THEN 'broken' ELSE 'complete' END AS run_status,
+             units, count(*) OVER () AS stores_with_style,
+             count(*) FILTER (WHERE sizes_in_stock < sizes_in_style) OVER () AS stores_broken,
+             round(100.0 * count(*) FILTER (WHERE sizes_in_stock < sizes_in_style) OVER () / count(*) OVER (), 1) AS pct_stores_broken
+      FROM per ORDER BY run_status, site_id
+    limit: 100
+    example: {style_id: STY-4102}
+
+  - name: get_stock_ageing
+    desc: Stock ageing by category and age band in units and value, optionally only stock older than a number of days.
+    kind: sql
+    args:
+      site_id: {}
+      category: {}
+      age_days: {type: int, default: 0, desc: "Only stock older than this many days"}
+    sql: |
+      SELECT p.category,
+             CASE WHEN d.age <= 90 THEN '0-90' WHEN d.age <= 180 THEN '91-180' WHEN d.age <= 365 THEN '181-365' ELSE 'over 365' END AS age_band_days,
+             sum(i.on_hand) AS units, round(sum(i.on_hand * p.unit_cost_gbp)) AS value_gbp, count(*) AS positions
+      FROM inventory_positions i JOIN master.products p USING (sku),
+           LATERAL (SELECT date_diff('day', i.received_date, CAST($as_of AS DATE)) AS age) d
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category) AND d.age >= $age_days AND i.on_hand > 0
+      GROUP BY ALL ORDER BY value_gbp DESC
+    limit: 100
+    example: {category: Bedding}
+
+  - name: get_stock_by_location_for_batch
+    desc: Stock by site and location for a SKU, split by batch, with batch totals for DCs and stores. Shows batch status across stores and DCs.
+    kind: sql
+    args:
+      sku: {required: true}
+      batch_id: {}
+    sql: |
+      SELECT b.batch_id, b.sku, b.site_id, CASE WHEN s.type = 'dc' THEN 'DC' ELSE 'Store' END AS location_type,
+             b.location_id, b.on_hand, b.status, b.received_date,
+             sum(b.on_hand) OVER (PARTITION BY b.batch_id) AS batch_total_units,
+             sum(b.on_hand) OVER (PARTITION BY b.batch_id, CASE WHEN s.type = 'dc' THEN 'DC' ELSE 'Store' END) AS batch_units_in_location_type
+      FROM stock_batches b JOIN master.sites s ON s.site_id = b.site_id
+      WHERE b.sku = $sku AND ($batch_id IS NULL OR b.batch_id = $batch_id)
+      ORDER BY b.batch_id, location_type DESC, b.site_id
+    limit: 100
+    example: {sku: PF-220}
+
+  - name: get_stock_confirmation_status_for_promotion
+    desc: Stock confirmation status per promotion SKU. Shows required, confirmed and gap units. Filter by promotion start date to see only the promotions starting in a window.
+    kind: sql
+    args:
+      promotion_id: {}
+      sku: {}
+      date_from: {type: date, desc: "Only promotions starting on or after this date, e.g. today"}
+      date_to: {type: date, desc: "Only promotions starting on or before this date, e.g. +42d for the next six weeks"}
+    sql: |
+      SELECT ps.promotion_id, ps.sku, p.name, ps.hero_item, ps.promo_start, ps.promo_end, ps.required_units, ps.confirmed_units,
+             ps.required_units - ps.confirmed_units AS gap_units, ps.status
+      FROM promotion_stock ps JOIN master.products p USING (sku)
+      WHERE ($promotion_id IS NULL OR ps.promotion_id = $promotion_id) AND ($sku IS NULL OR ps.sku = $sku)
+        AND ($date_from IS NULL OR ps.promo_start >= CAST($date_from AS DATE))
+        AND ($date_to IS NULL OR ps.promo_start <= CAST($date_to AS DATE))
+      ORDER BY gap_units DESC
+    limit: 100
+    example: {}
+
+  - name: get_stock_count_results
+    desc: Cycle count results by count with system and counted quantities, variance and accuracy, plus site accuracy.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-90d", desc: "Counts from this date"}
+    sql: |
+      WITH c AS (
+        SELECT cc.cycle_count_id, cc.site_id, cc.category, cc.location_id, cc.counted_at, count(*) AS skus_counted,
+               sum(ccr.system_qty) AS system_qty, sum(ccr.counted_qty) AS counted_qty, sum(ccr.variance) AS net_variance,
+               sum(abs(ccr.variance)) AS abs_variance
+        FROM cycle_count_tasks cc JOIN cycle_count_results ccr USING (cycle_count_id)
+        WHERE cc.status = 'completed' AND ($site_id IS NULL OR cc.site_id = $site_id) AND cc.counted_at >= CAST($date_from AS DATE)
+        GROUP BY ALL
+      )
+      SELECT *, round(100.0 * (1 - abs_variance / NULLIF(system_qty, 0)), 1) AS count_accuracy_pct,
+             round(100.0 * (1 - sum(abs_variance) OVER (PARTITION BY site_id) / NULLIF(sum(system_qty) OVER (PARTITION BY site_id), 0)), 1) AS site_accuracy_pct
+      FROM c ORDER BY site_id, counted_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_stock_position_at_order_date
+    desc: Stock position for a SKU within 7 days of an order, from availability tracking. Give a retail order id, or an order date and fulfilling site.
+    kind: sql
+    args:
+      sku: {required: true}
+      order_id: {}
+      order_date: {type: date, desc: "Date the order was placed, for orders not held in the retail order master, e.g. -14d"}
+      site_id: {}
+    sql: |
+      WITH o AS (SELECT order_id, CAST(order_date AS DATE) AS order_date, fulfil_site_id FROM master.orders WHERE order_id = $order_id),
+      d AS (SELECT COALESCE((SELECT order_date FROM o), CAST($order_date AS DATE)) AS order_date)
+      SELECT $sku AS sku, a.site_id, a.tracking_date, a.quantity_available, a.demand_units, a.stockout_days, a.available AS in_stock,
+             a.stockout_cause, (SELECT order_id FROM o) AS order_id, d.order_date
+      FROM availability_tracking a CROSS JOIN d
+      WHERE a.sku = $sku AND (a.site_id = COALESCE($site_id, (SELECT fulfil_site_id FROM o), a.site_id))
+        AND (d.order_date IS NULL OR a.tracking_date BETWEEN d.order_date - INTERVAL 7 DAY AND d.order_date + INTERVAL 7 DAY)
+      ORDER BY a.tracking_date DESC
+    limit: 60
+    example: {sku: K-1700, site_id: ST214}
+
+  - name: get_stock_position_for_product_by_channel
+    desc: Stock position for a SKU by sales channel. Shows active and released reservations plus free network stock.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT sr.channel, sum(CASE WHEN sr.status = 'active' THEN sr.quantity ELSE 0 END) AS active_reserved_units,
+             sum(CASE WHEN sr.status = 'released' THEN sr.quantity ELSE 0 END) AS released_units, count(*) AS reservations
+      FROM stock_reservations sr WHERE sr.sku = $sku GROUP BY ALL
+      UNION ALL
+      SELECT 'free_to_allocate (network)', greatest(sum(i.available) - sum(i.hold_qty) - COALESCE((SELECT sum(quantity) FROM stock_reservations WHERE sku = $sku AND status = 'active'), 0), 0), NULL, NULL
+      FROM inventory_positions i WHERE i.sku = $sku
+    example: {sku: K-1700}
+
+  - name: list_aged_stock_over_threshold
+    desc: Stock older than a number of days, ranked by value at cost, with weeks of cover and retail value.
+    kind: sql
+    args:
+      age_days: {type: int, default: 180, desc: "Age threshold in days"}
+      category: {}
+      site_id: {}
+    sql: |
+      SELECT i.sku, p.name, p.category, i.site_id, i.on_hand, round(i.on_hand * p.unit_cost_gbp, 2) AS value_gbp,
+             round(i.on_hand * p.retail_price_gbp, 2) AS retail_value_gbp,
+             date_diff('day', i.received_date, CAST($as_of AS DATE)) AS days_in_stock,
+             round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE date_diff('day', i.received_date, CAST($as_of AS DATE)) >= $age_days AND i.on_hand > 0
+        AND ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
+      ORDER BY value_gbp DESC
+    limit: 100
+    example: {}
+
+  - name: list_damage_write_offs
+    desc: Damage and rework write-offs with value and notes, optionally for one site and period.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-90d", desc: "From this date"}
+      date_to: {type: date, default: "$as_of", desc: "To this date"}
+    sql: |
+      SELECT l.loss_id, l.sku, p.name, l.site_id, l.loss_type, l.quantity, l.value_gbp, l.identified_date, l.notes
+      FROM lost_products l JOIN master.products p USING (sku)
+      WHERE l.loss_type IN ('damage', 'expiry', 'rework') AND l.identified_date >= CAST($date_from AS DATE)
+        AND l.identified_date <= CAST($date_to AS DATE) AND ($site_id IS NULL OR l.site_id = $site_id)
+      ORDER BY l.value_gbp DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_highest_value_skus
+    desc: Highest value SKUs by stock value at cost across the network or one site, with ABC class and current reorder point and safety stock. Up to 500.
+    kind: sql
+    args:
+      limit_skus: {type: int, default: 20, desc: "Top N SKUs, up to 500"}
+      site_id: {}
+      category: {}
+      abc_class: {}
+    sql: |
+      SELECT p.sku, p.name, p.category, p.abc_class, sum(i.on_hand) AS total_units, round(sum(i.on_hand * p.unit_cost_gbp), 2) AS total_value_gbp,
+             sum(i.reorder_point) AS current_reorder_point, sum(i.safety_stock) AS current_safety_stock
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+        AND ($abc_class IS NULL OR p.abc_class = $abc_class)
+      GROUP BY ALL ORDER BY total_value_gbp DESC LIMIT $limit_skus
+    limit: 500
+    example: {}
+
+  - name: list_lines_at_risk_of_overstock
+    desc: Lines at risk of overstock, meaning network stock beyond demand to season end, ranked by excess value.
+    kind: sql
+    args:
+      category: {}
+      site_id: {}
+      product_season: {type: str, desc: "Product season code, e.g. AW26 for the autumn range"}
+    sql: |
+      WITH se AS (SELECT min(date) AS season_end FROM master.calendar WHERE date > CAST($as_of AS DATE)
+                  AND season <> (SELECT season FROM master.calendar WHERE date = CAST($as_of AS DATE)))
+      SELECT p.sku, p.name, p.category, p.season, sum(i.on_hand) AS on_hand, round(sum(i.weekly_demand), 1) AS weekly_demand,
+             round(sum(i.on_hand) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover,
+             round(sum(i.on_hand) - sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0) AS excess_units_at_season_end,
+             round((sum(i.on_hand) - sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0) * p.unit_cost_gbp) AS excess_value_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku), se
+      WHERE ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND ($product_season IS NULL OR p.season = $product_season)
+      GROUP BY p.sku, p.name, p.category, p.season, p.unit_cost_gbp
+      HAVING sum(i.on_hand) > sum(i.weekly_demand) * date_diff('day', CAST($as_of AS DATE), max(se.season_end)) / 7.0
+      ORDER BY excess_value_gbp DESC
+    limit: 100
+    example: {category: Bedding}
+
+  - name: list_long_tail_skus
+    desc: Long tail SKUs that sell a few units a week, with stock held and weeks of cover.
+    kind: sql
+    args:
+      max_units_per_week: {type: float, default: 140, desc: "Network weekly demand at or below this"}
+      category: {}
+    sql: |
+      SELECT p.sku, p.name, p.category, sum(i.available) AS available_units, round(sum(i.weekly_demand), 1) AS weekly_demand,
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover, count(*) AS sites_holding,
+             round(sum(i.on_hand * p.unit_cost_gbp)) AS stock_value_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE $category IS NULL OR p.category = $category
+      GROUP BY p.sku, p.name, p.category HAVING sum(i.weekly_demand) <= $max_units_per_week
+      ORDER BY available_units DESC
+    limit: 100
+    example: {}
+
+  - name: list_mitigation_options
+    desc: Mitigation options for a SKU at risk. Shows sites with spare stock to transfer from, or sites short to move stock to.
+    kind: sql
+    args:
+      sku: {required: true}
+      issue_type: {values: [overstock, understock, excess, shortage], default: shortage, desc: "Type of issue"}
+    sql: |
+      SELECT CAST($issue_type AS TEXT) AS issue_type,
+             CASE WHEN $issue_type IN ('understock', 'shortage') THEN 'Transfer from ' || i.site_id ELSE 'Transfer to ' || i.site_id END AS mitigation,
+             i.site_id, i.available, round(i.available / NULLIF(i.weekly_demand, 0), 1) AS weeks_cover,
+             greatest(round(i.available - 8 * i.weekly_demand), 0) AS spare_units_above_8_weeks,
+             greatest(round(4 * i.weekly_demand - i.available), 0) AS units_short_of_4_weeks
+      FROM inventory_positions i
+      WHERE i.sku = $sku AND i.weekly_demand > 0
+        AND (($issue_type IN ('understock', 'shortage') AND i.available > 8 * i.weekly_demand)
+          OR ($issue_type IN ('overstock', 'excess') AND i.available < 4 * i.weekly_demand))
+      ORDER BY weeks_cover DESC
+    limit: 20
+    example: {sku: SKU-103458}
+
+  - name: list_projected_stockouts
+    desc: SKUs projected to run out within a number of days, ranked by weekly sales at risk, with unit margin.
+    kind: sql
+    args:
+      days_ahead: {type: int, default: 28, desc: "Days in advance to project"}
+      site_id: {}
+      category: {}
+    sql: |
+      SELECT i.sku, p.name, p.category, i.site_id, i.available, i.weekly_demand,
+             round(7.0 * i.available / i.weekly_demand, 1) AS days_until_stockout,
+             round(p.retail_price_gbp - p.unit_cost_gbp, 2) AS unit_margin_gbp,
+             round(i.weekly_demand * p.retail_price_gbp) AS weekly_sales_at_risk_gbp,
+             round(i.weekly_demand * (p.retail_price_gbp - p.unit_cost_gbp)) AS weekly_margin_at_risk_gbp
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE i.weekly_demand > 0 AND 7.0 * i.available / i.weekly_demand < $days_ahead
+        AND ($site_id IS NULL OR i.site_id = $site_id) AND ($category IS NULL OR p.category = $category)
+      ORDER BY weekly_sales_at_risk_gbp DESC
+    limit: 100
+    example: {}
+
+  - name: list_skus_by_excess_contribution
+    desc: SKUs ranked by contribution to excess stock above target cover, with cumulative share of the total excess.
+    kind: sql
+    args:
+      limit_skus: {type: int, default: 20, desc: "Top N SKUs"}
+      category: {}
+      site_id: {}
+      target_weeks: {type: float, default: 10.7, desc: "Target weeks of cover"}
+    sql: |
+      WITH e AS (
+        SELECT p.sku, p.name, p.category, sum(greatest(i.available - $target_weeks * i.weekly_demand, 0)) AS excess_units,
+               sum(greatest(i.available - $target_weeks * i.weekly_demand, 0)) * max(p.unit_cost_gbp) AS excess_value_gbp
+        FROM inventory_positions i JOIN master.products p USING (sku)
+        WHERE ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
+        GROUP BY p.sku, p.name, p.category
+      )
+      SELECT sku, name, category, round(excess_units) AS excess_units, round(excess_value_gbp) AS excess_value_gbp,
+             round(100.0 * sum(excess_value_gbp) OVER (ORDER BY excess_value_gbp DESC) / sum(excess_value_gbp) OVER (), 1) AS cumulative_share_pct
+      FROM e WHERE excess_units > 0 ORDER BY excess_value_gbp DESC LIMIT $limit_skus
+    limit: 200
+    example: {category: Bedding}
+
+  - name: list_skus_on_shipment
+    desc: SKUs and quantities on an inbound shipment, from its purchase order lines, with stock cover of each SKU.
+    kind: sql
+    args:
+      shipment_id: {required: true}
+    sql: |
+      SELECT sh.shipment_id, sh.po_id, sh.status, sh.eta, l.line_no, l.sku, p.name, l.qty_ordered AS quantity,
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS network_weeks_cover
+      FROM master.shipments sh JOIN master.po_lines l USING (po_id) JOIN master.products p ON p.sku = l.sku
+      LEFT JOIN inventory_positions i ON i.sku = l.sku
+      WHERE sh.shipment_id = $shipment_id
+      GROUP BY ALL ORDER BY l.line_no
+    example: {shipment_id: SHP-0000102}
+
+  - name: list_slow_moving_skus
+    desc: Slow moving SKUs by network weekly demand, with stock held and weeks of cover.
+    kind: sql
+    args:
+      max_units_per_week: {type: float, default: 140, desc: "Network weekly demand at or below this"}
+      category: {}
+    sql: |
+      SELECT p.sku, p.name, p.category, sum(i.available) AS available_units, round(sum(i.weekly_demand), 1) AS weekly_demand,
+             round(sum(i.available) / NULLIF(sum(i.weekly_demand), 0), 1) AS weeks_cover
+      FROM inventory_positions i JOIN master.products p USING (sku)
+      WHERE i.available > 0 AND ($category IS NULL OR p.category = $category)
+      GROUP BY p.sku, p.name, p.category HAVING sum(i.weekly_demand) <= $max_units_per_week
+      ORDER BY available_units DESC
+    limit: 100
+    example: {max_units_per_week: 140}
+
+  - name: list_stock_adjustments_for_store
+    desc: Stock adjustments posted at one store, by user and time. Use for store shrink and adjustment history.
+    kind: select
+    from: inventory_adjustments
+    filters:
+      site_id: {required: true}
+      user_id: {}
+      date_from: {col: created_at, op: ">=", type: date, default: "-30d", desc: "From this date"}
+    columns: [adjustment_id, sku, quantity_delta, cause_code, reason_notes, value_impact_gbp, user_id, created_at, status]
+    order: created_at DESC
+    limit: 500
+    example: {site_id: ST214}
+
+  - name: list_stock_release_options
+    desc: Options to release excess stock for a category or site, with units and value addressable and assumed recovery.
+    kind: sql
+    args:
+      category: {}
+      site_id: {}
+    sql: |
+      WITH a AS (
+        SELECT sum(i.on_hand) AS units, sum(i.on_hand * p.unit_cost_gbp) AS value,
+               sum(CASE WHEN date_diff('day', i.received_date, CAST($as_of AS DATE)) > 180 THEN i.on_hand * p.unit_cost_gbp ELSE 0 END) AS aged_value,
+               sum(greatest(i.available - 10.7 * i.weekly_demand, 0) * p.unit_cost_gbp) AS excess_value
+        FROM inventory_positions i JOIN master.products p USING (sku)
+        WHERE ($category IS NULL OR p.category = $category) AND ($site_id IS NULL OR i.site_id = $site_id)
+      )
+      SELECT o.option, o.description, round(CASE o.option WHEN 'Markdown' THEN a.excess_value WHEN 'Transfer' THEN a.excess_value * 0.4 ELSE a.aged_value END) AS addressable_value_gbp,
+             o.assumed_recovery_pct, round(o.assumed_recovery_pct / 100.0 * CASE o.option WHEN 'Markdown' THEN a.excess_value WHEN 'Transfer' THEN a.excess_value * 0.4 ELSE a.aged_value END) AS expected_recovery_gbp
+      FROM a, (VALUES ('Markdown', 'Reduce price on excess cover', 60), ('Transfer', 'Move to sites with lower cover', 90), ('Clearance event', 'Outlet or liquidation of aged stock', 40)) AS o(option, description, assumed_recovery_pct)
+      ORDER BY expected_recovery_gbp DESC
+    example: {category: Bedding}
+
+  - name: list_stockout_root_causes
+    desc: Root causes of stockouts in a period with counts, lost sales and whether each is one-off or persistent.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-60d", desc: "From this date"}
+      site_id: {}
+    sql: |
+      SELECT a.stockout_cause AS cause, count(*) AS stockout_records, sum(a.stockout_days) AS stockout_days, sum(a.lost_sales) AS lost_sales_units,
+             count(DISTINCT date_trunc('week', a.tracking_date)) AS weeks_active, min(a.tracking_date) AS first_seen, max(a.tracking_date) AS last_seen,
+             CASE WHEN count(DISTINCT date_trunc('week', a.tracking_date)) <= 2 THEN 'one-off' ELSE 'persistent' END AS pattern
+      FROM availability_tracking a
+      WHERE NOT a.available AND a.stockout_cause IS NOT NULL AND a.tracking_date >= CAST($date_from AS DATE) AND ($site_id IS NULL OR a.site_id = $site_id)
+      GROUP BY ALL ORDER BY lost_sales_units DESC
+    example: {}
+

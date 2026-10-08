@@ -1,0 +1,187 @@
+id: property
+name: Retail Property & Footfall System
+instructions: >
+  Store footfall, energy consumption and catchment areas for Harbour & Vale retail locations.
+  Footfall ids look like FF-000123. Use it for energy tracking, footfall history and forecasts,
+  store catchment analysis and competitor impact assessment.
+
+tables:
+  energy_consumption:
+    key: consumption_id
+    cols:
+      consumption_id: {type: str, desc: "Energy consumption record, e.g. ENG-000123"}
+      site_id: {type: str, desc: "Store or DC, e.g. ST001 or DC1"}
+      period_start: {type: date, desc: Period start date}
+      period_end: {type: date, desc: Period end date}
+      energy_kwh: {type: float, desc: Energy used in kWh}
+      energy_cost_gbp: {type: float, desc: Energy cost in GBP}
+      measured_at: {type: timestamp, desc: When measured}
+
+  store_footfall_daily:
+    key: [site_id, date]
+    cols:
+      site_id: {type: str, desc: Store id}
+      date: {type: date, desc: Trading day}
+      footfall_count: {type: int, desc: Visitors that day}
+      sales_gbp: {type: float, desc: Store sales that day in GBP}
+
+  store_footfall:
+    key: footfall_id
+    cols:
+      footfall_id: {type: str, desc: "Footfall record, e.g. FF-000123"}
+      site_id: {type: str, desc: Store id}
+      date: {type: date, desc: Date of footfall data}
+      hour: {type: int, desc: "Hour of day (0-23)"}
+      footfall_count: {type: int, desc: Number of visitors in the hour}
+      sales_gbp: {type: float, desc: Sales in GBP for the hour}
+      recorded_at: {type: timestamp, desc: When recorded}
+
+  footfall_forecast:
+    key: forecast_id
+    cols:
+      forecast_id: {type: str, desc: "Footfall forecast, e.g. FFC-000123"}
+      site_id: {type: str, desc: Store id}
+      forecast_date: {type: date, desc: Date of forecast}
+      hour: {type: int, desc: "Hour of day (0-23)"}
+      forecast_footfall_count: {type: int, desc: Predicted visitor count}
+      confidence_level: {type: float, desc: "Confidence as percentage (0-100)"}
+      created_at: {type: timestamp, desc: When forecast was created}
+
+  store_catchment:
+    key: catchment_id
+    cols:
+      catchment_id: {type: str, desc: "Catchment row, e.g. CAT-000123"}
+      site_id: {type: str, desc: Our store the catchment belongs to}
+      competitor_id: {type: str, desc: "Competitor with a store in the catchment, e.g. CMPD-002"}
+      competitor_name: {type: str, desc: Competitor name}
+      competitor_status: {type: enum, values: [open, closed], desc: Whether the competitor store is trading}
+      distance_km: {type: float, desc: Distance from our store in km}
+      radius_km: {type: float, desc: Catchment radius in km}
+      population: {type: int, desc: Population in catchment}
+      overlap_percentage: {type: float, desc: Share of our catchment that this competitor store also serves (percent)}
+      updated_at: {type: timestamp, desc: Last updated}
+
+tools:
+  - name: get_energy_consumption_by_site
+    desc: Electricity kWh and cost per site for a period, with the same period a year earlier and the % change. Use to test whether Scope 2 fell because use fell.
+    kind: sql
+    args:
+      site_id: {desc: "Site, e.g. DC1 or ST001 (default all)"}
+      site_type: {type: str, values: [dc, store], desc: "Only distribution centres (dc) or stores (store)"}
+      period_from: {type: date, default: "-364d", desc: "Start of period (whole weeks, from that week's Monday)"}
+      period_to: {type: date, default: "$as_of", desc: "End of period, exclusive (whole weeks)"}
+    sql: |
+      WITH cur AS (
+        SELECT e.site_id, count(*) AS weeks, sum(e.energy_kwh) AS kwh, sum(e.energy_cost_gbp) AS cost
+        FROM energy_consumption e JOIN master.sites s ON s.site_id = e.site_id
+        WHERE ($site_id IS NULL OR e.site_id = $site_id) AND ($site_type IS NULL OR s.type = $site_type)
+          AND e.period_start >= CAST(date_trunc('week', CAST($period_from AS DATE)) AS DATE)
+          AND e.period_start < CAST(date_trunc('week', CAST($period_to AS DATE)) AS DATE)
+        GROUP BY e.site_id),
+      pri AS (
+        SELECT e.site_id, count(*) AS weeks, sum(e.energy_kwh) AS kwh, sum(e.energy_cost_gbp) AS cost
+        FROM energy_consumption e
+        WHERE e.period_start >= CAST(date_trunc('week', CAST($period_from AS DATE)) AS DATE) - INTERVAL 364 DAY
+          AND e.period_start < CAST(date_trunc('week', CAST($period_to AS DATE)) AS DATE) - INTERVAL 364 DAY
+        GROUP BY e.site_id),
+      j AS (
+        SELECT c.site_id, c.weeks, c.kwh, c.cost, p.kwh AS prior_kwh, p.cost AS prior_cost
+        FROM cur c LEFT JOIN pri p ON p.site_id = c.site_id),
+      u AS (
+        SELECT 0 AS tot, site_id, weeks, kwh, cost, prior_kwh, prior_cost FROM j
+        UNION ALL
+        SELECT 1, 'ALL SITES', max(weeks), sum(kwh), sum(cost), sum(prior_kwh), sum(prior_cost) FROM j)
+      SELECT u.site_id, coalesce(s.name, 'Total of sites listed') AS site_name, u.weeks,
+             round(u.kwh) AS energy_kwh, round(u.cost, 2) AS energy_cost_gbp,
+             round(u.prior_kwh) AS prior_year_kwh, round(u.prior_cost, 2) AS prior_year_cost_gbp,
+             round(100.0 * (u.kwh - u.prior_kwh) / NULLIF(u.prior_kwh, 0), 1) AS kwh_change_pct,
+             'change_pct = (kwh - prior_year_kwh) / prior_year_kwh; prior year = same weeks 52 weeks earlier' AS formula
+      FROM u LEFT JOIN master.sites s ON s.site_id = u.site_id
+      ORDER BY u.tot DESC, u.kwh DESC
+    limit: 100
+    example: {site_type: dc}
+
+  - name: get_store_footfall_and_sales_by_store
+    desc: Total footfall, sales and sales per visitor by store over a period, highest footfall first, with an all-stores total. Use to find high-volume stores.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Footfall on or after"}
+      date_to: {type: date, default: "$as_of", desc: "Footfall up to and including"}
+      country: {type: str, desc: "Country code, e.g. GB for UK stores (default all)"}
+      region: {type: str, desc: "Region, e.g. Scotland or UK South (default all)"}
+      site_id: {desc: "One store, e.g. ST214 (default all)"}
+    sql: |
+      WITH t AS (
+        SELECT f.site_id, s.name AS store_name, s.region, s.format,
+               count(*) AS days_recorded, sum(f.footfall_count) AS total_footfall, sum(f.sales_gbp) AS sales
+        FROM store_footfall_daily f JOIN master.sites s ON s.site_id = f.site_id
+        WHERE f.date >= CAST($date_from AS DATE) AND f.date <= CAST($date_to AS DATE)
+          AND ($country IS NULL OR s.country = $country) AND ($region IS NULL OR s.region = $region)
+          AND ($site_id IS NULL OR f.site_id = $site_id)
+        GROUP BY ALL),
+      u AS (
+        SELECT 0 AS tot, * FROM t
+        UNION ALL
+        SELECT 1, 'ALL STORES', 'Total of ' || count(*) || ' stores', NULL, NULL, max(days_recorded), sum(total_footfall), sum(sales) FROM t)
+      SELECT site_id, store_name, region, format, days_recorded, total_footfall,
+             round(total_footfall * 1.0 / days_recorded) AS avg_daily_footfall,
+             round(sales, 2) AS total_sales_gbp, round(sales / NULLIF(total_footfall, 0), 2) AS sales_per_visitor_gbp,
+             'sales_per_visitor = total_sales / total_footfall' AS formula
+      FROM u ORDER BY tot DESC, total_footfall DESC
+    limit: 26
+    example: {country: GB}
+
+  - name: get_footfall_forecast_for_store
+    desc: Hourly footfall forecast for a store over a date range, with day of week and confidence. Use to plan staffing by hour for the coming week.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Store, e.g. ST214"}
+      date_from: {type: date, default: "+1d", desc: "First forecast date"}
+      date_to: {type: date, default: "+14d", desc: "Last forecast date"}
+    sql: |
+      SELECT site_id, forecast_date, dayname(forecast_date) AS day_of_week, hour, forecast_footfall_count, confidence_level
+      FROM footfall_forecast
+      WHERE site_id = $site_id AND forecast_date >= CAST($date_from AS DATE) AND forecast_date <= CAST($date_to AS DATE)
+      ORDER BY forecast_date, hour
+    limit: 300
+    example: {site_id: ST214}
+
+  - name: get_footfall_history_for_store
+    desc: Past footfall and sales for a store, per day (default) or per hour. Use to see how events, roadworks or openings changed trade.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Store, e.g. ST214"}
+      date_from: {type: date, default: "-90d", desc: "Date from"}
+      date_to: {type: date, default: "$as_of", desc: "Date to"}
+      granularity: {type: str, values: [day, hour], default: day, desc: "day for daily totals, hour for hourly rows"}
+    sql: |
+      SELECT site_id, date, dayname(date) AS day_of_week, NULL AS hour, footfall_count, sales_gbp
+      FROM store_footfall_daily
+      WHERE $granularity = 'day' AND site_id = $site_id
+        AND date >= CAST($date_from AS DATE) AND date <= CAST($date_to AS DATE)
+      UNION ALL
+      SELECT site_id, date, dayname(date), hour, footfall_count, sales_gbp
+      FROM store_footfall
+      WHERE $granularity = 'hour' AND site_id = $site_id
+        AND date >= CAST($date_from AS DATE) AND date <= CAST($date_to AS DATE)
+      ORDER BY date DESC, hour
+    limit: 200
+    example: {site_id: ST214, date_from: "-30d"}
+
+  - name: get_store_catchment_overlap
+    desc: Competitor stores inside each store's catchment with distance and the share of catchment overlapped, biggest overlap first. Use to judge which competitor matters locally.
+    kind: sql
+    args:
+      site_id: {desc: "Store, e.g. ST214 (default all)"}
+      region: {type: str, desc: "Region, e.g. Scotland (default all)"}
+      competitor_id: {desc: "Competitor, e.g. CMPD-002 (default all)"}
+    sql: |
+      SELECT c.site_id, s.name AS store_name, s.region, c.competitor_id, c.competitor_name, c.competitor_status,
+             c.distance_km, c.radius_km, c.population, c.overlap_percentage,
+             round(c.population * c.overlap_percentage / 100.0) AS overlapping_population
+      FROM store_catchment c JOIN master.sites s ON s.site_id = c.site_id
+      WHERE ($site_id IS NULL OR c.site_id = $site_id) AND ($region IS NULL OR s.region = $region)
+        AND ($competitor_id IS NULL OR c.competitor_id = $competitor_id)
+      ORDER BY c.overlap_percentage DESC, c.site_id
+    limit: 60
+    example: {site_id: ST214}

@@ -1,0 +1,324 @@
+id: store_wfm
+name: Store Workforce Management
+instructions: >
+  Store rotas, shifts, staff, availability, labour standards and labour cost for stores (ST001-ST255).
+  Rota ids look like ROT-000123, shift ids SFT-000123, store colleagues STF-000123 (store managers also
+  carry their EMP id). Weeks start on Monday; times are 24h HH:MM.
+
+tables:
+  store_staff:
+    key: staff_id
+    cols:
+      staff_id: {type: str, desc: "Store colleague, e.g. STF-000123"}
+      site_id: {type: str, desc: "Home store, e.g. ST214"}
+      employee_id: {type: str, desc: "Master employee id, only for store managers and borrowed cover"}
+      name: {type: str, desc: "Colleague name"}
+      role: {type: str, desc: "Store Manager, Assistant Manager, Team Leader, Sales Assistant, Stock Assistant, Cover Manager"}
+      status: {type: enum, values: [active, agency, cover, vacant], desc: "active = employed here, agency = agency worker, cover = borrowed from another store, vacant = unfilled post"}
+      contract_hours: {type: float, desc: "Contracted or budgeted hours per week"}
+
+  staff_rotas:
+    key: rota_id
+    cols:
+      rota_id: {type: str, desc: "Rota, e.g. ROT-000123"}
+      site_id: {type: str, desc: "Store, e.g. ST214"}
+      week_start: {type: date, desc: "Monday of the week"}
+      status: {type: enum, values: [draft, approved, published, archived], desc: "Rota status; draft rotas are not visible to staff"}
+      approved_by: {type: str, desc: "Employee id of approver"}
+      approved_at: {type: timestamp, desc: "When the rota was approved"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  rota_shifts:
+    key: shift_id
+    cols:
+      shift_id: {type: str, desc: "Shift, e.g. SFT-000123"}
+      rota_id: {type: str, desc: "Parent rota"}
+      staff_id: {type: str, desc: "Colleague on the shift"}
+      shift_date: {type: date, desc: "Day of the shift"}
+      start_time: {type: str, desc: "Start time, HH:MM"}
+      end_time: {type: str, desc: "End time, HH:MM"}
+      task_category: {type: str, desc: "Main task: receiving, shelf, till, stock, checkout, relabel, cleaning, management"}
+      status: {type: enum, values: [scheduled, swapped, cancelled], desc: "Shift status; swapped = changed after the rota was built"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_standards:
+    key: standard_id
+    cols:
+      standard_id: {type: str, desc: "Standard, e.g. STD-000123"}
+      task_category: {type: str, desc: "Task type"}
+      description: {type: str, desc: "What the task involves"}
+      standard_hours: {type: float, desc: "Standard labour hours required"}
+      unit_of_measure: {type: str, desc: "Per what (e.g. per delivery, per 1000 units)"}
+      max_defer_days: {type: int, desc: "Days the task can slip without hurting trade or compliance; 0 = must be done on the day"}
+      status: {type: enum, values: [active, archived], desc: "Status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  staff_availability:
+    key: availability_id
+    cols:
+      availability_id: {type: str, desc: "Availability record, e.g. AVL-000123"}
+      staff_id: {type: str, desc: "Colleague"}
+      week_start: {type: date, desc: "Monday of the week"}
+      monday_available: {type: bool, desc: "Available Monday"}
+      tuesday_available: {type: bool, desc: "Available Tuesday"}
+      wednesday_available: {type: bool, desc: "Available Wednesday"}
+      thursday_available: {type: bool, desc: "Available Thursday"}
+      friday_available: {type: bool, desc: "Available Friday"}
+      saturday_available: {type: bool, desc: "Available Saturday"}
+      sunday_available: {type: bool, desc: "Available Sunday"}
+      notes: {type: str, desc: "Absence reason or notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_costs:
+    key: [site_id, week_start]
+    cols:
+      site_id: {type: str, desc: "Store"}
+      week_start: {type: date, desc: "Monday of the week"}
+      total_hours: {type: float, desc: "Paid labour hours in the week, including agency"}
+      total_labour_cost_gbp: {type: float, desc: "Total labour cost in GBP"}
+      average_hourly_rate_gbp: {type: float, desc: "Average hourly rate in GBP"}
+      sales_value_gbp: {type: float, desc: "Store sales for the week in GBP"}
+      labour_cost_pct: {type: float, desc: "Labour cost as % of sales"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_staff_rota_for_store
+    desc: Dated shifts for one store over a period, with rota status, colleague, times and task. Filter by weekday, task or time of day.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-7d", desc: "Start of the first week to include (whole Monday-Sunday weeks are returned)"}
+      date_to: {type: date, default: "$as_of", desc: "Last week to include (whole weeks)"}
+      weekday: {type: str, values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], desc: "Only shifts on this weekday"}
+      task_category: {desc: "Only this task, e.g. receiving, till, stock, shelf"}
+      on_shift_at: {type: str, desc: "Only shifts covering this time of day, e.g. 15:00"}
+    sql: |
+      SELECT sh.shift_id, r.rota_id, r.status AS rota_status, r.site_id, sh.shift_date, dayname(sh.shift_date) AS weekday,
+             sh.staff_id, s.name, s.role, s.status AS staff_status, sh.start_time, sh.end_time,
+             round(date_diff('minute', CAST(sh.start_time AS TIME), CAST(sh.end_time AS TIME)) / 60.0, 1) AS hours,
+             sh.task_category, sh.status
+      FROM rota_shifts sh
+      JOIN staff_rotas r ON r.rota_id = sh.rota_id
+      JOIN store_staff s ON s.staff_id = sh.staff_id
+      WHERE r.site_id = $site_id
+        AND r.week_start >= date_trunc('week', CAST($date_from AS DATE))
+        AND r.week_start <= date_trunc('week', CAST($date_to AS DATE))
+        AND sh.status <> 'cancelled'
+        AND ($weekday IS NULL OR lower(dayname(sh.shift_date)) = lower($weekday))
+        AND ($task_category IS NULL OR lower(sh.task_category) = lower($task_category))
+        AND ($on_shift_at IS NULL OR (sh.start_time <= $on_shift_at AND sh.end_time > $on_shift_at))
+      ORDER BY sh.shift_date, sh.start_time, s.name
+    limit: 300
+    example: {site_id: ST214, date_from: "-28d", task_category: receiving}
+
+  - name: get_staff_rota_for_stores
+    desc: Rotas across many stores grouped by recurring shift (store, colleague, weekday, times, task) with times rostered. Filter by region, weekday, task or time of day.
+    kind: sql
+    args:
+      region: {desc: "Region of the stores, e.g. UK North"}
+      date_from: {type: date, default: "-28d", desc: "Start of the first week to include (whole weeks)"}
+      date_to: {type: date, default: "$as_of", desc: "Last week to include (whole weeks)"}
+      weekday: {type: str, values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], desc: "Only shifts on this weekday"}
+      task_category: {desc: "Only this task, e.g. till, stock, receiving"}
+      on_shift_at: {type: str, desc: "Only shifts covering this time of day, e.g. 15:00"}
+    sql: |
+      SELECT r.site_id, st.name AS store_name, sh.staff_id, s.name, s.employee_id, s.role, dayname(sh.shift_date) AS weekday,
+             sh.start_time, sh.end_time, sh.task_category, count(*) AS times_rostered,
+             min(sh.shift_date) AS first_date, max(sh.shift_date) AS last_date
+      FROM rota_shifts sh
+      JOIN staff_rotas r ON r.rota_id = sh.rota_id
+      JOIN store_staff s ON s.staff_id = sh.staff_id
+      JOIN master.sites st ON st.site_id = r.site_id
+      WHERE st.type = 'store'
+        AND r.status IN ('approved', 'published', 'archived')
+        AND r.week_start >= date_trunc('week', CAST($date_from AS DATE))
+        AND r.week_start <= date_trunc('week', CAST($date_to AS DATE))
+        AND sh.status <> 'cancelled'
+        AND ($region IS NULL OR lower(st.region) = lower($region))
+        AND ($weekday IS NULL OR lower(dayname(sh.shift_date)) = lower($weekday))
+        AND ($task_category IS NULL OR lower(sh.task_category) = lower($task_category))
+        AND ($on_shift_at IS NULL OR (sh.start_time <= $on_shift_at AND sh.end_time > $on_shift_at))
+      GROUP BY ALL
+      ORDER BY r.site_id, isodow(min(sh.shift_date)), sh.start_time, s.name
+    limit: 300
+    example: {region: UK North, weekday: Thursday, task_category: till, on_shift_at: "15:00"}
+
+  - name: get_store_staff_schedules
+    desc: Who is rostered at one store, grouped by recurring shift (weekday, times, task) with how many times worked. Use to see who covers which hours.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-21d", desc: "Start of the first week to include (whole weeks)"}
+      date_to: {type: date, default: "$as_of", desc: "Last week to include (whole weeks)"}
+      weekday: {type: str, values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], desc: "Only this weekday"}
+      on_shift_at: {type: str, desc: "Only shifts covering this time of day, e.g. 20:00"}
+    sql: |
+      SELECT sh.staff_id, s.name, s.role, s.status AS staff_status, dayname(sh.shift_date) AS weekday,
+             sh.start_time, sh.end_time, sh.task_category,
+             CASE WHEN sh.end_time >= '19:30' THEN 'closing' WHEN sh.start_time <= '09:00' THEN 'opening' ELSE 'mid' END AS shift_type,
+             count(*) AS times_rostered, min(sh.shift_date) AS first_date, max(sh.shift_date) AS last_date
+      FROM rota_shifts sh
+      JOIN staff_rotas r ON r.rota_id = sh.rota_id
+      JOIN store_staff s ON s.staff_id = sh.staff_id
+      WHERE r.site_id = $site_id
+        AND r.status IN ('approved', 'published', 'archived')
+        AND r.week_start >= date_trunc('week', CAST($date_from AS DATE))
+        AND r.week_start <= date_trunc('week', CAST($date_to AS DATE))
+        AND sh.status <> 'cancelled'
+        AND ($weekday IS NULL OR lower(dayname(sh.shift_date)) = lower($weekday))
+        AND ($on_shift_at IS NULL OR (sh.start_time <= $on_shift_at AND sh.end_time > $on_shift_at))
+      GROUP BY ALL
+      ORDER BY isodow(min(sh.shift_date)), sh.start_time, s.name
+    limit: 120
+    example: {site_id: ST150, date_from: "-21d"}
+
+  - name: get_staff_availability_for_week
+    desc: Which colleagues of a store are available each day of a week, with absence notes and shifts already rostered. Defaults to next week.
+    kind: sql
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "+7d", desc: "Any date in the week wanted"}
+      available_on: {type: str, values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], desc: "Only colleagues available on this weekday"}
+    sql: |
+      WITH rostered AS (
+        SELECT sh.staff_id, count(*) AS rostered_shifts,
+               round(sum(date_diff('minute', CAST(sh.start_time AS TIME), CAST(sh.end_time AS TIME))) / 60.0, 1) AS rostered_hours
+        FROM rota_shifts sh JOIN staff_rotas r ON r.rota_id = sh.rota_id
+        WHERE r.site_id = $site_id AND r.week_start = date_trunc('week', CAST($week_start AS DATE)) AND sh.status <> 'cancelled'
+        GROUP BY sh.staff_id)
+      SELECT a.availability_id, a.staff_id, s.name, s.role, s.status AS staff_status, a.week_start,
+             a.monday_available, a.tuesday_available, a.wednesday_available, a.thursday_available,
+             a.friday_available, a.saturday_available, a.sunday_available, a.notes,
+             coalesce(ro.rostered_shifts, 0) AS rostered_shifts, coalesce(ro.rostered_hours, 0) AS rostered_hours
+      FROM staff_availability a
+      JOIN store_staff s ON s.staff_id = a.staff_id
+      LEFT JOIN rostered ro ON ro.staff_id = a.staff_id
+      WHERE s.site_id = $site_id
+        AND a.week_start = date_trunc('week', CAST($week_start AS DATE))
+        AND ($available_on IS NULL OR CASE lower($available_on)
+              WHEN 'monday' THEN a.monday_available WHEN 'tuesday' THEN a.tuesday_available
+              WHEN 'wednesday' THEN a.wednesday_available WHEN 'thursday' THEN a.thursday_available
+              WHEN 'friday' THEN a.friday_available WHEN 'saturday' THEN a.saturday_available
+              ELSE a.sunday_available END)
+      ORDER BY s.name
+    limit: 60
+    example: {site_id: ST214}
+
+  - name: get_labour_standards_for_tasks
+    desc: Standard labour hours per task unit, with how many days each task can slip. Use when sizing task hours or deciding what to defer.
+    kind: select
+    from: labour_standards
+    filters:
+      task_category: {op: like}
+      status: {default: active}
+    columns: [standard_id, task_category, description, standard_hours, unit_of_measure, max_defer_days, status]
+    order: task_category
+    limit: 50
+    example: {task_category: relabel}
+
+  - name: calculate_hourly_labour_requirement
+    desc: Staff needed per hour for a store week from the footfall forecast and deliveries, against rostered staff, flagging short or over by hour. Can assume absences.
+    kind: py
+    fn: calc_labour_requirement
+    args:
+      site_id: {required: true}
+      week_start: {type: date, default: "+7d", desc: "Any date in the week to plan"}
+      forecast_footfall: {type: int, required: true, desc: "Forecast total store visitors for the whole week, e.g. 15300"}
+      delivery_days: {type: str, default: "tuesday,friday", desc: "Comma-separated delivery weekdays; each needs one person for the standard receiving hours before opening"}
+      day: {type: str, values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], desc: "Only this weekday; also the day the absences apply to"}
+      staff_off: {type: int, default: 0, desc: "Colleagues assumed absent (e.g. sick) on the chosen day"}
+    example: {site_id: ST214, forecast_footfall: 15300, day: Saturday, staff_off: 2}
+
+  - name: get_labour_cost_percentage_by_store
+    desc: Labour cost as % of sales per store over recent weeks, highest first, with rank, format, size and cluster. Use to compare stores in a cluster or region.
+    kind: sql
+    args:
+      site_id: {desc: "Store to show; it is ranked against its cluster (or the cluster/region given)"}
+      cluster: {desc: "Store cluster letter, e.g. B"}
+      region: {desc: "Region, e.g. UK North"}
+      date_from: {type: date, default: "-28d", desc: "Start of the first week to include (whole weeks)"}
+      date_to: {type: date, default: "$as_of", desc: "Last week to include (whole weeks)"}
+    sql: |
+      WITH eff AS (
+        SELECT coalesce($cluster, (SELECT cluster FROM master.sites WHERE site_id = $site_id)) AS cluster),
+      base AS (
+        SELECT s.site_id, s.name, s.region, s.cluster, s.format, s.sqft,
+               count(*) AS weeks, round(sum(lc.total_hours), 0) AS total_hours,
+               round(sum(lc.total_labour_cost_gbp), 0) AS total_labour_cost_gbp,
+               round(sum(lc.sales_value_gbp), 0) AS sales_value_gbp,
+               round(sum(lc.total_labour_cost_gbp) / NULLIF(sum(lc.sales_value_gbp), 0) * 100, 1) AS labour_cost_pct,
+               round(sum(lc.total_labour_cost_gbp) / NULLIF(sum(lc.total_hours), 0), 2) AS average_hourly_rate_gbp
+        FROM labour_costs lc
+        JOIN master.sites s ON s.site_id = lc.site_id
+        CROSS JOIN eff
+        WHERE lc.week_start >= date_trunc('week', CAST($date_from AS DATE))
+          AND lc.week_start <= date_trunc('week', CAST($date_to AS DATE))
+          AND ($region IS NULL OR lower(s.region) = lower($region))
+          AND (eff.cluster IS NULL OR lower(s.cluster) = lower(eff.cluster))
+        GROUP BY ALL),
+      scoped AS (
+        SELECT b.*,
+               rank() OVER (ORDER BY b.labour_cost_pct DESC) AS rank_highest_cost,
+               count(*) OVER () AS stores_compared,
+               round(avg(b.labour_cost_pct) OVER (), 1) AS group_avg_pct
+        FROM base b)
+      SELECT * FROM scoped
+      WHERE $site_id IS NULL OR site_id = $site_id
+      ORDER BY labour_cost_pct DESC, site_id
+    limit: 120
+    example: {cluster: B, date_from: "-28d"}
+
+  - name: get_staffing_levels_for_store
+    desc: Staffing by role for a store, with headcount, agency, cover, vacancies and FTE, plus a total with FTE per 1000 sqft and weekly paid hours.
+    kind: sql
+    args:
+      site_id: {required: true}
+    sql: |
+      WITH st AS (SELECT * FROM store_staff WHERE site_id = $site_id),
+      by_role AS (
+        SELECT role,
+               count(*) FILTER (WHERE status IN ('active', 'agency')) AS headcount,
+               count(*) FILTER (WHERE status = 'active') AS active_staff,
+               count(*) FILTER (WHERE status = 'agency') AS agency_staff,
+               count(*) FILTER (WHERE status = 'cover') AS cover_staff,
+               count(*) FILTER (WHERE status = 'vacant') AS vacancies,
+               round(sum(contract_hours) FILTER (WHERE status IN ('active', 'agency')) / 37.5, 2) AS fte
+        FROM st GROUP BY role),
+      hrs AS (
+        SELECT round(avg(total_hours), 0) AS avg_weekly_paid_hours
+        FROM labour_costs
+        WHERE site_id = $site_id AND week_start >= date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 28 DAY)
+      SELECT * FROM (
+      SELECT $site_id AS site_id, 'ALL ROLES' AS role, sum(headcount) AS headcount, sum(active_staff) AS active_staff,
+             sum(agency_staff) AS agency_staff, sum(cover_staff) AS cover_staff, sum(vacancies) AS vacancies,
+             round(sum(fte), 2) AS fte,
+             round(sum(fte) / (SELECT cast(sqft AS DOUBLE) FROM master.sites WHERE site_id = $site_id) * 1000, 2) AS fte_per_1000_sqft,
+             (SELECT avg_weekly_paid_hours FROM hrs) AS avg_weekly_paid_hours,
+             'fte = contracted hours / 37.5, active + agency only' AS formula
+      FROM by_role
+      UNION ALL
+      SELECT $site_id, role, headcount, active_staff, agency_staff, cover_staff, vacancies, fte, NULL, NULL, NULL
+      FROM by_role) u
+      ORDER BY CASE WHEN role = 'ALL ROLES' THEN 0 ELSE 1 END, role
+    limit: 20
+    example: {site_id: ST214}
+
+  - name: approve_rota_for_store
+    desc: Approves a draft rota and publishes it to staff. Returns the old and new rota status.
+    kind: update
+    table: staff_rotas
+    set: {status: published, approved_at: "$as_of"}
+    args:
+      approved_by: {required: true, desc: "Employee id of the approving manager, e.g. EMP-00536"}
+    example: {rota_id: ROT-900001, approved_by: EMP-00536}
+
+  - name: update_shift_for_employee
+    desc: Moves a colleague's shift to another day or changes its start or end time, and marks it swapped. Give the new date and times.
+    kind: update
+    table: rota_shifts
+    set: {status: swapped, updated_at: "$as_of"}
+    args:
+      shift_date: {type: date, desc: "New day of the shift"}
+      start_time: {type: str, desc: "New start time, HH:MM"}
+      end_time: {type: str, desc: "New end time, HH:MM"}
+    example: {shift_id: SFT-900020, shift_date: "+13d", start_time: "10:00", end_time: "16:00"}

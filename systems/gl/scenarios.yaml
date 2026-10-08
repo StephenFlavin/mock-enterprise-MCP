@@ -1,0 +1,507 @@
+- question: 01:6:Q1
+  story: CC-2101 (Northampton DC, DC1) cost per unit rose 9.0% in FY27-08 (70.39p) from FY27-07 (64.58p); overtime (+82,656) and agency (+50,008) drive most of it while permanent labour fell slightly and
+    productivity dropped from 32.9 to 30.3 units per paid hour. FY26-08 is 63.26p for the year-on-year view.
+  checks:
+  - tool: get_cost_centre_actuals
+    args:
+      site_id: DC1
+    expect:
+    - Warehouse overtime
+    - '207648'
+    - '124992'
+    - '70.39'
+    - '64.58'
+  - tool: get_cost_centre_actuals
+    args:
+      site_id: DC1
+      period: FY26-08
+    expect:
+    - '63.26'
+    - '3310000'
+- question: 01:6:Q3
+  story: 'DC1 rate card (base 12.80, overtime x1.5, night premium 25%, agency 70% of late-shift hours) gives 45 FTE over eight weeks: late shift 288,462 versus overtime 322,387, with agency fees of 39,312
+    on the late shift.'
+  checks:
+  - tool: calculate_shift_option_cost
+    args:
+      site_id: DC1
+      period_start: +29d
+      period_end: +84d
+      headcount_gap: 45
+    expect:
+    - '288462'
+    - '322387'
+    - '39312'
+    - late_shift
+    - overtime
+- question: 01:6:Q4
+  story: 'Three-month KPIs per DC from cost centres and statistical volumes: DC1 65.99p per unit, 46.55p labour per unit, 32.3 units per paid hour; the definition column states what is included so a model
+    can explain comparability.'
+  checks:
+  - tool: get_dc_cost_and_productivity_kpis
+    args:
+      site_id: DC1
+    expect:
+    - '65.99'
+    - '46.55'
+    - '32.3'
+    - excludes management
+- question: 01:8:Q2
+  story: ERP holds 5392 units of SKU-100007 at DC1 (value 156098.4), equal to master dc_stock; WMS holds 5242 on-hand plus 150 in quarantine, which is the 150-unit difference the WMS side explains.
+  checks:
+  - tool: get_erp_stock_by_sku
+    args:
+      sku: SKU-100007
+      site_id: DC1
+    expect:
+    - SKU-100007
+    - '5392'
+    - '156098.4'
+    - Northampton DC
+- question: 01:8:Q4
+  story: ERP quantities equal master dc_stock, so the 1.2m ERP-WMS gap is WMS status mapping (quarantine, damaged, expired), mostly DC3 quarantine such as SKU-100819 (ERP 5878). ERP side also shows 11 goods
+    movements pending in the other system worth 182593.18, the timing part.
+  checks:
+  - tool: list_in_transit_documents
+    args: {}
+    expect:
+    - '182593.18'
+    - STR-000040
+    - goods_receipt
+    - stock_transfer
+  - tool: get_erp_stock_by_sku
+    args:
+      sku: SKU-100819
+      site_id: DC3
+    expect:
+    - '5878'
+    - '258161.76'
+- question: 05:49:Q5
+  story: 'Last 12 months recovery postings by channel (units match the returns pilots: 4,100 collected, 1,950 reused, 800 repaired, 1,040 recycled): resale recovers 4.74 per pound of handling cost, the best;
+    total recovered 65500 against 35900 handling cost, as in the returns pilots.'
+  checks:
+  - tool: get_recovered_value_by_channel
+    args: {}
+    expect:
+    - resale
+    - '4.74'
+    - '65500'
+  - tool: get_handling_cost_by_channel
+    args: {}
+    expect:
+    - take_back
+    - '12300'
+    - '35900'
+- question: 07:61:Q1
+  story: 'September one-offs: redundancy provision 385000 (LE-UK), legal settlement 210000 (LE-US), sourcing true-up 160000 (LE-HK) and a 145000 dilapidations release, net profit impact -610000. Timing
+    items of 50000 or more total 575000: marketing phasing 310000, licence prepayment 120000, Venlo agency 85000 and a rebate shortfall 60000.'
+  checks:
+  - tool: list_one_off_journals
+    args:
+      min_amount_gbp: 50000
+    expect:
+    - redundancy
+    - '385000'
+    - '-610000'
+  - tool: list_timing_items
+    args:
+      min_amount_gbp: 50000
+    expect:
+    - marketing
+    - '310000'
+    - '575000'
+- question: 07:61:Q2
+  story: 'LE-UK to LE-PL is out by 340000.00: 189997.70 missing invoices (IC-900001, IC-900002), 120000 timing (PL books after period end, IC-900003/4) and 30002.30 FX on PLN 8,687,000 (5.06 vs 5.15, IC-900005).
+    Draft journals JE-900011..14 exist with JE-900012 a duplicate of JE-900011.'
+  checks:
+  - tool: get_intercompany_balances
+    args:
+      from_entity_id: LE-UK
+      to_entity_id: LE-PL
+    expect:
+    - '340000'
+    - '189997.7'
+    - '120000'
+    - '30002.3'
+  - tool: list_intercompany_transactions
+    args:
+      from_entity_id: LE-UK
+      to_entity_id: LE-PL
+      status: unmatched
+    expect:
+    - IC-900005
+    - PLN
+    - '8687000'
+    - fx
+    - timing
+    - missing invoice
+  - tool: draft_clearing_journals
+    args:
+      from_entity_id: LE-UK
+      to_entity_id: LE-PL
+    expect:
+    - '189997.7'
+    - '120000'
+    - '30002.3'
+    - '8100'
+  - tool: list_one_off_journals
+    args:
+      je_type: intercompany
+      status: draft
+    expect:
+    - JE-900011
+    - JE-900012
+  - tool: create_journal_entry
+    args:
+      entity_id: LE-PL
+      posting_date: -5d
+      description: Clear UK-PL FX difference
+      total_debit_gbp: 30002.3
+      debit_account: '8100'
+      credit_account: '2300'
+      je_type: intercompany
+      created_by: EMP-00087
+    expect:
+    - draft
+    - '30002.3'
+    - '8100'
+  - tool: delete_draft_journal
+    args:
+      je_id: JE-900012
+    expect:
+    - Deleted
+    - JE-900012
+  - tool: submit_journal_for_approval
+    args:
+      je_id: JE-900011
+      submitted_by: EMP-00087
+    expect:
+    - JE-900011
+    - submitted
+- question: 07:61:Q4
+  story: Five accruals are open more than 60 days (176650 in total, ACC-900201..205, owners EMP-00086 x2, EMP-00085, EMP-00088, EMP-00089) and six reconciliations (R-900001..006, EMP-00086 holds three;
+    EMP-00089 has the disputed R-900005). R-900001 is reassigned from EMP-00086 to EMP-00088.
+  checks:
+  - tool: list_open_accruals
+    args:
+      min_age_days: 60
+    expect:
+    - '176650'
+    - ACC-900201
+    - EMP-00086
+  - tool: list_unreconciled_accounts
+    args:
+      min_age_days: 60
+    expect:
+    - R-900005
+    - disputed
+    - EMP-00086
+    - '64100'
+  - tool: reassign_reconciliation
+    args:
+      recon_id: R-900001
+      assigned_to: EMP-00088
+    expect:
+    - R-900001
+    - EMP-00088
+- question: 07:61:Q5
+  story: Freight posted to 5110 in the last four weeks is 509970 (agrees with the TMS reconciliation ledger_posted); four carrier invoices (39130) are coded to 5000, 6100, 4000 and 5102. The unaccrued invoices
+    (208822) are not in the ledger and are accrued with create_accrual_journal.
+  checks:
+  - tool: get_freight_cost_by_ledger_account
+    args:
+      period_start: -28d
+    expect:
+    - '509970'
+    - '5000'
+    - '18400'
+    - '6100'
+    - '9750'
+    - '4000'
+    - '6120'
+  - tool: create_accrual_journal
+    args:
+      entity_id: LE-UK
+      period: FY27-08
+      description: Unaccrued freight invoices
+      amount_gbp: 208822
+      reversal_date: +30d
+      account_code: '5110'
+      owner_id: EMP-00087
+    expect:
+    - '208822'
+    - '5110'
+    - FY27-08
+    - open
+- question: 07:62:Q5
+  story: 'USD purchases are about 80% of cost of goods: 368873931 GBP over 52 weeks at 1.27, so a 10% fall in sterling adds about 40985992 before hedges.'
+  checks:
+  - tool: get_usd_cogs_exposure
+    args: {}
+    expect:
+    - '368873931'
+    - '80.1'
+    - '40985992'
+- question: 07:65:Q3
+  story: The provision increase journal is created as a complete draft in LE-UK (debit 6800 bad debt expense, credit 1210 provision) for the controller's approval.
+  checks:
+  - tool: create_journal_entry
+    args:
+      entity_id: LE-UK
+      posting_date: -5d
+      description: Increase bad debt provision
+      total_debit_gbp: 85000
+      debit_account: '6800'
+      credit_account: '1210'
+      created_by: EMP-00087
+    expect:
+    - draft
+    - '85000'
+    - '6800'
+    - '1210'
+- question: 07:66:Q4
+  story: 'September FX gain/loss is a net loss of 1,100,000: realised -600,000 (USD settlements JE-900301, EUR JE-900302) and unrealised -500,000, of which 210,000 (JE-900303 USD 150,000 and JE-900304 EUR
+    60,000) was booked to realised account 8110 instead of 8120 and needs reclassifying.'
+  checks:
+  - tool: get_fx_gain_loss_by_account
+    args:
+      period_start: -30d
+    expect:
+    - '-1100000'
+    - unrealised booked to realised account
+    - JE-900303
+    - JE-900304
+  - tool: get_realised_vs_unrealised_fx
+    args:
+      period_start: -30d
+    expect:
+    - '-600000'
+    - '-500000'
+    - '-210000'
+  - tool: create_journal_entry
+    args:
+      entity_id: LE-UK
+      posting_date: -1d
+      description: Reclass unrealised FX booked as realised
+      total_debit_gbp: 210000
+      debit_account: '8120'
+      credit_account: '8110'
+      je_type: reclassification
+      created_by: EMP-00087
+    expect:
+    - '210000'
+    - '8120'
+    - '8110'
+    - draft
+- question: 07:67:Q1
+  story: 'Sourcing entity mark-ups against their policy mark-ups (same as tax_duty: HK 12%, PL 10%, UK 8%) over the last four quarters: LE-HK earns 12.07% on a 30.0m cost base (Womenswear 12.2, Menswear 12.1, Kids 11.8); LE-UK earns 7.99% on 45.0m;
+    LE-PL earns 10.01% on 20.0m. HK and PL are above their benchmark ranges in tax_duty, which carries the exposure.'
+  checks:
+  - tool: get_intercompany_sourcing_margins
+    args: {}
+    expect:
+    - LE-HK
+    - '12.07'
+    - '30012400'
+    - '7.99'
+  - tool: get_intercompany_sourcing_margins
+    args:
+      from_entity_id: LE-HK
+      department: Kids
+    expect:
+    - '11.8'
+    - '15189'
+- question: 07:68:Q2
+  story: 'DC2 and DC3 provisions are in line with policy; Northampton DC1 provides below policy on 13 slow-moving and obsolete SKUs, 283,608.51 short of the 15%/50% policy (provision calculated in a spreadsheet with manual overrides, as the internal audit test TST-900109 found), so DC1 is the weak site. Gross values agree to ERP stock.'
+  checks:
+  - tool: get_inventory_valuation_by_site
+    args:
+      site_id: DC1
+    expect:
+    - Northampton DC
+    - '283608.51'
+    - '18.4'
+    - '13'
+  - tool: get_inventory_valuation_by_site
+    args:
+      site_id: DC2
+    expect:
+    - Daventry DC
+    - '26.8'
+  - tool: get_inventory_valuation_by_site
+    args:
+      site_id: DC3
+    expect:
+    - Leeds DC
+    - '18.2'
+- question: 07:69:Q1
+  story: 'September gross inventory rose 3,400,000 (178,817,194.58 to 182,217,194.58) while units fell 41,261: cost updates +2,410,000, FX +720,000, mix +640,000, adjustments +750,000, volume -1,120,000.
+    Cost updates include a duplicated standard cost revaluation (JE-900201 and JE-900202, 450,000 each, DC2 Outerwear) which is the error to correct.'
+  checks:
+  - tool: get_inventory_value_movement
+    args:
+      period_start: -60d
+    expect:
+    - '3400000'
+    - '2410000'
+    - '-41261'
+    - JE-900202
+  - tool: get_inventory_value_movement
+    args:
+      period_start: -60d
+      group_by: category
+    expect:
+    - Outerwear
+    - '967485.04'
+  - tool: create_journal_entry
+    args:
+      entity_id: LE-UK
+      posting_date: -1d
+      description: Reverse duplicate revaluation JE-900202
+      total_debit_gbp: 450000
+      debit_account: '5000'
+      credit_account: '1300'
+      je_type: inventory
+      created_by: EMP-00087
+    expect:
+    - '450000'
+    - draft
+  - tool: submit_journal_for_approval
+    args:
+      je_id: JE-900005
+      submitted_by: EMP-00087
+    expect:
+    - JE-900005
+    - submitted
+- question: 07:69:Q2
+  story: Slow-moving and obsolete provision booked is 3,988,716.43, up 33.4% on 2,990,600.37 a year earlier, 283,608.58 below policy (15%/50%). Outerwear (755,176.62) carries the
+    most.
+  checks:
+  - tool: get_slow_moving_provision
+    args: {}
+    expect:
+    - '3988716.43'
+    - '2990600.37'
+    - '33.4'
+    - Outerwear
+    - '755176.62'
+  - tool: create_journal_entry
+    args:
+      entity_id: LE-UK
+      posting_date: -1d
+      description: Slow-moving and obsolete provision top-up to policy
+      total_debit_gbp: 283608.58
+      debit_account: '5000'
+      credit_account: '1310'
+      je_type: inventory
+      created_by: EMP-00087
+    expect:
+    - '283608.58'
+    - '1310'
+  - tool: submit_journal_for_approval
+    args:
+      je_id: JE-900006
+      submitted_by: EMP-00087
+    expect:
+    - JE-900006
+    - submitted
+- question: 07:69:Q3
+  story: 'Shrink and write-offs are running about 17% above last year: last 12 months 7,178,018.38 against 6,420,087.46 the year before, with the Q4 peak and January/February clearance months heaviest.
+    Small Appliances has the largest increase in pounds and Fragrance the largest in percent.'
+  checks:
+  - tool: get_shrink_and_writeoff_history
+    args: {}
+    expect:
+    - '7178018.38'
+    - '6420087.46'
+    - '559134.83'
+    - '479049.17'
+  - tool: get_shrink_and_writeoff_history
+    args:
+      group_by: category
+    expect:
+    - Small Appliances
+    - Fragrance
+    - '29.6'
+- question: 07:69:Q5
+  story: 'WMS stock value is 1,247,904.23 below the ledger (ledger 180,969,290.35 + 1,247,904.23 = 182,217,194.58 in account 1300): valuation 521,688.34 (56 SKUs with updated standard cost), unit cost keyed
+    at ten times on SKU-105537 at DC3 480,287.61, duplicated goods receipt on SKU-102555 at DC5 149,975.28, timing 95,953 (four ERP receipts not yet put away in WMS).'
+  checks:
+  - tool: compare_wms_to_ledger
+    args:
+      group_by: cause
+    expect:
+    - '1247904.23'
+    - '521688.34'
+    - '480287.61'
+    - '149975.28'
+    - '95953'
+  - tool: compare_wms_to_ledger
+    args: {}
+    expect:
+    - SKU-105537
+    - SKU-102555
+    - ten times
+  - tool: get_ledger_inventory_balance
+    args:
+      period: FY27-08
+    expect:
+    - '182217194.58'
+    - '1300'
+- question: 09:81:Q2
+  story: 'Finance values inventory at 182,217,194.58 gross (provision 3,988,716.43, net 178,228,478.15) against operations'' stock value of 180,969,290.35: a 1,247,904.23 difference made of timing, valuation
+    and error items (see compare_wms_to_ledger). Agreed errors are corrected with an inventory adjustment journal.'
+  checks:
+  - tool: get_inventory_valuation_by_site
+    args: {}
+    expect:
+    - '182217194.58'
+    - '180969290.35'
+    - '1247904.23'
+    - '178228478.15'
+  - tool: create_inventory_adjustment_journal
+    args:
+      entity_id: LE-UK
+      posting_date: -1d
+      description: Correct SKU-105537 DC3 ledger unit cost keyed at ten times
+      total_debit_gbp: 480287.61
+      debit_account: '5000'
+      credit_account: '1300'
+      created_by: EMP-00087
+    expect:
+    - '480287.61'
+    - '1300'
+    - inventory
+- question: 09:81:Q4
+  story: "ERP order headers carry entity, channel, revenue, freight and handling charges, discount and shipment count. ORD-2026-0108564 (web, LE-UK, same-day, 15 August, the same order as data_warehouse and tms) was split into 2 shipments but has a single freight charge of 8.99 and handling charge of 1.65 on its header (tms shows 11.75 + 11.44 freight)."
+  checks:
+  - tool: get_erp_order_header_and_charges
+    args:
+      order_id: ORD-2026-0108564
+      period_start: -120d
+    expect:
+    - '59.57'
+    - '8.99'
+    - '1.65'
+    - LE-UK
+    - same_day
+- question: 09:82:Q6
+  story: 'Payment history from real supplier invoices: five low-OTIF suppliers are paid well beyond terms (SUP-0046 19.4 days late on 45-day terms, SUP-0073 19.2 days late on 30-day terms, SUP-0053 17.0 (the slipping
+    West Textiles, same supplier as srm/po/wms 09:82:Q6), SUP-0068 12.0, SUP-0033 10.5) while the rest pay within a few days of terms.'
+  checks:
+  - tool: get_payment_history_by_supplier
+    args:
+      period_start: -180d
+    expect:
+    - SUP-0046
+    - '19.4'
+    - SUP-0073
+    - '19.2'
+    - payment_terms_days
+  - tool: get_payment_history_by_supplier
+    args:
+      supplier_id: SUP-0073
+    expect:
+    - '30'
+    - '49.2'
+    - '19.2'

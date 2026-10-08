@@ -1,0 +1,614 @@
+id: inv_opt
+name: Inventory Optimisation Tool
+instructions: >
+  Safety stock, reorder points and service level targets per SKU (ids like SKU-100007), built from 52 weeks
+  of demand and observed supplier lead times. Use for safety stock sizing, service level trade-offs,
+  lead-time what-ifs and centralisation analysis. Segments are SEG-001 (A), SEG-002 (B), SEG-003 (C).
+
+tables:
+  sku_inventory_policies:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU, e.g. SKU-100007"}
+      reorder_point_units: {type: int, desc: "Current reorder point in units (lead-time demand plus safety stock)"}
+      safety_stock_units: {type: int, desc: "Current safety stock in units"}
+      service_level_target_pct: {type: int, desc: "Target service level percentage, e.g. 95"}
+      lead_time_days: {type: int, desc: "Supplier lead time assumed when the policy was set, in days"}
+      annual_volume_units: {type: int, desc: "Annual demand in units"}
+      cv_demand: {type: float, desc: "Coefficient of variation of weekly demand"}
+      category: {type: str, desc: "Product category"}
+      abc_class: {type: enum, values: [A, B, C], desc: "ABC class from the product master"}
+      last_review_date: {type: date, desc: "Date the policy was last reviewed"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  segment_service_levels:
+    key: segment_id
+    cols:
+      segment_id: {type: str, desc: "Segment, e.g. SEG-001"}
+      abc_class: {type: enum, values: [A, B, C], desc: "ABC class the segment covers"}
+      segment_name: {type: str, desc: "Segment name"}
+      sku_count: {type: int, desc: "Number of SKUs in segment"}
+      target_service_level_pct: {type: int, desc: "Target service level percentage"}
+      status: {type: enum, values: [active, review, archived], desc: "Segment status"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  sku_demand_analysis:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU"}
+      demand_52w_mean: {type: float, desc: "Mean weekly demand (store plus online units) last 52 weeks"}
+      demand_52w_stdev: {type: float, desc: "Standard deviation of weekly demand"}
+      demand_cv: {type: float, desc: "Coefficient of variation of weekly demand"}
+      seasonality_factor: {type: float, desc: "Best 4-week demand divided by the mean (1.0 = no seasonality)"}
+      trend_direction: {type: str, desc: "Last 13 weeks vs earlier: up, down, stable"}
+      high_variability: {type: bool, desc: "True if CV > 0.4"}
+      last_calculated_date: {type: date, desc: "Date analysis was calculated"}
+      weeks_of_history: {type: int, desc: "Weeks of sales history available (max 52)"}
+      zero_weeks_pct: {type: float, desc: "Percent of weeks with no sales"}
+      markdown_weeks_pct: {type: float, desc: "Percent of weeks with markdown or promotion"}
+      store_share_pct: {type: float, desc: "Percent of units sold in stores rather than online"}
+      variability_driver: {type: str, desc: "Main reason demand is volatile"}
+
+  supplier_lead_time_actuals:
+    key: [sku, supplier_id]
+    cols:
+      sku: {type: str, desc: "SKU"}
+      supplier_id: {type: str, desc: "Supplier"}
+      lead_time_days: {type: int, desc: "Actual lead time observed recently"}
+      lead_time_stdev_days: {type: float, desc: "Standard deviation of lead time"}
+      change_from_baseline_pct: {type: float, desc: "Percentage change from the lead time assumed in the policy"}
+      sample_size: {type: int, desc: "Number of observations"}
+      measurement_date: {type: date, desc: "Date of measurement"}
+
+  service_level_z:
+    key: service_level_pct
+    cols:
+      service_level_pct: {type: int, desc: "Service level percentage, 50 to 99"}
+      z_score: {type: float, desc: "Normal z-score for that service level"}
+
+tools:
+  - name: get_inventory_policy_parameters
+    desc: Current reorder point, safety stock, lead time and service level target per SKU, fastest sellers first. Filter by SKU, ABC class or category.
+    kind: select
+    from: sku_inventory_policies
+    filters:
+      sku: {op: like, desc: "SKU or part of it, e.g. SKU-100007"}
+      abc_class: {}
+      category: {}
+      service_level_target_pct: {}
+    columns: [sku, category, abc_class, reorder_point_units, safety_stock_units, service_level_target_pct, lead_time_days, annual_volume_units, cv_demand, last_review_date]
+    order: annual_volume_units DESC
+    limit: 200
+    example: {abc_class: A}
+
+  - name: list_high_variability_skus
+    desc: SKUs with unusually volatile demand (CV above a threshold) with the driver, plus whether to exclude them from statistical safety stock.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+      min_cv: {type: float, default: 0.4, desc: "Minimum coefficient of variation of weekly demand"}
+      top_n_by_value: {type: int, desc: "Only consider the N highest-value SKUs (annual units x unit cost)"}
+      only_exclusion_candidates: {type: bool, default: false, desc: "List only SKUs to exclude from statistical safety stock (run-down, short history, intermittent), whatever their CV"}
+      limit_count: {type: int, default: 50, desc: "Maximum results"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      )
+      SELECT s.sku, s.category, s.abc_class, s.product_status, s.value_rank, a.demand_cv, round(a.demand_52w_mean, 1) AS weekly_mean,
+             round(a.demand_52w_stdev, 1) AS weekly_stdev, a.seasonality_factor, a.trend_direction, a.variability_driver,
+             a.weeks_of_history, a.zero_weeks_pct, a.markdown_weeks_pct,
+             round(100.0 * s.act_sd / s.act_lt, 1) AS lead_time_cv_pct,
+             CASE WHEN s.product_status IN ('discontinued', 'clearance') OR a.weeks_of_history < 16 OR a.zero_weeks_pct >= 30
+                  THEN true ELSE false END AS exclude_from_statistical_ss,
+             CASE WHEN s.product_status IN ('discontinued', 'clearance') THEN 'Run-down range (' || s.product_status || ')'
+                  WHEN a.weeks_of_history < 16 THEN 'Too little history (' || a.weeks_of_history || ' weeks)'
+                  WHEN a.zero_weeks_pct >= 30 THEN 'Intermittent demand'
+                  ELSE '' END AS exclude_reason
+      FROM s JOIN sku_demand_analysis a ON a.sku = s.sku
+      WHERE CASE WHEN $only_exclusion_candidates THEN (s.product_status IN ('discontinued', 'clearance') OR a.weeks_of_history < 16 OR a.zero_weeks_pct >= 30)
+                   ELSE a.demand_cv > $min_cv END
+        AND ($category IS NULL OR s.category = $category)
+        AND ($abc_class IS NULL OR s.abc_class = $abc_class)
+        AND ($top_n_by_value IS NULL OR s.value_rank <= $top_n_by_value)
+      ORDER BY a.demand_cv DESC
+      LIMIT $limit_count
+    limit: 100
+    example: {min_cv: 0.4}
+
+  - name: get_sku_abc_classification
+    desc: ABC class per SKU by annual value, with value rank, share of total value and the segment id and service level target of its class.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+      limit_count: {type: int, default: 200, desc: "Maximum results"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      )
+      SELECT s.sku, s.abc_class, g.segment_id, g.target_service_level_pct AS segment_target_pct, s.category, s.product_status,
+             s.vol AS annual_volume_units, round(s.vol * s.cost, 2) AS annual_value_gbp, s.value_rank,
+             round(100.0 * sum(s.vol * s.cost) OVER (ORDER BY s.value_rank) / sum(s.vol * s.cost) OVER (), 1) AS cumulative_value_pct,
+             count(*) OVER (PARTITION BY s.abc_class) AS skus_in_class,
+             round(100.0 * sum(s.vol * s.cost) OVER (PARTITION BY s.abc_class) / sum(s.vol * s.cost) OVER (), 1) AS class_value_share_pct
+      FROM s JOIN segment_service_levels g ON g.abc_class = s.abc_class
+      WHERE ($category IS NULL OR s.category = $category) AND ($abc_class IS NULL OR s.abc_class = $abc_class)
+      ORDER BY s.value_rank
+      LIMIT $limit_count
+    limit: 200
+    example: {abc_class: A}
+
+  - name: get_demand_pattern_for_sku
+    desc: Demand pattern for one SKU - weekly mean, variability, seasonality, trend, store vs online share, stocking DCs. Use to judge centralisation suitability.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT a.sku, m.name, p.category, p.abc_class, m.status AS product_status, a.demand_52w_mean AS weekly_mean,
+             a.demand_52w_stdev AS weekly_stdev, a.demand_cv, a.seasonality_factor, a.trend_direction, a.high_variability,
+             a.variability_driver, a.weeks_of_history, a.zero_weeks_pct, a.markdown_weeks_pct, a.store_share_pct,
+             p.annual_volume_units, p.service_level_target_pct,
+             (SELECT count(*) FROM master.dc_stock d WHERE d.sku = a.sku) AS dcs_stocking, m.unit_cost_gbp
+      FROM sku_demand_analysis a
+      JOIN sku_inventory_policies p ON p.sku = a.sku
+      JOIN master.products m ON m.sku = a.sku
+      WHERE a.sku = $sku
+    limit: 1
+    example: {sku: SKU-100007}
+
+  - name: get_service_level_vs_inventory_curve
+    desc: Safety stock units, stock value and carrying cost at 85-99% service levels for a category or ABC class, with the extra cost of each step up.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      ), lv AS (SELECT unnest([85, 90, 92, 95, 97, 99]) AS service_level_pct), c AS (
+        SELECT lv.service_level_pct, count(*) AS sku_count,
+               round(sum(zz.z_score * sqrt(s.act_lt / 7.0 * s.sd * s.sd + s.mu * s.mu * power(s.act_sd / 7.0, 2))), 0) AS safety_stock_units,
+               round(sum(zz.z_score * sqrt(s.act_lt / 7.0 * s.sd * s.sd + s.mu * s.mu * power(s.act_sd / 7.0, 2)) * s.cost), 2) AS stock_value_gbp
+        FROM s CROSS JOIN lv JOIN service_level_z zz ON zz.service_level_pct = lv.service_level_pct
+        WHERE ($category IS NULL OR s.category = $category) AND ($abc_class IS NULL OR s.abc_class = $abc_class)
+        GROUP BY lv.service_level_pct
+      )
+      SELECT $category AS category, $abc_class AS abc_class, service_level_pct, sku_count, safety_stock_units, stock_value_gbp,
+             round(stock_value_gbp * 0.25, 2) AS annual_carrying_cost_gbp,
+             round(stock_value_gbp - lag(stock_value_gbp) OVER (ORDER BY service_level_pct), 2) AS extra_stock_value_vs_previous_gbp,
+             round((stock_value_gbp - lag(stock_value_gbp) OVER (ORDER BY service_level_pct)) / NULLIF(service_level_pct - lag(service_level_pct) OVER (ORDER BY service_level_pct), 0), 2) AS cost_per_extra_point_gbp,
+             'safety_stock = z * sqrt(LT_weeks * demand_sd^2 + demand_mean^2 * LT_sd_weeks^2); carrying cost 25% of stock value' AS formula
+      FROM c ORDER BY service_level_pct
+    limit: 10
+    example: {abc_class: A}
+
+  - name: calculate_safety_stock
+    desc: Recommended safety stock and reorder point for one SKU at a target service level, using demand and lead-time variability, versus current settings.
+    kind: sql
+    args:
+      sku: {required: true}
+      target_service_level_pct: {type: int, default: 95, desc: "Target service level percentage, e.g. 95, 97, 99"}
+      lead_time_increase_days: {type: int, default: 0, desc: "Extra supplier lead time to model, in days"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + $lead_time_increase_days) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($target_service_level_pct, r.cur_sl)
+      )
+      SELECT sku, category, abc_class, $target_service_level_pct AS target_service_level_pct, cur_sl AS current_service_level_pct,
+             round(mu, 1) AS weekly_demand_mean, round(sd, 1) AS weekly_demand_stdev, pol_lt AS policy_lead_time_days,
+             act_lt AS actual_lead_time_days, round(act_sd, 1) AS lead_time_stdev_days,
+             cur_ss AS current_safety_stock, round(rec_ext, 0) AS recommended_safety_stock, round(rec_ext - cur_ss, 0) AS safety_stock_change_units,
+             cur_rop AS current_reorder_point, round(mu * (act_lt + $lead_time_increase_days) / 7.0 + rec_ext, 0) AS recommended_reorder_point,
+             round((rec_ext - cur_ss) * cost, 2) AS working_capital_change_gbp,
+             'safety_stock = z * sqrt(LT_weeks * demand_sd^2 + demand_mean^2 * LT_sd_weeks^2); reorder_point = demand_mean * LT_weeks + safety_stock' AS formula
+      FROM s WHERE sku = $sku
+    limit: 1
+    example: {sku: SKU-100007, target_service_level_pct: 97}
+
+  - name: calculate_working_capital_impact
+    desc: Working capital change by category from resetting safety stock to recommended levels, to a target service level, or by a flat percentage.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+      target_service_level_pct: {type: int, desc: "Reset to recommended safety stock at this service level, e.g. 97; omit to use each SKU's current target"}
+      safety_stock_change_pct: {type: int, desc: "Flat percentage change in current safety stock, e.g. -10 or 5, instead of resetting to recommended"}
+      top_n: {type: int, desc: "Only the N highest-ranked SKUs, ranked by rank_by"}
+      rank_by: {type: enum, values: [value, volume], default: value, desc: "Rank for top_n - value (annual units x unit cost) or volume (annual units)"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($target_service_level_pct, r.cur_sl)
+      ), n AS (
+        SELECT s.*, CASE WHEN $safety_stock_change_pct IS NOT NULL THEN cur_ss * (1 + $safety_stock_change_pct / 100.0)
+                         ELSE rec_now END AS new_ss
+        FROM s
+        WHERE ($category IS NULL OR category = $category) AND ($abc_class IS NULL OR abc_class = $abc_class)
+          AND ($top_n IS NULL OR (CASE WHEN $rank_by = 'volume' THEN volume_rank ELSE value_rank END) <= $top_n)
+      )
+      SELECT category, count(*) AS sku_count, round(sum(cur_ss), 0) AS current_ss_units, round(sum(new_ss), 0) AS new_ss_units,
+             round(sum(cur_ss * cost), 2) AS current_value_gbp, round(sum(new_ss * cost), 2) AS new_value_gbp,
+             round(sum((new_ss - cur_ss) * cost), 2) AS wc_change_gbp,
+             round(sum((new_ss - cur_ss) * cost) * 0.25, 2) AS annual_carrying_cost_change_gbp,
+             CASE WHEN $safety_stock_change_pct IS NOT NULL THEN 'flat ' || $safety_stock_change_pct || '% change'
+                  WHEN $target_service_level_pct IS NOT NULL THEN 'recommended safety stock at ' || $target_service_level_pct || '% service level'
+                  ELSE 'recommended safety stock at each SKU current service level target' END AS basis,
+             'wc_change = sum((new_ss - current_ss) * unit_cost); carrying cost 25% a year' AS formula
+      FROM n GROUP BY category ORDER BY wc_change_gbp DESC
+    limit: 40
+    example: {target_service_level_pct: 97, abc_class: A}
+
+  - name: calculate_service_level_target_options
+    desc: Model stock value and carrying cost at 85%, 90%, 95%, 97% and 99% service levels for each ABC class or one class, with its segment and current target.
+    kind: sql
+    args:
+      sku_abc_class: {type: enum, values: [A, B, C], desc: "ABC class to model, omit for all classes"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      ), lv AS (SELECT unnest([85, 90, 95, 97, 99]) AS service_level_pct), c AS (
+        SELECT s.abc_class, lv.service_level_pct, count(*) AS sku_count, round(avg(s.act_lt), 1) AS avg_lead_time_days,
+               round(sum(s.vol) / 52.0 / count(*), 0) AS avg_weekly_demand_per_sku,
+               round(sum(zz.z_score * sqrt(s.act_lt / 7.0 * s.sd * s.sd + s.mu * s.mu * power(s.act_sd / 7.0, 2))), 0) AS safety_stock_units,
+               round(sum(zz.z_score * sqrt(s.act_lt / 7.0 * s.sd * s.sd + s.mu * s.mu * power(s.act_sd / 7.0, 2)) * s.cost), 2) AS stock_value_gbp
+        FROM s CROSS JOIN lv JOIN service_level_z zz ON zz.service_level_pct = lv.service_level_pct
+        WHERE ($sku_abc_class IS NULL OR s.abc_class = $sku_abc_class)
+        GROUP BY s.abc_class, lv.service_level_pct
+      )
+      SELECT g.segment_id, c.abc_class, g.target_service_level_pct AS current_segment_target_pct, c.service_level_pct, c.sku_count,
+             c.avg_lead_time_days, c.avg_weekly_demand_per_sku, c.safety_stock_units, c.stock_value_gbp,
+             round(c.stock_value_gbp * 0.25, 2) AS annual_carrying_cost_gbp,
+             round(c.stock_value_gbp - lag(c.stock_value_gbp) OVER (PARTITION BY c.abc_class ORDER BY c.service_level_pct), 2) AS extra_stock_value_vs_previous_gbp
+      FROM c JOIN segment_service_levels g ON g.abc_class = c.abc_class
+      ORDER BY c.abc_class, c.service_level_pct
+    limit: 20
+    example: {sku_abc_class: A}
+
+  - name: calculate_service_level_impact
+    desc: Estimate lost units, revenue and margin from moving a category, ABC class or SKU to a lower service level, and the safety stock value released.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+      sku: {}
+      target_service_level_pct: {type: int, default: 90, desc: "Proposed service level percentage"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      ), t AS (
+        SELECT s.*, zt.z_score AS z_new,
+               zt.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_new
+        FROM s JOIN service_level_z zt ON zt.service_level_pct = $target_service_level_pct
+        WHERE ($category IS NULL OR category = $category) AND ($abc_class IS NULL OR abc_class = $abc_class)
+          AND ($sku IS NULL OR sku = $sku)
+      )
+      SELECT category, count(*) AS sku_count, round(sum(vol * cur_sl) / sum(vol), 1) AS current_service_level_pct,
+             $target_service_level_pct AS proposed_service_level_pct, round(sum(vol), 0) AS annual_units,
+             round(sum(vol * greatest(cur_sl - $target_service_level_pct, 0) / 100.0 * 0.5), 0) AS estimated_lost_units,
+             round(sum(vol * greatest(cur_sl - $target_service_level_pct, 0) / 100.0 * 0.5 * price), 2) AS lost_revenue_gbp,
+             round(sum(vol * greatest(cur_sl - $target_service_level_pct, 0) / 100.0 * 0.5 * (price - cost)), 2) AS lost_margin_gbp,
+             round(sum(greatest(rec_now - rec_new, 0) * cost), 2) AS safety_stock_value_released_gbp,
+             'lost_units = annual_units * (current_SL - proposed_SL) * 50% (half of missed availability is lost; the rest is substituted or waits)' AS formula
+      FROM t GROUP BY category ORDER BY lost_revenue_gbp DESC
+    limit: 40
+    example: {category: Blouses, target_service_level_pct: 92}
+
+  - name: calculate_lead_time_sensitivity_by_category
+    desc: Extra safety stock and working capital per category if supplier lead times rise by N days, most sensitive first. Can limit to Asia-sourced SKUs.
+    kind: sql
+    args:
+      lead_time_increase_days: {type: int, default: 14, desc: "Additional lead time days to model"}
+      origin_region: {type: enum, values: [Asia, Other], desc: "Country-of-origin region (Asia = CN, VN, IN, BD), omit for all"}
+      target_service_level_pct: {type: int, desc: "Service level to protect, e.g. 95; omit to use each SKU's current target"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + $lead_time_increase_days) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($target_service_level_pct, r.cur_sl)
+      )
+      SELECT category, count(*) AS sku_count, round(avg(act_lt), 1) AS avg_lead_time_days, round(avg(mu), 0) AS avg_weekly_demand,
+             round(sum(rec_now), 0) AS safety_stock_now_units, round(sum(rec_ext), 0) AS safety_stock_extended_units,
+             round(100.0 * (sum(rec_ext) - sum(rec_now)) / sum(rec_now), 1) AS safety_stock_increase_pct,
+             round(sum((rec_ext - rec_now) * cost), 2) AS additional_wc_gbp,
+             round(sum((rec_ext - rec_now) * cost) * 0.25, 2) AS annual_carrying_cost_gbp,
+             'extra_ss = z * (sqrt((LT+delta)/7*sd^2 + mean^2*LTsd^2) - sqrt(LT/7*sd^2 + mean^2*LTsd^2))' AS formula
+      FROM s WHERE ($origin_region IS NULL OR region = $origin_region)
+      GROUP BY category ORDER BY additional_wc_gbp DESC
+    limit: 40
+    example: {lead_time_increase_days: 14, origin_region: Asia}
+
+  - name: compare_policy_to_recommended_parameters
+    desc: Compare current safety stock and reorder points with recommended values from demand and lead-time variability, flagging TOO_LOW or TOO_HIGH.
+    kind: sql
+    args:
+      sku: {}
+      category: {}
+      abc_class: {}
+      variance_threshold_pct: {type: int, default: 10, desc: "Show only SKUs whose safety stock differs by more than this percent"}
+      target_service_level_pct: {type: int, desc: "Service level to recommend for, e.g. 97; omit to use each SKU's current target"}
+      top_n_by_volume: {type: int, desc: "Only the N fastest-selling SKUs by annual units"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($target_service_level_pct, r.cur_sl)
+      )
+      SELECT sku, category, abc_class, volume_rank, cur_ss AS current_safety_stock, round(rec_now, 0) AS recommended_safety_stock,
+             round(100.0 * (cur_ss - rec_now) / rec_now, 1) AS variance_pct,
+             CASE WHEN cur_ss < rec_now * 0.9 THEN 'TOO_LOW' WHEN cur_ss > rec_now * 1.1 THEN 'TOO_HIGH' ELSE 'OK' END AS assessment,
+             cur_rop AS current_reorder_point, round(mu * act_lt / 7.0 + rec_now, 0) AS recommended_reorder_point,
+             pol_lt AS policy_lead_time_days, act_lt AS actual_lead_time_days, supplier_id, round(sd / mu, 2) AS demand_cv,
+             round((rec_now - cur_ss) * cost, 2) AS working_capital_change_gbp
+      FROM s
+      WHERE ($sku IS NULL OR sku = $sku) AND ($category IS NULL OR category = $category) AND ($abc_class IS NULL OR abc_class = $abc_class)
+        AND ($top_n_by_volume IS NULL OR volume_rank <= $top_n_by_volume)
+        AND ($variance_threshold_pct = 0 OR abs(100.0 * (cur_ss - rec_now) / rec_now) > $variance_threshold_pct)
+      ORDER BY abs(variance_pct) DESC
+    limit: 200
+    example: {abc_class: A, variance_threshold_pct: 15}
+
+  - name: compare_hold_stock_vs_accept_stockouts
+    desc: Per category, compare the yearly cost of holding stock for the current service level against the margin lost by accepting a lower one, with a recommendation.
+    kind: sql
+    args:
+      category: {}
+      abc_class: {}
+      origin_region: {type: enum, values: [Asia, Other], desc: "Country-of-origin region (Asia = CN, VN, IN, BD), omit for all"}
+      lead_time_increase_days: {type: int, default: 0, desc: "Extra supplier lead time to model, in days"}
+      current_service_level_pct: {type: int, desc: "Current service level, e.g. 95; omit to use each SKU's current target"}
+      proposed_service_level_pct: {type: int, default: 85, desc: "Lower service level to accept if holding less stock"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + $lead_time_increase_days) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce($current_service_level_pct, r.cur_sl)
+      ), t AS (
+        SELECT s.*, zp.z_score * sqrt((act_lt + $lead_time_increase_days) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_prop
+        FROM s JOIN service_level_z zp ON zp.service_level_pct = $proposed_service_level_pct
+        WHERE ($category IS NULL OR category = $category) AND ($abc_class IS NULL OR abc_class = $abc_class)
+          AND ($origin_region IS NULL OR region = $origin_region)
+      ), k AS (
+        SELECT t.*, greatest(rec_ext - rec_prop, 0) AS extra_units FROM t
+      )
+      SELECT category, count(*) AS sku_count, $proposed_service_level_pct AS proposed_service_level_pct,
+             round(sum(greatest(rec_ext - rec_now, 0) * cost), 2) AS extra_stock_for_lead_time_gbp,
+             round(sum(extra_units), 0) AS stock_needed_for_higher_service_units,
+             round(sum(extra_units * cost) * 0.25, 2) AS hold_stock_annual_cost_gbp,
+             round(sum(vol * greatest(cur_sl - $proposed_service_level_pct, 0) / 100.0 * 0.5 * (price - cost)), 2) AS lost_margin_if_accepted_gbp,
+             CASE WHEN sum(vol * greatest(cur_sl - $proposed_service_level_pct, 0) / 100.0 * 0.5 * (price - cost)) < sum(extra_units * cost) * 0.25
+                  THEN 'ACCEPT_STOCKOUTS' ELSE 'HOLD_STOCK' END AS recommendation,
+             'hold cost = 25% a year of the stock needed for the higher service level; lost margin = units * (current - proposed SL) * 50% * margin per unit' AS formula
+      FROM k GROUP BY category ORDER BY hold_stock_annual_cost_gbp DESC
+    limit: 40
+    example: {abc_class: C}
+
+  - name: calculate_centralised_stock_saving
+    desc: For low-volume SKUs held at several DCs, model the safety stock, working capital and carrying cost saved by holding it in one place, net of extra transport.
+    kind: sql
+    args:
+      sku: {}
+      category: {}
+      abc_class: {}
+      max_weekly_units: {type: float, default: 140, desc: "Long-tail definition - only SKUs selling at most this many units a week"}
+    sql: |
+      WITH b AS (
+        SELECT p.sku, p.category, p.abc_class, p.service_level_target_pct AS cur_sl, p.safety_stock_units AS cur_ss,
+               p.reorder_point_units AS cur_rop, p.lead_time_days AS pol_lt, p.annual_volume_units AS vol,
+               m.unit_cost_gbp AS cost, m.retail_price_gbp AS price, m.country_of_origin AS origin, m.status AS product_status,
+               m.supplier_id, a.demand_52w_mean AS mu, a.demand_52w_stdev AS sd,
+               l.lead_time_days AS act_lt, l.lead_time_stdev_days AS act_sd
+        FROM sku_inventory_policies p
+        JOIN sku_demand_analysis a ON a.sku = p.sku
+        JOIN supplier_lead_time_actuals l ON l.sku = p.sku
+        JOIN master.products m ON m.sku = p.sku
+      ), r AS (
+        SELECT b.*, row_number() OVER (ORDER BY vol * cost DESC) AS value_rank,
+               row_number() OVER (ORDER BY vol DESC) AS volume_rank,
+               CASE WHEN origin IN ('CN','VN','IN','BD') THEN 'Asia' ELSE 'Other' END AS region
+        FROM b
+      ), s AS (
+        SELECT r.*, zz.z_score AS z,
+               zz.z_score * sqrt(act_lt / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_now,
+               zz.z_score * sqrt((act_lt + 0) / 7.0 * sd * sd + mu * mu * power(act_sd / 7.0, 2)) AS rec_ext
+        FROM r JOIN service_level_z zz ON zz.service_level_pct = coalesce(CAST(NULL AS INTEGER), r.cur_sl)
+      ), d AS (
+        SELECT sku, count(*) AS dcs FROM master.dc_stock GROUP BY sku
+      ), c AS (
+        SELECT s.sku, s.category, s.abc_class, s.product_status, round(s.mu, 1) AS weekly_units, d.dcs AS dcs_stocking, s.vol, s.cost,
+               s.cur_ss, s.cur_ss / sqrt(d.dcs) AS pooled_ss
+        FROM s JOIN d ON d.sku = s.sku
+        WHERE d.dcs > 1 AND s.mu <= $max_weekly_units AND s.product_status = 'active'
+          AND ($sku IS NULL OR s.sku = $sku) AND ($category IS NULL OR s.category = $category) AND ($abc_class IS NULL OR s.abc_class = $abc_class)
+      )
+      SELECT sku, category, abc_class, weekly_units, dcs_stocking, cur_ss AS current_safety_stock, round(pooled_ss, 0) AS centralised_safety_stock,
+             round((cur_ss - pooled_ss) * cost, 2) AS working_capital_saving_gbp,
+             round((cur_ss - pooled_ss) * cost * 0.25, 2) AS carrying_cost_saving_gbp,
+             round(vol * (dcs_stocking - 1.0) / dcs_stocking * 0.20, 2) AS extra_transport_cost_gbp,
+             round((cur_ss - pooled_ss) * cost * 0.25 - vol * (dcs_stocking - 1.0) / dcs_stocking * 0.20, 2) AS net_annual_saving_gbp,
+             round(100.0 * (dcs_stocking - 1.0) / dcs_stocking, 0) AS volume_shipped_between_dcs_pct,
+             'pooled_ss = current_ss / sqrt(DCs); carrying 25% of value; transport 0.20 per unit moved between DCs' AS formula
+      FROM c ORDER BY net_annual_saving_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: update_service_level_target_for_segment
+    desc: Set the target service level for a segment (SEG-001 A items, SEG-002 B, SEG-003 C). Use only after the change is approved.
+    kind: update
+    table: segment_service_levels
+    set: {target_service_level_pct: "{target_service_level_pct}", updated_at: "$as_of"}
+    args:
+      target_service_level_pct: {type: int, required: true, desc: "New target service level, e.g. 97"}
+    example: {segment_id: SEG-001, target_service_level_pct: 97}

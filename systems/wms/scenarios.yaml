@@ -1,0 +1,402 @@
+# Scenarios for WMS: one entry per question row that uses this system's tools (see: python -m mockmcp brief wms).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+
+- question: "01:4:Q1"
+  story: >
+    Bay DC1-C-14 (bins -01 to -04). On the Tuesday count SKU-100084 in DC1-C-14-02 was 24 units short (system 124, counted 100,
+    -19.35%); SKU-100028 in DC1-C-14-01 was 3 short; the other bins counted clean. The 90-day movement history of DC1-C-14-02 shows
+    repeated adjustments with notes (pick short from the wrong bin scanned, put-away not scanned, picked against the C-14-01 label).
+    The bay is not held yet; block_location and create_cycle_count_task place the hold and the recount.
+  checks:
+    - tool: get_location_inventory_balance
+      args: {location_id: DC1-C-14}
+      expect: ["DC1-C-14-02", "SKU-100084", "124"]
+    - tool: list_cycle_count_results_for_location
+      args: {location_id: DC1-C-14}
+      expect: ["SKU-100084", "-24", "-19.35", "SKU-100028"]
+    - tool: get_stock_movements_for_location
+      args: {location_id: DC1-C-14-02, date_from: "-90d"}
+      expect: ["Pick short, wrong bin scanned", "Put-away to C-14-02 not scanned", "INV-ADJ-900005"]
+    - tool: block_location
+      args: {location_id: DC1-C-14-02, site_id: DC1, reason: Awaiting recount}
+      expect: ["LB-", "blocked", "DC1-C-14-02"]
+    - tool: create_cycle_count_task
+      args: {location_id: DC1-C-14-02, site_id: DC1, reason: Recount after variance}
+      expect: ["CCT-", "planned", "DC1-C-14-02"]
+
+- question: "01:4:Q2"
+  story: >
+    DC1 cycle count corrections over 500 pounds in the last quarter. Nine night-shift corrections on mezzanine and bulk aisles J and L
+    (counter EMP-00134) carry cause code other, the catch-all in get_cause_code_definitions. Three corrections (CCR-910000, CCR-910001,
+    CCR-910002) were reversed about 30 hours after the count and drop out with exclude_reversed_48h.
+  checks:
+    - tool: list_cycle_count_corrections
+      args: {site_id: DC1, min_value_gbp: 500, date_from: "-112d"}
+      expect: ["other", "night", "mezzanine", "CCR-910000", "CCR-910001", "CCR-910002", "hours_to_reversal"]
+    - tool: list_cycle_count_corrections
+      args: {site_id: DC1, min_value_gbp: 500, date_from: "-112d", cause_code: other}
+      expect: ["CCR-920000", "EMP-00134", "night"]
+    - tool: get_cause_code_definitions
+      args: {}
+      expect: ["other", "Catch-all", "receiving_variance", "cycle_count_variance"]
+
+- question: "01:4:Q3"
+  story: >
+    DC1 priority counts: six high-value bins not counted for 50 to 70 days with poor accuracy history (DC1-F-13-04, DC1-B-21-02,
+    DC1-A-28-02, DC1-E-23-01, DC1-D-18-02, DC1-D-25-01) have planned tasks CCT-900101 to CCT-900106. DC1-A-06-04 (high value, poor
+    history) was counted 11 days ago and DC1-C-06-01 has a clean history, so they rank lower or drop out. Aisle D has two of the six.
+  checks:
+    - tool: list_locations_by_last_count_date
+      args: {site_id: DC1, days_since_count: 30, min_value_gbp: 100000}
+      expect: ["DC1-F-13-04", "DC1-B-21-02", "DC1-A-28-02", "days_since_count"]
+    - tool: calculate_count_priority_score
+      args: {site_id: DC1}
+      expect: ["DC1-F-13-04", "CCT-900101", "priority_score", "DC1-D-25-01"]
+    - tool: get_historical_count_accuracy_by_location
+      args: {site_id: DC1, group_by: aisle}
+      expect: ["accuracy_pct", "group_key"]
+    - tool: draft_cycle_count_sheet
+      args: {location_ids: "DC1-F-13-04,DC1-B-21-02"}
+      expect: ["CYCLE COUNT SHEET", "DC1-F-13-04", "SKU-104739", "DC1-B-21-02"]
+    - tool: release_cycle_count_tasks
+      args: {task_id: CCT-900101}
+      expect: ["released", "CCT-900101"]
+    - tool: reassign_cycle_count_task
+      args: {task_id: CCT-900105, assigned_to: EMP-00136}
+      expect: ["EMP-00136", "CCT-900105"]
+    - tool: cancel_cycle_count_task
+      args: {task_id: CCT-900106, cancel_reason: Location blocked}
+      expect: ["cancelled", "CCT-900106"]
+
+- question: "01:4:Q4"
+  story: >
+    Over the last 8 weeks Vaughan Industries (SUP-0072) delivered PO-2026-005321 (DC2, SKU-104991) 932 units short and PO-2026-005133
+    (DC4, SKU-104998) 867 units short against the ASN (the same variances supplier_portal and po quote), about 89 percent of all short value. Both loads came on EuroLink (CAR-004), which
+    delivered about 120 other lines with only 0.3 percent variance, and the goods-in notes say the seals were intact and the loads were
+    counted twice at the tailgate, so it is short-shipping rather than our receiving.
+  checks:
+    - tool: compare_receipts_to_asns
+      args: {group_by: supplier}
+      expect: ["SUP-0072", "Vaughan Industries", "share_of_short_value_pct"]
+    - tool: compare_receipts_to_asns
+      args: {variance: short}
+      expect: ["GR-900001", "GR-900002", "-932", "-867", "PO-2026-005321"]
+    - tool: compare_receipts_to_asns
+      args: {group_by: carrier}
+      expect: ["CAR-004", "EuroLink"]
+    - tool: list_goods_receipts
+      args: {supplier_id: SUP-0072, date_from: "-56d"}
+      expect: ["PO-2026-005321", "PO-2026-005133", "seal intact"]
+
+- question: "01:4:Q5"
+  story: >
+    DC1 stock accuracy by zone over the last four 13-week quarters: mezzanine falls every quarter (about 94 to 86 percent) and is the
+    worst zone; pick, reserve, bulk and hazmat stay between 94 and 97 percent.
+  checks:
+    - tool: get_stock_accuracy_trend_by_zone
+      args: {site_id: DC1}
+      expect: ["mezzanine", "deteriorating", "accuracy_pct", "pick", "reserve", "bulk", "hazmat"]
+
+- question: "01:6:Q1"
+  story: >
+    DC1 shipped volume fell by about a tenth between the four weeks before last (about 1,240 units, 571 orders) and the latest four
+    weeks (about 1,110 units, 501 orders) while the single-unit share stayed about 38 percent, so the cost per unit rise is lost
+    volume rather than a shift to single-unit orders.
+  checks:
+    - tool: get_units_shipped_by_period
+      args: {site_id: DC1, date_from: "-98d", date_to: "-14d", period: week}
+      expect: ["units_shipped", "orders_shipped", "period_start"]
+    - tool: get_order_line_profile
+      args: {site_id: DC1, date_from: "-98d", date_to: "-14d", period: week}
+      expect: ["single_unit_pct", "avg_units_per_order", "period_start"]
+
+- question: "01:6:Q2"
+  story: >
+    DC1 pallet positions are 90 percent occupied (reserve and hazmat above 90 percent) and growing about 27 positions a week, so the
+    building fills in about four weeks (supply_planning projects it over capacity from the week of 2 November). Smart Home and Small Appliances
+    drive the growth, then Cookware and Audio.
+  checks:
+    - tool: get_storage_capacity_by_zone
+      args: {site_id: DC1}
+      expect: ["ALL", "weeks_to_full", "occupancy_pct", "reserve", "hazmat"]
+    - tool: get_pallet_positions_by_category
+      args: {site_id: DC1}
+      expect: ["Small Appliances", "Smart Home", "growth_per_week"]
+
+- question: "01:6:Q5"
+  story: >
+    Since three weeks ago DC1 loading exceptions rose from about 4 to about 28 a week and late waves from about 2 to about 13 a week,
+    concentrated on the North stores ST150 (Leeds Shopping Centre), ST159 and ST183; short picks stayed flat. On the Monday three weeks ago the store wave
+    template was changed (North stores added to the DC1 AM wave, release 05:00 to 06:30, wave size 40 to 65).
+  checks:
+    - tool: list_short_picks_by_stage
+      args: {site_id: DC1, date_from: "-56d"}
+      expect: ["loading", "loading_exception", "late_wave", "short_pick", "wave_release"]
+    - tool: list_short_picks_by_stage
+      args: {site_id: DC1, date_from: "-21d", group_by: store}
+      expect: ["ST150", "ST159", "ST183"]
+    - tool: list_recent_configuration_changes
+      args: {site_id: DC1, date_from: "-30d"}
+      expect: ["CFG-900001", "wave_template", "ST159"]
+    - tool: get_wave_configuration
+      args: {site_id: DC1}
+      expect: ["wave", "channel"]
+
+- question: "01:8:Q1"
+  story: >
+    140 orders sit in allocation_failed since 06:00: 132 fail PACK_UOM_MISMATCH on the 14 SUP-0013 electricals SKUs (PF-220 and K-1700
+    most) after the pack specification sync the evening before (CFG-900002, minimum allocation unit each to inner pack of 4); 8 fail
+    LOCATION_BLOCKED. retry_order_allocation queues a retry for one order.
+  checks:
+    - tool: list_orders_by_status
+      args: {status: allocation_failed}
+      expect: ["allocation_failed", "PACK_UOM_MISMATCH", "140 rows"]
+    - tool: list_allocation_failure_reasons
+      args: {}
+      expect: ["SUP-0013", "PF-220", "K-1700", "PACK_UOM_MISMATCH", "inner pack of 4"]
+    - tool: list_allocation_failure_reasons
+      args: {group_by: reason}
+      expect: ["PACK_UOM_MISMATCH", "132", "LOCATION_BLOCKED"]
+    - tool: list_recent_configuration_changes
+      args: {date_from: "-7d"}
+      expect: ["CFG-900002", "pack_specification", "INNER PACK (4)"]
+    - tool: retry_order_allocation
+      args: {order_id: ORD-2026-0114544, notes: Pack spec corrected}
+      expect: ["RETRY-", "retry_queued", "ORD-2026-0114544"]
+
+- question: "01:8:Q2"
+  story: >
+    SKU-100007 at DC1: WMS holds 150 of its 5,392 units in quarantine (location DC1-L-02-03), which WMS excludes from available but ERP
+    still counts, so ERP is 150 higher. Same-style size pairs (for example SKU-103157 with SKU-103164, 64 co-picks) are picked together
+    but sit in different aisles.
+  checks:
+    - tool: get_wms_stock_by_sku
+      args: {sku: SKU-100007, site_id: DC1}
+      expect: ["quarantine", "on-hand", "150", "available_to_promise"]
+    - tool: get_pick_affinity_pairs
+      args: {site_id: DC1}
+      expect: ["SKU-103157", "SKU-103164", "64", "location_1"]
+
+- question: "01:8:Q3"
+  story: >
+    WMS 9.2.4 is installed (applied after 9.2.0 to 9.2.3). Patch 9.2.7 is available and fixes the duplicate replenishment task bug
+    (KB-000002): 12 duplicate task pairs at DC1 in the last weeks, each created 2 to 4 seconds after another task for the same SKU and
+    bin, triggered by two receipts landing within 5 seconds.
+  checks:
+    - tool: get_wms_version_and_patches
+      args: {status: current}
+      expect: ["9.2.4", "current"]
+    - tool: get_wms_version_and_patches
+      args: {contains: duplicate}
+      expect: ["9.2.7", "available", "50 concurrent receipts", "KB-000002"]
+    - tool: list_replenishment_task_duplicates
+      args: {site_id: DC1, date_from: "-90d"}
+      expect: ["12 rows", "seconds_apart", "first_receipt_id"]
+
+- question: "01:10:Q5"
+  story: >
+    DC1 order mix by hour is flat: about 1.4 lines per order in every hour including 14:00 to 16:00, with the same zone split, so order
+    mix does not explain the afternoon dip.
+  checks:
+    - tool: get_order_mix_by_hour
+      args: {site_id: DC1, date_from: "-42d"}
+      expect: ["lines_per_order", "1.4", "pick_zone_pct"]
+
+- question: "01:8:Q4"
+  story: >
+    A quality hold put about 1.05m of DC3 and DC1 stock into quarantine; with damaged and expired stock about 1.2m is held in WMS but still booked by ERP. The status mapping explains why.
+  checks:
+    - tool: get_wms_stock_by_sku
+      args: {status: held}
+      expect: ["SKU-100819", "quarantine", "total_value_in_selection"]
+    - tool: get_inventory_status_mapping
+      args: {}
+      expect: ["quarantine", "erp_counts_in_book_stock"]
+- question: "01:8:Q5"
+  story: >
+    DC2 e-commerce runs three scheduled waves a day (06:00, 10:00, 13:00) with a 15:00 cut-off and about 29 orders per wave.
+  checks:
+    - tool: get_wave_configuration
+      args: {site_id: DC2, channel: ecommerce}
+      expect: ["15:00", "06:00, 10:00, 13:00", "29"]
+- question: "02:14:Q7"
+  story: >
+    UK DCs ship stock on to Ireland, Venlo and EU stores weekly; most is non-UK origin.
+  checks:
+    - tool: get_reexport_volumes_by_destination
+      args: {date_from: -120d}
+      expect: ["Ireland", "6713", "Netherlands", "16012"]
+    - tool: get_stock_movements_for_reexport_goods
+      args: {destination: IE, date_from: -120d}
+      expect: ["transfer_id", "IE"]
+- question: "03:22:Q1"
+  story: >
+    SKU-101904 sat in DC1 at 4282 units throughout the stockout while the only receipt in a year was 2807 units in March, so the stockout was allocation not supply.
+  checks:
+    - tool: get_goods_receipts_for_product
+      args: {sku: SKU-101904, date_from: -400d}
+      expect: ["2807", "193"]
+    - tool: get_dc_stock_history_for_product
+      args: {sku: SKU-101904, date_from: -60d}
+      expect: ["4282", "closing_qty"]
+- question: "03:22:Q4"
+  story: >
+    SKU-104963 is held across DC1, DC2, DC4 and DC5 (about 13,000 units); a transfer from Northampton DC1 (the DC with the lane to the northern stores) to northern store ST145 is created.
+  checks:
+    - tool: get_dc_stock_for_product
+      args: {sku: SKU-104963}
+      expect: ["5184", "4651", "site_total_qty"]
+    - tool: create_stock_transfer
+      args: {from_site_id: DC1, to_site_id: ST145, sku: SKU-104963, qty_requested: 200, reason: rebalance}
+      expect: ["STR-", "draft", "ST145"]
+- question: "03:22:Q5"
+  story: >
+    SUP-0013 delivered PO-2026-004443 into DC2 18 days late.
+  checks:
+    - tool: get_dc_inbound_delays
+      args: {supplier_id: SUP-0013, date_from: -63d, days_late_threshold: 1}
+      expect: ["PO-2026-004443", "DC2", "18"]
+    - tool: get_dc_inbound_delays
+      args: {group_by: site, date_from: -45d, days_late_threshold: 1}
+      expect: ["late_receipts", "DC1"]
+- question: "03:25:Q5"
+  story: >
+    Stock moves from weak store ST201 to strong store ST143.
+  checks:
+    - tool: create_stock_transfer
+      args: {from_site_id: ST201, to_site_id: ST143, sku: SKU-100084, qty_requested: 30, reason: rebalance}
+      expect: ["STR-", "draft", "ST143"]
+- question: "03:29:Q2"
+  story: >
+    Outlet transfer from DC3 to Sheffield Outlet ST154.
+  checks:
+    - tool: create_stock_transfer
+      args: {from_site_id: DC3, to_site_id: ST154, sku: SKU-104277, qty_requested: 800, reason: outlet}
+      expect: ["STR-", "draft", "ST154"]
+- question: "03:31:Q4"
+  story: >
+    Leeds DC3 is underused at 55.3 percent of bins occupied against 88.5 at Northampton.
+  checks:
+    - tool: get_dc_utilisation
+      args: {group_by: site}
+      expect: ["DC3", "55.3", "88.5"]
+- question: "04:40:Q1"
+  story: >
+    SKU-100532 has corrugated (250 per pallet), moulded pulp (200) and recycled plastic (400) pack specs.
+  checks:
+    - tool: calculate_pallet_fill_by_pack_spec
+      args: {sku: SKU-100532, annual_units: 400000}
+      expect: ["1600", "2000", "1000", "moulded_pulp"]
+- question: "04:40:Q3"
+  story: >
+    Own handling damage on small appliances is small and flat: 42 units in 12 weeks, mostly picking.
+  checks:
+    - tool: get_warehouse_handling_damage_reports
+      args: {category: Small Appliances, date_from: -90d, group_by: stage}
+      expect: ["picking", "24", "putaway"]
+- question: "07:67:Q4"
+  story: >
+    Bonded-suitable on-hand stock by DC: DC2 holds the most.
+  checks:
+    - tool: get_bonded_warehouse_volumes
+      args: {group_by: site}
+      expect: ["DC2", "all categories", "pallets_needed"]
+- question: "07:69:Q3"
+  story: >
+    Shrink forecast. create_cycle_count_task schedules a count of the highest-risk category at a DC.
+  checks:
+    - tool: create_cycle_count_task
+      args: {site_id: DC1, category: Small Appliances, scheduled_date: "+7d", reason: Year-end shrink risk}
+      expect: ["CCT-", "planned", "Small Appliances"]
+
+- question: "07:69:Q5"
+  story: >
+    WMS to ledger reconciliation comparison. get_inventory_status_mapping and get_wms_stock_valuation give the WMS side: about 1.2m of stock value sits in quarantine, damaged and expired status.
+  checks:
+    - tool: get_inventory_status_mapping
+      args: {}
+      expect: ["wms_status", "erp_status"]
+    - tool: get_wms_stock_valuation
+      args: {group_by: status}
+      expect: ["quarantine", "damaged", "expired", "on-hand"]
+
+- question: "08:74:Q2"
+  story: >
+    Black Friday peak capacity planning. get_dc_daily_capacity shows DC2 daily capacity by process; packing (16000 a day, 20000 with overtime) is the tightest.
+  checks:
+    - tool: get_dc_daily_capacity
+      args: {site_id: DC2}
+      expect: ["packing", "16000", "20000", "108.5"]
+
+- question: "08:74:Q5"
+  story: >
+    Split order analysis. get_units_shipped_by_period shows shipment volume trends and get_stock_location_for_split_orders shows orders picked from several bins.
+  checks:
+    - tool: get_units_shipped_by_period
+      args: {site_id: DC1, date_from: "-30d", period: day}
+      expect: ["units_shipped", "period_start"]
+    - tool: get_stock_location_for_split_orders
+      args: {date_from: "-30d", site_id: DC1}
+      expect: ["ORD-2026-", "DC1-"]
+
+- question: "08:75:Q1"
+  story: >
+    Wholesale order investigation. get_pick_and_pack_record_for_order shows pick history for an order.
+  checks:
+    - tool: get_pick_and_pack_record_for_order
+      args: {reference_id: ORD-900072}
+      expect: ["ORD-900072", "SKU-100476", "450", "Short pick"]
+
+- question: "09:81:Q4"
+  story: >
+    Cost per order model. get_wms_labour_and_handling_cost_by_order returns lines, units, bins and rate-card cost for an order.
+  checks:
+    - tool: get_wms_labour_and_handling_cost_by_order
+      args: {reference_id: ORD-900072}
+      expect: ["ORD-900072", "650", "125.26"]
+    - tool: get_wms_labour_and_handling_cost_by_order
+      args: {reference_id: ORD-2026-0108564}
+      expect: ["ORD-2026-0108564", "0.9", "0.79", "0.45", "2.14"]
+
+- question: "09:82:Q6"
+  story: >
+    Feature engineering for supplier delay. get_asn_timeliness_history provides receipt lateness against PO due date and quantity accuracy by supplier or PO; the slipping supplier SUP-0053 (West Textiles) is late on PO-2026-005840 (18 days), PO-2026-005461 (11) and PO-2026-005462 (5), the same POs po shows; SUP-0077 and SUP-0020 run latest overall.
+  checks:
+    - tool: get_asn_timeliness_history
+      args: {}
+      expect: ["SUP-0077", "SUP-0020"]
+    - tool: get_asn_timeliness_history
+      args: {supplier_id: SUP-0053, group_by: po}
+      expect: ["PO-2026-005840", "PO-2026-005461", "PO-2026-005462"]
+
+- question: "09:83:Q2"
+  story: >
+    EDI spec mapping. get_wms_inbound_field_schema documents inbound fields and the pallet-level fields the WMS does not hold.
+  checks:
+    - tool: get_wms_inbound_field_schema
+      args: {wms_supported: false}
+      expect: ["pallet_id_sscc", "cartons_per_pallet", "shipment_id"]
+
+- question: "09:87:Q5"
+  story: >
+    DC1 cost analysis. get_dc_product_mix_and_volume shows volume, category mix and SKU count.
+  checks:
+    - tool: get_dc_product_mix_and_volume
+      args: {period_days: 56}
+      expect: ["Northampton DC", "Blouses", "Daventry DC"]
+
+- question: "09:88:Q4"
+  story: >
+    Capacity planning. get_site_capacity_by_process shows rated capacity by process; DC2 packing was already over its normal capacity at last peak.
+  checks:
+    - tool: get_site_capacity_by_process
+      args: {}
+      expect: ["DC2", "packing", "108.5", "-8.5"]
+
+- question: "09:90:Q6"
+  story: >
+    Rollback assessment for the new Leeds DC (DC3). get_rollback_requirements shows data created since go-live and how each kind is reversed; stock movements can only be replayed.
+  checks:
+    - tool: get_rollback_requirements
+      args: {site_id: DC3, from_date: "-14d"}
+      expect: ["Stock Movements", "WMS support lead", "Open Order Lines"]

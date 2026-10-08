@@ -1,0 +1,211 @@
+id: ats
+name: Applicant Tracking System (ATS)
+instructions: >
+  Recruitment, job requisitions, hiring funnel and agency labour management.
+  Requisition ids look like REQ-000123, labour request ids like ALR-000123.
+  Use it for recruitment lead times, cost per hire, and hiring funnel bottlenecks.
+
+tables:
+  job_requisitions:
+    key: requisition_id
+    cols:
+      requisition_id: {type: str, desc: "Job requisition, e.g. REQ-000123"}
+      site_id: {type: str, desc: "Site, e.g. DC1 (home site for the role)"}
+      role: {type: str, desc: "Job title / role description"}
+      headcount_required: {type: int, desc: "Number of positions to fill"}
+      status: {type: enum, values: [open, in_progress, filled, cancelled], desc: Requisition status}
+      created_at: {type: timestamp, desc: "When the requisition was opened"}
+      filled_date: {type: date, desc: "Date when all positions were filled (if filled)"}
+      salary_gbp: {type: float, desc: "Annual salary in GBP"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  recruitment_funnel:
+    key: funnel_id
+    cols:
+      funnel_id: {type: str, desc: "Funnel entry, e.g. FUN-000123"}
+      requisition_id: {type: str, desc: "Job requisition this candidate applies for"}
+      candidate_name: {type: str, desc: "Candidate name"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "How candidate was sourced"}
+      stage: {type: enum, values: [application, screening, interview, offer, hired, rejected], desc: "Current hiring stage (rejected = left the pipeline)"}
+      applied_at: {type: timestamp, desc: "When application received"}
+      moved_at: {type: timestamp, desc: "When candidate moved to current stage"}
+      offer_date: {type: date, desc: "Date offer was made (if applicable)"}
+      start_date: {type: date, desc: "Planned start date (if hired)"}
+      days_in_stage: {type: int, desc: "Days spent in the current stage (or in the last stage if hired or rejected)"}
+      furthest_stage: {type: enum, values: [application, screening, interview, offer, hired], desc: "Furthest stage reached (the stage a rejected candidate dropped out at)"}
+      application_days: {type: int, desc: "Days spent in application stage before screening"}
+      screening_days: {type: int, desc: "Days spent in screening (blank if not reached)"}
+      interview_days: {type: int, desc: "Days spent in interview stage (blank if not reached)"}
+      offer_days: {type: int, desc: "Days from offer to acceptance (blank if not reached)"}
+      feedback: {type: str, desc: "Interview feedback or rejection reason"}
+
+  agency_labour_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Agency labour request, e.g. ALR-000123"}
+      site_id: {type: str, desc: "DC or store site"}
+      shift: {type: enum, values: [early, late, night, days, office], desc: "Shift pattern"}
+      start_date: {type: date, desc: "Start date for the agency workers"}
+      end_date: {type: date, desc: "End date for the agency workers"}
+      positions_requested: {type: int, desc: "Number of agency workers needed"}
+      positions_filled: {type: int, desc: "Number of positions filled"}
+      role: {type: str, desc: "Job role (e.g. warehouse operative, picker)"}
+      status: {type: enum, values: [submitted, approved, in_progress, completed, cancelled], desc: "Request status"}
+      created_at: {type: timestamp, desc: "When the request was submitted"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  recruitment_metrics:
+    key: metric_id
+    cols:
+      metric_id: {type: str, desc: "Metric entry, e.g. MET-000123"}
+      role: {type: str, desc: "Job role"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "Recruitment channel"}
+      cost_per_hire_gbp: {type: float, desc: "Average cost per successful hire in GBP"}
+      days_to_hire: {type: int, desc: "Average days from application to hire"}
+      onboarding_days: {type: int, desc: "Average days from accepted offer to productive on site (notice, vetting, induction)"}
+      hires_count: {type: int, desc: "Number of successful hires in period"}
+      period: {type: str, desc: "Period covered, e.g. 2026-Q3"}
+      recorded_at: {type: date, desc: "Date this metric was recorded"}
+
+tools:
+  - name: create_job_requisition
+    desc: Opens a job requisition for recruitment. Returns the new requisition and status.
+    kind: insert
+    table: job_requisitions
+    id_prefix: REQ-
+    defaults: {status: open}
+    args:
+      site_id: {required: true}
+      role: {required: true, desc: "Job title or role description"}
+      headcount_required: {required: true, type: int, desc: "Number of positions to fill"}
+      salary_gbp: {required: true, type: float, desc: "Annual salary in GBP"}
+    example: {site_id: DC1, role: "Warehouse Operative", headcount_required: 5, salary_gbp: 26000}
+
+  - name: submit_agency_labour_request
+    desc: Submits a request for agency labour by site, shift and dates. Returns the new request.
+    kind: insert
+    table: agency_labour_requests
+    id_prefix: ALR-
+    defaults: {status: submitted, positions_filled: 0}
+    args:
+      site_id: {required: true}
+      shift: {required: true}
+      start_date: {required: true, type: date}
+      end_date: {required: true, type: date}
+      positions_requested: {required: true, type: int}
+      role: {required: true, desc: "Job role"}
+    example: {site_id: DC1, shift: night, start_date: "+7d", end_date: "+35d", positions_requested: 10, role: "Warehouse Operative"}
+
+  - name: get_recruitment_lead_times
+    desc: Time to hire plus onboarding days and total lead time per role and recruitment channel, for the latest period unless given. Use to plan when recruiting must start.
+    kind: sql
+    args:
+      role: {type: str, desc: "Role or part of it, e.g. Warehouse Operative (default all roles)"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "Filter by recruitment channel (default all)"}
+      period: {type: str, desc: "Period such as 2026-Q2 (default latest period)"}
+    sql: |
+      SELECT role, recruitment_channel, period,
+             days_to_hire AS days_to_hire,
+             onboarding_days,
+             days_to_hire + onboarding_days AS total_lead_time_days,
+             hires_count
+      FROM recruitment_metrics
+      WHERE period = COALESCE($period, (SELECT max(period) FROM recruitment_metrics))
+        AND ($role IS NULL OR role ILIKE '%' || $role || '%')
+        AND ($recruitment_channel IS NULL OR recruitment_channel = $recruitment_channel)
+      ORDER BY role, total_lead_time_days DESC
+    limit: 40
+    example: {role: "Warehouse Operative"}
+
+  - name: get_recruitment_cost_per_hire
+    desc: Cost per hire by role and recruitment channel, with hires made, for the latest period unless one is given. Use to compare agency against direct and other channels.
+    kind: sql
+    args:
+      role: {type: str, desc: "Role or part of it, e.g. Warehouse Operative (default all roles)"}
+      recruitment_channel: {type: enum, values: [direct, agency, job_board, referral, internal], desc: "Filter by recruitment channel (default all)"}
+      period: {type: str, desc: "Period such as 2026-Q2 (default latest period)"}
+    sql: |
+      SELECT role, recruitment_channel, period,
+             round(cost_per_hire_gbp, 2) AS cost_per_hire_gbp,
+             hires_count AS hires,
+             round(cost_per_hire_gbp * hires_count, 0) AS total_cost_gbp
+      FROM recruitment_metrics
+      WHERE period = COALESCE($period, (SELECT max(period) FROM recruitment_metrics))
+        AND ($role IS NULL OR role ILIKE '%' || $role || '%')
+        AND ($recruitment_channel IS NULL OR recruitment_channel = $recruitment_channel)
+      ORDER BY role, cost_per_hire_gbp DESC
+    limit: 40
+    example: {role: "Warehouse Operative"}
+
+  - name: get_time_to_hire_by_site
+    desc: Average days from application to hire per site (slowest first), with applicants, hires and open requisitions. Filter by site or role; use list_recruitment_funnel_bottlenecks for the slow stage.
+    kind: sql
+    args:
+      site_id: {desc: "Site id, e.g. DC2 (default all sites)"}
+      role: {type: str, desc: "Role or part of it, e.g. Picker (default all roles)"}
+      date_from: {type: date, default: "-180d", desc: "Count applications received from this date"}
+    sql: |
+      WITH f AS (
+        SELECT j.site_id, j.requisition_id, r.funnel_id, r.stage,
+               CAST(r.moved_at AS DATE) - CAST(r.applied_at AS DATE) AS days_to_hire
+        FROM job_requisitions j
+        JOIN recruitment_funnel r ON r.requisition_id = j.requisition_id
+        WHERE CAST(r.applied_at AS DATE) >= CAST($date_from AS DATE)
+          AND ($site_id IS NULL OR j.site_id = $site_id)
+          AND ($role IS NULL OR j.role ILIKE '%' || $role || '%')
+      ), o AS (
+        SELECT site_id, count(*) AS open_requisitions, sum(headcount_required) AS open_positions
+        FROM job_requisitions
+        WHERE status IN ('open', 'in_progress')
+          AND ($site_id IS NULL OR site_id = $site_id)
+          AND ($role IS NULL OR role ILIKE '%' || $role || '%')
+        GROUP BY site_id
+      )
+      SELECT f.site_id, s.name AS site_name,
+             count(*) AS applicants,
+             count(*) FILTER (WHERE f.stage = 'hired') AS hires,
+             round(avg(f.days_to_hire) FILTER (WHERE f.stage = 'hired'), 1) AS avg_days_to_hire,
+             max(f.days_to_hire) FILTER (WHERE f.stage = 'hired') AS max_days_to_hire,
+             max(o.open_requisitions) AS open_requisitions,
+             max(o.open_positions) AS open_positions
+      FROM f JOIN master.sites s ON s.site_id = f.site_id
+      LEFT JOIN o ON o.site_id = f.site_id
+      GROUP BY f.site_id, s.name
+      ORDER BY avg_days_to_hire DESC NULLS LAST
+    limit: 20
+    example: {}
+
+  - name: list_recruitment_funnel_bottlenecks
+    desc: Per site and hiring stage, candidates reached, share progressing, and average days spent compared with all sites. Use to find which stage slows hiring. Filter by site or role.
+    kind: sql
+    args:
+      site_id: {desc: "Site id, e.g. DC2 (default all sites)"}
+      role: {type: str, desc: "Role or part of it, e.g. Picker (default all roles)"}
+      date_from: {type: date, default: "-180d", desc: "Count applications received from this date"}
+    sql: |
+      WITH base AS (
+        SELECT j.site_id, r.furthest_stage, r.stage, u.stg, u.days
+        FROM recruitment_funnel r
+        JOIN job_requisitions j ON j.requisition_id = r.requisition_id
+        CROSS JOIN LATERAL (VALUES
+          ('1 application', r.application_days, 1), ('2 screening', r.screening_days, 2),
+          ('3 interview', r.interview_days, 3), ('4 offer', r.offer_days, 4)) AS u(stg, days, rk)
+        WHERE CAST(r.applied_at AS DATE) >= CAST($date_from AS DATE)
+          AND ($role IS NULL OR j.role ILIKE '%' || $role || '%')
+          AND u.days IS NOT NULL
+      ), net AS (
+        SELECT stg, round(avg(days), 1) AS network_avg_days FROM base GROUP BY stg
+      )
+      SELECT b.site_id, substr(b.stg, 3) AS stage,
+             count(*) AS candidates_reached,
+             count(*) FILTER (WHERE NOT (b.furthest_stage = substr(b.stg, 3) AND b.stage IN ('rejected', substr(b.stg, 3)))) AS progressed,
+             round(100.0 * count(*) FILTER (WHERE NOT (b.furthest_stage = substr(b.stg, 3) AND b.stage IN ('rejected', substr(b.stg, 3)))) / count(*), 1) AS pct_progressed,
+             round(avg(b.days), 1) AS avg_days_in_stage,
+             max(n.network_avg_days) AS all_sites_avg_days,
+             max(b.days) AS max_days_in_stage
+      FROM base b JOIN net n USING (stg)
+      WHERE ($site_id IS NULL OR b.site_id = $site_id)
+      GROUP BY b.site_id, b.stg
+      ORDER BY b.site_id, b.stg
+    limit: 50
+    example: {site_id: DC2}

@@ -1,0 +1,779 @@
+id: budgeting
+name: Budgeting & Forecasting Tool
+instructions: >
+  Budget management, forecasting, scenario analysis, margin planning and investment returns
+  for Harbour & Vale. Cost budgets by cost centre (CC-2101), operating profit by legal entity (LE-UK),
+  forecast versions (FCST-01001), scenarios (FSC-000001), margin plans, levers and investment cases (INV-900001).
+  Budget line ids look like BL-000123, programmes PGM-000789.
+
+tables:
+  expense_categories:
+    key: [category_group, category]
+    cols:
+      category_group: {type: str, desc: "Group: Facilities, Logistics, People or Technology"}
+      category: {type: str, desc: "Expense category, e.g. utilities, air freight"}
+      description: {type: str, desc: "What the category covers"}
+
+  budget_lines:
+    key: budget_line_id
+    cols:
+      budget_line_id: {type: str, desc: "Budget line, e.g. BL-000123"}
+      cost_centre_id: {type: str, desc: "Cost centre"}
+      category: {type: str, desc: "Expense category, e.g. air freight, staff, utilities"}
+      period_date: {type: date, desc: "A date inside the budget month; the month is the period"}
+      value_gbp: {type: float, desc: Budget amount in GBP}
+      notes: {type: str, desc: "Notes on the budget"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  actual_costs:
+    key: [cost_centre_id, category, period_date]
+    cols:
+      cost_centre_id: {type: str, desc: "Cost centre"}
+      category: {type: str, desc: "Expense category"}
+      period_date: {type: date, desc: "A date inside the month; the month is the period"}
+      actual_gbp: {type: float, desc: "Actual spend in GBP"}
+      one_off_gbp: {type: float, desc: "One-off/non-recurring portion in GBP"}
+      notes: {type: str, desc: "What drove the spend"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  profit_lines:
+    key: [entity_id, category, period_date]
+    cols:
+      entity_id: {type: str, desc: "Legal entity"}
+      category: {type: str, desc: "Product department, e.g. Home, Womenswear, Electricals"}
+      period_date: {type: date, desc: "A date inside the month; the month is the period"}
+      budget_profit_gbp: {type: float, desc: "Budgeted operating profit in GBP"}
+      actual_profit_gbp: {type: float, desc: "Actual operating profit in GBP"}
+      basis: {type: enum, values: [full_month, month_to_date], desc: "Closed month or the current month so far"}
+
+  variance_items:
+    key: variance_item_id
+    cols:
+      variance_item_id: {type: str, desc: "Variance item, e.g. VI-000123"}
+      entity_id: {type: str, desc: "Legal entity"}
+      category: {type: str, desc: "Product department"}
+      period_date: {type: date, desc: "A date inside the month"}
+      driver: {type: enum, values: [volume, price, mix, cost, one_off], desc: "Variance driver"}
+      nature: {type: enum, values: [permanent, timing], desc: "Permanent, or timing that reverses later"}
+      amount_gbp: {type: float, desc: "Effect on operating profit in GBP (negative = adverse)"}
+      explained: {type: bool, desc: "Whether the entity has explained the item"}
+      explanation: {type: text, desc: "Explanation from the entity accountant"}
+
+  forecast_versions:
+    key: forecast_version_id
+    cols:
+      forecast_version_id: {type: str, desc: "Forecast version, e.g. FCST-01001"}
+      forecast_date: {type: date, desc: "Date forecast was made"}
+      scenario_id: {type: str, desc: "Scenario this forecast represents"}
+      forecast_type: {type: enum, values: [forecast, budget], desc: "Forecast or the original budget"}
+      revenue_forecast_gbp: {type: float, desc: "Full-year revenue forecast in GBP"}
+      gross_margin_pct: {type: float, desc: "Gross margin percentage"}
+      freight_cost_gbp: {type: float, desc: "Full-year freight cost in GBP (inside cost of goods)"}
+      ebit_forecast_gbp: {type: float, desc: "Full-year EBIT forecast in GBP"}
+      notes: {type: str, desc: "Notes on the forecast"}
+      status: {type: enum, values: [current, superseded, rejected], desc: "Forecast status"}
+      created_at: {type: timestamp, desc: "Created date"}
+
+  forecast_scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Forecast scenario, e.g. FSC-000001"}
+      name: {type: str, desc: "Scenario name, e.g. Base, Downside, Upside"}
+      description: {type: str, desc: "Description of assumptions in the scenario"}
+      created_date: {type: date, desc: "Date scenario was created"}
+      created_by: {type: str, desc: "Employee who created it"}
+      assumptions: {type: text, desc: "Key assumptions in words (volume, price, freight, FX, etc.)"}
+      demand_change_pct: {type: float, desc: "Demand (volume) change vs base forecast, %, e.g. -5"}
+      price_change_pct: {type: float, desc: "Selling price change vs base forecast, %"}
+      freight_change_pct: {type: float, desc: "Freight cost rate change vs base forecast, %"}
+      fx_change_pct: {type: float, desc: "Move in sterling against the dollar, %, negative = sterling weaker"}
+      nearshore_mix_pct: {type: float, desc: "Share of production moved nearshore, %"}
+      status: {type: enum, values: [active, archived, deleted], desc: "Status"}
+
+  forecast_assumptions:
+    key: [forecast_version_id, driver]
+    cols:
+      forecast_version_id: {type: str, desc: "Forecast version"}
+      driver: {type: str, desc: "Assumption, e.g. Demand growth vs last year"}
+      assumed_value: {type: float, desc: "Value assumed in the forecast"}
+      actual_value: {type: float, desc: "What actually happened, once known"}
+      unit: {type: str, desc: "Unit of the values"}
+      note: {type: text, desc: "Comment"}
+
+  forecast_actuals:
+    key: [forecast_version_id, period_date, line_item]
+    cols:
+      forecast_version_id: {type: str, desc: "Forecast version"}
+      period_date: {type: date, desc: "A date in the middle of the month or quarter"}
+      period_type: {type: enum, values: [month, quarter], desc: "Month or calendar quarter"}
+      line_item: {type: str, desc: "P&L line (revenue, units, gross_profit, gross_margin_pct, freight, markdown, opex, ebit)"}
+      unit: {type: str, desc: "GBP, units or %"}
+      forecast_value: {type: float, desc: "Forecasted value"}
+      actual_value: {type: float, desc: "Actual value"}
+
+  margin_plans:
+    key: [scenario_id, category]
+    cols:
+      scenario_id: {type: str, desc: "Forecast scenario"}
+      category: {type: str, desc: "Product category, e.g. Housewares"}
+      planned_margin_pct: {type: float, desc: "Planned gross margin %"}
+      inflation_assumption_pct: {type: float, desc: "Assumed cost inflation %"}
+      fx_impact_pct: {type: float, desc: "Cost increase from FX, % (net of hedges)"}
+      fx_assumption: {type: str, desc: "FX assumption in words"}
+      tariff_impact_pct: {type: float, desc: "Tariff cost increase %"}
+      notes: {type: str, desc: "Notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  margin_actions:
+    key: action_id
+    cols:
+      action_id: {type: str, desc: "Margin recovery action, e.g. MRA-0001"}
+      category: {type: str, desc: "Product category, or All"}
+      driver: {type: str, desc: "Margin driver it addresses: price, product cost, freight, fx, duty, mix, markdown, shrink"}
+      description: {type: str, desc: "The action"}
+      estimated_value_gbp: {type: float, desc: "Estimated annual margin recovered in GBP"}
+      lead_time_weeks: {type: int, desc: "Weeks before it delivers"}
+      confidence_pct: {type: int, desc: "Confidence in the estimate %"}
+
+  mitigation_levers:
+    key: lever_id
+    cols:
+      lever_id: {type: str, desc: "Lever, e.g. LEV-0001"}
+      name: {type: str, desc: "Lever"}
+      lever_type: {type: str, desc: "revenue, cost reduction, cost structure or working capital"}
+      estimated_value_gbp: {type: float, desc: "Estimated value in GBP"}
+      lead_time_weeks: {type: int, desc: "Weeks before it delivers"}
+      one_time: {type: bool, desc: "One-off rather than recurring"}
+      value_basis: {type: str, desc: "What the value measures, e.g. EBIT per year"}
+
+  programmes:
+    key: programme_id
+    cols:
+      programme_id: {type: str, desc: "Programme, e.g. PGM-000123"}
+      name: {type: str, desc: "Programme name, e.g. Margin Recovery"}
+      description: {type: str, desc: "Programme description"}
+      budget_gbp: {type: float, desc: "Total programme budget in GBP"}
+      start_date: {type: date, desc: "Start date"}
+      end_date: {type: date, desc: "Expected end date"}
+      status: {type: enum, values: [approved, in_progress, completed, cancelled], desc: "Status"}
+      type: {type: enum, values: [cost_saving, revenue, capex, transformation], desc: "Programme type"}
+      annual_benefit_gbp: {type: float, desc: "Planned recurring annual benefit once live, in GBP; 0 if none"}
+      benefit_start_date: {type: date, desc: "Date the benefit starts to flow"}
+
+  programme_costs:
+    key: [programme_id, period_date]
+    cols:
+      programme_id: {type: str, desc: "Programme"}
+      period_date: {type: date, desc: "A date inside the month; the month is the period"}
+      planned_gbp: {type: float, desc: "Baseline plan spend for the month in GBP (sums to the budget)"}
+      forecast_gbp: {type: float, desc: "Latest forecast spend for the month in GBP"}
+      actual_gbp: {type: float, desc: "Actual spend in GBP; blank for months not yet closed"}
+      burn_rate_pct: {type: float, desc: "Actual spend as % of the plan for the month"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  fx_budget_assumptions:
+    key: currency_pair
+    cols:
+      currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
+      budget_rate: {type: float, desc: "Budgeted rate (units of foreign currency per pound)"}
+      hedge_cover_pct: {type: float, desc: "Share of the budgeted exposure assumed hedged, %"}
+      hedged_to: {type: date, desc: "Date the budgeted hedges run to"}
+      annual_exposure_gbp: {type: float, desc: "Budgeted annual purchases in that currency, in GBP at the budget rate"}
+      notes: {type: text, desc: "How the budget treats the currency"}
+
+  capital_budgets:
+    key: budget_id
+    cols:
+      budget_id: {type: str, desc: "Capital budget, e.g. CAPB-GROUP"}
+      scope: {type: enum, values: [group, region], desc: "Whole group or one region"}
+      region: {type: str, desc: "Region (UK North, UK South, ...); blank for the group"}
+      budget_gbp: {type: float, desc: "Capital budget for the year in GBP"}
+      committed_gbp: {type: float, desc: "Already committed or allocated in GBP"}
+      purpose: {type: text, desc: "What the budget is for"}
+
+  capital_options:
+    key: option_id
+    cols:
+      option_id: {type: str, desc: "Capital option, e.g. COPT-01"}
+      option_name: {type: str, desc: "Option, e.g. New regional DC, Store refits"}
+      investment_case_id: {type: str, desc: "Investment case holding its capex and benefits"}
+      proposal_id: {type: str, desc: "Capital proposal id in the project office"}
+      risk_rating: {type: enum, values: [low, medium, high], desc: "Risk rating"}
+      hurdle_rate_pct: {type: float, desc: "Group hurdle rate, %"}
+      risk_adjustment_pct: {type: float, desc: "Points added to the hurdle for this risk rating"}
+      key_risk: {type: text, desc: "Main risk to the return"}
+
+  investment_cases:
+    key: investment_case_id
+    cols:
+      investment_case_id: {type: str, desc: "Investment case, e.g. INV-900001"}
+      title: {type: str, desc: "Investment title, e.g. Northampton DC automation"}
+      description: {type: str, desc: "Investment description"}
+      site_id: {type: str, desc: "Site affected, if any"}
+      capex_gbp: {type: float, desc: "Capital expenditure in GBP"}
+      annual_saving_gbp: {type: float, desc: "Expected annual saving in GBP once live"}
+      annual_revenue_gbp: {type: float, desc: "Expected annual incremental revenue"}
+      payback_period_months: {type: float, desc: "Payback period in months from first spend"}
+      npv_gbp: {type: float, desc: "Net present value at 10% discount rate"}
+      irr_pct: {type: float, desc: "Internal rate of return %"}
+      status: {type: enum, values: [proposal, approved, rejected, implemented], desc: "Status"}
+      created_date: {type: date, desc: "Created date"}
+      assumptions: {type: text, desc: "Key assumptions used"}
+      build_months: {type: int, desc: "Months of build before benefits start"}
+      project_life_years: {type: int, desc: "Years of benefits"}
+
+tools:
+  - name: get_budget_vs_actual_by_cost_centre
+    desc: Budget versus actual cost, variance and one-off amounts by cost centre, category or month, with a total row. Filter by category group such as Facilities.
+    kind: sql
+    args:
+      cost_centre_id: {}
+      category: {type: str, desc: "Expense category, e.g. utilities, maintenance, air freight, staff"}
+      category_group: {type: str, desc: "Category group: Facilities, Logistics, People or Technology"}
+      function: {type: str, desc: "Cost centre function, one or several comma separated: Logistics (DC operations), Transport, Stores, E-commerce"}
+      period_from: {type: date, default: "-12m", desc: "First month (e.g. this year, 2026-01, -3m)"}
+      period_to: {type: date, default: "today", desc: "Last month (e.g. last month, 2026-09)"}
+      group_by: {type: enum, values: [cost_centre, category, cost_centre_category, period], default: cost_centre, desc: "How to group the rows"}
+    sql: |
+      WITH bud AS (
+        SELECT cost_centre_id, category, date_trunc('month', period_date) AS m, SUM(value_gbp) AS budget
+        FROM budget_lines GROUP BY ALL),
+      act AS (
+        SELECT cost_centre_id, category, date_trunc('month', period_date) AS m, SUM(actual_gbp) AS actual, SUM(one_off_gbp) AS one_off,
+               string_agg(DISTINCT NULLIF(notes, ''), '; ') AS note
+        FROM actual_costs GROUP BY ALL),
+      j AS (
+        SELECT a.cost_centre_id, a.category, COALESCE(ec.category_group, 'Other') AS category_group, a.m,
+               COALESCE(b.budget, 0) AS budget, a.actual, a.one_off, a.note
+        FROM act a
+        LEFT JOIN master.cost_centres mcc ON mcc.cost_centre_id = a.cost_centre_id
+        LEFT JOIN bud b ON b.cost_centre_id = a.cost_centre_id AND b.category = a.category AND b.m = a.m
+        LEFT JOIN expense_categories ec ON ec.category = a.category
+        WHERE a.m >= date_trunc('month', CAST($period_from AS DATE))
+          AND a.m <= date_trunc('month', CAST($period_to AS DATE))
+          AND ($cost_centre_id IS NULL OR a.cost_centre_id = $cost_centre_id)
+          AND ($category IS NULL OR lower(a.category) = lower($category))
+          AND ($category_group IS NULL OR lower(COALESCE(ec.category_group, 'Other')) = lower($category_group))
+          AND ($function IS NULL OR lower(mcc.function) IN (SELECT lower(trim(x)) FROM unnest(string_split($function, ',')) t(x)))),
+      agg AS (
+        SELECT
+          CASE WHEN $group_by IN ('cost_centre', 'cost_centre_category') THEN j.cost_centre_id ELSE COALESCE($cost_centre_id, 'ALL') END AS cost_centre_id,
+          CASE WHEN $group_by IN ('category', 'cost_centre_category') THEN j.category ELSE 'ALL' END AS category,
+          CASE WHEN $group_by = 'period' THEN strftime(j.m, '%Y-%m') ELSE 'ALL' END AS period,
+          SUM(j.budget) AS budget_gbp, SUM(j.actual) AS actual_gbp, SUM(j.one_off) AS one_off_gbp,
+          string_agg(DISTINCT j.note, '; ') AS notes
+        FROM j GROUP BY ALL)
+      SELECT cost_centre_id, cost_centre_name, site_id, category, period, budget_gbp, actual_gbp, variance_gbp,
+             variance_pct, one_off_gbp, recurring_variance_gbp, notes
+      FROM (
+        SELECT 1 AS ord, a.cost_centre_id, cc.name AS cost_centre_name, cc.site_id, a.category, a.period,
+               ROUND(a.budget_gbp, 0) AS budget_gbp, ROUND(a.actual_gbp, 0) AS actual_gbp,
+               ROUND(a.actual_gbp - a.budget_gbp, 0) AS variance_gbp,
+               ROUND((a.actual_gbp - a.budget_gbp) / NULLIF(a.budget_gbp, 0) * 100, 1) AS variance_pct,
+               ROUND(a.one_off_gbp, 0) AS one_off_gbp,
+               ROUND(a.actual_gbp - a.budget_gbp - a.one_off_gbp, 0) AS recurring_variance_gbp, a.notes
+        FROM agg a LEFT JOIN master.cost_centres cc ON cc.cost_centre_id = a.cost_centre_id
+        UNION ALL
+        SELECT 0, 'TOTAL', NULL, NULL, 'ALL', 'ALL', ROUND(SUM(budget_gbp), 0), ROUND(SUM(actual_gbp), 0),
+               ROUND(SUM(actual_gbp) - SUM(budget_gbp), 0),
+               ROUND((SUM(actual_gbp) - SUM(budget_gbp)) / NULLIF(SUM(budget_gbp), 0) * 100, 1),
+               ROUND(SUM(one_off_gbp), 0), ROUND(SUM(actual_gbp) - SUM(budget_gbp) - SUM(one_off_gbp), 0), NULL
+        FROM agg HAVING count(*) > 1) t
+      ORDER BY ord, CASE WHEN $group_by = 'period' THEN period END, variance_gbp DESC
+    limit: 100
+    example: {cost_centre_id: CC-2101}
+
+  - name: get_budget_vs_actual_variance
+    desc: Operating profit actual versus budget by legal entity, category or month for a period, with a total row. Use to see where profit is off budget.
+    kind: py
+    fn: profit_variance
+    args:
+      period_from: {type: date, default: "last month", desc: "First month (e.g. last month, this month, 2026-09)"}
+      period_to: {type: date, desc: "Last month; defaults to the same month as period_from"}
+      entity_id: {}
+      category: {type: str, desc: "Product department, e.g. Home, Womenswear, Electricals"}
+      group_by: {type: enum, values: [entity, category, entity_category, period], default: entity, desc: "How to group the rows"}
+    example: {}
+
+  - name: get_variance_drivers
+    desc: Operating profit variance split into volume, price, mix, cost and one-off drivers, permanent versus timing, explained versus unexplained.
+    kind: py
+    fn: calc_variance_drivers
+    args:
+      period_from: {type: date, default: "last month", desc: "First month (e.g. last month, this month, 2026-09)"}
+      period_to: {type: date, desc: "Last month; defaults to the same month as period_from"}
+      entity_id: {}
+      category: {type: str, desc: "Product department, e.g. Home, Womenswear, Electricals"}
+      group_by: {type: enum, values: [driver, entity, category, item], default: driver, desc: "Split by driver, entity, category, or list each item with its explanation"}
+    example: {}
+
+  - name: get_historical_air_freight_spend
+    desc: Air freight budget and actual spend by month, with the budget line ids (including the peak-season line). Use to base the peak budget on recent trend.
+    kind: sql
+    args:
+      cost_centre_id: {}
+      period_from: {type: date, default: "-12m", desc: "First month (e.g. -12m, 2025-11)"}
+      period_to: {type: date, default: "+3m", desc: "Last month; future months show budget only"}
+    sql: |
+      WITH bud AS (
+        SELECT date_trunc('month', period_date) AS m, string_agg(budget_line_id, ', ' ORDER BY budget_line_id) AS budget_line_ids,
+               SUM(value_gbp) AS budget, string_agg(NULLIF(notes, ''), '; ') AS budget_notes
+        FROM budget_lines WHERE category = 'air freight' AND ($cost_centre_id IS NULL OR cost_centre_id = $cost_centre_id)
+        GROUP BY m),
+      act AS (
+        SELECT date_trunc('month', period_date) AS m, SUM(actual_gbp) AS actual, string_agg(NULLIF(notes, ''), '; ') AS actual_notes
+        FROM actual_costs WHERE category = 'air freight' AND ($cost_centre_id IS NULL OR cost_centre_id = $cost_centre_id)
+        GROUP BY m)
+      SELECT strftime(COALESCE(b.m, a.m), '%Y-%m') AS period, b.budget_line_ids, ROUND(b.budget, 0) AS budget_gbp,
+             ROUND(a.actual, 0) AS actual_gbp, ROUND(a.actual - b.budget, 0) AS variance_gbp,
+             COALESCE(b.budget_notes, a.actual_notes) AS notes
+      FROM bud b FULL JOIN act a ON a.m = b.m
+      WHERE COALESCE(b.m, a.m) >= date_trunc('month', CAST($period_from AS DATE))
+        AND COALESCE(b.m, a.m) <= date_trunc('month', CAST($period_to AS DATE))
+      ORDER BY COALESCE(b.m, a.m)
+    limit: 36
+    example: {period_from: "-12m"}
+
+  - name: update_budget_line
+    desc: Change the value of a budget line for a period. Updates an existing budget line and returns the old and new value.
+    kind: update
+    table: budget_lines
+    set: {updated_at: "$as_of"}
+    args:
+      value_gbp: {required: true, type: float, desc: "New budget value in GBP"}
+      notes: {type: str, desc: "Reason for update"}
+    example: {budget_line_id: BL-900101, value_gbp: 450000, notes: "Peak season adjustment"}
+
+  - name: calculate_budget_impact_of_rate_increase
+    desc: Annual budget impact of a carrier or supplier rate increase on a spend category. Uses the last 12 months of actual spend unless you supply one.
+    kind: py
+    fn: calc_rate_impact
+    args:
+      category: {required: true, type: str, desc: "Spend category, e.g. air freight, road transport"}
+      rate_increase_pct: {required: true, type: float, desc: "Rate increase as %"}
+      current_spend_gbp: {type: float, desc: "Annual spend in GBP; default is the last 12 months of actuals"}
+      cost_centre_id: {}
+      volume_assumption: {type: float, default: 1.0, desc: "Volume multiplier against last year; 1.0 = same volume"}
+    example: {category: "air freight", rate_increase_pct: 9.0}
+
+  - name: get_category_margin_plan
+    desc: Planned gross margin by product category and scenario, with the inflation, FX and tariff assumptions behind each.
+    kind: sql
+    args:
+      category: {type: str, desc: "Product category, e.g. Housewares, Womenswear, Electricals"}
+      scenario_id: {}
+    sql: |
+      SELECT
+        mp.scenario_id, fs.name AS scenario_name,
+        mp.category, mp.planned_margin_pct,
+        mp.inflation_assumption_pct, mp.fx_impact_pct, mp.fx_assumption, mp.tariff_impact_pct,
+        mp.notes
+      FROM margin_plans mp
+      LEFT JOIN forecast_scenarios fs ON mp.scenario_id = fs.scenario_id
+      WHERE ($category IS NULL OR lower(mp.category) = lower($category))
+        AND ($scenario_id IS NULL OR mp.scenario_id = $scenario_id)
+      ORDER BY mp.category, mp.scenario_id
+    limit: 50
+    example: {category: Housewares}
+
+  - name: calculate_margin_scenario
+    desc: Category margin under inflation, FX and tariff scenarios. Returns planned margin, each factor's impact in points and the scenario margin, for every scenario.
+    kind: py
+    fn: calc_margin_scenario
+    args:
+      category: {required: true, type: str, desc: "Product category, e.g. Housewares"}
+      scenario_id: {}
+      inflation_rate_pct: {type: float, desc: "Override cost inflation %; default from the plan"}
+      fx_impact_pct: {type: float, desc: "Override cost increase from FX %; default from the plan"}
+      tariff_rate_pct: {type: float, desc: "Override tariff cost increase %; default from the plan"}
+      price_increase_pct: {type: float, default: 0, desc: "Selling price increase % to offset cost"}
+    example: {category: Housewares}
+
+  - name: update_category_margin_plan
+    desc: Change the planned margin for a category in a chosen scenario. Returns the old and new planned margin.
+    kind: update
+    table: margin_plans
+    set: {updated_at: "$as_of"}
+    args:
+      planned_margin_pct: {required: true, type: float, desc: "New margin % for category"}
+      notes: {type: str, desc: "Why the plan changed"}
+    example: {scenario_id: FSC-000002, category: Housewares, planned_margin_pct: 31.0}
+
+  - name: get_latest_forecast_version
+    desc: Full-year forecast versions with revenue, margin, EBIT and date. Current by default; use status superseded for earlier versions such as the July forecast.
+    kind: sql
+    args:
+      scenario_id: {}
+      status: {type: enum, values: [current, superseded, rejected], default: current, desc: "Forecast status"}
+      forecast_type: {type: enum, values: [forecast, budget], default: forecast, desc: "Forecast, or the original budget"}
+    sql: |
+      SELECT
+        fv.forecast_version_id, fv.forecast_type, fv.scenario_id, fs.name AS scenario_name, fv.forecast_date,
+        fv.revenue_forecast_gbp, fv.gross_margin_pct,
+        ROUND(fv.revenue_forecast_gbp * fv.gross_margin_pct / 100, 0) AS gross_profit_gbp,
+        ROUND(fv.revenue_forecast_gbp * fv.gross_margin_pct / 100 - fv.ebit_forecast_gbp, 0) AS opex_gbp,
+        fv.ebit_forecast_gbp, fv.freight_cost_gbp, fv.status, fv.notes
+      FROM forecast_versions fv
+      LEFT JOIN forecast_scenarios fs ON fv.scenario_id = fs.scenario_id
+      WHERE fv.status = $status AND fv.forecast_type = $forecast_type
+        AND ($scenario_id IS NULL OR fv.scenario_id = $scenario_id)
+      ORDER BY fv.forecast_date DESC, fv.forecast_version_id DESC
+    limit: 10
+    example: {status: current}
+
+  - name: get_forecast_drivers_and_assumptions
+    desc: Driver assumptions behind a forecast version (demand, price, freight, FX, markdown, shrink), with the actual outcome where known.
+    kind: sql
+    args:
+      forecast_version_id: {required: true}
+    sql: |
+      SELECT
+        a.forecast_version_id, fv.forecast_date, fs.name AS scenario_name, a.driver, a.assumed_value, a.actual_value,
+        ROUND(a.actual_value - a.assumed_value, 2) AS difference, a.unit, a.note
+      FROM forecast_assumptions a
+      JOIN forecast_versions fv ON fv.forecast_version_id = a.forecast_version_id
+      LEFT JOIN forecast_scenarios fs ON fs.scenario_id = fv.scenario_id
+      WHERE a.forecast_version_id = $forecast_version_id
+      ORDER BY COALESCE(ABS(a.actual_value - a.assumed_value) / GREATEST(ABS(a.assumed_value), 1), 0) DESC, a.driver
+    limit: 30
+    example: {forecast_version_id: "FCST-00701"}
+
+  - name: compare_forecast_to_actuals
+    desc: Forecast version versus actual P&L by line (revenue, units, gross profit, margin, freight, EBIT), for the quarter and each month.
+    kind: sql
+    args:
+      forecast_version_id: {required: true}
+      period_from: {type: date, default: "-6m", desc: "First period (e.g. -6m, Q3, last quarter)"}
+      period_to: {type: date, default: "today", desc: "Last period"}
+      line_item: {type: str, desc: "One P&L line, e.g. revenue, units, gross_profit, gross_margin_pct, freight, ebit"}
+    sql: |
+      SELECT
+        fa.forecast_version_id,
+        CASE fa.period_type WHEN 'quarter' THEN CAST(year(fa.period_date) AS VARCHAR) || '-Q' || CAST(quarter(fa.period_date) AS VARCHAR)
+             ELSE strftime(fa.period_date, '%Y-%m') END AS period,
+        fa.period_type, fa.line_item, fa.unit, fa.forecast_value, fa.actual_value,
+        ROUND(fa.actual_value - fa.forecast_value, 2) AS variance,
+        CASE WHEN fa.unit = '%' THEN NULL ELSE ROUND((fa.actual_value - fa.forecast_value) / NULLIF(fa.forecast_value, 0) * 100, 1) END AS variance_pct
+      FROM forecast_actuals fa
+      WHERE fa.forecast_version_id = $forecast_version_id
+        AND fa.period_date >= date_trunc('quarter', CAST($period_from AS DATE))
+        AND fa.period_date <= CAST($period_to AS DATE)
+        AND ($line_item IS NULL OR lower(fa.line_item) = lower($line_item))
+      ORDER BY fa.period_type DESC, fa.period_date, fa.line_item
+    limit: 100
+    example: {forecast_version_id: "FCST-00701"}
+
+  - name: get_forecast_accuracy_by_line
+    desc: Forecast accuracy by P&L line over monthly periods, giving total forecast, total actual, bias %, average monthly error % and the worst month.
+    kind: sql
+    args:
+      forecast_version_id: {required: true}
+      period_from: {type: date, default: "-6m", desc: "First month (e.g. -6m, 2026-07)"}
+      line_item: {type: str, desc: "One P&L line, e.g. revenue, units, gross_profit"}
+    sql: |
+      WITH m AS (
+        SELECT fa.line_item, fa.unit, fa.period_date, fa.forecast_value, fa.actual_value,
+               (fa.actual_value - fa.forecast_value) / NULLIF(fa.forecast_value, 0) * 100 AS err_pct
+        FROM forecast_actuals fa
+        WHERE fa.forecast_version_id = $forecast_version_id AND fa.period_type = 'month'
+          AND fa.period_date >= date_trunc('month', CAST($period_from AS DATE))
+          AND ($line_item IS NULL OR lower(fa.line_item) = lower($line_item)))
+      SELECT $forecast_version_id AS forecast_version_id, line_item, unit, count(*) AS months,
+             ROUND(SUM(forecast_value), 0) AS total_forecast, ROUND(SUM(actual_value), 0) AS total_actual,
+             ROUND((SUM(actual_value) - SUM(forecast_value)) / NULLIF(SUM(forecast_value), 0) * 100, 1) AS bias_pct,
+             ROUND(avg(abs(err_pct)), 1) AS avg_abs_error_pct,
+             strftime(arg_min(period_date, err_pct), '%Y-%m') AS worst_month,
+             ROUND(min(err_pct), 1) AS worst_month_error_pct
+      FROM m GROUP BY line_item, unit ORDER BY abs(bias_pct) DESC
+    limit: 20
+    example: {forecast_version_id: "FCST-00701"}
+
+  - name: get_full_year_outlook
+    desc: Latest full-year forecast for revenue, gross margin, opex and EBIT, set against the original budget, with the gap in points and pounds.
+    kind: sql
+    args:
+      scenario_type: {type: str, desc: "Scenario name, e.g. Base; empty for all current scenarios"}
+    sql: |
+      WITH bud AS (SELECT * FROM forecast_versions WHERE forecast_type = 'budget' ORDER BY forecast_date DESC LIMIT 1)
+      SELECT
+        fv.forecast_version_id, fs.name AS scenario_name, fv.forecast_date,
+        fv.revenue_forecast_gbp, fv.gross_margin_pct,
+        ROUND(fv.revenue_forecast_gbp * fv.gross_margin_pct / 100, 0) AS gross_profit_gbp,
+        ROUND(fv.revenue_forecast_gbp * fv.gross_margin_pct / 100 - fv.ebit_forecast_gbp, 0) AS opex_gbp,
+        fv.ebit_forecast_gbp, fv.freight_cost_gbp,
+        b.revenue_forecast_gbp AS budget_revenue_gbp, b.gross_margin_pct AS budget_gross_margin_pct, b.ebit_forecast_gbp AS budget_ebit_gbp,
+        ROUND(fv.gross_margin_pct - b.gross_margin_pct, 1) AS gross_margin_vs_budget_pts,
+        ROUND(fv.ebit_forecast_gbp - b.ebit_forecast_gbp, 0) AS ebit_vs_budget_gbp,
+        ROUND(fv.freight_cost_gbp - b.freight_cost_gbp, 0) AS freight_vs_budget_gbp,
+        fv.status, fv.notes
+      FROM forecast_versions fv CROSS JOIN bud b
+      LEFT JOIN forecast_scenarios fs ON fv.scenario_id = fs.scenario_id
+      WHERE fv.status = 'current' AND fv.forecast_type = 'forecast' AND COALESCE(fs.status, 'active') <> 'deleted'
+        AND ($scenario_type IS NULL OR fs.name ILIKE '%' || $scenario_type || '%')
+      ORDER BY fv.forecast_date DESC
+    limit: 10
+    example: {}
+
+  - name: list_margin_recovery_actions
+    desc: Candidate margin recovery actions with estimated annual value, lead time and confidence, largest first. Filter by category or margin driver.
+    kind: sql
+    args:
+      category: {type: str, desc: "Product category, e.g. Housewares; actions for All categories are always included"}
+      driver: {type: str, desc: "Margin driver: price, product cost, freight, fx, duty, mix, markdown or shrink"}
+      min_value_gbp: {type: float, default: 0, desc: "Minimum estimated annual value in GBP"}
+    sql: |
+      SELECT action_id, category, driver, description, estimated_value_gbp, lead_time_weeks, confidence_pct,
+             ROUND(estimated_value_gbp * confidence_pct / 100, 0) AS confidence_weighted_value_gbp
+      FROM margin_actions
+      WHERE ($category IS NULL OR lower(category) IN (lower($category), 'all'))
+        AND ($driver IS NULL OR lower(driver) = lower($driver))
+        AND estimated_value_gbp >= $min_value_gbp
+      ORDER BY estimated_value_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: list_mitigation_levers
+    desc: Cost and revenue levers with estimated value, lead time and whether one-off, largest first. Use for scenario planning and risk mitigation.
+    kind: select
+    from: mitigation_levers
+    filters:
+      lever_type: {desc: "Type: revenue, cost reduction, cost structure or working capital"}
+      max_lead_time_weeks: {col: lead_time_weeks, op: "<=", desc: "Only levers that deliver within this many weeks"}
+      min_value_gbp: {col: estimated_value_gbp, op: ">=", desc: "Minimum estimated value in GBP"}
+    order: estimated_value_gbp DESC
+    limit: 20
+    example: {}
+
+  - name: create_forecast_scenario
+    desc: Save a new forecast scenario with its name and assumptions (demand, price, freight, FX, nearshoring changes against the base forecast).
+    kind: insert
+    table: forecast_scenarios
+    id_prefix: FSC-
+    defaults: {status: active, created_by: EMP-00077}
+    args:
+      name: {required: true, desc: "Scenario name, e.g. Downside"}
+      description: {required: true, desc: "Description of assumptions"}
+      assumptions: {}
+      demand_change_pct: {}
+      price_change_pct: {}
+      freight_change_pct: {}
+      fx_change_pct: {}
+      nearshore_mix_pct: {}
+    example: {name: "Downside", description: "Demand down 5%, freight up 20%", demand_change_pct: -5, freight_change_pct: 20}
+
+  - name: delete_forecast_scenario
+    desc: Delete a saved forecast scenario by id. Returns the old and new status.
+    kind: update
+    table: forecast_scenarios
+    set: {status: deleted}
+    args: {}
+    example: {scenario_id: FSC-000003}
+
+  - name: calculate_scenario_outcomes
+    desc: Full-year revenue, gross margin, opex and EBIT under changed demand, price, freight and cost assumptions, against the base forecast.
+    kind: py
+    fn: calc_scenario_outcomes
+    args:
+      forecast_version_id: {type: str, desc: "Forecast version to flex; default is the current forecast"}
+      scenario_id: {}
+      demand_change_pct: {type: float, desc: "Demand change %, e.g. -5; default from the scenario, else 0"}
+      price_change_pct: {type: float, desc: "Selling price change %; default from the scenario, else 0"}
+      freight_change_pct: {type: float, desc: "Freight rate change %, e.g. 20; default from the scenario, else 0"}
+      cost_inflation_pct: {type: float, default: 0, desc: "Change in non-freight cost of goods per unit, %"}
+    example: {demand_change_pct: -5, freight_change_pct: 20}
+
+  - name: calculate_investment_returns
+    desc: "Payback, NPV and IRR for an investment, from an investment case or from capex and annual benefit, with optional build slippage."
+    kind: py
+    fn: calc_investment_returns
+    args:
+      investment_case_id: {}
+      capex_gbp: {type: float, desc: "Capex in GBP; default from the investment case"}
+      annual_saving_gbp: {type: float, desc: "Annual saving once live in GBP; default from the case"}
+      annual_revenue_gbp: {type: float, desc: "Annual incremental revenue benefit in GBP; default from the case, else 0"}
+      discount_rate_pct: {type: float, default: 10.0, desc: "Discount rate as %"}
+      project_life_years: {type: int, desc: "Years of benefits; default from the case, else 5"}
+      delay_months: {type: int, default: 0, desc: "Extra months the build slips, delaying all benefits"}
+    example: {investment_case_id: INV-900001}
+
+  - name: calculate_sensitivity_analysis
+    desc: Sensitivity of payback, NPV and IRR to volume, price, cost, discount rate or build delay, across a range either side of the base case.
+    kind: py
+    fn: calc_sensitivity_analysis
+    args:
+      investment_case_id: {}
+      base_capex_gbp: {type: float, desc: "Capex in GBP; default from the investment case"}
+      base_annual_return_gbp: {type: float, desc: "Annual benefit in GBP; default from the case"}
+      sensitivity_variable: {type: enum, values: [volume, price, cost, discount_rate, delay], default: volume, desc: "Variable to vary: volume or price (benefit +/- %), cost (capex +/- %), discount_rate, delay (months)"}
+      variance_range_pct: {type: float, default: 20.0, desc: "Vary by +/- this %; for discount_rate it is a tenth of this in points"}
+      discount_rate_pct: {type: float, default: 10.0, desc: "Base discount rate %"}
+    example: {investment_case_id: INV-900001}
+
+  - name: get_margin_phasing_forecast
+    desc: Monthly flow-through of a landed cost increase into gross margin as old-cost stock sells through, with optional price recovery.
+    kind: py
+    fn: get_margin_phasing_forecast
+    args:
+      landed_cost_increase_pct: {required: true, type: float, desc: "Landed cost increase %, e.g. 7"}
+      affected_cogs_share_pct: {type: float, default: 100, desc: "Share of cost of goods on the affected SKUs, %"}
+      stock_cover_weeks: {type: float, default: 12, desc: "Weeks of stock held at the old cost"}
+      months: {type: int, default: 6, desc: "Months to show"}
+      price_recovery_pct: {type: float, default: 0, desc: "Share of the cost increase recovered through price, %"}
+    example: {landed_cost_increase_pct: 7, affected_cogs_share_pct: 40, stock_cover_weeks: 10}
+
+  - name: calculate_pl_scenario
+    desc: Full-year P&L (revenue, cost of goods, margin, opex, EBIT) against the current forecast with a share of production moved nearshore, plus changed volume or price.
+    kind: py
+    fn: calc_pl_scenario
+    args:
+      scenario_id: {type: str, desc: "Saved scenario to take volume, price and nearshore mix from, e.g. FSC-000005"}
+      nearshore_mix_pct: {type: float, desc: "Share of production moved nearshore, %; default from the scenario, else 0"}
+      volume_change_pct: {type: float, desc: "Volume change %; default from the scenario, else 0"}
+      price_change_pct: {type: float, desc: "Price change %; default from the scenario, else 0"}
+      nearshore_cost_change_pct: {type: float, default: 0, desc: "Unit cost change on the moved goods excluding freight, %"}
+      freight_saving_pct: {type: float, default: 45, desc: "Freight cost saved on the moved share, %"}
+      markdown_saving_pct: {type: float, default: 10, desc: "Markdown saved on the moved share, % (shorter lead times)"}
+    example: {nearshore_mix_pct: 20}
+  - name: calculate_programme_payback
+    desc: Payback period in months and years for a programme, from its investment and annual benefit (both default from the programme record).
+    kind: py
+    fn: calc_programme_payback
+    args:
+      programme_id: {required: true}
+      investment_gbp: {type: float, desc: "Programme investment in GBP; default is the programme budget"}
+      annual_benefit_gbp: {type: float, desc: "Annual benefit in GBP; default is the programme's planned benefit"}
+    example: {programme_id: "PGM-000001"}
+  - name: calculate_programme_savings
+    desc: Savings from a programme with its planned annual benefit, monthly run rate, spend to date and savings delivered since the start date.
+    kind: py
+    fn: calc_programme_savings
+    args:
+      programme_id: {required: true}
+      start_date: {type: date, default: "-6m", desc: "Count savings from this date"}
+    example: {programme_id: PGM-000001}
+  - name: calculate_investment_required
+    desc: Capex required to reach a revenue or benefit target at a target return and payback. Use for market entry or growth cases.
+    kind: py
+    fn: calc_investment_required
+    args:
+      target_gbp: {required: true, type: float, desc: "Target annual revenue or annual benefit in GBP"}
+      roi_target_pct: {required: true, type: float, default: 30.0, desc: "Target return on investment %"}
+      payback_years: {type: float, default: 3.0, desc: "Desired payback period"}
+      target_type: {type: enum, values: [revenue, annual_benefit], default: revenue, desc: "Whether the target is sales or already a profit benefit"}
+      margin_pct: {type: float, desc: "Margin earned on revenue, %; default is the current forecast gross margin"}
+    example: {target_gbp: 5000000, roi_target_pct: 25.0}
+  - name: calculate_breakeven_period
+    desc: Breakeven period for an investment or initiative. Returns months to recover initial investment.
+    kind: py
+    fn: calc_breakeven
+    args:
+      initial_investment_gbp: {required: true, type: float, desc: "Initial investment in GBP"}
+      monthly_return_gbp: {type: float, default: 0, desc: "Monthly return or saving in GBP"}
+      annual_return_gbp: {type: float, default: 0, desc: "Annual return or saving in GBP"}
+    example: {initial_investment_gbp: 500000, annual_return_gbp: 100000}
+  - name: get_capital_budget_and_hurdle_rates
+    desc: Group capital budget and what is still unallocated, with each capital option's risk rating, hurdle rate and risk adjustment. Use to compare options on one basis.
+    kind: sql
+    args:
+      option_name: {type: str, desc: "Part of an option name, e.g. DC, refit, nearshoring"}
+      risk_rating: {type: enum, values: [low, medium, high], desc: "Only options with this risk rating"}
+    sql: |
+      SELECT o.option_name, o.investment_case_id, o.proposal_id, ic.capex_gbp, o.risk_rating, o.hurdle_rate_pct,
+             o.risk_adjustment_pct, ROUND(o.hurdle_rate_pct + o.risk_adjustment_pct, 1) AS risk_adjusted_hurdle_pct, o.key_risk,
+             g.budget_gbp AS group_capital_budget_gbp, g.committed_gbp AS allocated_gbp, g.budget_gbp - g.committed_gbp AS unallocated_gbp
+      FROM capital_options o
+      LEFT JOIN investment_cases ic ON ic.investment_case_id = o.investment_case_id
+      CROSS JOIN (SELECT * FROM capital_budgets WHERE scope = 'group') g
+      WHERE ($option_name IS NULL OR o.option_name ILIKE '%' || $option_name || '%')
+        AND ($risk_rating IS NULL OR o.risk_rating = $risk_rating)
+      ORDER BY o.option_id
+    limit: 20
+    example: {}
+  - name: get_capital_investment_budget_for_region
+    desc: Capital budget for store upgrades and local infrastructure in a region, with the amount committed and still available. Give a region, or a site to find its region.
+    kind: sql
+    args:
+      region: {type: str, desc: "Region, e.g. UK North, UK South, Scotland, Ireland, EU Central, US"}
+      site_id: {}
+    sql: |
+      SELECT b.region, b.budget_gbp, b.committed_gbp, b.budget_gbp - b.committed_gbp AS available_gbp, b.purpose,
+             (SELECT count(*) FROM master.sites s WHERE s.region = b.region AND s.type = 'store') AS store_count
+      FROM capital_budgets b
+      WHERE b.scope = 'region'
+        AND ($region IS NULL OR lower(b.region) = lower($region))
+        AND ($site_id IS NULL OR b.region = (SELECT region FROM master.sites WHERE site_id = $site_id))
+      ORDER BY b.region
+    limit: 10
+    example: {region: UK North}
+  - name: get_fx_budget_assumptions
+    desc: Budgeted FX rate, hedge cover, hedge end date and budgeted exposure by currency pair, with the unhedged amount. Use to explain FX gain or loss against budget.
+    kind: sql
+    args:
+      currency_pair: {type: str, desc: "Currency pair, e.g. GBP/USD"}
+    sql: |
+      SELECT currency_pair, budget_rate, hedge_cover_pct, hedged_to, annual_exposure_gbp,
+             ROUND(annual_exposure_gbp * hedge_cover_pct / 100, 0) AS hedged_exposure_gbp,
+             ROUND(annual_exposure_gbp * (100 - hedge_cover_pct) / 100, 0) AS unhedged_exposure_gbp, notes
+      FROM fx_budget_assumptions
+      WHERE ($currency_pair IS NULL OR upper(currency_pair) = upper($currency_pair))
+      ORDER BY annual_exposure_gbp DESC
+    limit: 10
+    example: {}
+  - name: get_programme_budget_vs_actual
+    desc: Programme budget, plan and actual spend to date, forecast to complete and forecast at completion, with variances. Shows budget adherence.
+    kind: sql
+    args:
+      programme_id: {required: true}
+    sql: |
+      WITH pc AS (
+        SELECT programme_id, SUM(planned_gbp) AS plan_total,
+               SUM(CASE WHEN actual_gbp IS NOT NULL THEN planned_gbp END) AS planned_to_date,
+               SUM(actual_gbp) AS actual_to_date,
+               SUM(CASE WHEN actual_gbp IS NULL THEN forecast_gbp END) AS forecast_to_complete,
+               count(*) FILTER (WHERE actual_gbp IS NULL) AS months_remaining
+        FROM programme_costs GROUP BY programme_id)
+      SELECT p.programme_id, p.name AS programme_name, p.type, p.status, p.budget_gbp,
+             ROUND(pc.planned_to_date, 0) AS planned_to_date_gbp, ROUND(pc.actual_to_date, 0) AS actual_to_date_gbp,
+             ROUND(pc.actual_to_date - pc.planned_to_date, 0) AS variance_to_date_gbp,
+             ROUND((pc.actual_to_date - pc.planned_to_date) / NULLIF(pc.planned_to_date, 0) * 100, 1) AS variance_to_date_pct,
+             ROUND(p.budget_gbp - COALESCE(pc.actual_to_date, 0), 0) AS budget_remaining_gbp,
+             ROUND(pc.forecast_to_complete, 0) AS forecast_to_complete_gbp, pc.months_remaining,
+             ROUND(COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0), 0) AS forecast_at_completion_gbp,
+             ROUND(COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0) - p.budget_gbp, 0) AS variance_at_completion_gbp,
+             ROUND((COALESCE(pc.actual_to_date, 0) + COALESCE(pc.forecast_to_complete, 0) - p.budget_gbp) / NULLIF(p.budget_gbp, 0) * 100, 1) AS variance_at_completion_pct
+      FROM programmes p LEFT JOIN pc ON pc.programme_id = p.programme_id
+      WHERE p.programme_id = $programme_id
+    limit: 1
+    example: {programme_id: PGM-000001}
+  - name: get_burn_rate_history
+    desc: Programme spend by month, plan versus forecast versus actual, with burn rate against plan and cumulative figures. Future months show plan and forecast only.
+    kind: sql
+    args:
+      programme_id: {required: true}
+      period_from: {type: date, default: "-6m", desc: "First month (e.g. -6m, 2026-04)"}
+    sql: |
+      SELECT programme_id, name, period, planned_gbp, forecast_gbp, actual_gbp, burn_rate_pct,
+             cumulative_planned_gbp, cumulative_actual_gbp
+      FROM (
+        SELECT pc.programme_id, p.name, strftime(pc.period_date, '%Y-%m') AS period, pc.period_date,
+               ROUND(pc.planned_gbp, 0) AS planned_gbp, ROUND(pc.forecast_gbp, 0) AS forecast_gbp, ROUND(pc.actual_gbp, 0) AS actual_gbp,
+               ROUND(pc.actual_gbp / NULLIF(pc.planned_gbp, 0) * 100, 1) AS burn_rate_pct,
+               ROUND(SUM(pc.planned_gbp) OVER (PARTITION BY pc.programme_id ORDER BY pc.period_date), 0) AS cumulative_planned_gbp,
+               ROUND(SUM(pc.actual_gbp) OVER (PARTITION BY pc.programme_id ORDER BY pc.period_date), 0) AS cumulative_actual_gbp
+        FROM programme_costs pc LEFT JOIN programmes p ON p.programme_id = pc.programme_id
+        WHERE pc.programme_id = $programme_id) t
+      WHERE period_date >= date_trunc('month', CAST($period_from AS DATE))
+      ORDER BY period_date
+    limit: 60
+    example: {programme_id: PGM-000001}
+  - name: run_year_end_shrink_forecast
+    desc: Forecast year-end shrink % and £ impact from the year-to-date rate, with a peak-season uplift, against the budget target.
+    kind: py
+    fn: forecast_shrink
+    args:
+      ytd_shrink_pct: {type: float, required: true, desc: "Year-to-date shrink as % of sales"}
+      target_shrink_pct: {type: float, desc: "Target shrink % for the full year; default is the budget assumption"}
+      months_remaining: {type: int, desc: "Months of the year left including the current one; default from today"}
+      peak_uplift_pct: {type: float, default: 15, desc: "Shrink uplift in the last two months of the year, %"}
+      revenue_base_gbp: {type: float, desc: "Sales the rate applies to; default is the full-year revenue forecast"}
+    example: {ytd_shrink_pct: 0.8}

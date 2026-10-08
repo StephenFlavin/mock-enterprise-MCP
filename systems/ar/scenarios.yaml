@@ -1,0 +1,90 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief ar).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+# Accounts are 32 wholesale partners (PTN-001..PTN-010 key accounts, PTN-025..PTN-047); gen.py derives balances, history and provision from one invoice list.
+
+- question: "07:65:Q1"
+  story: >
+    PTN-025 (Hartley & Reed Ltd, wholesale) pays more slowly each month (about 27 days against 30-day terms a year
+    ago, 41 days now, never on time since the start of the year) and has three overdue invoices totalling 168000.
+    Score 58 (high risk), limit 250000, balance 219000. The recommendation is 150000. Atradius cover 150000 at 90% (135000 insured).
+  checks:
+    - tool: get_customer_account_summary
+      args: {customer_id: PTN-025}
+      expect: ["PTN-025", "250000", "168000", "high"]
+    - tool: get_customer_payment_history
+      args: {customer_id: PTN-025}
+      expect: ["days_beyond_terms", "41"]
+    - tool: get_credit_insurance_cover
+      args: {customer_id: PTN-025}
+      expect: ["Atradius", "135000"]
+    - tool: calculate_credit_limit_recommendation
+      args: {customer_id: PTN-025}
+      expect: ["150000", "reduction"]
+    - tool: update_customer_credit_limit
+      args: {customer_id: PTN-025, credit_limit_gbp: 150000}
+      expect: ["250000", "150000"]
+
+- question: "07:65:Q2"
+  story: >
+    Invoice INV-2026-900040 (PTN-041, order ORD-900040) bills 8000 units at 60 = 480000 and is disputed: the
+    second delivery of 3000 units was signed for 2640, so 360 units were damaged or missing.
+  checks:
+    - tool: get_sales_order_and_invoice
+      args: {invoice_id: INV-2026-900040}
+      expect: ["INV-2026-900040", "480000", "4000", "360", "disputed"]
+    - tool: update_invoice_dispute_status
+      args: {invoice_id: INV-2026-900040, dispute_status: on_hold, dispute_reason: "Delivery shortfall: 360 units short"}
+      expect: ["on_hold", "INV-2026-900040"]
+
+- question: "07:65:Q3"
+  story: >
+    Open ledger of about 2.4m. Expected credit loss is about 97k against a booked provision of 33000, so the
+    provision needs to rise. PTN-006 carries the largest expected loss (18030). The 480k disputed invoice is
+    excluded from the collections forecast.
+  checks:
+    - tool: get_open_receivables_ledger
+      args: {order_by: amount}
+      expect: ["INV-2026-900040", "balance_due_gbp"]
+    - tool: get_historical_collection_patterns
+      args: {}
+      expect: ["PTN-025", "days_beyond_terms"]
+    - tool: calculate_collections_forecast
+      args: {weeks_ahead: 8}
+      expect: ["expected_collection_gbp", "cumulative_expected_gbp"]
+    - tool: get_bad_debt_provision
+      args: {}
+      expect: ["33000", "by_0_30_days_gbp"]
+    - tool: calculate_expected_credit_loss
+      args: {group_by: customer}
+      expect: ["PTN-006", "18030"]
+
+- question: "07:65:Q4"
+  story: >
+    Ten customers have overdue balances that grew over the last 60 days: PTN-006 218000, PTN-025 168000,
+    PTN-009 139000, PTN-034 127000, PTN-031 105000, PTN-043 94000, PTN-002 90000, PTN-046 87000,
+    PTN-001 81000 and PTN-032 71000. PTN-007 is a decoy: 210000 overdue 30 days ago, now 12000.
+  checks:
+    - tool: list_overdue_invoices
+      args: {min_days_overdue: 1}
+      expect: ["INV-2026-900102", "85000", "overdue"]
+    - tool: get_overdue_trend_by_customer
+      args: {days: 60}
+      expect: ["PTN-006", "218000", "worsening", "PTN-007", "improving"]
+    - tool: get_customer_exposure_summary
+      args: {}
+      expect: ["PTN-041", "limit_utilisation_pct"]
+    - tool: send_payment_reminder
+      args: {customer_id: PTN-006, invoice_id: INV-2026-900102, reminder_type: second_notice, message: "Your invoice is overdue. Please pay within 5 days."}
+      expect: ["Created", "PTN-006"]
+
+- question: "07:65:Q5"
+  story: >
+    PTN-032 is 75 days overdue on a 61000 invoice plus a 10000 invoice (71000 overdue against a 60000 limit),
+    score 41 (critical), no hold yet.
+  checks:
+    - tool: get_customer_account_summary
+      args: {customer_id: PTN-032}
+      expect: ["PTN-032", "71000", "60000", "critical", "61000"]
+    - tool: update_customer_credit_hold
+      args: {customer_id: PTN-032, credit_held: true, credit_hold_reason: "75 days overdue"}
+      expect: ["Updated", "75 days overdue"]

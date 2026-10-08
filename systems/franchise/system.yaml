@@ -1,0 +1,252 @@
+id: franchise
+name: Franchise Management Portal
+instructions: >
+  Franchise partner orders, stock levels, sales, margin and compliance.
+  Order ids look like FRO-000123. Use it for partner order tracking, stock positioning,
+  performance monitoring, intervention management and hold controls.
+
+tables:
+  franchise_orders:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "Franchise order, e.g. FRO-000123"}
+      partner_id: {type: str, desc: "Franchise partner, e.g. PTN-012"}
+      order_date: {type: date, desc: Date order placed}
+      expected_arrival_date: {type: date, desc: Expected delivery date}
+      status: {type: enum, values: [open, shipped, received, cancelled], desc: Order status}
+      hold_reason: {type: str, desc: Reason if order is held}
+      total_units: {type: int, desc: Total units on order}
+      total_value_gbp: {type: float, desc: Order value in GBP}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  franchise_order_lines:
+    key: [order_id, line_no]
+    cols:
+      order_id: {type: str, desc: "Franchise order"}
+      line_no: {type: int, desc: Line number}
+      sku: {type: str, desc: "SKU"}
+      qty_ordered: {type: int, desc: Units ordered}
+      qty_received: {type: int, desc: Units received so far}
+      hold_status: {type: enum, values: [none, held, released], desc: Hold status on this line}
+      is_core_range: {type: bool, desc: Is this part of core range}
+
+  partner_stock:
+    key: [partner_id, sku]
+    cols:
+      partner_id: {type: str, desc: "Franchise partner"}
+      sku: {type: str, desc: "SKU"}
+      on_hand: {type: int, desc: Units in stock at partner}
+      available: {type: int, desc: Available units}
+      allocated: {type: int, desc: Units allocated to local orders}
+      target_stock: {type: int, desc: Target stock level}
+      is_core_range: {type: bool, desc: Part of core range}
+      last_stock_check: {type: date, desc: Date of last stock verification}
+
+  partner_performance:
+    key: [partner_id, period_end]
+    cols:
+      partner_id: {type: str, desc: "Franchise partner"}
+      period_end: {type: date, desc: End of performance period (month end)}
+      sales_units: {type: int, desc: Units sold in period}
+      sales_gbp: {type: float, desc: Sales revenue in GBP}
+      margin_gbp: {type: float, desc: Gross margin in GBP}
+      margin_pct: {type: float, desc: Margin percentage}
+      compliance_score: {type: int, desc: Compliance score 0-100}
+      stockout_incidents: {type: int, desc: Number of stockout incidents}
+      overstock_value_gbp: {type: float, desc: Value of excess stock}
+      intervention_needed: {type: bool, desc: Needs intervention}
+
+  performance_notices:
+    key: notice_id
+    cols:
+      notice_id: {type: str, desc: "Performance notice, e.g. PNC-000123"}
+      partner_id: {type: str, desc: "Franchise partner"}
+      sent_date: {type: timestamp, desc: When notice was sent}
+      notice_type: {type: enum, values: [performance_alert, compliance_warning, intervention_notice], desc: Type of notice}
+      content: {type: text, desc: Notice content}
+      status: {type: enum, values: [draft, sent, acknowledged], desc: Status}
+
+  order_holds:
+    key: hold_id
+    cols:
+      hold_id: {type: str, desc: "Hold record, e.g. HLD-000123"}
+      order_id: {type: str, desc: "Franchise order"}
+      line_no: {type: int, desc: "Line number (optional, NULL for whole order)"}
+      hold_reason: {type: str, desc: Reason for hold}
+      created_at: {type: timestamp, desc: When hold was created}
+      lifted_at: {type: timestamp, desc: When hold was lifted}
+      created_by: {type: str, desc: Employee who created the hold}
+
+tools:
+  - name: get_franchise_order_history
+    desc: Order history for a franchise partner, most recent first, with each order's lines (line number, SKU, core or non-core, qty) and held lines. Use before holding lines.
+    kind: sql
+    args:
+      partner_id: {required: true}
+      status: {default: open, values: [open, shipped, received, cancelled]}
+      date_from: {type: date, default: "-90d", desc: "Orders from this date onwards"}
+    sql: |
+      SELECT o.order_id, o.partner_id, o.order_date, o.expected_arrival_date, o.status,
+             o.total_units, o.total_value_gbp, o.updated_at,
+             COUNT(l.line_no) AS line_count,
+             COUNT(*) FILTER (WHERE h.hold_id IS NOT NULL) AS lines_held,
+             COALESCE(SUM(l.qty_ordered) FILTER (WHERE l.is_core_range), 0) AS core_units,
+             COALESCE(SUM(l.qty_ordered) FILTER (WHERE NOT l.is_core_range), 0) AS non_core_units,
+             string_agg(l.line_no || ':' || l.sku || CASE WHEN l.is_core_range THEN ' core ' ELSE ' non-core ' END
+                        || l.qty_ordered || CASE WHEN h.hold_id IS NOT NULL THEN ' HELD' ELSE '' END, '; ' ORDER BY l.line_no) AS lines
+      FROM franchise_orders o
+      LEFT JOIN franchise_order_lines l ON o.order_id = l.order_id
+      LEFT JOIN (SELECT DISTINCT order_id, line_no, hold_id FROM order_holds WHERE lifted_at IS NULL) h
+        ON h.order_id = l.order_id AND (h.line_no IS NULL OR h.line_no = l.line_no)
+      WHERE o.partner_id = $partner_id
+        AND ($status IS NULL OR o.status = $status)
+        AND o.order_date >= CAST($date_from AS DATE)
+      GROUP BY o.order_id, o.partner_id, o.order_date, o.expected_arrival_date, o.status,
+               o.total_units, o.total_value_gbp, o.updated_at
+      ORDER BY o.order_date DESC
+    limit: 50
+    example: {partner_id: PTN-011}
+
+  - name: compare_core_range_cover_vs_forecast
+    desc: Compare a partner's stock against target by SKU, with units still on open orders and overstock or understock flag. Filter to core range lines.
+    kind: sql
+    args:
+      partner_id: {required: true}
+      is_core_range: {type: bool, desc: "true for core range lines only, false for non-core only; omit for all"}
+    sql: |
+      SELECT s.sku, p.name, s.is_core_range, s.on_hand, s.available, s.target_stock,
+             (s.on_hand - s.target_stock) AS variance,
+             round(100.0 * s.on_hand / NULLIF(s.target_stock, 0)) AS cover_pct_of_target,
+             COALESCE(oo.on_order, 0) AS units_on_open_orders,
+             CASE WHEN (s.on_hand - s.target_stock) > 0.2 * s.target_stock THEN 'overstock'
+                  WHEN (s.on_hand - s.target_stock) < -0.2 * s.target_stock THEN 'understock'
+                  ELSE 'balanced' END AS position
+      FROM partner_stock s
+      JOIN master.products p ON s.sku = p.sku
+      LEFT JOIN (SELECT o.partner_id, l.sku, SUM(l.qty_ordered - l.qty_received) AS on_order
+                 FROM franchise_orders o JOIN franchise_order_lines l ON o.order_id = l.order_id
+                 WHERE o.status IN ('open', 'shipped') GROUP BY o.partner_id, l.sku) oo
+        ON oo.partner_id = s.partner_id AND oo.sku = s.sku
+      WHERE s.partner_id = $partner_id
+        AND ($is_core_range IS NULL OR s.is_core_range = $is_core_range)
+      ORDER BY s.is_core_range DESC, variance DESC
+    limit: 100
+    example: {partner_id: PTN-011}
+
+  - name: get_franchise_partner_scorecard
+    desc: Latest-month scorecard (sales, margin, compliance, stockouts, overstock, intervention flag, open orders) for one franchise partner, or all partners worst compliance first if none given.
+    kind: sql
+    args:
+      partner_id: {}
+    sql: |
+      SELECT pt.partner_id, pt.name AS partner_name, pt.country, pt.status AS partner_status,
+             pp.period_end, pp.sales_units, pp.sales_gbp, pp.margin_gbp, pp.margin_pct,
+             pp.compliance_score, pp.stockout_incidents, pp.overstock_value_gbp,
+             pp.intervention_needed,
+             (SELECT COUNT(*) FROM franchise_orders o WHERE o.partner_id = pt.partner_id AND o.status = 'open') AS open_orders
+      FROM master.partners pt
+      JOIN partner_performance pp ON pt.partner_id = pp.partner_id
+        AND pp.period_end = (SELECT MAX(period_end) FROM partner_performance WHERE partner_id = pt.partner_id)
+      WHERE pt.type = 'franchise' AND ($partner_id IS NULL OR pt.partner_id = $partner_id)
+      ORDER BY pp.compliance_score ASC, pp.overstock_value_gbp DESC
+    limit: 20
+    example: {partner_id: PTN-011}
+
+  - name: get_partner_sales_and_margin
+    desc: Sales revenue and margin for a franchise partner over last 12 months, by month.
+    kind: sql
+    args:
+      partner_id: {required: true}
+      months: {type: int, default: 12, desc: "Months of history"}
+    sql: |
+      SELECT partner_id, period_end, sales_units, sales_gbp, margin_gbp, margin_pct
+      FROM partner_performance
+      WHERE partner_id = $partner_id
+        AND period_end >= CAST($as_of AS DATE) - INTERVAL ($months) MONTH
+      ORDER BY period_end DESC
+    limit: 12
+    example: {partner_id: PTN-012}
+
+  - name: get_partner_stock_position
+    desc: Current stock position for a franchise partner by SKU, core range and non-core, with overstock flag.
+    kind: sql
+    args:
+      partner_id: {required: true}
+    sql: |
+      SELECT s.partner_id, s.sku, p.name, s.on_hand, s.available, s.allocated, s.target_stock,
+             (s.on_hand - s.target_stock) AS variance,
+             s.is_core_range, s.last_stock_check,
+             CASE WHEN s.on_hand > s.target_stock * 1.2 THEN 'overstock'
+                  WHEN s.on_hand < s.target_stock * 0.8 THEN 'understock'
+                  ELSE 'normal' END AS status
+      FROM partner_stock s
+      JOIN master.products p ON s.sku = p.sku
+      WHERE s.partner_id = $partner_id
+      ORDER BY s.is_core_range DESC, variance DESC
+    limit: 100
+    example: {partner_id: PTN-012}
+
+  - name: get_partner_compliance_status
+    desc: Compliance score and incidents for a franchise partner; compliance issues trigger intervention.
+    kind: sql
+    args:
+      partner_id: {required: true}
+    sql: |
+      SELECT partner_id, period_end, compliance_score, stockout_incidents, overstock_value_gbp,
+             CASE WHEN compliance_score < 70 THEN 'at_risk'
+                  WHEN compliance_score < 85 THEN 'watch'
+                  ELSE 'compliant' END AS compliance_status
+      FROM partner_performance
+      WHERE partner_id = $partner_id
+      ORDER BY period_end DESC
+      LIMIT 3
+    example: {partner_id: PTN-012}
+
+  - name: list_partners_needing_intervention
+    desc: Active franchise partners with low compliance, high overstock or recurrent stockouts, worst compliance first. Use to pick who needs a performance notice.
+    kind: sql
+    args:
+      min_compliance_score: {type: int, default: 75, desc: "Threshold below which intervention is flagged"}
+    sql: |
+      SELECT pt.partner_id, pt.name, pt.country, pp.sales_gbp, pp.margin_pct,
+             pp.compliance_score, pp.stockout_incidents, pp.overstock_value_gbp,
+             CASE WHEN pp.compliance_score < $min_compliance_score THEN 'low_compliance'
+                  WHEN pp.overstock_value_gbp > 50000 THEN 'high_overstock'
+                  WHEN pp.stockout_incidents > 3 THEN 'frequent_stockouts'
+                  ELSE 'other' END AS issue_type
+      FROM master.partners pt
+      INNER JOIN (SELECT partner_id, MAX(period_end) AS latest_period
+                  FROM partner_performance
+                  GROUP BY partner_id) latest ON pt.partner_id = latest.partner_id
+      INNER JOIN partner_performance pp ON latest.partner_id = pp.partner_id
+        AND latest.latest_period = pp.period_end
+      WHERE pt.type = 'franchise' AND pt.status <> 'ended'
+        AND (pp.intervention_needed = true OR pp.compliance_score < $min_compliance_score
+             OR pp.overstock_value_gbp > 50000 OR pp.stockout_incidents > 3)
+      ORDER BY pp.compliance_score ASC, pp.overstock_value_gbp DESC
+    limit: 20
+    example: {min_compliance_score: 75}
+
+  - name: send_partner_performance_notice
+    desc: Send a formal performance notice to a franchise partner. Returns notice id and status.
+    kind: insert
+    table: performance_notices
+    id_prefix: PNC-
+    defaults: {status: sent}
+    args:
+      partner_id: {required: true}
+      notice_type: {required: true, values: [performance_alert, compliance_warning, intervention_notice]}
+      content: {required: true, type: text}
+    example: {partner_id: PTN-012, notice_type: compliance_warning, content: "Your compliance score has fallen below 75%. Please review inventory procedures."}
+
+  - name: update_franchise_order_hold
+    desc: Place a hold on a franchise order, or on one line if line_no is given. Returns the hold record created.
+    kind: insert
+    table: order_holds
+    id_prefix: HLD-
+    args:
+      order_id: {required: true}
+      hold_reason: {required: true, desc: "Reason for the hold"}
+      line_no: {type: int, desc: "Specific line if holding a single line (optional)"}
+    defaults: {created_at: "$as_of", created_by: "franchise_mgr"}
+    example: {order_id: FRO-900001, hold_reason: "Expedite core range only"}

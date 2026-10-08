@@ -1,0 +1,801 @@
+id: supply_planning
+name: Supply Planning System (MRP/DRP)
+instructions: >
+  Demand and supply planning: item planning parameters, order proposals, supply-demand gaps, supplier planning terms,
+  origin lead times, material requirements, DC space plans and scenario costing. Ids: SKU-100234, SUP-0001, DC1,
+  SPP-000123 (parameters), ORP-000123 (order proposals), SRP-000123 (supply requests).
+
+tables:
+  planning_parameters:
+    key: sku
+    cols:
+      planning_param_id: {type: str, desc: "Planning parameter record, e.g. SPP-000123"}
+      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      weekly_demand: {type: float, desc: "Planning demand in units per week (network)"}
+      network_stock_units: {type: int, desc: "Available stock across DCs and stores, in units"}
+      lead_time_days: {type: int, desc: "Lead time assumed in planning, in days"}
+      pack_size: {type: int, desc: "Pack size in units; orders are rounded up to a multiple"}
+      lot_size: {type: int, desc: "Minimum order lot in units"}
+      safety_stock_pct: {type: float, desc: "Safety stock as % of demand over the planning cover"}
+      sourcing_policy: {type: enum, values: [stocked, make_to_order, dual_source], desc: "Sourcing strategy"}
+      reorder_point: {type: int, desc: "Reorder point in units"}
+      updated_at: {type: timestamp, desc: "Last parameter change"}
+
+  order_proposals:
+    key: proposal_id
+    cols:
+      proposal_id: {type: str, desc: "Order proposal, e.g. ORP-000123"}
+      sku: {type: str, desc: "SKU"}
+      supplier_id: {type: str, desc: "Recommended supplier"}
+      dest_site_id: {type: str, desc: "Destination DC"}
+      quantity: {type: int, desc: "Proposed quantity in units"}
+      demand_period_weeks: {type: int, desc: "Weeks of demand cover added on top of the lead time"}
+      weekly_demand_used: {type: float, desc: "Weekly demand the calculation used"}
+      lead_time_days_used: {type: int, desc: "Lead time the calculation used, in days"}
+      pack_size_used: {type: int, desc: "Pack size the calculation used"}
+      lot_size_used: {type: int, desc: "Lot size the calculation used"}
+      safety_stock_pct_used: {type: float, desc: "Safety stock % the calculation used"}
+      net_stock_used: {type: int, desc: "Stock position netted off in the calculation, in units"}
+      promotion_uplift_pct: {type: float, desc: "Promotion uplift applied to demand, % (0 = no promotion flag)"}
+      history_outliers_flagged: {type: int, desc: "Demand history weeks flagged as spikes and included"}
+      planned_order_date: {type: date, desc: "Date this order should be placed"}
+      planned_delivery_date: {type: date, desc: "Date delivery is expected"}
+      status: {type: enum, values: [draft, approved, converted, cancelled], desc: "Proposal status"}
+      conversion_reason: {type: str, desc: "Why created: forecast_driven, replenishment, safety_stock"}
+      issue_detected: {type: str, desc: "Flag if parameters look wrong, e.g. pack_size_too_large"}
+      created_at: {type: timestamp, desc: "When this proposal was created"}
+      cancelled_at: {type: timestamp, desc: "When cancelled"}
+      cancel_reason: {type: str, desc: "Reason for cancellation"}
+
+  supply_plans:
+    key: [sku, week_start]
+    cols:
+      sku: {type: str, desc: "SKU"}
+      week_start: {type: date, desc: "Monday of the plan week"}
+      forecast_units: {type: int, desc: "Demand forecast for the week"}
+      confirmed_supply: {type: int, desc: "Units already confirmed on POs"}
+      planned_inbound: {type: int, desc: "Units on approved/draft proposals"}
+      gap: {type: int, desc: "Unmet demand in the week after stock, confirmed supply and planned inbound (0 = covered)"}
+      stock_on_hand: {type: int, desc: "Projected on-hand stock start of week"}
+      stock_projected: {type: int, desc: "Projected on-hand stock end of week"}
+      safety_stock: {type: int, desc: "Target safety stock"}
+      last_updated: {type: timestamp, desc: "When plan was last recalculated"}
+
+  supply_demand_gaps:
+    key: gap_id
+    cols:
+      gap_id: {type: str, desc: "Gap record, e.g. SDG-000123"}
+      sku: {type: str, desc: "SKU with gap"}
+      style_id: {type: str, desc: "Style the SKU belongs to, e.g. STY-6083"}
+      week_start: {type: date, desc: "Monday of the week with the shortage"}
+      forecast_units: {type: int, desc: "Forecast for the week"}
+      confirmed_units: {type: int, desc: "Confirmed supply for the week"}
+      gap_units: {type: int, desc: "Shortfall"}
+      category: {type: str, desc: "Product category, e.g. Trousers"}
+      gap_reason: {type: str, desc: "Why the gap occurred: delayed_po, forecast_spike, promotion, supplier_delay"}
+      first_detected: {type: date, desc: "Date the gap was first flagged"}
+      last_updated: {type: date, desc: "Most recent update"}
+
+  supply_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Supply request, e.g. SRP-000123"}
+      sku: {type: str, desc: "SKU"}
+      site_id: {type: str, desc: "Requesting site/DC"}
+      quantity_requested: {type: int, desc: "Units required"}
+      requirement_date: {type: date, desc: "Date needed by"}
+      request_type: {type: enum, values: [promotion, replenishment, safety_stock, emergency, clearance], desc: "Type of request"}
+      promotion_id: {type: str, desc: "Promotion id if promotion-related"}
+      status: {type: enum, values: [draft, submitted, ordered, fulfilled, cancelled], desc: "Status"}
+      submitted_at: {type: timestamp, desc: "When request was created"}
+      notes: {type: str, desc: "Notes on the request"}
+
+  supplier_planning_terms:
+    key: supplier_id
+    cols:
+      supplier_id: {type: str, desc: "Supplier"}
+      quoted_lead_days: {type: float, desc: "Average lead time the supplier quotes, in days"}
+      actual_avg_lead_days: {type: float, desc: "Average lead time actually achieved (order to receipt), in days"}
+      planning_lead_days: {type: int, desc: "Lead time currently used in planning for this supplier, in days"}
+      price_index: {type: float, desc: "Supplier price relative to plan unit cost (1.00 = plan)"}
+      rush_premium_pct_per_week: {type: float, desc: "Price premium, % of unit cost, for each week of lead time compressed"}
+      setup_cost_gbp: {type: float, desc: "One-off cost to set up an order as a second supplier"}
+      qualification_weeks: {type: int, desc: "Weeks to qualify the supplier for a new item (0 = already qualified)"}
+      freight_sea_gbp_per_unit: {type: float, desc: "Standard (sea or road) freight per unit from its origin"}
+      freight_air_gbp_per_unit: {type: float, desc: "Air freight per unit from its origin"}
+      change_reason: {type: str, desc: "Why the planning lead time was last changed"}
+      updated_at: {type: timestamp, desc: "Last change to the planning terms"}
+
+  lead_time_by_origin:
+    key: origin_id
+    cols:
+      origin_id: {type: str, desc: "Origin lane record, e.g. LTO-000012"}
+      origin_region: {type: str, desc: "Region: Asia, Europe, Americas"}
+      origin_country: {type: str, desc: "Origin country code, e.g. VN"}
+      origin_port: {type: str, desc: "Origin port code, e.g. VNSGN"}
+      dest_dc: {type: str, desc: "Destination DC, e.g. DC1"}
+      transit_days: {type: int, desc: "Average port-to-DC transit time in days"}
+      transit_variability_days: {type: int, desc: "Standard deviation of transit time in days"}
+      mode: {type: enum, values: [sea, air, road, rail], desc: "Transport mode"}
+      rate_gbp_per_unit: {type: float, desc: "Typical freight cost per unit"}
+      last_updated: {type: date, desc: "Date of last update"}
+
+  fabric_requirements:
+    key: [category, material]
+    cols:
+      category: {type: str, desc: "Product category, e.g. Knitwear"}
+      material: {type: str, desc: "Fabric type, e.g. Wool"}
+      annual_requirement_units: {type: int, desc: "Annual requirement in metres"}
+      monthly_average_units: {type: int, desc: "Average monthly requirement in metres"}
+      supplier_id: {type: str, desc: "Primary fabric supplier"}
+      lead_time_weeks: {type: int, desc: "Lead time from supplier in weeks"}
+      stock_on_hand: {type: int, desc: "Fabric in stock, in metres"}
+      critical_threshold: {type: int, desc: "Stock level below which supply is critical, in metres"}
+
+  material_requirements:
+    key: [material_type, month_start]
+    cols:
+      material_type: {type: str, desc: "Material: leather, fabric, zips or trims"}
+      month_start: {type: date, desc: "First day of the month the material is needed"}
+      required_qty: {type: int, desc: "Quantity needed that month, from planned demand"}
+      unit: {type: str, desc: "Unit of the quantity: m2, m or pcs"}
+      lead_time_weeks: {type: int, desc: "Weeks from placing the order to receipt"}
+      driver_categories: {type: str, desc: "Product categories that use the material"}
+
+  space_baseline:
+    key: [site_id, category]
+    cols:
+      site_id: {type: str, desc: "DC, e.g. DC1"}
+      category: {type: str, desc: "Product category"}
+      positions_occupied: {type: int, desc: "Pallet positions occupied now"}
+      units_per_position: {type: int, desc: "Average units per pallet position"}
+
+  space_forecast_weekly:
+    key: [site_id, week_start, category]
+    cols:
+      site_id: {type: str, desc: "DC, e.g. DC1"}
+      week_start: {type: date, desc: "Monday of the planning week"}
+      category: {type: str, desc: "Product category"}
+      inbound_pallets: {type: float, desc: "Pallet positions arriving from open purchase orders"}
+      outbound_pallets: {type: float, desc: "Pallet positions released by planned outbound"}
+
+  component_buy_terms:
+    key: component_id
+    cols:
+      component_id: {type: str, desc: "Component id, e.g. ZIP_METAL"}
+      component_name: {type: str, desc: "Component description"}
+      unit_price_gbp: {type: float, desc: "Current price per single unit"}
+      weekly_price_rise_pct: {type: float, desc: "Expected price rise per week, %"}
+      storage_gbp_per_unit_week: {type: float, desc: "Storage cost per unit per week"}
+      cost_of_capital_pct: {type: float, desc: "Annual cost of capital, %"}
+      lead_time_weeks: {type: int, desc: "Supplier lead time in weeks"}
+
+tools:
+  - name: get_item_planning_parameters
+    desc: Planning parameters per item (lead time, pack size, lot size, safety stock, sourcing policy) with weeks of demand per pack and lot. Use to audit configuration.
+    kind: sql
+    args:
+      sku: {}
+      supplier_id: {}
+      category: {desc: "Product category, e.g. Shirts"}
+    sql: |
+      SELECT pp.planning_param_id, pp.sku, p.name, p.category, p.supplier_id, pp.weekly_demand, pp.lead_time_days,
+             pp.pack_size, pp.lot_size,
+             round(pp.pack_size / NULLIF(pp.weekly_demand, 0), 1) AS weeks_of_demand_per_pack,
+             round(pp.lot_size / NULLIF(pp.weekly_demand, 0), 1) AS weeks_of_demand_per_lot,
+             pp.safety_stock_pct, pp.sourcing_policy, pp.reorder_point, pp.updated_at
+      FROM planning_parameters pp JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR pp.sku = $sku) AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+      ORDER BY pp.sku
+    limit: 20
+    example: {sku: "SKU-102961"}
+
+  - name: update_item_planning_parameters
+    desc: Change planning parameters (lead time, pack size, lot size, safety stock %, sourcing policy) on an item after auditing. Returns old and new values.
+    kind: update
+    table: planning_parameters
+    args:
+      lead_time_days: {type: int}
+      pack_size: {type: int}
+      lot_size: {type: int}
+      safety_stock_pct: {type: float}
+      sourcing_policy: {type: enum, values: [stocked, make_to_order, dual_source]}
+    example: {sku: "SKU-102961", pack_size: 500}
+
+  - name: get_supply_demand_gap_for_product
+    desc: Weekly supply-demand gaps (forecast, confirmed supply, shortfall) by SKU, style or category and week range, with the total gap for each week and category.
+    kind: sql
+    args:
+      sku: {}
+      style_id: {}
+      category: {desc: "Product category, e.g. Trousers"}
+      week_from: {type: date, desc: "First week to include (YYYY-MM-DD or e.g. +14d)"}
+      week_to: {type: date, desc: "Last week to include (YYYY-MM-DD or e.g. +28d)"}
+    sql: |
+      SELECT gap_id, sku, style_id, category, week_start, forecast_units, confirmed_units, gap_units, gap_reason,
+             sum(gap_units) OVER (PARTITION BY category, week_start) AS category_gap_units_that_week,
+             first_detected
+      FROM supply_demand_gaps
+      WHERE ($sku IS NULL OR sku = $sku) AND ($style_id IS NULL OR style_id = $style_id)
+        AND ($category IS NULL OR lower(category) = lower($category))
+        AND ($week_from IS NULL OR week_start >= CAST($week_from AS DATE))
+        AND ($week_to IS NULL OR week_start <= CAST($week_to AS DATE))
+      ORDER BY week_start, gap_units DESC
+    limit: 40
+    example: {category: Trousers, week_from: "+0d", week_to: "+56d"}
+
+  - name: get_supply_plan_for_product
+    desc: "Weekly supply plan for a SKU: forecast, confirmed supply, planned inbound, unmet gap, projected stock and running unmet units. Use to see when stock runs short."
+    kind: sql
+    args:
+      sku: {required: true}
+      week_from: {type: date, default: "-7d", desc: "First plan week to show"}
+      week_to: {type: date, default: "+182d", desc: "Last plan week to show"}
+    sql: |
+      SELECT sp.sku, strftime(sp.week_start, '%G-W%V') AS plan_week, sp.week_start, sp.forecast_units, sp.confirmed_supply,
+             sp.planned_inbound, sp.gap, sp.stock_on_hand, sp.stock_projected, sp.safety_stock,
+             sum(sp.gap) OVER (ORDER BY sp.week_start) AS cumulative_gap_units
+      FROM supply_plans sp
+      WHERE sp.sku = $sku
+        AND sp.week_start >= CAST($week_from AS DATE) - INTERVAL 6 DAY
+        AND sp.week_start <= CAST($week_to AS DATE)
+      ORDER BY sp.week_start
+    limit: 52
+    example: {sku: "SKU-104599"}
+
+  - name: get_order_proposal_calculation_trace
+    desc: Step-by-step calculation of an order proposal (demand, lead time, safety stock, stock netted, lot and pack rounding) and the main driver of its quantity. Find by proposal id or SKU.
+    kind: sql
+    args:
+      proposal_id: {}
+      sku: {}
+    sql: |
+      WITH t AS (
+        SELECT o.*, round(o.weekly_demand_used * (o.lead_time_days_used / 7.0 + o.demand_period_weeks)) AS gross_requirement_units
+        FROM order_proposals o
+        WHERE ($proposal_id IS NULL OR o.proposal_id = $proposal_id) AND ($sku IS NULL OR o.sku = $sku)
+      ), u AS (
+        SELECT t.*, round(gross_requirement_units * safety_stock_pct_used / 100.0) AS safety_stock_units FROM t
+      ), v AS (
+        SELECT u.*, greatest(gross_requirement_units + safety_stock_units - net_stock_used, 0) AS net_requirement_units FROM u
+      )
+      SELECT v.proposal_id, v.sku, v.supplier_id, v.dest_site_id, v.status, v.weekly_demand_used AS weekly_demand,
+             v.lead_time_days_used AS lead_time_days, v.demand_period_weeks AS cover_weeks_added,
+             v.promotion_uplift_pct, v.history_outliers_flagged,
+             v.gross_requirement_units, v.safety_stock_pct_used AS safety_stock_pct, v.safety_stock_units,
+             v.net_stock_used AS stock_netted_units, v.net_requirement_units,
+             v.lot_size_used AS lot_size, greatest(v.net_requirement_units, v.lot_size_used) AS qty_after_lot_size,
+             v.pack_size_used AS pack_size, v.quantity AS proposed_quantity,
+             v.quantity - greatest(v.net_requirement_units, v.lot_size_used) AS units_added_by_pack_rounding,
+             round(v.quantity / NULLIF(v.weekly_demand_used, 0), 1) AS weeks_of_demand_proposed,
+             pp.pack_size AS current_pack_size, pp.lot_size AS current_lot_size,
+             CASE WHEN v.quantity - greatest(v.net_requirement_units, v.lot_size_used) >= 0.5 * v.quantity THEN 'pack_size'
+                  WHEN v.lot_size_used >= 0.5 * v.quantity AND v.lot_size_used > v.net_requirement_units THEN 'lot_size'
+                  WHEN v.promotion_uplift_pct > 0 THEN 'promotion_uplift'
+                  WHEN v.history_outliers_flagged > 0 THEN 'history_spike'
+                  ELSE 'demand_and_lead_time' END AS main_driver,
+             v.issue_detected, v.conversion_reason, v.created_at,
+             'gross = demand * (lead weeks + cover weeks); + safety %; - stock; at least lot size; rounded up to a pack multiple' AS formula
+      FROM v LEFT JOIN planning_parameters pp ON pp.sku = v.sku
+      ORDER BY v.created_at DESC
+    limit: 10
+    example: {sku: "SKU-102961"}
+
+  - name: calculate_projected_space_utilisation
+    desc: Project DC pallet-position utilisation by week from current stock, inbound purchase orders and planned outbound, with the categories growing most. Shows when capacity runs out.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC to project, e.g. DC1"}
+      weeks_ahead: {type: int, default: 12, desc: "Weeks to project (up to 12)"}
+    sql: |
+      WITH cap AS (
+        SELECT count(*) AS capacity FROM master.locations
+        WHERE site_id = $site_id AND status = 'active' AND location_type IN ('reserve', 'bulk_floor')
+      ), base AS (
+        SELECT sum(positions_occupied) AS occ0 FROM space_baseline WHERE site_id = $site_id
+      ), w AS (
+        SELECT week_start, category, inbound_pallets, outbound_pallets FROM space_forecast_weekly WHERE site_id = $site_id
+      ), wk AS (
+        SELECT week_start, sum(inbound_pallets) AS inb, sum(outbound_pallets) AS outb FROM w GROUP BY week_start
+      ), tot AS (
+        SELECT week_start, inb, outb, (SELECT occ0 FROM base) + sum(inb - outb) OVER (ORDER BY week_start) AS projected FROM wk
+      ), cum AS (
+        SELECT week_start, category, sum(inbound_pallets - outbound_pallets) OVER (PARTITION BY category ORDER BY week_start) AS cat_growth FROM w
+      ), rk AS (
+        SELECT week_start, category, cat_growth, row_number() OVER (PARTITION BY week_start ORDER BY cat_growth DESC) AS rn FROM cum
+      ), drv AS (
+        SELECT week_start, string_agg(category || ' +' || CAST(round(cat_growth) AS INTEGER), ', ' ORDER BY rn) AS categories_growing_most
+        FROM rk WHERE rn <= 3 GROUP BY week_start
+      )
+      SELECT $site_id AS site_id, t.week_start, cap.capacity AS capacity_positions,
+             CAST(round(t.inb) AS INTEGER) AS inbound_positions, CAST(round(t.outb) AS INTEGER) AS outbound_positions,
+             CAST(round(t.projected) AS INTEGER) AS projected_occupied_positions,
+             round(100.0 * t.projected / cap.capacity, 1) AS utilisation_pct,
+             cap.capacity - CAST(round(t.projected) AS INTEGER) AS positions_free,
+             greatest(CAST(round(t.projected) AS INTEGER) - cap.capacity, 0) AS positions_over_capacity,
+             CASE WHEN t.projected > cap.capacity THEN 'over capacity'
+                  WHEN t.projected >= 0.95 * cap.capacity THEN 'critical'
+                  WHEN t.projected >= 0.90 * cap.capacity THEN 'tight' ELSE 'ok' END AS risk_level,
+             d.categories_growing_most,
+             'projected = occupied now + cumulative (inbound from open POs - planned outbound); capacity = active reserve and bulk positions' AS formula
+      FROM tot t CROSS JOIN cap JOIN drv d USING (week_start)
+      WHERE t.week_start < CAST($as_of AS DATE) + CAST($weeks_ahead AS INTEGER) * 7
+      ORDER BY t.week_start
+    limit: 12
+    example: {site_id: DC1}
+
+  - name: cancel_order_proposal
+    desc: Cancels a system-generated order proposal before conversion to a PO. Returns old and new status.
+    kind: update
+    table: order_proposals
+    set: {status: cancelled, cancelled_at: "$as_of"}
+    args:
+      cancel_reason: {required: true, desc: "Reason for cancellation"}
+    example: {proposal_id: "ORP-900001", cancel_reason: "Pack size misconfigured"}
+
+  - name: list_items_with_similar_parameter_issue
+    desc: List items whose planning parameters have the same fault, as pack size too large for demand or lead time shorter than the supplier delivers, with open proposals.
+    kind: sql
+    args:
+      issue_type: {type: enum, values: [pack_size_too_large, lead_time_short], required: true, desc: "Fault to search for"}
+      max_pack_weeks: {type: float, default: 8, desc: "For pack_size_too_large: flag packs bigger than this many weeks of demand"}
+      category: {desc: "Product category, e.g. Shirts"}
+    sql: |
+      WITH a AS (
+        SELECT pp.sku, p.name, p.category, p.supplier_id, pp.weekly_demand, pp.pack_size, pp.lot_size, pp.lead_time_days,
+               round(pp.pack_size / NULLIF(pp.weekly_demand, 0), 1) AS pack_weeks_of_demand,
+               t.actual_avg_lead_days
+        FROM planning_parameters pp JOIN master.products p USING (sku)
+        LEFT JOIN supplier_planning_terms t ON t.supplier_id = p.supplier_id
+        WHERE $category IS NULL OR lower(p.category) = lower($category)
+      )
+      SELECT a.sku, a.name, a.category, a.supplier_id, a.weekly_demand, a.pack_size, a.lot_size, a.pack_weeks_of_demand,
+             a.lead_time_days, round(a.actual_avg_lead_days) AS supplier_actual_lead_days,
+             (SELECT count(*) FROM order_proposals o WHERE o.sku = a.sku AND o.status IN ('draft', 'approved')) AS open_proposals,
+             (SELECT coalesce(sum(o.quantity), 0) FROM order_proposals o WHERE o.sku = a.sku AND o.status IN ('draft', 'approved')) AS open_proposal_units,
+             $issue_type AS issue
+      FROM a
+      WHERE ($issue_type = 'pack_size_too_large' AND a.pack_weeks_of_demand > $max_pack_weeks)
+         OR ($issue_type = 'lead_time_short' AND a.actual_avg_lead_days - a.lead_time_days >= 14)
+      ORDER BY CASE WHEN $issue_type = 'pack_size_too_large' THEN a.pack_weeks_of_demand ELSE a.actual_avg_lead_days - a.lead_time_days END DESC
+    limit: 30
+    example: {issue_type: pack_size_too_large}
+
+  - name: calculate_expedite_cost
+    desc: Cost of expediting a supplier order, with extra cost per unit above plan (rush premium plus air freight uplift) and the shortened lead time.
+    kind: sql
+    args:
+      sku: {required: true}
+      supplier_id: {required: true}
+      quantity_units: {type: int, required: true, desc: "Units to expedite"}
+      expedite_weeks: {type: int, default: 1, desc: "Weeks to compress lead time"}
+    sql: |
+      SELECT $sku AS sku, $supplier_id AS supplier_id, $quantity_units AS quantity_units, $expedite_weeks AS expedite_weeks,
+             p.unit_cost_gbp, t.rush_premium_pct_per_week,
+             round(p.unit_cost_gbp * t.rush_premium_pct_per_week / 100.0 * $expedite_weeks, 2) AS rush_premium_per_unit_gbp,
+             round(t.freight_air_gbp_per_unit - t.freight_sea_gbp_per_unit, 2) AS air_freight_uplift_per_unit_gbp,
+             round(p.unit_cost_gbp * t.rush_premium_pct_per_week / 100.0 * $expedite_weeks
+                   + t.freight_air_gbp_per_unit - t.freight_sea_gbp_per_unit, 2) AS cost_per_unit_above_plan_gbp,
+             round($quantity_units * (p.unit_cost_gbp * t.rush_premium_pct_per_week / 100.0 * $expedite_weeks
+                   + t.freight_air_gbp_per_unit - t.freight_sea_gbp_per_unit), 2) AS expedite_cost_gbp,
+             p.lead_time_days AS plan_lead_days, greatest(p.lead_time_days - 7 * $expedite_weeks, 7) AS expedited_lead_days,
+             'per unit = unit cost * rush premium % per week * weeks + (air - sea freight per unit)' AS formula
+      FROM master.products p, supplier_planning_terms t
+      WHERE p.sku = $sku AND t.supplier_id = $supplier_id
+    limit: 1
+    example: {sku: "SKU-102884", supplier_id: "SUP-0008", quantity_units: 25000, expedite_weeks: 2}
+
+  - name: calculate_split_sourcing_cost
+    desc: Extra cost of splitting an order between a primary and a second supplier (price difference, setup, freight difference), per unit above plan, and the second supplier's earliest arrival.
+    kind: sql
+    args:
+      sku: {required: true}
+      total_quantity: {type: int, required: true, desc: "Total units to source"}
+      primary_supplier_id: {required: true, desc: "Primary supplier, e.g. SUP-0008"}
+      secondary_supplier_id: {required: true, desc: "Second supplier, e.g. SUP-0036"}
+      split_pct: {type: float, default: 50, desc: "% of units from the second supplier (50 = 50/50, 40 = 60/40)"}
+      qualification_weeks: {type: int, desc: "Weeks the second supplier needs to qualify (default: its recorded time)"}
+    sql: |
+      WITH p AS (SELECT sku, unit_cost_gbp, category, lead_time_days FROM master.products WHERE sku = $sku),
+      pri AS (SELECT * FROM supplier_planning_terms WHERE supplier_id = $primary_supplier_id),
+      sec AS (SELECT * FROM supplier_planning_terms WHERE supplier_id = $secondary_supplier_id),
+      sl AS (
+        SELECT coalesce(avg(q.lead_time_days), (SELECT lead_time_days FROM p)) AS sec_lead_days
+        FROM master.products q WHERE q.supplier_id = $secondary_supplier_id AND q.category = (SELECT category FROM p)
+      )
+      SELECT $sku AS sku, $total_quantity AS total_quantity, $primary_supplier_id AS primary_supplier_id,
+             $secondary_supplier_id AS secondary_supplier_id, round($split_pct, 1) AS split_pct_from_secondary,
+             CAST(round($total_quantity * $split_pct / 100.0) AS INTEGER) AS qty_from_secondary,
+             $total_quantity - CAST(round($total_quantity * $split_pct / 100.0) AS INTEGER) AS qty_from_primary,
+             p.unit_cost_gbp, pri.price_index AS primary_price_index, sec.price_index AS secondary_price_index,
+             round($total_quantity * $split_pct / 100.0 * p.unit_cost_gbp * (sec.price_index - pri.price_index), 2) AS extra_price_cost_gbp,
+             sec.setup_cost_gbp,
+             round($total_quantity * $split_pct / 100.0 * (sec.freight_sea_gbp_per_unit - pri.freight_sea_gbp_per_unit), 2) AS freight_difference_gbp,
+             round($total_quantity * $split_pct / 100.0 * p.unit_cost_gbp * (sec.price_index - pri.price_index)
+                   + sec.setup_cost_gbp
+                   + $total_quantity * $split_pct / 100.0 * (sec.freight_sea_gbp_per_unit - pri.freight_sea_gbp_per_unit), 2) AS total_split_cost_gbp,
+             round(($total_quantity * $split_pct / 100.0 * p.unit_cost_gbp * (sec.price_index - pri.price_index)
+                   + sec.setup_cost_gbp
+                   + $total_quantity * $split_pct / 100.0 * (sec.freight_sea_gbp_per_unit - pri.freight_sea_gbp_per_unit)) / $total_quantity, 2) AS cost_per_unit_above_plan_gbp,
+             coalesce($qualification_weeks, sec.qualification_weeks) AS qualification_weeks,
+             CAST(round(sl.sec_lead_days + 7 * coalesce($qualification_weeks, sec.qualification_weeks)) AS INTEGER) AS secondary_earliest_arrival_days,
+             'extra = secondary qty * unit cost * (secondary - primary price index) + setup + secondary qty * freight difference' AS formula
+      FROM p, pri, sec, sl
+    limit: 1
+    example: {sku: "SKU-102884", total_quantity: 25000, primary_supplier_id: "SUP-0008", secondary_supplier_id: "SUP-0036"}
+
+  - name: calculate_buy_ahead_cost
+    desc: Cost of buying a component ahead of need (working capital plus storage) against the price rise avoided, with net benefit and a buy-ahead recommendation.
+    kind: sql
+    args:
+      component_id: {type: str, required: true, desc: "Component id, e.g. ZIP_METAL or ZIP_PLASTIC"}
+      quantity_units: {type: int, required: true, desc: "Units to buy ahead"}
+      advance_weeks: {type: int, default: 8, desc: "How many weeks ahead to buy"}
+    sql: |
+      SELECT c.component_id, c.component_name, $quantity_units AS quantity_units, $advance_weeks AS advance_weeks,
+             c.unit_price_gbp, c.weekly_price_rise_pct,
+             round($quantity_units * c.unit_price_gbp, 2) AS purchase_value_gbp,
+             round($quantity_units * c.unit_price_gbp * c.cost_of_capital_pct / 100.0 * $advance_weeks / 52.0, 2) AS working_capital_cost_gbp,
+             round($quantity_units * c.storage_gbp_per_unit_week * $advance_weeks, 2) AS storage_cost_gbp,
+             round($quantity_units * c.unit_price_gbp * c.cost_of_capital_pct / 100.0 * $advance_weeks / 52.0
+                   + $quantity_units * c.storage_gbp_per_unit_week * $advance_weeks, 2) AS total_buy_ahead_cost_gbp,
+             round($quantity_units * c.unit_price_gbp * c.weekly_price_rise_pct / 100.0 * $advance_weeks, 2) AS price_rise_avoided_gbp,
+             round($quantity_units * c.unit_price_gbp * c.weekly_price_rise_pct / 100.0 * $advance_weeks
+                   - ($quantity_units * c.unit_price_gbp * c.cost_of_capital_pct / 100.0 * $advance_weeks / 52.0
+                      + $quantity_units * c.storage_gbp_per_unit_week * $advance_weeks), 2) AS net_benefit_gbp,
+             CASE WHEN $quantity_units * c.unit_price_gbp * c.weekly_price_rise_pct / 100.0 * $advance_weeks
+                       > $quantity_units * c.unit_price_gbp * c.cost_of_capital_pct / 100.0 * $advance_weeks / 52.0
+                         + $quantity_units * c.storage_gbp_per_unit_week * $advance_weeks
+                  THEN 'buy ahead' ELSE 'do not buy ahead' END AS recommendation,
+             c.lead_time_weeks,
+             'cost = value * capital % * weeks/52 + qty * storage per unit-week * weeks; benefit = value * weekly price rise % * weeks' AS formula
+      FROM component_buy_terms c
+      WHERE c.component_id = upper($component_id)
+    limit: 1
+    example: {component_id: ZIP_METAL, quantity_units: 500000, advance_weeks: 8}
+
+  - name: calculate_buffer_stock_cost
+    desc: Annual holding cost of a proposed safety stock buffer for a SKU, from its unit cost and demand. Give buffer units or weeks of cover.
+    kind: sql
+    args:
+      sku: {required: true}
+      buffer_units: {type: int, desc: "Safety stock units to hold (default: buffer_weeks of demand)"}
+      buffer_weeks: {type: float, desc: "Weeks of demand to hold as buffer, used when buffer_units is not given", default: 4}
+      holding_rate_pct: {type: float, desc: "Annual holding cost as % of stock value (capital, storage, shrink)", default: 25}
+    sql: |
+      WITH b AS (
+        SELECT pp.sku, p.name, p.supplier_id, pp.weekly_demand, pp.network_stock_units, p.unit_cost_gbp,
+               coalesce($buffer_units, CAST(round(pp.weekly_demand * $buffer_weeks) AS BIGINT)) AS units
+        FROM planning_parameters pp JOIN master.products p USING (sku)
+        WHERE pp.sku = $sku
+      )
+      SELECT sku, name, supplier_id, weekly_demand, units AS buffer_units,
+             round(units / weekly_demand, 1) AS buffer_weeks_of_cover,
+             round(network_stock_units / weekly_demand, 1) AS current_weeks_of_cover,
+             unit_cost_gbp, round(units * unit_cost_gbp, 2) AS buffer_value_gbp, $holding_rate_pct AS holding_rate_pct,
+             round(units * unit_cost_gbp * $holding_rate_pct / 100.0, 2) AS annual_holding_cost_gbp,
+             round(units * unit_cost_gbp * $holding_rate_pct / 1200.0, 2) AS monthly_holding_cost_gbp,
+             'annual cost = buffer units * unit cost * holding rate %; buffer units = weekly demand * weeks if not given' AS formula
+      FROM b
+    limit: 1
+    example: {sku: "SKU-105075", buffer_weeks: 6}
+
+  - name: calculate_lead_time_gap_inventory_impact
+    desc: Extra stock, holding cost and service level at risk when a supplier's actual lead time exceeds the planning lead time, using the demand of its SKUs.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      gap_days: {type: float, desc: "Days actual exceeds the planning lead time (default: the supplier's recorded gap)"}
+    sql: |
+      WITH t AS (SELECT * FROM supplier_planning_terms WHERE supplier_id = $supplier_id),
+      d AS (
+        SELECT count(*) AS skus, sum(pp.weekly_demand) / 7.0 AS daily_units, sum(pp.weekly_demand / 7.0 * p.unit_cost_gbp) AS daily_value
+        FROM planning_parameters pp JOIN master.products p USING (sku) WHERE p.supplier_id = $supplier_id
+      ), g AS (
+        SELECT greatest(coalesce($gap_days, t.actual_avg_lead_days - t.planning_lead_days), 0) AS gap FROM t
+      )
+      SELECT t.supplier_id, s.name AS supplier_name, s.tier, t.quoted_lead_days, t.planning_lead_days, t.actual_avg_lead_days,
+             round(g.gap, 1) AS gap_days_used, d.skus AS skus_supplied, CAST(round(d.daily_units) AS INTEGER) AS daily_demand_units,
+             CAST(round(d.daily_units * g.gap) AS INTEGER) AS extra_stock_units_needed,
+             CAST(round(d.daily_value * g.gap) AS INTEGER) AS extra_stock_value_gbp,
+             CAST(round(d.daily_value * g.gap * 0.25) AS INTEGER) AS annual_holding_cost_gbp,
+             round(100.0 * g.gap / (t.actual_avg_lead_days + 14), 1) AS service_level_at_risk_pct,
+             'extra stock = daily demand * gap days; holding cost = 25% of stock value a year; service at risk = gap / (actual lead + 14 day review)' AS formula
+      FROM t JOIN master.suppliers s USING (supplier_id), d, g
+    limit: 1
+    example: {supplier_id: "SUP-0022"}
+
+  - name: get_lead_times_by_origin
+    desc: Transit lead times by origin port and region (Asia, Europe, Americas) to each DC, with variability, freight rate and a what-if of extra days.
+    kind: sql
+    args:
+      origin_region: {desc: "Region: Asia, Europe or Americas"}
+      origin_country: {desc: "Origin country code, e.g. VN"}
+      origin_port: {desc: "Origin port code, e.g. VNSGN"}
+      dest_dc: {desc: "Destination DC, e.g. DC1"}
+      mode: {desc: "Transport mode: sea, air, road or rail"}
+      extra_days: {type: int, default: 0, desc: "What-if extra days added to every lane (14 = two weeks longer)"}
+    sql: |
+      SELECT origin_id, origin_region, origin_country, origin_port, dest_dc, mode, transit_days, transit_variability_days,
+             transit_days + CAST($extra_days AS INTEGER) AS transit_days_with_extra,
+             transit_days + CAST(ceil(1.65 * transit_variability_days) AS INTEGER) AS planning_transit_days_95pct,
+             CAST($extra_days AS INTEGER) AS extra_days, rate_gbp_per_unit
+      FROM lead_time_by_origin
+      WHERE ($origin_region IS NULL OR lower(origin_region) = lower($origin_region))
+        AND ($origin_country IS NULL OR upper(origin_country) = upper($origin_country))
+        AND ($origin_port IS NULL OR upper(origin_port) = upper($origin_port))
+        AND ($dest_dc IS NULL OR dest_dc = $dest_dc)
+        AND ($mode IS NULL OR lower(mode) = lower($mode))
+      ORDER BY origin_region, origin_port, dest_dc, mode
+    limit: 30
+    example: {origin_region: Asia, dest_dc: DC1, mode: sea}
+
+  - name: update_planning_lead_time_for_supplier
+    desc: Changes the lead time used in planning for a supplier after analysing actual performance. Returns old and new planning lead time.
+    kind: update
+    table: supplier_planning_terms
+    args:
+      planning_lead_days: {type: int, required: true, desc: "New planning lead time in days"}
+      change_reason: {desc: "Why the lead time is changing"}
+    example: {supplier_id: "SUP-0022", planning_lead_days: 32, change_reason: "Actual lead time 10 days over quote"}
+
+  - name: get_fabric_requirements_by_category
+    desc: Fabric requirements by category and material with weeks of cover against supplier lead time, shortage status and supplier risk. Most exposed first.
+    kind: sql
+    args:
+      category: {desc: "Product category, e.g. Knitwear"}
+      material: {desc: "Fabric, e.g. Wool"}
+      supplier_id: {}
+      status: {type: enum, values: [shortage, at_risk, ok], desc: "shortage = below critical level; at_risk = cover shorter than lead time"}
+    sql: |
+      WITH x AS (
+        SELECT f.category, f.material, f.supplier_id, s.name AS supplier_name, s.risk_rating AS supplier_risk, s.otif_pct_12m,
+               f.monthly_average_units, f.lead_time_weeks, f.stock_on_hand, f.critical_threshold,
+               round(f.stock_on_hand / (f.monthly_average_units / 4.33), 1) AS weeks_of_cover,
+               round(f.lead_time_weeks - f.stock_on_hand / (f.monthly_average_units / 4.33), 1) AS weeks_uncovered_vs_lead_time,
+               greatest(f.critical_threshold - f.stock_on_hand, 0) AS units_below_critical,
+               CASE WHEN f.stock_on_hand < f.critical_threshold THEN 'shortage'
+                    WHEN f.stock_on_hand / (f.monthly_average_units / 4.33) < f.lead_time_weeks THEN 'at_risk' ELSE 'ok' END AS status
+        FROM fabric_requirements f JOIN master.suppliers s USING (supplier_id)
+        WHERE ($category IS NULL OR lower(f.category) = lower($category)) AND ($material IS NULL OR lower(f.material) = lower($material))
+          AND ($supplier_id IS NULL OR f.supplier_id = $supplier_id)
+      )
+      SELECT * FROM x WHERE $status IS NULL OR status = $status
+      ORDER BY weeks_uncovered_vs_lead_time DESC, category, material
+    limit: 50
+    example: {}
+
+  - name: get_material_requirements_forecast
+    desc: Monthly requirement forecast for a material (leather, fabric, zips, trims) from planned demand, with the date each month's order must be placed given supplier lead time.
+    kind: sql
+    args:
+      material_type: {type: enum, values: [leather, fabric, zips, trims], default: fabric, desc: "Material to forecast"}
+      date_from: {type: date, default: "-31d", desc: "First month to include (YYYY-MM-DD or e.g. +90d)"}
+      date_to: {type: date, desc: "Last month to include (YYYY-MM-DD or e.g. +400d)"}
+    sql: |
+      SELECT material_type, month_start, required_qty, unit, lead_time_weeks,
+             CAST(month_start AS DATE) - CAST(lead_time_weeks * 7 AS INTEGER) AS order_by_date,
+             strftime(CAST(month_start AS DATE) - CAST(lead_time_weeks * 7 AS INTEGER), '%B %Y') AS order_by_month,
+             round(100.0 * required_qty / sum(required_qty) OVER (), 1) AS share_of_period_pct,
+             CASE WHEN required_qty = max(required_qty) OVER () THEN 'peak month' ELSE '' END AS peak,
+             driver_categories
+      FROM material_requirements
+      WHERE material_type = lower($material_type)
+        AND ($date_from IS NULL OR month_start >= CAST($date_from AS DATE))
+        AND ($date_to IS NULL OR month_start <= CAST($date_to AS DATE))
+      ORDER BY month_start
+    limit: 36
+    example: {material_type: leather}
+
+  - name: calculate_supplier_disruption_impact
+    desc: Stock-out, revenue and margin impact of a supplier outage, SKU by SKU, first to run out first, with a total row. A packaging supplier covers its pack type's SKUs.
+    kind: sql
+    args:
+      supplier_id: {required: true}
+      outage_weeks: {type: int, required: true, desc: "Duration of the supplier outage in weeks"}
+    sql: |
+      WITH dep(supplier_id, pack_type) AS (VALUES ('SUP-0081', 'carton'), ('SUP-0082', 'polybag')),
+      s AS (
+        SELECT p.sku, p.name, p.category, p.retail_price_gbp, p.unit_cost_gbp, pp.weekly_demand,
+               pp.network_stock_units AS stock_units
+        FROM master.products p JOIN planning_parameters pp USING (sku)
+        WHERE (p.supplier_id = $supplier_id
+               OR (p.pack_type IN (SELECT pack_type FROM dep WHERE supplier_id = $supplier_id) AND p.launch_date <= CAST($as_of AS DATE)))
+          AND p.status <> 'discontinued' AND pp.weekly_demand > 0
+      ), c AS (
+        SELECT s.*, stock_units / weekly_demand AS cover_weeks,
+               greatest(weekly_demand * $outage_weeks - stock_units, 0) AS lost_units FROM s
+      )
+      SELECT * EXCLUDE (sort_key) FROM (
+      SELECT 'TOTAL' AS sku, 'All SKUs of ' || $supplier_id AS name, '' AS category, CAST(sum(stock_units) AS BIGINT) AS stock_units,
+             round(sum(weekly_demand), 1) AS weekly_demand, NULL::DOUBLE AS weeks_of_cover,
+             count(*) FILTER (WHERE cover_weeks < $outage_weeks) || ' of ' || count(*) || ' SKUs run out' AS outcome,
+             CAST(round(sum(lost_units)) AS BIGINT) AS units_lost,
+             CAST(round(sum(lost_units * retail_price_gbp)) AS BIGINT) AS revenue_at_risk_gbp,
+             CAST(round(sum(lost_units * (retail_price_gbp - unit_cost_gbp))) AS BIGINT) AS margin_at_risk_gbp,
+             0 AS sort_key
+      FROM c
+      UNION ALL
+      SELECT sku, name, category, CAST(stock_units AS BIGINT), round(weekly_demand, 1), round(cover_weeks, 1),
+             CASE WHEN cover_weeks < $outage_weeks THEN 'runs out in week ' || CAST(ceil(cover_weeks) AS INTEGER) ELSE 'holds' END,
+             CAST(round(lost_units) AS BIGINT), CAST(round(lost_units * retail_price_gbp) AS BIGINT),
+             CAST(round(lost_units * (retail_price_gbp - unit_cost_gbp)) AS BIGINT), 1
+      FROM c
+      ) ORDER BY sort_key, weeks_of_cover
+    limit: 25
+    example: {supplier_id: "SUP-0068", outage_weeks: 6}
+
+  - name: calculate_port_closure_impact_scenarios
+    desc: Revenue, margin and stock-out impact if a port closes for 3, 6 and 12 weeks (or one length), for SKUs made in that country, with first to run out.
+    kind: sql
+    args:
+      port_code: {type: str, required: true, desc: "Port affected, e.g. VNSGN"}
+      scenario_weeks: {type: int, desc: "Closure length in weeks (default: the 3, 6 and 12 week cases)"}
+    sql: |
+      WITH pr AS (SELECT port_code, name AS port_name, country FROM master.ports WHERE port_code = upper($port_code)),
+      w AS (SELECT unnest(CASE WHEN $scenario_weeks IS NULL THEN [3, 6, 12] ELSE [CAST($scenario_weeks AS INTEGER)] END) AS weeks),
+      s AS (
+        SELECT p.sku, p.category, p.retail_price_gbp, p.unit_cost_gbp, pp.weekly_demand,
+               pp.network_stock_units AS stock_units
+        FROM master.products p JOIN planning_parameters pp USING (sku), pr
+        WHERE p.country_of_origin = pr.country AND p.status NOT IN ('discontinued', 'new') AND p.launch_date <= CAST($as_of AS DATE) AND pp.weekly_demand > 0
+      ), c AS (
+        SELECT w.weeks, s.*, s.stock_units / s.weekly_demand AS cover_weeks,
+               greatest(s.weekly_demand * w.weeks - s.stock_units, 0) AS lost_units,
+               row_number() OVER (PARTITION BY w.weeks ORDER BY s.stock_units / s.weekly_demand) AS rn
+        FROM s CROSS JOIN w
+      )
+      SELECT upper($port_code) AS port_code, (SELECT port_name FROM pr) AS port_name, weeks AS scenario_weeks,
+             count(*) AS skus_in_scope, count(*) FILTER (WHERE cover_weeks < weeks) AS skus_running_out,
+             CAST(round(sum(lost_units)) AS BIGINT) AS units_lost,
+             CAST(round(sum(lost_units * retail_price_gbp)) AS BIGINT) AS revenue_at_risk_gbp,
+             CAST(round(sum(lost_units * (retail_price_gbp - unit_cost_gbp))) AS BIGINT) AS margin_at_risk_gbp,
+             count(DISTINCT category) FILTER (WHERE cover_weeks < weeks) AS categories_hit,
+             string_agg(sku || ' (' || CAST(round(cover_weeks, 1) AS VARCHAR) || ' wks)', ', ' ORDER BY cover_weeks) FILTER (WHERE rn <= 5) AS first_to_run_out,
+             'lost units = max(weekly demand * weeks - network stock, 0) for SKUs made in the port country; revenue at retail price; margin = price - unit cost' AS formula
+      FROM c GROUP BY weeks ORDER BY weeks
+    limit: 3
+    example: {port_code: VNSGN}
+
+  - name: run_port_closure_scenario
+    desc: Runs a port closure on the supply plan. Per category shows inbound shipments blocked, stock cover now and after the closure, and the DCs and regions hit first.
+    kind: sql
+    args:
+      port_code: {type: str, required: true, desc: "Port that closes, e.g. NLRTM"}
+      closure_weeks: {type: int, required: true, desc: "Duration of port closure in weeks"}
+    sql: |
+      WITH win AS (SELECT CAST($as_of AS DATE) + CAST($closure_weeks AS INTEGER) * 7 AS last_day),
+      inb AS (
+        SELECT sh.shipment_id, pur.dest_site_id, p.category, l.qty_ordered - l.qty_received AS units,
+               upper($port_code) IN (sh.origin_port, sh.dest_port) AS via_port
+        FROM master.shipments sh JOIN master.purchase_orders pur USING (po_id)
+        JOIN master.po_lines l USING (po_id) JOIN master.products p ON p.sku = l.sku, win
+        WHERE sh.status <> 'delivered' AND sh.eta <= win.last_day
+      ), cat AS (
+        SELECT p.category, sum(pp.weekly_demand) AS weekly_demand,
+               sum(pp.network_stock_units) AS stock_units
+        FROM master.products p JOIN planning_parameters pp USING (sku) WHERE p.status <> 'discontinued' GROUP BY p.category
+      ), blocked AS (
+        SELECT category, sum(units) AS blocked_units, count(DISTINCT shipment_id) AS shipments_blocked
+        FROM inb WHERE via_port GROUP BY category
+      ), alli AS (
+        SELECT category, sum(units) AS inbound_units FROM inb GROUP BY category
+      ), bydc AS (
+        SELECT i.category, string_agg(i.dest_site_id || ' (' || s.region || '): ' || CAST(i.u AS VARCHAR), '; ' ORDER BY i.u DESC) AS dcs_hit
+        FROM (SELECT category, dest_site_id, sum(units) AS u FROM inb WHERE via_port GROUP BY category, dest_site_id) i
+        JOIN master.sites s ON s.site_id = i.dest_site_id GROUP BY i.category
+      )
+      SELECT upper($port_code) AS port_code, $closure_weeks AS closure_weeks, c.category, b.shipments_blocked,
+             b.blocked_units AS blocked_inbound_units, CAST(round(c.weekly_demand) AS INTEGER) AS weekly_demand,
+             CAST(c.stock_units AS INTEGER) AS stock_units, round(c.stock_units / c.weekly_demand, 1) AS cover_weeks_now,
+             round((c.stock_units + coalesce(a.inbound_units, 0) - b.blocked_units) / c.weekly_demand - $closure_weeks, 1) AS cover_weeks_after_closure,
+             CAST(greatest(round($closure_weeks * c.weekly_demand - (c.stock_units + coalesce(a.inbound_units, 0) - b.blocked_units)), 0) AS BIGINT) AS projected_stockout_units,
+             d.dcs_hit AS dcs_and_regions_hit,
+             'cover after = (stock + inbound due in the window - inbound via the port) / weekly demand - closure weeks' AS formula
+      FROM cat c JOIN blocked b USING (category) LEFT JOIN alli a USING (category) LEFT JOIN bydc d USING (category)
+      ORDER BY cover_weeks_after_closure
+    limit: 30
+    example: {port_code: NLRTM, closure_weeks: 2}
+
+  - name: compare_supply_gap_options
+    desc: Compare ways to cover a supply gap (expedite, split with a second supplier, delay the promotion) on cost, cost per unit, lead time, service level and risk.
+    kind: sql
+    args:
+      sku: {required: true}
+      gap_units: {type: int, required: true, desc: "Units to cover"}
+      supplier_id: {required: true, desc: "Current supplier, e.g. SUP-0008"}
+      secondary_supplier_id: {required: true, desc: "Second supplier for the split option, e.g. SUP-0036"}
+      split_pct: {type: float, default: 50, desc: "% of units from the second supplier (50 = 50/50, 40 = 60/40)"}
+      expedite_weeks: {type: int, default: 2, desc: "Weeks to compress lead time when expediting"}
+      qualification_weeks: {type: int, desc: "Weeks the second supplier needs to qualify (default: its recorded time)"}
+    sql: |
+      WITH p AS (SELECT sku, unit_cost_gbp, retail_price_gbp, category, lead_time_days FROM master.products WHERE sku = $sku),
+      pri AS (SELECT t.*, s.otif_pct_12m, s.risk_rating FROM supplier_planning_terms t JOIN master.suppliers s USING (supplier_id) WHERE t.supplier_id = $supplier_id),
+      sec AS (SELECT t.*, s.otif_pct_12m, s.risk_rating FROM supplier_planning_terms t JOIN master.suppliers s USING (supplier_id) WHERE t.supplier_id = $secondary_supplier_id),
+      sl AS (
+        SELECT coalesce(avg(q.lead_time_days), (SELECT lead_time_days FROM p)) AS sec_lead_days
+        FROM master.products q WHERE q.supplier_id = $secondary_supplier_id AND q.category = (SELECT category FROM p)
+      ), opt AS (
+        SELECT 1 AS n, 'Expedite with ' || $supplier_id AS option,
+               round($gap_units * (p.unit_cost_gbp * pri.rush_premium_pct_per_week / 100.0 * $expedite_weeks + pri.freight_air_gbp_per_unit - pri.freight_sea_gbp_per_unit), 0) AS cost_gbp,
+               CAST(greatest(p.lead_time_days - 7 * $expedite_weeks, 7) AS INTEGER) AS lead_time_days,
+               pri.otif_pct_12m AS service_level_pct,
+               'Single mill; supplier risk ' || pri.risk_rating || ', OTIF ' || CAST(pri.otif_pct_12m AS VARCHAR) || '%; needs spare mill capacity' AS risk
+        FROM p, pri
+        UNION ALL
+        SELECT 2, 'Split ' || CAST(round(100 - $split_pct) AS INTEGER) || '/' || CAST(round($split_pct) AS INTEGER) || ' with ' || $secondary_supplier_id,
+               round($gap_units * $split_pct / 100.0 * p.unit_cost_gbp * (sec.price_index - pri.price_index) + sec.setup_cost_gbp
+                     + $gap_units * $split_pct / 100.0 * (sec.freight_sea_gbp_per_unit - pri.freight_sea_gbp_per_unit), 0),
+               CAST(round(sl.sec_lead_days + 7 * coalesce($qualification_weeks, sec.qualification_weeks)) AS INTEGER),
+               round((100 - $split_pct) / 100.0 * pri.otif_pct_12m + $split_pct / 100.0 * sec.otif_pct_12m, 1),
+               'Second supplier risk ' || sec.risk_rating || ', OTIF ' || CAST(sec.otif_pct_12m AS VARCHAR) || '%; qualification ' || CAST(coalesce($qualification_weeks, sec.qualification_weeks) AS VARCHAR) || ' weeks; quality variance between mills'
+        FROM p, pri, sec, sl
+        UNION ALL
+        SELECT 3, 'Shift promotion timing',
+               round($gap_units * (p.retail_price_gbp - p.unit_cost_gbp) * 0.20, 0),
+               21, 80.0,
+               'Assumes 20% of promoted units are lost sales; customer and competitor timing risk'
+        FROM p
+      )
+      SELECT $sku AS sku, $gap_units AS gap_units, option, CAST(cost_gbp AS BIGINT) AS cost_gbp,
+             round(cost_gbp / $gap_units, 2) AS cost_per_unit_above_plan_gbp, lead_time_days, service_level_pct, risk,
+             'expedite = rush premium + air uplift; split = price difference + setup + freight difference; promotion = lost margin on 20% of units' AS formula
+      FROM opt ORDER BY n
+    limit: 3
+    example: {sku: "SKU-102884", gap_units: 25000, supplier_id: "SUP-0008", secondary_supplier_id: "SUP-0036"}
+
+  - name: calculate_stock_shortfall_for_promotion
+    desc: Shortfall, stock-out risk (Low/Medium/High), lost revenue and margin when promotion volume exceeds the stock available, plus a pack-rounded top-up order size and lead time.
+    kind: sql
+    args:
+      sku: {required: true}
+      promotion_volume: {type: int, required: true, desc: "Units the promotion is expected to sell"}
+      current_stock: {type: int, desc: "Stock available or confirmed for the promotion, in units (default: network stock in planning)"}
+    sql: |
+      WITH b AS (
+        SELECT pp.sku, p.name, pp.network_stock_units, pp.lead_time_days, pp.pack_size, pp.lot_size,
+               p.retail_price_gbp, p.unit_cost_gbp,
+               coalesce($current_stock, pp.network_stock_units) AS stock,
+               $promotion_volume AS vol
+        FROM planning_parameters pp JOIN master.products p USING (sku)
+        WHERE pp.sku = $sku
+      ), s AS (
+        SELECT *, greatest(vol - stock, 0) AS shortfall FROM b
+      )
+      SELECT sku, name, vol AS promotion_volume, stock AS current_stock, shortfall AS shortfall_units,
+             round(stock * 100.0 / vol, 1) AS stock_cover_pct,
+             CASE WHEN stock >= vol THEN 'Low' WHEN stock >= vol * 0.8 THEN 'Medium' ELSE 'High' END AS stockout_risk,
+             retail_price_gbp, unit_cost_gbp,
+             round(shortfall * retail_price_gbp, 0) AS lost_revenue_gbp,
+             round(shortfall * (retail_price_gbp - unit_cost_gbp), 0) AS lost_margin_gbp,
+             CASE WHEN shortfall = 0 THEN 0
+                  ELSE CAST(ceil(greatest(shortfall, lot_size) * 1.0 / pack_size) * pack_size AS BIGINT) END AS suggested_top_up_units,
+             lead_time_days AS replenishment_lead_time_days,
+             'shortfall = volume - stock; risk Low if stock >= volume, Medium if >= 80% of volume, else High; revenue at retail price' AS formula
+      FROM s
+    limit: 1
+    example: {sku: "SKU-100707", promotion_volume: 600, current_stock: 200}
+
+  - name: create_supply_request_for_promotion
+    desc: Raises a supply request for the stock a promotion needs. Returns new request id and status.
+    kind: insert
+    table: supply_requests
+    id_prefix: SRP-
+    defaults: {status: submitted, request_type: promotion}
+    args:
+      sku: {required: true}
+      site_id: {required: true}
+      quantity_requested: {required: true, type: int, desc: "Units required"}
+      requirement_date: {required: true, type: date, desc: "Date needed by"}
+      promotion_id: {}
+      notes: {}
+    example: {sku: "SKU-100007", site_id: "DC1", quantity_requested: 15000, requirement_date: "+21d"}
+
+  - name: update_sku_sourcing_policy
+    desc: Changes a SKU between stocked and make-to-order sourcing based on demand analysis. Returns old and new policy.
+    kind: update
+    table: planning_parameters
+    args:
+      sourcing_policy: {type: enum, values: [stocked, make_to_order, dual_source], required: true}
+    example: {sku: "SKU-101253", sourcing_policy: "make_to_order"}

@@ -1,0 +1,911 @@
+id: competitor_prices
+name: Competitor Price Monitoring Tool
+instructions: >
+  Monitor competitor pricing, promotions, and delivery practices across key product categories.
+  Use to track price positions, promotion timing, and how competitors respond to market changes.
+  Competitor IDs look like CMPD-001; our SKUs are matched to competitor products by SKU.
+
+tables:
+  competitors:
+    key: competitor_id
+    cols:
+      competitor_id: {type: str, desc: "Competitor, e.g. CMPD-001"}
+      name: {type: str, desc: "Competitor name"}
+      format: {type: str, desc: "Store format or channel, e.g. online, high_street, department_store"}
+      country: {type: str, desc: "Primary country of operation"}
+      region: {type: str, desc: "Trading region, e.g. UK, EU, US"}
+      data_source: {type: str, desc: "How we source their prices: web_scrape, manual, agency"}
+      last_updated: {type: timestamp, desc: "When their pricing was last checked"}
+      coverage_status: {type: enum, values: [active, partial, inactive], desc: "How actively we monitor them"}
+
+  competitor_products:
+    key: competitor_product_id
+    cols:
+      competitor_product_id: {type: str, desc: "Their product id, e.g. CMPD-001-APR-2045"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      sku: {type: str, desc: "Our closest matching SKU, if any"}
+      their_sku: {type: str, desc: "Their SKU or product code"}
+      their_name: {type: str, desc: "Product name as they show it"}
+      category: {type: str, desc: "Product category, e.g. Insulated bottles, Men's jackets, Small appliances"}
+      subcategory: {type: str, desc: "Product type inside the category, e.g. Kettles, Toasters"}
+      department: {type: str, desc: "Department the product sits in, e.g. Menswear, Home, Electricals"}
+      brand: {type: str, desc: "Brand if different from competitor"}
+      features: {type: text, desc: "Key features or description"}
+      colour: {type: str, desc: "Main colour as they describe it, if relevant"}
+      material: {type: str, desc: "Main material, e.g. recycled wool, stainless steel"}
+      silhouette: {type: str, desc: "Fit or shape for apparel, e.g. oversized, cropped"}
+      status: {type: enum, values: [active, bestseller, discontinued], desc: "Listing status: bestseller = top seller on their site, discontinued = withdrawn"}
+      launch_date: {type: date, desc: "When they first listed the product"}
+      matched_product: {type: bool, desc: "True if directly matched to our sku"}
+
+  competitor_prices:
+    key: [competitor_product_id, price_date]
+    cols:
+      competitor_product_id: {type: str, desc: "Their product"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      sku: {type: str, desc: "Our matching SKU if any"}
+      price_date: {type: date, desc: "Date of price observation"}
+      price_gbp: {type: float, desc: "Price paid on the date, in GBP or converted, after any promotion"}
+      list_price_gbp: {type: float, desc: "Full price before any promotion, in GBP"}
+      promotion_type: {type: enum, values: [none, percentage, fixed_amount, clearance, bundle, bogo], desc: "Promotion type if any"}
+      discount_pct: {type: float, desc: "Discount percentage if promoted"}
+      promotion_desc: {type: str, desc: "Promotion description"}
+      in_clearance: {type: bool, desc: "True if marked as clearance"}
+      data_quality: {type: enum, values: [confirmed, estimated, partial], desc: "Quality of the data point"}
+
+  competitor_promotions:
+    key: promotion_id
+    cols:
+      promotion_id: {type: str, desc: "Promotion id, e.g. PRMO-001"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      competitor_product_id: {type: str, desc: "Their product id"}
+      sku: {type: str, desc: "Our matching SKU if any"}
+      promo_start: {type: date, desc: "Promotion start date"}
+      promo_end: {type: date, desc: "Promotion end date"}
+      promo_type: {type: enum, values: [percentage, fixed_amount, bogo, bundle, clearance, seasonal], desc: "Type of promotion"}
+      discount_pct: {type: float, desc: "Discount percentage"}
+      discount_gbp: {type: float, desc: "Fixed discount in GBP"}
+      promo_description: {type: text, desc: "How they describe the promotion"}
+      duration_days: {type: int, desc: "Length of promotion in days"}
+      status: {type: enum, values: [active, completed, cancelled], desc: "Current status"}
+
+  competitor_stores:
+    key: store_id
+    cols:
+      store_id: {type: str, desc: "Competitor store id, e.g. CSTD-001-0001"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      site_id: {type: str, desc: "Our closest store location, e.g. ST214"}
+      opening_date: {type: date, desc: "Store opening date"}
+      closing_date: {type: date, desc: "Store closing date if closed"}
+      status: {type: enum, values: [open, closed], desc: "Current store status"}
+      store_format: {type: str, desc: "Store format, e.g. online, high_street"}
+
+  competitor_price_events:
+    key: event_id
+    cols:
+      event_id: {type: str, desc: "Event row id, e.g. CPE-001"}
+      event_type: {type: enum, values: [tariff, cost_rise, price_rise, seasonal], desc: "What triggered the price move: tariff, cost_rise (freight or energy), price_rise (a competitor led a rise) or seasonal"}
+      event_date: {type: date, desc: "When the shock or lead price move happened"}
+      event_desc: {type: str, desc: "What happened, e.g. tariff added about 7% to landed cost"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      category: {type: str, desc: "Competitor product category affected, e.g. Small appliances"}
+      response: {type: enum, values: [passed_on, partly_passed_on, absorbed, matched, held, led], desc: "How the competitor reacted on shelf price"}
+      price_change_pct: {type: float, desc: "List price change they made in response, percent"}
+      response_lag_days: {type: int, desc: "Days from the event to their first price change, blank if no change"}
+      promo_support_pct: {type: float, desc: "Depth of any promotion they ran alongside, percent (0 if none)"}
+      promo_weeks: {type: int, desc: "Weeks that promotion ran"}
+      notes: {type: text, desc: "What they did in practice"}
+
+  competitor_returns_policies:
+    key: policy_id
+    cols:
+      policy_id: {type: str, desc: "Policy id, e.g. RPOL-01"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      competitor_name: {type: str, desc: "Competitor name"}
+      country: {type: str, desc: "Market the policy applies to, e.g. GB, FR"}
+      returns_free: {type: bool, desc: "True if returns are free"}
+      restocking_fee_gbp: {type: float, desc: "Fixed restocking fee in GBP"}
+      restocking_fee_pct: {type: float, desc: "Restocking fee as percentage"}
+      return_window_days: {type: int, desc: "Days within which returns accepted"}
+      policy_description: {type: str, desc: "Summary of returns policy"}
+      last_updated: {type: timestamp, desc: "When policy was last confirmed"}
+
+  competitor_delivery_practices:
+    key: practice_id
+    cols:
+      practice_id: {type: str, desc: "Practice id, e.g. DLVR-01"}
+      competitor_id: {type: str, desc: "Competitor id"}
+      competitor_name: {type: str, desc: "Competitor name"}
+      delivery_zones: {type: str, desc: "Geographic zones served, e.g. UK mainland only"}
+      min_order_gbp: {type: float, desc: "Minimum order value to process"}
+      free_delivery_threshold_gbp: {type: float, desc: "Threshold for free delivery"}
+      standard_delivery_days: {type: int, desc: "Delivery time in days"}
+      express_delivery_available: {type: bool, desc: "Whether express delivery offered"}
+      saturday_delivery: {type: bool, desc: "Whether Saturday delivery available"}
+      eu_cross_border: {type: bool, desc: "True if they ship from the UK to EU addresses (cross-border)"}
+      de_minimis_threshold_eur: {type: float, desc: "Basket value in EUR below which they treat an EU order as duty-free"}
+      vat_reverse_charge: {type: bool, desc: "Whether VAT reverse charge applied"}
+      duty_vat_terms: {type: text, desc: "Who pays import duty and VAT on cross-border EU orders, and how"}
+      urban_delivery_notes: {type: text, desc: "How they adapt city delivery to low-emission zones and time restrictions"}
+      last_updated: {type: timestamp, desc: "When practice was last confirmed"}
+
+tools:
+  - name: get_competitor_prices_for_product
+    desc: Current competitor prices for one of our SKUs (latest observation per competitor, with promotion and clearance flags and data quality). Use for a price check on one product.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Our SKU, e.g. SKU-100161; competitor products matched to any size or colour of its style are included"}
+    sql: |
+      WITH target AS (
+        SELECT DISTINCT m2.sku FROM master.products m1 JOIN master.products m2 ON m2.style_id = m1.style_id WHERE m1.sku = $sku
+      ),
+      latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT c.competitor_id, c.name AS competitor, c.data_source, cp.their_name, cp.their_sku,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.promotion_desc,
+             p.in_clearance, p.price_date, p.data_quality
+      FROM latest p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE cp.sku IN (SELECT sku FROM target)
+        AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY p.price_gbp, c.competitor_id
+    limit: 50
+    example: {sku: "K-1700"}
+
+  - name: get_competitor_prices_for_products
+    desc: Current competitor prices for several of our SKUs at once (latest per competitor product), with our price and gap to each. Use for bulk product comparison.
+    kind: sql
+    args:
+      skus: {required: true, type: list, desc: "List of our SKUs to compare, e.g. [K-1700, SKU-106307]"}
+    sql: |
+      WITH req AS (
+        SELECT m.sku AS our_sku, m.style_id, m.retail_price_gbp AS our_price_gbp FROM master.products m WHERE m.sku IN (SELECT value FROM UNNEST($skus) AS t(value))
+      ),
+      latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT req.our_sku AS sku, req.our_price_gbp, c.competitor_id, c.name AS competitor, cp.their_name,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.in_clearance, p.price_date,
+             round(100.0 * (req.our_price_gbp - p.price_gbp) / p.price_gbp, 1) AS our_gap_pct
+      FROM latest p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      JOIN master.products mm ON mm.sku = cp.sku
+      JOIN req ON req.style_id = mm.style_id
+      WHERE p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY req.our_sku, p.price_gbp, c.competitor_id
+    limit: 100
+    example: {skus: ["K-1700", "SKU-106307"]}
+
+  - name: get_competitor_prices_for_range
+    desc: Current competitor prices across a whole category range (latest per product, with list price and any promotion). Use to see how a range is positioned and discounted.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Product category or product type, e.g. Athleisure, Insulated bottles, Kettles"}
+      country: {type: str, desc: "Country code of the competitor, e.g. GB, FR; default all"}
+    sql: |
+      WITH latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT c.competitor_id, c.name AS competitor, cp.category, cp.subcategory, cp.their_name,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.promotion_desc, p.price_date
+      FROM latest p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($country IS NULL OR c.country = $country)
+        AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY cp.subcategory, p.price_gbp DESC, c.competitor_id
+    limit: 60
+    example: {category: "Athleisure"}
+
+  - name: get_competitor_prices_for_similar_products
+    desc: Current competitor prices for products of the same type as one of our SKUs (same category as its competitor matches). Use to benchmark a new product.
+    kind: sql
+    args:
+      sku: {required: true}
+      category: {type: str, desc: "Competitor category to use instead of the one inferred from the SKU, e.g. Kettles"}
+    sql: |
+      WITH target_category AS (
+        SELECT DISTINCT cp.category FROM competitor_products cp
+        WHERE cp.sku IN (SELECT m2.sku FROM master.products m1 JOIN master.products m2 ON m2.style_id = m1.style_id WHERE m1.sku = $sku)
+      ),
+      latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT c.competitor_id, c.name AS competitor, cp.category, cp.subcategory, cp.their_name, cp.features,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.price_date
+      FROM latest p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE (($category IS NOT NULL AND (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%'))
+             OR ($category IS NULL AND cp.category IN (SELECT category FROM target_category)))
+        AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY p.price_gbp, c.competitor_id
+    limit: 50
+    example: {sku: "K-1700"}
+
+  - name: get_competitor_price_history
+    desc: Weekly competitor price history for a product category, newest first, with promotions and data quality. Use for trend analysis and to judge how stable prices are.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Product category or product type, e.g. Insulated bottles, Men's jackets, Small appliances"}
+      date_from: {type: date, default: "-90d", desc: "History from"}
+      competitor_id: {type: str, desc: "Specific competitor (default all)"}
+    sql: |
+      SELECT c.competitor_id, c.name AS competitor, cp.category, cp.their_name, p.price_date, p.list_price_gbp, p.price_gbp,
+             p.promotion_type, p.discount_pct, p.data_quality
+      FROM competitor_prices p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($competitor_id IS NULL OR p.competitor_id = $competitor_id)
+        AND p.price_date >= CAST($date_from AS DATE)
+      ORDER BY p.price_date DESC, c.competitor_id, cp.their_name
+    limit: 150
+    example: {category: "Insulated bottles", date_from: "-90d"}
+
+  - name: get_competitor_price_history_for_product
+    desc: Weekly competitor price history for one of our SKUs over a period, newest first. Use for the price path of a single product.
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-60d", desc: "History from"}
+    sql: |
+      WITH target AS (
+        SELECT DISTINCT m2.sku FROM master.products m1 JOIN master.products m2 ON m2.style_id = m1.style_id WHERE m1.sku = $sku
+      )
+      SELECT c.competitor_id, c.name AS competitor, cp.sku, cp.their_name, p.price_date, p.list_price_gbp, p.price_gbp,
+             p.promotion_type, p.discount_pct, p.in_clearance
+      FROM competitor_prices p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE cp.sku IN (SELECT sku FROM target)
+        AND p.price_date >= CAST($date_from AS DATE)
+      ORDER BY p.price_date DESC, c.competitor_id
+    limit: 100
+    example: {sku: "K-1700", date_from: "-60d"}
+
+  - name: get_competitor_clearance_prices
+    desc: Competitor products on clearance right now, with depth, list price, clearance price and the date the clearance started. Use to compare depth and timing of markdowns.
+    kind: sql
+    args:
+      category: {type: str, desc: "Product category, e.g. Men's jackets; default all"}
+      country: {type: str, desc: "Country code of the competitor, e.g. GB; default all"}
+      min_discount_pct: {type: int, default: 20, desc: "Minimum discount to show"}
+    sql: |
+      WITH latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      ),
+      since AS (
+        SELECT competitor_product_id, min(price_date) AS clearance_since
+        FROM competitor_prices WHERE in_clearance = true GROUP BY competitor_product_id
+      )
+      SELECT c.competitor_id, c.name AS competitor, cp.category, cp.their_name,
+             p.list_price_gbp, p.price_gbp AS clearance_price_gbp, p.discount_pct, s.clearance_since,
+             p.promotion_desc, p.price_date
+      FROM latest p
+      JOIN since s ON s.competitor_product_id = p.competitor_product_id
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE p.in_clearance = true
+        AND p.discount_pct >= $min_discount_pct
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($country IS NULL OR c.country = $country)
+        AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY p.discount_pct DESC, c.competitor_id
+    limit: 50
+    example: {}
+
+  - name: get_competitor_price_changes_for_period
+    desc: Which competitor products changed shelf price and by how much over a period (promotions and clearance included), biggest moves first. For competitive monitoring.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Start of period"}
+      date_to: {type: date, default: "+0d", desc: "End of period"}
+      min_change_pct: {type: float, default: 5, desc: "Minimum price change to show"}
+      category: {type: str, desc: "Competitor product category, e.g. Men's jackets (default all)"}
+    sql: |
+      WITH dated_prices AS (
+        SELECT p.competitor_product_id, p.competitor_id, cp.their_name, cp.category,
+               p.price_date, p.price_gbp, c.name, p.promotion_type, p.in_clearance,
+               LAG(p.price_gbp) OVER (PARTITION BY p.competitor_product_id ORDER BY p.price_date) AS prev_price
+        FROM competitor_prices p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+      )
+      SELECT competitor_id, name, category, their_name, price_date, prev_price, price_gbp, promotion_type, in_clearance,
+             ROUND(100.0 * (price_gbp - prev_price) / prev_price, 1) AS change_pct
+      FROM dated_prices
+      WHERE prev_price IS NOT NULL
+        AND price_date >= CAST($date_from AS DATE)
+        AND price_date <= CAST($date_to AS DATE)
+        AND ABS(100.0 * (price_gbp - prev_price) / prev_price) >= $min_change_pct
+      ORDER BY ABS(change_pct) DESC, price_date DESC
+    limit: 100
+    example: {date_from: "-30d"}
+
+  - name: get_competitor_promotions_active
+    desc: Active promotions from competitors now. Shows what they're promoting and depth.
+    kind: sql
+    args:
+      category: {type: str, desc: "Filter by category (default all)"}
+      country: {type: str, desc: "Filter by country (default all)"}
+    sql: |
+      SELECT c.competitor_id, c.name, prom.promo_type, cp.category, cp.their_name,
+             prom.discount_pct, prom.discount_gbp, prom.promo_description,
+             prom.promo_start, prom.promo_end, prom.duration_days, prom.status
+      FROM competitor_promotions prom
+      JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
+      JOIN competitors c ON c.competitor_id = prom.competitor_id
+      WHERE prom.status = 'active'
+        AND prom.promo_start <= CAST($as_of AS DATE)
+        AND prom.promo_end >= CAST($as_of AS DATE)
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%')
+        AND ($country IS NULL OR c.country = $country)
+      ORDER BY prom.discount_pct DESC, c.competitor_id
+    limit: 50
+    example: {}
+
+  - name: get_competitor_promotion_history_for_period
+    desc: Historical promotions from competitors in a date range. For seasonal and event analysis.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-90d", desc: "Promotions starting on or after"}
+      date_to: {type: date, default: "+0d", desc: "Promotions starting on or before"}
+      category: {type: str, desc: "Filter by product category"}
+    sql: |
+      SELECT DISTINCT c.competitor_id, c.name, cp.category, cp.their_name,
+             prom.promo_type, prom.discount_pct, prom.duration_days,
+             prom.promo_start, prom.promo_end, prom.promo_description
+      FROM competitor_promotions prom
+      JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
+      JOIN competitors c ON c.competitor_id = prom.competitor_id
+      WHERE prom.promo_start >= CAST($date_from AS DATE)
+        AND prom.promo_start <= CAST($date_to AS DATE)
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%')
+      ORDER BY prom.promo_start DESC, prom.discount_pct DESC
+    limit: 100
+    example: {date_from: "-90d"}
+
+  - name: get_competitor_price_response_history
+    desc: How each competitor responded to past price shocks or market price rises, one row per event (price change, days to react, promotion used), newest first. Filter by event type, category.
+    kind: sql
+    args:
+      event_type: {type: str, desc: "Type of shock: tariff, cost_rise, price_rise or seasonal (default all)"}
+      category: {type: str, desc: "Competitor product category, e.g. Small appliances (default all)"}
+      competitor_id: {}
+      date_from: {type: date, default: "-730d", desc: "Look back this far"}
+    sql: |
+      SELECT e.event_date, e.event_type, e.event_desc, c.competitor_id, c.name AS competitor, e.category, e.response,
+             e.price_change_pct, e.response_lag_days, e.promo_support_pct, e.promo_weeks, e.notes
+      FROM competitor_price_events e
+      JOIN competitors c ON c.competitor_id = e.competitor_id
+      WHERE e.event_date >= CAST($date_from AS DATE)
+        AND ($event_type IS NULL OR e.event_type = lower($event_type))
+        AND ($category IS NULL OR e.category ILIKE '%' || $category || '%')
+        AND ($competitor_id IS NULL OR e.competitor_id = $competitor_id)
+      ORDER BY e.event_date DESC, e.price_change_pct DESC, c.competitor_id
+    limit: 50
+    example: {event_type: "tariff", date_from: "-730d"}
+
+  - name: compare_markdown_to_competitors
+    desc: Draft comparison of our products in a category against competitor clearance depth and timing. Use to see where our markdown is out of line.
+    kind: draft
+    args:
+      category: {required: true, type: str, desc: "Competitor product category, e.g. Men's jackets"}
+    sql:
+      our_products: |
+        SELECT DISTINCT m.sku, m.name, m.style_id, m.retail_price_gbp AS full_price
+        FROM master.products m
+        WHERE m.style_id IN (
+          SELECT m1.style_id FROM master.products m1 JOIN competitor_products cp ON cp.sku = m1.sku
+          WHERE cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        ORDER BY m.sku
+      competitor_clearance: |
+        WITH latest AS (
+          SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+        ),
+        since AS (
+          SELECT competitor_product_id, min(price_date) AS clearance_since
+          FROM competitor_prices WHERE in_clearance = true GROUP BY competitor_product_id
+        )
+        SELECT c.name, cp.their_name, p.list_price_gbp, p.price_gbp, p.discount_pct, s.clearance_since
+        FROM latest p
+        JOIN since s ON s.competitor_product_id = p.competitor_product_id
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE p.in_clearance = true
+          AND (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+          AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        ORDER BY p.discount_pct DESC
+    template: |
+      ## Markdown comparison: {{ category }}
+
+      ### Our products at full price
+      {% for row in our_products %}- {{ row.sku }}: {{ row.name }} (style {{ row.style_id }}, full price £{{ row.full_price | num(2) }})
+      {% endfor %}
+      ### Competitor clearance (deepest first)
+      {% for row in competitor_clearance %}- {{ row.name }}: {{ row.their_name }} at {{ row.discount_pct | num(0) }}% off, £{{ row.price_gbp | num(2) }} (was £{{ row.list_price_gbp | num(2) }}), on clearance since {{ row.clearance_since }}
+      {% endfor %}
+    example: {category: "Men's jackets"}
+
+  - name: compare_offer_vs_competitors
+    desc: Compare our price with competitor prices for one SKU (our full price, then each competitor's current price and promotion). Use for a head-to-head on a top product.
+    kind: draft
+    args:
+      sku: {required: true, desc: "Our SKU"}
+    sql:
+      our_offer: |
+        SELECT mp.sku, mp.name, mp.retail_price_gbp, mp.category, mp.supplier_id
+        FROM master.products mp
+        WHERE mp.sku = $sku
+      competitor_offers: |
+        WITH target AS (
+          SELECT DISTINCT m2.sku FROM master.products m1 JOIN master.products m2 ON m2.style_id = m1.style_id WHERE m1.sku = $sku
+        ),
+        latest AS (
+          SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+        )
+        SELECT c.competitor_id, c.name, c.format, cp.their_name, p.price_gbp, p.discount_pct, p.promotion_desc, p.price_date
+        FROM latest p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE cp.sku IN (SELECT sku FROM target)
+          AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        ORDER BY p.price_gbp
+    template: |
+      ## Our Offer vs Competitors
+
+      ### Our Pricing
+      {% if our_offer %}
+      - SKU: {{ our_offer[0].sku }}
+      - Product: {{ our_offer[0].name }}
+      - Full Price: £{{ our_offer[0].retail_price_gbp | num(2) }}
+      - Category: {{ our_offer[0].category }}
+      {% endif %}
+
+      ### Competitor Pricing
+      {% for comp in competitor_offers %}- {{ comp.name }} ({{ comp.format }}): £{{ comp.price_gbp | num(2) }}{% if comp.discount_pct %} ({{ comp.discount_pct }}% off){% endif %}{{ '' }}
+      {% endfor %}
+    example: {sku: "K-1700"}
+
+  - name: draft_competitor_comparison_table
+    desc: Draft a shareable comparison table of competitor products in a category with current price, promotion and features. Optionally adds our own products.
+    kind: draft
+    args:
+      category: {required: true, type: str, desc: "Product category or product type, e.g. Lunch boxes, Insulated bottles"}
+      include_our_products: {type: bool, default: false, desc: "Include our products in the table"}
+    sql:
+      competitors_in_category: |
+        WITH latest AS (
+          SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+        )
+        SELECT c.name, c.competitor_id, cp.their_name, cp.features, p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct
+        FROM latest p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+          AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        ORDER BY p.price_gbp DESC, c.name
+      our_products: |
+        SELECT sku, name, category, retail_price_gbp
+        FROM master.products
+        WHERE category ILIKE '%' || $category || '%'
+        ORDER BY sku
+        LIMIT 20
+    template: |
+      # {{ category }}: competitor comparison
+
+      ## Competitor products and pricing
+
+      | Competitor | Product | Price | Promotion | Features |
+      |---|---|---|---|---|
+      {% for row in competitors_in_category %}| {{ row.name }} ({{ row.competitor_id }}) | {{ row.their_name }} | £{{ row.price_gbp | num(2) }} | {% if row.discount_pct %}{{ row.discount_pct | num(0) }}% off (was £{{ row.list_price_gbp | num(2) }}){% else %}None{% endif %} | {{ row.features }} |
+      {% endfor %}
+      {% if include_our_products %}
+      ## Our products
+
+      | SKU | Name | Price |
+      |---|---|---|
+      {% for row in our_products %}| {{ row.sku }} | {{ row.name }} | £{{ row.retail_price_gbp | num(2) }} |
+      {% endfor %}
+      {% endif %}
+    example: {category: "Insulated bottles"}
+
+  - name: calculate_price_index_vs_competitors
+    desc: Our price index vs competitors (100 = competitor average, median or minimum) for each matched SKU in a category plus the category total. Shows where we are priced above market.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Product category or product type, e.g. Small appliances, Kettles"}
+      comparison_type: {type: str, default: "average", desc: "Competitor reference price: average, median or min"}
+    sql: |
+      WITH latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      ),
+      pairs AS (
+        SELECT m.sku, m.name AS our_product, cp.subcategory, m.retail_price_gbp AS our_price_gbp,
+               CASE lower($comparison_type) WHEN 'median' THEN median(p.price_gbp) WHEN 'min' THEN min(p.price_gbp) ELSE avg(p.price_gbp) END AS comp_price_gbp,
+               count(DISTINCT cp.competitor_id) AS competitors_compared
+        FROM latest p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN master.products m ON m.sku = cp.sku
+        WHERE (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+          AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+        GROUP BY m.sku, m.name, cp.subcategory, m.retail_price_gbp
+      ),
+      rows AS (
+        SELECT 0 AS ord, 'CATEGORY TOTAL' AS scope, '' AS sku, '' AS our_product, '' AS subcategory,
+               round(avg(our_price_gbp), 2) AS our_price_gbp, round(avg(comp_price_gbp), 2) AS comp_price_gbp,
+               sum(competitors_compared) AS competitors_compared
+        FROM pairs
+        UNION ALL
+        SELECT 1, 'SKU', sku, our_product, subcategory, our_price_gbp, round(comp_price_gbp, 2), competitors_compared FROM pairs
+      )
+      SELECT scope, sku, our_product, subcategory, our_price_gbp, comp_price_gbp AS competitor_price_gbp, competitors_compared,
+             round(100.0 * our_price_gbp / comp_price_gbp, 1) AS price_index,
+             CASE WHEN our_price_gbp / comp_price_gbp > 1.05 THEN 'Above market'
+                  WHEN our_price_gbp / comp_price_gbp < 0.95 THEN 'Below market' ELSE 'At market' END AS positioning,
+             'index = our price / competitor reference price * 100' AS formula
+      FROM rows
+      ORDER BY ord, price_index DESC
+    limit: 30
+    example: {category: "Small appliances"}
+
+  - name: get_competitor_promotions_for_period
+    desc: Competitor promotions that ran at any point during a period (overlapping it), with depth, dates and description. Filter by department or category to see what rivals ran against our event.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Period start"}
+      date_to: {type: date, default: "+0d", desc: "Period end"}
+      department: {type: str, desc: "Our department the product sits in, e.g. Home, Menswear, Electricals (default all)"}
+      category: {type: str, desc: "Competitor product category, e.g. Men's jackets (default all)"}
+      promo_type: {type: str, desc: "Filter by promotion type, default all"}
+    sql: |
+      SELECT c.competitor_id, c.name, cp.department, cp.category, cp.their_name,
+             prom.promo_type, prom.discount_pct, prom.discount_gbp,
+             prom.promo_start, prom.promo_end, prom.duration_days,
+             prom.promo_description, prom.status
+      FROM competitor_promotions prom
+      JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
+      JOIN competitors c ON c.competitor_id = prom.competitor_id
+      WHERE prom.promo_start <= CAST($date_to AS DATE)
+        AND prom.promo_end >= CAST($date_from AS DATE)
+        AND ($department IS NULL OR cp.department ILIKE $department)
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($promo_type IS NULL OR prom.promo_type = $promo_type)
+      ORDER BY prom.discount_pct DESC, prom.promo_start DESC
+    limit: 100
+    example: {date_from: "-30d"}
+
+  - name: get_competitor_promotions_near_stores
+    desc: Promotions running now at competitors that have an open store near our locations, with count and depth per site and category. Filter by site or sales region.
+    kind: sql
+    args:
+      site_id: {type: str, desc: "Our store location to check, e.g. ST214; default all"}
+      region: {type: str, desc: "Our sales region to cover, e.g. Scotland, UK North; default all"}
+      date_from: {type: date, default: "-30d", desc: "Promotions started on or after"}
+    sql: |
+      SELECT cs.site_id, c.competitor_id, c.name,
+             COUNT(prom.promotion_id) as active_promotions,
+             ROUND(AVG(prom.discount_pct), 1) as avg_discount,
+             MAX(prom.discount_pct) as max_discount,
+             cp.category
+      FROM competitor_stores cs
+      JOIN master.sites s ON s.site_id = cs.site_id
+      JOIN competitors c ON c.competitor_id = cs.competitor_id
+      JOIN competitor_promotions prom ON prom.competitor_id = c.competitor_id
+      JOIN competitor_products cp ON cp.competitor_product_id = prom.competitor_product_id
+      WHERE prom.promo_start >= CAST($date_from AS DATE)
+        AND prom.status = 'active'
+        AND prom.promo_end >= CAST($as_of AS DATE)
+        AND ($site_id IS NULL OR cs.site_id = $site_id)
+        AND ($region IS NULL OR s.region ILIKE '%' || $region || '%')
+        AND cs.status = 'open'
+      GROUP BY cs.site_id, c.competitor_id, c.name, cp.category
+      ORDER BY cs.site_id, avg_discount DESC, c.name
+    limit: 100
+    example: {site_id: "ST214"}
+
+  - name: get_competitor_response_to_past_cost_shocks
+    desc: Per competitor summary of reactions to past cost or tariff shocks in a category - average price rise passed on, days to react, promotion used. Use before cost-driven pricing decisions.
+    kind: sql
+    args:
+      event_type: {type: str, default: "tariff", desc: "Type of shock: tariff, cost_rise or price_rise"}
+      category: {type: str, desc: "Competitor product category, e.g. Small appliances (default all)"}
+      date_from: {type: date, default: "-730d", desc: "Look back this far"}
+    sql: |
+      SELECT c.competitor_id, c.name AS competitor, e.category, count(*) AS shocks_observed,
+             round(avg(e.price_change_pct), 1) AS avg_price_change_pct,
+             max(e.price_change_pct) AS max_price_change_pct,
+             round(avg(e.response_lag_days), 0) AS avg_days_to_react,
+             count(*) FILTER (WHERE e.response IN ('passed_on', 'matched')) AS fully_passed_on,
+             count(*) FILTER (WHERE e.response = 'partly_passed_on') AS partly_passed_on,
+             count(*) FILTER (WHERE e.response IN ('absorbed', 'held')) AS absorbed,
+             round(avg(e.promo_support_pct) FILTER (WHERE e.promo_support_pct > 0), 0) AS avg_promo_depth_pct,
+             max(e.event_date) AS latest_event
+      FROM competitor_price_events e
+      JOIN competitors c ON c.competitor_id = e.competitor_id
+      WHERE e.event_type = lower($event_type)
+        AND e.event_date >= CAST($date_from AS DATE)
+        AND ($category IS NULL OR e.category ILIKE '%' || $category || '%')
+      GROUP BY c.competitor_id, c.name, e.category
+      ORDER BY avg_price_change_pct DESC, c.competitor_id
+    limit: 50
+    example: {event_type: "tariff"}
+
+  - name: get_price_changes_on_our_top_sellers
+    desc: Competitor price changes on products matched to our own SKUs over a period, with our unit cost and whether the new price is clearance. Shows moves hitting our lines.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Period start"}
+      min_change_pct: {type: float, default: 5, desc: "Minimum price change to show"}
+      limit_to: {type: int, default: 20, desc: "Show top N price changes"}
+    sql: |
+      WITH dated_prices AS (
+        SELECT p.competitor_product_id, p.competitor_id, cp.their_name, cp.category, cp.sku,
+               p.price_date, p.price_gbp, c.name, p.promotion_type, p.in_clearance,
+               LAG(p.price_gbp) OVER (PARTITION BY p.competitor_product_id ORDER BY p.price_date) AS prev_price
+        FROM competitor_prices p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE cp.sku IS NOT NULL
+      )
+      SELECT d.competitor_id, d.name, d.their_name, d.category, d.sku, d.price_date,
+             ROUND(d.prev_price, 2) as prev_price, ROUND(d.price_gbp, 2) as current_price,
+             ROUND(100.0 * (d.price_gbp - d.prev_price) / NULLIF(d.prev_price, 0), 1) AS change_pct,
+             d.promotion_type, d.in_clearance, m.unit_cost_gbp AS our_unit_cost_gbp,
+             d.price_gbp < m.unit_cost_gbp AS below_our_cost
+      FROM dated_prices d
+      JOIN master.products m ON m.sku = d.sku
+      WHERE m.status = 'active'
+        AND d.prev_price IS NOT NULL
+        AND d.price_date >= CAST($date_from AS DATE)
+        AND ABS(100.0 * (d.price_gbp - d.prev_price) / NULLIF(d.prev_price, 0)) >= $min_change_pct
+      ORDER BY ABS(change_pct) DESC
+      LIMIT $limit_to
+    limit: 20
+    example: {date_from: "-30d"}
+
+  - name: get_price_gaps_vs_competitors
+    desc: Our price vs competitors for our top sellers. Shows which products are overpriced or underpriced.
+    kind: sql
+    args:
+      category: {type: str, desc: "Filter to competitor category, e.g. Pots and pans; default all"}
+      department: {type: str, desc: "Our department, e.g. Home, Electricals, Menswear; default all"}
+      min_gap_pct: {type: float, default: 5, desc: "Minimum gap to show"}
+    sql: |
+      WITH matched_skus AS (
+        SELECT DISTINCT cp.sku, cp.category
+        FROM competitor_products cp
+        WHERE cp.sku IS NOT NULL
+          AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+      ),
+      our_prices AS (
+        SELECT mp.sku, mp.name, mp.retail_price_gbp, ms.category, mp.department
+        FROM master.products mp
+        JOIN matched_skus ms ON ms.sku = mp.sku
+        WHERE mp.status = 'active'
+          AND ($department IS NULL OR mp.department ILIKE $department)
+      ),
+      comp_prices AS (
+        SELECT cp.sku, ROUND(AVG(p.price_gbp), 2) as avg_comp_price,
+               ROUND(MIN(p.price_gbp), 2) as min_comp_price,
+               ROUND(MAX(p.price_gbp), 2) as max_comp_price,
+               COUNT(DISTINCT c.competitor_id) as num_competitors
+        FROM competitor_prices p
+        JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+        JOIN competitors c ON c.competitor_id = p.competitor_id
+        WHERE cp.sku IS NOT NULL
+          AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 7 DAY
+        GROUP BY cp.sku
+      )
+      SELECT oup.sku, oup.name, oup.department, oup.category, oup.retail_price_gbp,
+             ROUND(cp.avg_comp_price, 2) as competitor_avg_price,
+             cp.min_comp_price, cp.max_comp_price, cp.num_competitors,
+             ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) as gap_pct,
+             CASE WHEN ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) > 5 THEN 'Premium'
+                  WHEN ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1) < -5 THEN 'Discount'
+                  ELSE 'Competitive' END as position
+      FROM our_prices oup
+      LEFT JOIN comp_prices cp ON cp.sku = oup.sku
+      WHERE cp.avg_comp_price IS NOT NULL
+        AND ABS(ROUND(100.0 * (oup.retail_price_gbp - cp.avg_comp_price) / NULLIF(cp.avg_comp_price, 0), 1)) >= $min_gap_pct
+      ORDER BY ABS(gap_pct) DESC
+    limit: 50
+    example: {}
+
+  - name: get_sales_impact_of_past_competitor_openings
+    desc: Competitor store openings and closures near us over past year. Helps forecast impact on our locations.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Our store location"}
+      lookback_months: {type: int, default: 12, desc: "Months of history to analyze"}
+    sql: |
+      SELECT cs.site_id as our_site, cs.competitor_id, c.name as competitor_name, 
+             c.format, cs.opening_date, cs.closing_date, cs.status,
+             DATEDIFF('month', cs.opening_date, CAST($as_of AS DATE)) as months_since_opening,
+             CASE WHEN cs.status = 'open' THEN 'Active'
+                  WHEN cs.status = 'closed' THEN 'Closed' END as store_status
+      FROM competitor_stores cs
+      JOIN competitors c ON c.competitor_id = cs.competitor_id
+      WHERE cs.site_id = $site_id
+        AND (cs.opening_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INTEGER)) MONTH
+             OR (cs.closing_date IS NOT NULL AND cs.closing_date >= CAST($as_of AS DATE) - INTERVAL (CAST($lookback_months AS INTEGER)) MONTH))
+      ORDER BY COALESCE(cs.closing_date, cs.opening_date) DESC
+    limit: 20
+    example: {site_id: "ST214"}
+
+  - name: search_competitor_delivery_practices
+    desc: Competitor delivery practices, including how they adapt city delivery to low-emission zones and time restrictions, plus zones, thresholds, speed and express options.
+    kind: select
+    from: competitor_delivery_practices
+    filters:
+      competitor_id: {type: str, desc: "Specific competitor"}
+      delivery_zones: {op: like, desc: "Geographic zones served, e.g. EU"}
+      urban_delivery_notes: {op: like, desc: "City delivery approach, e.g. cargo bikes, lockers, zero-emission"}
+      express_delivery_available: {}
+      saturday_delivery: {}
+    columns: [practice_id, competitor_id, competitor_name, delivery_zones, urban_delivery_notes, min_order_gbp,
+              free_delivery_threshold_gbp, standard_delivery_days, express_delivery_available, saturday_delivery]
+    order: competitor_name
+    limit: 20
+    example: {}
+
+  - name: search_competitor_delivery_terms
+    desc: Cross-border delivery terms by competitor, including EU shipping, de minimis threshold, who pays duty and VAT, and VAT reverse charge.
+    kind: select
+    from: competitor_delivery_practices
+    filters:
+      competitor_id: {}
+      delivery_zones: {op: like}
+      eu_cross_border: {}
+      de_minimis_threshold_eur: {}
+      vat_reverse_charge: {}
+    columns: [practice_id, competitor_id, competitor_name, delivery_zones, eu_cross_border, de_minimis_threshold_eur,
+              duty_vat_terms, vat_reverse_charge, min_order_gbp, free_delivery_threshold_gbp]
+    order: competitor_name
+    limit: 20
+    example: {}
+
+  - name: search_competitor_openings_and_closures_near_stores
+    desc: Competitor store openings and closures near our locations, newest first, with site and competitor. Filter by sales region or site; for store impact analysis.
+    kind: sql
+    args:
+      region: {type: str, desc: "Our sales region to cover, e.g. Scotland, UK North; default all"}
+      site_id: {type: str, desc: "One of our stores, e.g. ST214; default all"}
+      date_from: {type: date, default: "-180d", desc: "Look back this far"}
+    sql: |
+      SELECT cs.site_id, s.name AS our_store, cs.competitor_id, c.name, cs.opening_date, cs.closing_date, cs.status,
+             CASE WHEN cs.status = 'open' THEN 'Opening' ELSE 'Closure' END as event_type,
+             COALESCE(cs.closing_date, cs.opening_date) as event_date
+      FROM competitor_stores cs
+      JOIN competitors c ON c.competitor_id = cs.competitor_id
+      JOIN master.sites s ON s.site_id = cs.site_id
+      WHERE (cs.opening_date >= CAST($date_from AS DATE)
+             OR cs.closing_date >= CAST($date_from AS DATE))
+        AND ($site_id IS NULL OR cs.site_id = $site_id)
+        AND ($region IS NULL OR s.region ILIKE '%' || $region || '%')
+      ORDER BY event_date DESC, cs.site_id
+    limit: 100
+    example: {region: "Scotland"}
+
+  - name: search_competitor_openings_near_store
+    desc: Competitor store openings and closures near a specific store location.
+    kind: sql
+    args:
+      site_id: {required: true, desc: "Our store location"}
+      date_from: {type: date, default: "-180d", desc: "Look back this far"}
+    sql: |
+      SELECT cs.competitor_id, c.name, c.format, cs.opening_date, cs.closing_date, cs.status,
+             CASE WHEN cs.status = 'open' THEN 'Opening' ELSE 'Closure' END as event_type
+      FROM competitor_stores cs
+      JOIN competitors c ON c.competitor_id = cs.competitor_id
+      WHERE cs.site_id = $site_id
+        AND (cs.opening_date >= CAST($date_from AS DATE)
+             OR (cs.closing_date IS NOT NULL AND cs.closing_date >= CAST($date_from AS DATE)))
+      ORDER BY COALESCE(cs.closing_date, cs.opening_date) DESC
+    limit: 20
+    example: {site_id: "ST214"}
+
+  - name: search_competitor_prices_for_product
+    desc: Competitor prices for products comparable to one of our SKUs (same category), with source and data quality so reliability can be judged.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Our SKU to find competitors for, e.g. SKU-106307"}
+      category: {type: str, desc: "Restrict to a competitor category instead of the one matched to the SKU"}
+    sql: |
+      WITH target_category AS (
+        SELECT DISTINCT cp.category FROM competitor_products cp
+        WHERE cp.sku IN (SELECT m2.sku FROM master.products m1 JOIN master.products m2 ON m2.style_id = m1.style_id WHERE m1.sku = $sku)
+      ),
+      latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT c.competitor_id, c.name AS competitor, c.format, c.data_source, cp.their_name, cp.features,
+             p.list_price_gbp, p.price_gbp, p.promotion_type, p.discount_pct, p.data_quality, p.price_date
+      FROM latest p
+      JOIN competitor_products cp ON cp.competitor_product_id = p.competitor_product_id
+      JOIN competitors c ON c.competitor_id = p.competitor_id
+      WHERE (($category IS NOT NULL AND (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%'))
+             OR ($category IS NULL AND cp.category IN (SELECT category FROM target_category)))
+        AND p.price_date >= CAST($as_of AS DATE) - INTERVAL 14 DAY
+      ORDER BY p.price_gbp ASC, c.name
+    limit: 50
+    example: {sku: "K-1700"}
+
+  - name: search_competitor_products_by_category
+    desc: Competitor products in a category or product type with brand, features, listing status (bestseller, discontinued) and current price. Shows who sells what and where ranges are thin.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Product category or product type, e.g. Small appliances, Lunch boxes, Wellness"}
+      subcategory: {type: str, desc: "Product type, e.g. Air fryers, Soup makers"}
+      competitor_id: {}
+      status: {type: str, desc: "Listing status: active, bestseller or discontinued", values: [active, bestseller, discontinued]}
+    sql: |
+      WITH latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT cp.competitor_product_id, c.competitor_id, c.name AS competitor, cp.their_name, cp.category, cp.subcategory,
+             cp.brand, cp.features, cp.status, cp.launch_date, p.list_price_gbp, p.price_gbp AS current_price_gbp,
+             p.discount_pct, p.price_date AS last_price_date, cp.sku
+      FROM competitor_products cp
+      JOIN competitors c ON c.competitor_id = cp.competitor_id
+      LEFT JOIN latest p ON p.competitor_product_id = cp.competitor_product_id
+      WHERE (cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($subcategory IS NULL OR cp.subcategory ILIKE '%' || $subcategory || '%')
+        AND ($competitor_id IS NULL OR cp.competitor_id = $competitor_id)
+        AND ($status IS NULL OR cp.status = $status)
+      ORDER BY cp.category, cp.subcategory, c.competitor_id
+    limit: 100
+    example: {category: "Small appliances"}
+
+  - name: search_competitor_ranges_by_attribute
+    desc: Competitor products matching an attribute such as feature, colour, material or silhouette, with competitor name and current price. For trend and range analysis.
+    kind: sql
+    args:
+      features: {type: str, desc: "Feature or keyword in the product name or description, e.g. insulated, eco-friendly"}
+      category: {type: str, desc: "Restrict to a category, e.g. Women's outerwear"}
+      colour: {type: str, desc: "Colour, e.g. chocolate brown, sage green"}
+      material: {type: str, desc: "Material, e.g. recycled, wool"}
+      silhouette: {type: str, desc: "Fit or shape, e.g. oversized, cropped"}
+      brand: {type: str, desc: "Brand filter"}
+      department: {type: str, desc: "Our department the range sits in, e.g. Home, Womenswear, Electricals"}
+    sql: |
+      WITH latest AS (
+        SELECT * FROM competitor_prices QUALIFY row_number() OVER (PARTITION BY competitor_product_id ORDER BY price_date DESC) = 1
+      )
+      SELECT cp.competitor_product_id, c.competitor_id, c.name AS competitor, cp.their_name, cp.department, cp.category, cp.subcategory,
+             cp.colour, cp.material, cp.silhouette, cp.features, cp.brand, cp.launch_date, p.price_gbp AS current_price_gbp
+      FROM competitor_products cp
+      JOIN competitors c ON c.competitor_id = cp.competitor_id
+      LEFT JOIN latest p ON p.competitor_product_id = cp.competitor_product_id
+      WHERE ($features IS NULL OR cp.features ILIKE '%' || $features || '%' OR cp.their_name ILIKE '%' || $features || '%'
+             OR cp.material ILIKE '%' || $features || '%' OR cp.silhouette ILIKE '%' || $features || '%')
+        AND ($category IS NULL OR cp.category ILIKE '%' || $category || '%' OR cp.subcategory ILIKE '%' || $category || '%')
+        AND ($colour IS NULL OR cp.colour ILIKE '%' || $colour || '%')
+        AND ($material IS NULL OR cp.material ILIKE '%' || $material || '%')
+        AND ($silhouette IS NULL OR cp.silhouette ILIKE '%' || $silhouette || '%')
+        AND ($brand IS NULL OR cp.brand ILIKE '%' || $brand || '%')
+        AND ($department IS NULL OR cp.department ILIKE $department)
+      ORDER BY cp.category, c.competitor_id
+    limit: 100
+    example: {features: "insulated"}
+
+  - name: search_competitor_returns_policies
+    desc: Returns policies by competitor, showing whether returns are free, the returns fee, restocking charge and return window.
+    kind: select
+    from: competitor_returns_policies
+    filters:
+      competitor_id: {}
+      competitor_name: {op: like}
+      country: {type: str, desc: "Market the policy applies to, e.g. GB, FR"}
+      returns_free: {}
+    columns: [policy_id, competitor_id, competitor_name, country, returns_free, restocking_fee_gbp, restocking_fee_pct,
+              return_window_days, policy_description]
+    order: competitor_name
+    limit: 20
+    example: {}

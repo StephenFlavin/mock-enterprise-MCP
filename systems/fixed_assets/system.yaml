@@ -1,0 +1,87 @@
+id: fixed_assets
+name: Fixed Asset Register
+instructions: >
+  Tracks capital asset acquisitions, depreciation and planned capex across DCs.
+  Asset IDs reference master.assets. Use for asset valuations, depreciation schedules,
+  and capital expenditure forecasts. Capex ids look like CAPEX-000123.
+
+tables:
+  fixed_assets:
+    key: asset_id
+    cols:
+      asset_id: {desc: "Asset id, e.g. AST-DC1-SRT"}
+      acquisition_date: {type: date, desc: "Date asset was purchased"}
+      acquisition_cost_gbp: {type: float, desc: "Original purchase price in GBP"}
+      useful_life_years: {type: int, desc: "Expected useful life in years"}
+      depreciation_method: {type: enum, values: [straight_line, declining_balance], desc: "Depreciation method"}
+      depreciation_rate_pct: {type: float, desc: "Annual depreciation rate as percentage"}
+      accumulated_depreciation_gbp: {type: float, desc: "Total depreciation to date"}
+      book_value_gbp: {type: float, desc: "Net book value (cost less accumulated depreciation)"}
+      residual_value_gbp: {type: float, desc: "Estimated residual value at end of useful life"}
+      last_depreciation_calc_date: {type: date, desc: "Date depreciation was last calculated"}
+      status: {type: enum, values: [in_service, fully_depreciated, retired], desc: "Asset status for depreciation"}
+
+  planned_capex:
+    key: capex_id
+    cols:
+      capex_id: {type: str, desc: "Capex project, e.g. CAPEX-000123"}
+      asset_class: {type: enum, values: [shuttle, conveyor, sorter, motor, gearbox, sensor, forklift, reach_truck, dock_leveller, sprinkler, racking, charger, compressor, other], desc: "Asset class being invested in"}
+      investment_type: {type: enum, values: [automation, renewable_energy, energy_efficiency, maintenance_replacement], desc: "Investment theme, e.g. automation or renewable_energy"}
+      description: {type: str, desc: "Capex project description"}
+      estimated_cost_gbp: {type: float, desc: "Estimated capital cost in GBP"}
+      planned_date: {type: date, desc: "Planned implementation or completion date"}
+      status: {type: enum, values: [planned, approved, in_progress, completed, cancelled], desc: "Project status"}
+      source_of_funds: {type: enum, values: [capex_budget, lease, grant, self_funded], desc: "Funding source"}
+      site_id: {type: str, desc: "DC site, if applicable"}
+      created_at: {type: timestamp, desc: "When the project was added"}
+
+tools:
+  - name: get_asset_book_value
+    desc: Net book value and depreciation for an asset. Shows acquisition cost, accumulated depreciation, and current book value.
+    kind: sql
+    args:
+      asset_id: {required: true, desc: "Asset id"}
+    sql: |
+      SELECT f.asset_id, a.name AS asset_name, a.site_id, a.asset_class,
+             a.install_date, f.acquisition_date, f.acquisition_cost_gbp,
+             f.useful_life_years, f.depreciation_method, f.depreciation_rate_pct,
+             round(f.accumulated_depreciation_gbp, 2) AS accumulated_depreciation_gbp,
+             round(f.book_value_gbp, 2) AS book_value_gbp,
+             round(f.residual_value_gbp, 2) AS residual_value_gbp,
+             f.status, f.last_depreciation_calc_date,
+             round(f.depreciation_rate_pct * f.acquisition_cost_gbp / 100.0, 2) AS annual_depreciation_gbp,
+             round(date_diff('day', f.acquisition_date, CAST($as_of AS DATE)) / 365.25, 1) AS age_years,
+             a.replacement_cost_gbp
+      FROM fixed_assets f
+      JOIN master.assets a USING (asset_id)
+      WHERE f.asset_id = $asset_id
+    limit: 1
+    example: {asset_id: AST-DC1-SRT}
+
+  - name: get_planned_capex_by_type
+    desc: Planned capex totals by investment type (automation, renewable_energy...) and asset class, with project ids, sites and dates. Excludes cancelled and completed projects by default.
+    kind: sql
+    args:
+      investment_type: {type: enum, values: [automation, renewable_energy, energy_efficiency, maintenance_replacement], desc: "Investment theme (default all)"}
+      asset_class: {desc: "Filter by asset class (default all)"}
+      status: {type: enum, values: [planned, approved, in_progress, completed, cancelled], desc: "Filter by one status (default planned, approved and in_progress)"}
+      site_id: {desc: "DC site id, e.g. DC1 (default all)"}
+    sql: |
+      SELECT investment_type, asset_class,
+             count(*) AS project_count,
+             round(sum(estimated_cost_gbp), 2) AS total_capex_gbp,
+             round(sum(sum(estimated_cost_gbp)) OVER (PARTITION BY investment_type), 2) AS investment_type_total_gbp,
+             round(avg(estimated_cost_gbp), 2) AS avg_project_cost_gbp,
+             min(planned_date) AS earliest_planned_date,
+             max(planned_date) AS latest_planned_date,
+             string_agg(DISTINCT status, '; ') AS statuses,
+             string_agg(capex_id || ' ' || description || ' (' || coalesce(site_id, 'all sites') || ', ' || status || ', ' || source_of_funds || ', GBP ' || CAST(CAST(round(estimated_cost_gbp) AS BIGINT) AS VARCHAR) || ')', '; ') AS projects
+      FROM planned_capex
+      WHERE ($investment_type IS NULL OR investment_type = $investment_type)
+        AND ($asset_class IS NULL OR asset_class = $asset_class)
+        AND ($site_id IS NULL OR site_id = $site_id)
+        AND (($status IS NULL AND status IN ('planned', 'approved', 'in_progress')) OR status = $status)
+      GROUP BY investment_type, asset_class
+      ORDER BY investment_type, total_capex_gbp DESC
+    limit: 50
+    example: {}

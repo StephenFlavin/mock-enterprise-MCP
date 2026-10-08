@@ -1,0 +1,425 @@
+id: reviews
+name: Customer Reviews & Feedback Platform
+instructions: >
+  Customer reviews, ratings and feedback themes for our products (SKU-..., K-1700, style STY-...), stores (ST214)
+  and competitor products (CMPD-001-L01). Review ids look like REV-000123. Use it for sentiment, rating trends and
+  complaint themes by product, style, store, supplier, segment or competitor category. Ratings are 1-5.
+
+tables:
+  reviews:
+    key: review_id
+    cols:
+      review_id: {type: str, desc: "Review id, e.g. REV-000123"}
+      sku: {desc: "Product SKU being reviewed"}
+      style_id: {desc: "Style of the product"}
+      store_id: {desc: "Store where feedback was collected (optional)"}
+      customer_segment: {type: str, desc: "Reviewer segment: an age band (25-34) or an interest group (outdoor_enthusiast, professional, budget_conscious)"}
+      country: {type: str, desc: "Reviewer country code, e.g. GB, DE"}
+      rating: {type: int, desc: "Rating out of 5"}
+      review_text: {type: text, desc: "Review content"}
+      theme: {type: str, desc: "Main feedback theme, e.g. sizing, quality, durability, fit, comfort, value, packaging"}
+      created_at: {type: timestamp, desc: "When the review was created"}
+
+  competitor_products:
+    key: competitor_product_id
+    cols:
+      competitor_product_id: {type: str, desc: "Competitor product id, e.g. CMPD-002-L01"}
+      competitor_name: {type: str, desc: "Name of the competitor retailer, e.g. John Lewis"}
+      category: {type: str, desc: "Competitor product category, e.g. Lunch boxes, Wellness & recovery, Insulated bottles"}
+      product_name: {type: str, desc: "Competitor product name"}
+      price_gbp: {type: float, desc: "Competitor price in GBP"}
+      avg_rating: {type: float, desc: "Average rating out of 5 on the competitor site"}
+      review_count: {type: int, desc: "Number of reviews on the competitor site"}
+      status: {type: enum, values: [active, bestseller, discontinued], desc: "Market status of the competitor product"}
+      features: {type: text, desc: "Feature summary"}
+      sku: {desc: "Our SKU this competitor product is matched to, if any"}
+      collected_at: {type: timestamp, desc: "When this data was collected"}
+
+  competitor_reviews:
+    key: competitor_review_id
+    cols:
+      competitor_review_id: {type: str, desc: "Competitor review id, e.g. CREV-000123"}
+      competitor_product_id: {type: str, desc: "Competitor product reviewed, e.g. CMPD-002-L01"}
+      rating: {type: int, desc: "Rating out of 5"}
+      review_text: {type: text, desc: "Review content"}
+      theme: {type: str, desc: "Main feedback theme, e.g. leaking, insulation, durability, value"}
+      created_at: {type: timestamp, desc: "When the review was created"}
+
+tools:
+  - name: search_customer_reviews_for_product
+    desc: Customer reviews for one SKU, newest first, with rating, text and theme. Filter by rating range or theme to isolate complaints or praise.
+    kind: sql
+    args:
+      sku: {required: true}
+      min_rating: {type: int, desc: "Only reviews rated at least this (1-5), e.g. 4 for praise"}
+      max_rating: {type: int, desc: "Only reviews rated at most this (1-5), e.g. 2 for complaints"}
+      theme: {desc: "Only this feedback theme, e.g. fit, quality"}
+      text: {type: str, desc: "Only reviews containing this word or phrase"}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT review_id, sku, rating, review_text, theme, customer_segment, country, created_at,
+             count(*) OVER () AS total_matching
+      FROM reviews
+      WHERE sku = $sku
+        AND created_at >= CAST($date_from AS DATE)
+        AND ($min_rating IS NULL OR rating >= $min_rating)
+        AND ($max_rating IS NULL OR rating <= $max_rating)
+        AND ($theme IS NULL OR theme ILIKE $theme)
+        AND ($text IS NULL OR review_text ILIKE '%' || $text || '%')
+      ORDER BY created_at DESC
+    limit: 50
+    example: {sku: K-1700}
+
+  - name: get_review_theme_summary
+    desc: Review themes with counts, average rating and share, for one SKU, a product category or a competitor category. Use sentiment negative for the most common complaints.
+    kind: sql
+    args:
+      sku: {}
+      category:
+        type: str
+        desc: "Our category (Outerwear) or a competitor category (Lunch boxes, Wellness & recovery). Not needed with sku"
+      customer_segment: {type: str, desc: "Only our reviews from this segment, e.g. 25-34"}
+      sentiment: {type: enum, values: [negative, positive], desc: "negative = rated 1-2, positive = rated 4-5; leave empty for all"}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      WITH rv AS (
+        SELECT 'own' AS source, r.theme, r.rating
+        FROM reviews r JOIN master.products p ON p.sku = r.sku
+        WHERE r.created_at >= CAST($date_from AS DATE)
+          AND ($sku IS NULL OR r.sku = $sku)
+          AND ($category IS NULL OR p.category ILIKE '%' || regexp_replace(trim($category), '(es|s)$', '') || '%')
+          AND ($customer_segment IS NULL OR r.customer_segment = replace(replace($customer_segment, ' to ', '-'), '–', '-'))
+        UNION ALL
+        SELECT 'competitor', v.theme, v.rating
+        FROM competitor_reviews v JOIN competitor_products c ON c.competitor_product_id = v.competitor_product_id
+        WHERE $sku IS NULL AND $customer_segment IS NULL AND $category IS NOT NULL
+          AND v.created_at >= CAST($date_from AS DATE)
+          AND (c.category ILIKE '%' || regexp_replace(trim($category), '(es|s)$', '') || '%')
+      ), f AS (
+        SELECT * FROM rv
+        WHERE $sentiment IS NULL OR ($sentiment = 'negative' AND rating <= 2) OR ($sentiment = 'positive' AND rating >= 4)
+      )
+      SELECT source, theme, count(*) AS review_count,
+             round(100.0 * count(*) / sum(count(*)) OVER (PARTITION BY source), 1) AS share_pct,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_count,
+             count(*) FILTER (WHERE rating <= 2) AS negative_count
+      FROM f
+      GROUP BY source, theme
+      ORDER BY source, review_count DESC
+    limit: 20
+    example: {sku: K-1700}
+
+  - name: search_customer_review_themes
+    desc: "Review themes per product with counts, average rating, complaint count and an example review. Give a sku, category or theme such as packaging."
+    kind: sql
+    args:
+      sku: {}
+      category: {type: str, desc: "Our product category, e.g. Drinkware"}
+      theme: {type: str, desc: "Only this theme, e.g. packaging, insulation"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT r.sku, p.name AS product_name, r.theme, count(*) AS review_count,
+             round(avg(r.rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE r.rating >= 4) AS positive_count,
+             count(*) FILTER (WHERE r.rating <= 3) AS complaint_count,
+             arg_min(r.review_text, struct_pack(rt := r.rating, ts := r.created_at, id := r.review_id)) AS example_review
+      FROM reviews r JOIN master.products p ON p.sku = r.sku
+      WHERE r.created_at >= CAST($date_from AS DATE)
+        AND ($sku IS NULL OR r.sku = $sku)
+        AND ($category IS NULL OR p.category ILIKE $category)
+        AND ($theme IS NULL OR r.theme ILIKE $theme)
+      GROUP BY r.sku, p.name, r.theme
+      ORDER BY CASE WHEN $sku IS NOT NULL THEN count(*) ELSE count(*) FILTER (WHERE r.rating <= 3) END DESC, avg_rating
+    limit: 20
+    example: {sku: PF-220}
+
+  - name: get_ratings_by_product
+    desc: Average rating and star distribution per SKU for a period, with the rating in the previous period of equal length and the change. Filter by style or category.
+    kind: sql
+    args:
+      sku: {}
+      style_id: {}
+      category: {type: str, desc: "Our product category, e.g. Small Appliances"}
+      date_from: {type: date, default: "-90d", desc: "Start of the period; the previous period of equal length is compared"}
+      min_reviews: {type: int, default: 3, desc: "Only SKUs with at least this many reviews in the period"}
+    sql: |
+      WITH win AS (
+        SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span
+      ), base AS (
+        SELECT r.sku, r.style_id, r.rating, r.created_at >= w.d0 AS is_current
+        FROM reviews r JOIN master.products p ON p.sku = r.sku, win w
+        WHERE r.created_at >= w.d0 - w.span
+          AND ($sku IS NULL OR r.sku = $sku)
+          AND ($style_id IS NULL OR r.style_id = $style_id)
+          AND ($category IS NULL OR p.category ILIKE $category)
+      )
+      SELECT b.sku, p.name AS product_name, b.style_id,
+             count(*) FILTER (WHERE is_current) AS review_count,
+             round(avg(rating) FILTER (WHERE is_current), 2) AS avg_rating,
+             round(avg(rating) FILTER (WHERE NOT is_current), 2) AS prior_avg_rating,
+             round(avg(rating) FILTER (WHERE is_current) - avg(rating) FILTER (WHERE NOT is_current), 2) AS rating_change,
+             count(*) FILTER (WHERE is_current AND rating = 5) AS five_star_count,
+             count(*) FILTER (WHERE is_current AND rating = 4) AS four_star_count,
+             count(*) FILTER (WHERE is_current AND rating = 3) AS three_star_count,
+             count(*) FILTER (WHERE is_current AND rating <= 2) AS low_star_count
+      FROM base b JOIN master.products p ON p.sku = b.sku
+      GROUP BY b.sku, p.name, b.style_id
+      HAVING count(*) FILTER (WHERE is_current) >= $min_reviews
+      ORDER BY rating_change ASC NULLS LAST, avg_rating
+    limit: 50
+    example: {style_id: STY-4012}
+
+  - name: get_ratings_trend_for_sku
+    desc: Weekly average rating, review count and top complaint theme for one SKU, oldest first. Use to see when and how fast a rating started falling.
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT CAST(date_trunc('week', created_at) AS DATE) AS week_start,
+             count(*) AS review_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_count,
+             count(*) FILTER (WHERE rating <= 2) AS low_rating_count,
+             mode(theme) FILTER (WHERE rating <= 2) AS top_complaint_theme
+      FROM reviews
+      WHERE sku = $sku AND created_at >= CAST($date_from AS DATE)
+      GROUP BY date_trunc('week', created_at)
+      ORDER BY week_start ASC
+    limit: 100
+    example: {sku: K-1700}
+
+  - name: get_customer_feedback_themes_by_style
+    desc: Feedback themes for a style with counts, average rating, positive and negative counts and an example complaint. Use to see whether feedback is about sizing, quality or expectations.
+    kind: sql
+    args:
+      style_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT theme, count(*) AS feedback_count,
+             round(avg(rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE rating >= 4) AS positive_feedback,
+             count(*) FILTER (WHERE rating <= 2) AS negative_feedback,
+             arg_min(review_text, struct_pack(rt := rating, ts := created_at, id := review_id)) AS example_review
+      FROM reviews
+      WHERE style_id = $style_id AND created_at >= CAST($date_from AS DATE)
+      GROUP BY theme
+      ORDER BY feedback_count DESC
+    limit: 20
+    example: {style_id: STY-4123}
+
+  - name: get_customer_feedback_for_store
+    desc: Customer feedback and reviews collected at a specific store, newest first.
+    kind: sql
+    args:
+      store_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Feedback from this date onwards"}
+    sql: |
+      SELECT review_id, sku, store_id, rating, review_text, theme, created_at
+      FROM reviews
+      WHERE store_id = $store_id AND created_at >= CAST($date_from AS DATE)
+      ORDER BY created_at DESC
+    limit: 50
+    example: {store_id: ST214}
+
+  - name: search_customer_reviews_by_segment
+    desc: Reviews from one customer segment (an age band like 25-34 or an interest group), filterable by product category, country and theme. theme_mentions counts that theme across all matches.
+    kind: sql
+    args:
+      customer_segment: {required: true, desc: "Segment, e.g. 25-34, outdoor_enthusiast"}
+      category: {type: str, desc: "Our product category, e.g. Outerwear"}
+      country: {type: str, desc: "Reviewer country code, e.g. GB, DE"}
+      theme: {type: str, desc: "Only this theme, e.g. lightweight"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT review_id, sku, category, customer_segment, country, rating, review_text, theme, created_at, theme_mentions, total_matching
+      FROM (
+        SELECT review_id, r.sku, p.category, r.customer_segment, r.country, r.rating, r.review_text, r.theme, r.created_at,
+               count(*) OVER (PARTITION BY r.theme) AS theme_mentions,
+               count(*) OVER () AS total_matching,
+               row_number() OVER (PARTITION BY r.theme ORDER BY r.created_at DESC) AS theme_rank
+        FROM reviews r JOIN master.products p ON p.sku = r.sku
+        WHERE r.customer_segment = replace(replace($customer_segment, ' to ', '-'), '–', '-')
+          AND r.created_at >= CAST($date_from AS DATE)
+          AND ($category IS NULL OR p.category ILIKE $category)
+          AND ($country IS NULL OR r.country = upper($country))
+          AND ($theme IS NULL OR r.theme ILIKE $theme)
+      ) t
+      WHERE theme_rank <= 6 OR $theme IS NOT NULL
+      ORDER BY theme_mentions DESC, created_at DESC
+    limit: 50
+    example: {customer_segment: "25-34", category: Outerwear}
+
+  - name: search_customer_feedback_for_supplier
+    desc: Customer feedback per supplier, from reviews of the products they make. Gives review count, average rating, low-rating share, top complaint and worst review. Filter by supplier, country or category.
+    kind: sql
+    args:
+      supplier_id: {}
+      country: {type: str, desc: "Supplier country code(s), comma separated, e.g. PT,TR"}
+      category: {type: str, desc: "Product category made by the supplier, e.g. Outerwear"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT p.supplier_id, s.name AS supplier_name, s.country, count(*) AS review_count,
+             round(avg(r.rating), 2) AS avg_rating,
+             count(*) FILTER (WHERE r.rating <= 2) AS low_rating_count,
+             round(100.0 * count(*) FILTER (WHERE r.rating <= 2) / count(*), 1) AS low_rating_pct,
+             mode(r.theme) FILTER (WHERE r.rating <= 3) AS top_complaint_theme,
+             arg_min(r.review_text, struct_pack(rt := r.rating, ts := r.created_at, id := r.review_id)) AS worst_review
+      FROM reviews r
+      JOIN master.products p ON p.sku = r.sku
+      JOIN master.suppliers s ON s.supplier_id = p.supplier_id
+      WHERE r.created_at >= CAST($date_from AS DATE)
+        AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id)
+        AND ($country IS NULL OR list_contains(string_split(upper(replace($country, ' ', '')), ','), s.country))
+        AND ($category IS NULL OR p.category ILIKE $category)
+      GROUP BY p.supplier_id, s.name, s.country
+      ORDER BY avg_rating DESC, review_count DESC
+    limit: 20
+    example: {country: "PT,TR", category: Outerwear}
+
+  - name: search_review_text_by_topic
+    desc: Reviews whose text mentions a topic (all words, e.g. sole separation), newest first, with how many matches the SKU had in the last 30 days against the 30 days before.
+    kind: sql
+    args:
+      topic: {required: true, type: str, desc: "Words to look for in review text, e.g. sole separation"}
+      sku: {}
+      category: {type: str, desc: "Our product category, e.g. Footwear"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT r.review_id, r.sku, r.rating, r.review_text, r.theme, r.created_at,
+             count(*) OVER (PARTITION BY r.sku) AS sku_matches,
+             count(*) FILTER (WHERE r.created_at >= CAST($as_of AS DATE) - INTERVAL 30 DAY) OVER (PARTITION BY r.sku) AS sku_matches_last_30d,
+             count(*) FILTER (WHERE r.created_at < CAST($as_of AS DATE) - INTERVAL 30 DAY
+                                AND r.created_at >= CAST($as_of AS DATE) - INTERVAL 60 DAY) OVER (PARTITION BY r.sku) AS sku_matches_prior_30d
+      FROM reviews r JOIN master.products p ON p.sku = r.sku
+      WHERE r.created_at >= CAST($date_from AS DATE)
+        AND ($sku IS NULL OR r.sku = $sku)
+        AND ($category IS NULL OR p.category ILIKE $category)
+        AND len(list_filter(string_split(lower(trim($topic)), ' '),
+              w -> NOT contains(lower(r.review_text), CASE WHEN length(w) > 5 THEN left(w, length(w) - 2) ELSE w END))) = 0
+      ORDER BY r.created_at DESC
+    limit: 50
+    example: {topic: "sole separation"}
+
+  - name: get_competitor_ratings_for_products
+    desc: Competitor products with price, average rating, review count and status, best rated first. Filter by competitor category or by our SKU they are matched to.
+    kind: sql
+    args:
+      category: {type: str, desc: "Competitor category, e.g. Insulated bottles, Lunch boxes, Small appliances"}
+      sku: {desc: "Our SKU the competitor products are matched to, e.g. K-1700"}
+      skus: {type: list, desc: "Several of our SKUs at once (e.g. our top products), e.g. [K-1700, SKU-101309]; returns the competitor products matched to any of them"}
+    sql: |
+      SELECT competitor_product_id, competitor_name, product_name, category, price_gbp,
+             avg_rating, review_count, status, sku AS our_sku, collected_at
+      FROM competitor_products
+      WHERE ($category IS NULL OR category ILIKE '%' || regexp_replace(trim($category), '(es|s)$', '') || '%')
+        AND ($sku IS NULL OR sku = $sku)
+        AND ($skus IS NULL OR list_contains($skus, sku))
+      ORDER BY avg_rating DESC, review_count DESC
+    limit: 50
+    example: {category: "insulated bottles"}
+
+  - name: search_customer_reviews_for_competitor_products
+    desc: Customer reviews of competitor products in a category, summarised per product with price, status, rating, top complaint theme and the worst reviews. Status discontinued shows the flops.
+    kind: sql
+    args:
+      category: {required: true, type: str, desc: "Competitor category, e.g. Lunch boxes, Wellness & recovery"}
+      competitor_name: {type: str, desc: "Only this competitor, e.g. John Lewis"}
+      status: {type: enum, values: [active, bestseller, discontinued], desc: "Only products with this market status"}
+      theme: {type: str, desc: "Only reviews with this theme, e.g. leaking"}
+      date_from: {type: date, default: "-180d", desc: "Reviews from this date onwards"}
+    sql: |
+      SELECT c.competitor_product_id, c.competitor_name, c.product_name, c.price_gbp, c.status,
+             c.avg_rating AS product_avg_rating, c.review_count,
+             count(*) AS reviews_sampled,
+             round(avg(v.rating), 2) AS sample_avg_rating,
+             round(100.0 * count(*) FILTER (WHERE v.rating <= 2) / count(*), 1) AS negative_pct,
+             mode(v.theme) FILTER (WHERE v.rating <= 2) AS top_complaint_theme,
+             array_to_string(list_distinct(list(v.review_text) FILTER (WHERE v.rating <= 2))[1:3], ' | ') AS worst_reviews
+      FROM competitor_reviews v JOIN competitor_products c ON c.competitor_product_id = v.competitor_product_id
+      WHERE (c.category ILIKE '%' || regexp_replace(trim($category), '(es|s)$', '') || '%'
+             OR c.product_name ILIKE '%' || trim($category) || '%')
+        AND v.created_at >= CAST($date_from AS DATE)
+        AND ($competitor_name IS NULL OR c.competitor_name ILIKE '%' || $competitor_name || '%')
+        AND ($status IS NULL OR c.status = $status)
+        AND ($theme IS NULL OR v.theme ILIKE $theme)
+      GROUP BY c.competitor_product_id, c.competitor_name, c.product_name, c.price_gbp, c.status, c.avg_rating, c.review_count
+      ORDER BY c.avg_rating DESC
+    limit: 30
+    example: {category: "Lunch boxes"}
+
+  - name: get_range_reviews_summary
+    desc: "Review summary for a range, by style prefix or category, with a range total first. Gives rating against the all-product average, positive and negative counts and top complaint theme."
+    kind: sql
+    args:
+      style_id: {desc: "Style id or style prefix, e.g. STY-4056"}
+      category: {type: str, desc: "Our product category, e.g. Tops"}
+      date_from: {type: date, default: "-90d", desc: "Reviews from this date onwards"}
+    sql: |
+      WITH base AS (
+        SELECT r.style_id, r.rating, r.theme
+        FROM reviews r JOIN master.products p ON p.sku = r.sku
+        WHERE r.created_at >= CAST($date_from AS DATE)
+          AND ($style_id IS NULL OR r.style_id LIKE $style_id || '%')
+          AND ($category IS NULL OR p.category ILIKE $category)
+      ), allavg AS (
+        SELECT round(avg(rating), 2) AS a FROM reviews WHERE created_at >= CAST($date_from AS DATE)
+      ), per AS (
+        SELECT style_id, count(*) AS review_count, round(avg(rating), 2) AS avg_rating,
+               count(*) FILTER (WHERE rating >= 4) AS positive_reviews,
+               count(*) FILTER (WHERE rating <= 2) AS negative_reviews,
+               mode(theme) FILTER (WHERE rating <= 3) AS top_complaint_theme
+        FROM base GROUP BY style_id
+      ), tot AS (
+        SELECT '(range total)' AS style_id, count(*) AS review_count, round(avg(rating), 2) AS avg_rating,
+               count(*) FILTER (WHERE rating >= 4) AS positive_reviews,
+               count(*) FILTER (WHERE rating <= 2) AS negative_reviews,
+               mode(theme) FILTER (WHERE rating <= 3) AS top_complaint_theme
+        FROM base
+      )
+      SELECT u.style_id, u.review_count, u.avg_rating, u.positive_reviews, u.negative_reviews, u.top_complaint_theme,
+             allavg.a AS all_products_avg_rating
+      FROM (SELECT *, 0 AS ord FROM tot UNION ALL SELECT *, 1 FROM per) u, allavg
+      WHERE u.review_count > 0
+      ORDER BY u.ord, u.review_count DESC
+    limit: 25
+    example: {style_id: STY-4056}
+
+  - name: draft_range_review_shortlist
+    desc: Draft a shortlist of the products to discuss at a range review, ranked by rating fall against the previous period, with each one's top complaint theme and a suggested action.
+    kind: sql
+    args:
+      style_id: {}
+      category: {type: str, desc: "Our product category, e.g. Small Appliances"}
+      date_from: {type: date, default: "-30d", desc: "Start of the review period; the previous period of equal length is compared"}
+      limit_to: {type: int, desc: "Number of products to include", default: 5}
+    sql: |
+      WITH win AS (
+        SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span
+      ), base AS (
+        SELECT r.sku, r.style_id, r.rating, r.theme, r.created_at >= w.d0 AS is_current
+        FROM reviews r JOIN master.products p ON p.sku = r.sku, win w
+        WHERE r.created_at >= w.d0 - w.span
+          AND ($style_id IS NULL OR r.style_id = $style_id)
+          AND ($category IS NULL OR p.category ILIKE $category)
+      ), agg AS (
+        SELECT sku, style_id,
+               count(*) FILTER (WHERE is_current) AS review_count,
+               round(avg(rating) FILTER (WHERE is_current), 2) AS avg_rating,
+               round(avg(rating) FILTER (WHERE NOT is_current), 2) AS prior_avg_rating,
+               count(*) FILTER (WHERE is_current AND rating <= 2) AS problem_reviews,
+               mode(theme) FILTER (WHERE is_current AND rating <= 3) AS top_complaint_theme
+        FROM base GROUP BY sku, style_id
+        HAVING count(*) FILTER (WHERE is_current) >= 10 AND count(*) FILTER (WHERE NOT is_current) >= 5
+      )
+      SELECT a.sku, p.name AS product_name, a.style_id, a.review_count, a.avg_rating, a.prior_avg_rating,
+             round(a.avg_rating - a.prior_avg_rating, 2) AS rating_change, a.problem_reviews, a.top_complaint_theme,
+             CASE WHEN a.avg_rating - a.prior_avg_rating <= -0.3 THEN 'Discuss: rating fell, investigate ' || a.top_complaint_theme
+                  WHEN a.avg_rating < 4.0 THEN 'Watch: low rating, complaints about ' || a.top_complaint_theme
+                  ELSE 'No action' END AS suggested_action
+      FROM agg a JOIN master.products p ON p.sku = a.sku
+      ORDER BY (a.avg_rating - a.prior_avg_rating) ASC, a.avg_rating ASC
+      LIMIT CAST($limit_to AS INT)
+    limit: 20
+    example: {category: "Small Appliances"}

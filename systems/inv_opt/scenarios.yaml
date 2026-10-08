@@ -1,0 +1,88 @@
+# One entry per question row that uses inv_opt's tools (see: python -m mockmcp brief inv_opt).
+
+- question: "03:22:Q3"
+  story: >
+    Policies are derived from master sales and lead times, and supplier lead-time drift follows the purchasing system:
+    SUP-0080 is about 31 days (+44%) slower and SUP-0048 about 31 days faster, SUP-0013 only slightly slower. Among the
+    200 fastest sellers the SUP-0080 and SUP-0013 SKUs (e.g. SKU-102471, SKU-104018, SKU-103234) are TOO_LOW by 65-70%;
+    SKU-105075, SKU-100476 and SKU-103927 were over-set (TOO_HIGH by 100%+).
+  checks:
+    - tool: get_inventory_policy_parameters
+      args: {limit: 200}
+      expect: ["SKU-104669", "SKU-102338"]
+    - tool: compare_policy_to_recommended_parameters
+      args: {top_n_by_volume: 200}
+      expect: ["SKU-104018", "TOO_LOW", "SKU-105075", "TOO_HIGH", "SUP-0080"]
+    - tool: calculate_safety_stock
+      args: {sku: SKU-104018, target_service_level_pct: 95}
+      expect: ["SKU-104018", "4769", "79"]
+    - tool: calculate_working_capital_impact
+      args: {top_n: 200, rank_by: volume}
+      expect: ["Small Appliances", "Audio"]
+
+- question: "03:27:Q6"
+  story: >
+    Master ABC classes: A (125 SKUs) carries about half of annual value; segments SEG-001/002/003 hold targets 95/92/90.
+    The curve and options tools show the stock value of each service level for A versus the C long tail.
+  checks:
+    - tool: get_sku_abc_classification
+      args: {limit_count: 5}
+      expect: ["SKU-104032", "SEG-001", "class_value_share_pct"]
+    - tool: get_service_level_vs_inventory_curve
+      args: {abc_class: A}
+      expect: ["97", "cost_per_extra_point_gbp"]
+    - tool: calculate_service_level_target_options
+      args: {}
+      expect: ["SEG-001", "SEG-003", "stock_value_gbp"]
+    - tool: update_service_level_target_for_segment
+      args: {segment_id: SEG-001, target_service_level_pct: 97}
+      expect: ["SEG-001", "95 → 97"]
+
+- question: "03:28:Q1"
+  story: >
+    The 500 highest-value SKUs at 97% need much more safety stock than today (A items are set at 95%); Small Appliances and
+    Audio add the most working capital. 50 SKUs have CV above 0.4, mostly strong seasonal peaks or markdown-driven; clearance and
+    short-history SKUs are exclusion candidates.
+  checks:
+    - tool: compare_policy_to_recommended_parameters
+      args: {top_n_by_volume: 500, target_service_level_pct: 97, abc_class: A, variance_threshold_pct: 0}
+      expect: ["recommended_safety_stock", "TOO_LOW"]
+    - tool: calculate_working_capital_impact
+      args: {target_service_level_pct: 97, top_n: 500}
+      expect: ["Small Appliances", "Audio", "wc_change_gbp"]
+    - tool: list_high_variability_skus
+      args: {top_n_by_value: 500}
+      expect: ["PF-220", "Strong seasonal peak"]
+    - tool: list_high_variability_skus
+      args: {only_exclusion_candidates: true}
+      expect: ["SKU-103024", "Run-down range (clearance)"]
+
+- question: "03:28:Q3"
+  story: >
+    For Asia-sourced SKUs (CN, VN, IN, BD) a 14 day lead time increase adds the most safety stock working capital in Babywear,
+    Outerwear and Jewellery. Holding the stock costs far less than the margin lost by accepting a lower service level.
+  checks:
+    - tool: calculate_lead_time_sensitivity_by_category
+      args: {lead_time_increase_days: 14, origin_region: Asia}
+      expect: ["Babywear", "Outerwear", "additional_wc_gbp"]
+    - tool: calculate_safety_stock
+      args: {sku: SKU-104669, lead_time_increase_days: 14}
+      expect: ["SKU-104669", "recommended_safety_stock"]
+    - tool: compare_hold_stock_vs_accept_stockouts
+      args: {origin_region: Asia, lead_time_increase_days: 14, proposed_service_level_pct: 90}
+      expect: ["Babywear", "HOLD_STOCK"]
+
+- question: "03:28:Q4"
+  story: >
+    Long-tail C items selling at most about 140 units a week (the old 20 scaled x6.8) and stocked at 3-4 DCs (e.g. SKU-101253, SKU-105054, SKU-101617) save most
+    working capital when pooled in one DC; net annual saving after extra transport is shown per SKU.
+  checks:
+    - tool: get_demand_pattern_for_sku
+      args: {sku: SKU-101253}
+      expect: ["SKU-101253", "133.3", "dcs_stocking"]
+    - tool: calculate_centralised_stock_saving
+      args: {}
+      expect: ["SKU-101253", "SKU-105054", "net_annual_saving_gbp"]
+    - tool: calculate_service_level_impact
+      args: {abc_class: C, target_service_level_pct: 85}
+      expect: ["Small Appliances", "lost_revenue_gbp"]

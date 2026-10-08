@@ -1,0 +1,78 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief mdm).
+# story = what the seed data plants; checks = tool calls whose output must contain every `expect` string.
+
+- question: "01:8:Q1"
+  story: >
+    SKU data quality: PF-220 (portable fan with lithium battery, hazmat li_ion_battery) and K-1700
+    (kettle) are compared on hazmat flag, pack type, weight and supplier (both SUP-0013) to see
+    what the SKUs failing allocation have in common.
+  checks:
+    - tool: get_sku_master_attributes
+      args: {sku: PF-220}
+      expect: ["PF-220", "Portable", "li_ion_battery"]
+    - tool: get_sku_master_attributes
+      args: {sku: K-1700}
+      expect: ["K-1700", "kettle"]
+
+- question: "04:36:Q5"
+  story: >
+    Vendor master has duplicates: TextileCorp has 3 variants (VEN-900001/002/003) with identical
+    tax IDs and bank accounts. Acme Fabrics has 2 variants (VEN-900004/005). Premium Textiles
+    has 2 variants (VEN-900006/007). Global Apparel has 2 variants (VEN-900008/009).
+    First, these groups are identified via fuzzy matching on name, address and bank account.
+    FastShip Logistics VEN-900010 and Fast Ship Logistic Ltd VEN-900011 share an IBAN but have
+    different tax ids and addresses: flagged as possible fraud, not a duplicate. Then
+    merge_vendor_records consolidates a group after approval and archive_duplicate_vendor archives
+    the duplicate copy.
+  checks:
+    - tool: search_duplicate_vendor_candidates
+      args: {name: TextileCorp}
+      expect: ["VEN-900001", "VEN-900002", "VEN-900003", "TextileCorp", "likely duplicate"]
+    - tool: search_duplicate_vendor_candidates
+      args: {vendor_id: VEN-900010}
+      expect: ["VEN-900011", "possible fraud"]
+    - tool: get_vendor_bank_account_matches
+      args: {vendor_id: VEN-900001}
+      expect: ["VEN-900001", "VEN-900002", "VEN-900003", "GB82 WEST 1234 5678 9012"]
+    - tool: get_vendor_bank_account_matches
+      args: {vendor_id: VEN-900010}
+      expect: ["VEN-900011", "possible fraud"]
+    - tool: merge_vendor_records
+      args: {vendor_id: VEN-900002, merged_into: VEN-900001}
+      expect: ["VEN-900002", "merged"]
+    - tool: archive_duplicate_vendor
+      args: {vendor_id: VEN-900003}
+      expect: ["VEN-900003", "archived"]
+
+- question: "09:81:Q6"
+  story: >
+    Data ownership governance: Vendor Master Data domain is owned by EMP-00052 with steward
+    EMP-00053. SLO is 98% accuracy; last audit a few weeks ago. Product Master Data is owned by
+    EMP-00050 with SLO 99.5%. The datasets behind open data quality issues (OTIF_daily, ASN_feed,
+    demand_forecast, sales_actuals) have owners EMP-00008, EMP-00012, EMP-00004, EMP-00015.
+  checks:
+    - tool: get_data_owner_for_dataset
+      args: {domain: vendors}
+      expect: ["Vendor Master Data", "EMP-00052", "EMP-00053", "98"]
+    - tool: get_data_owner_for_dataset
+      args: {domain: products}
+      expect: ["Product Master Data", "EMP-00050", "99.5"]
+    - tool: get_data_owner_for_dataset
+      args: {dataset: OTIF_daily}
+      expect: ["OTIF_daily", "EMP-00008", "Damien Hayes"]
+
+- question: "09:85:Q2"
+  story: >
+    Security incident: three days before the as-of date, at 03:17 and 03:24, two bank detail edits
+    were made: TextileCorp (VEN-900002) account_holder from "TextileCorp Limited" to "TextileCorp Ltd"
+    by EMP-00086, and Acme Fabrics (VEN-900004) account_number ****1200 to ****1234 by EMP-00085.
+    The change that matters: Brown Textiles Pvt Ltd (VEN-900012, supplier SUP-0001) IBAN changed from NL91 ending 4300 to IN29 ending 4159
+    at 03:38 on the day of the Mumbai login, requested by supplier portal user SUPP-00001 (same story as ap BDC-900007, identity, supplier_portal, documents).
+    No other bank change is in the last 14 days.
+  checks:
+    - tool: list_vendor_bank_detail_changes
+      args: {vendor_id: VEN-900002}
+      expect: ["VEN-900002", "account_holder", "TextileCorp Limited"]
+    - tool: list_vendor_bank_detail_changes
+      args: {changed_from: "-14d", change_type: modified}
+      expect: ["CHG-900006", "CHG-900011", "CHG-900014", "SUPP-00001", "modified"]

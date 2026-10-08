@@ -1,0 +1,69 @@
+- question: "08:75:Q1"
+  story: |
+    PTN-001 (Freeman-Sharp Department Stores) has four recent orders, three of them short, after two older complete ones: WOL-900001 800 ordered, 560 allocated
+    and delivered (stock, our fault); WOL-900002 600 shipped by CAR-003 but 0 delivered (lost by the carrier); WOL-900003 500 ordered, 450 picked
+    and delivered (short pick); WOL-900004 700 ordered and delivered in full (the one that was not short, as ORD-900073 in oms). Quantities mirror the oms/carrier_portal story for PTN-001.
+  checks:
+    - tool: get_wholesale_orders_for_customer
+      args: {partner_id: PTN-001, limit: 4}
+      expect: ["WOL-900001", "WOL-900002", "WOL-900003", "WOL-900004", "CAR-003", "carrier", "560", "450", "700"]
+    - tool: draft_response_to_customer_buyer
+      args: {partner_id: PTN-001}
+      expect: ["Freeman-Sharp", "WOL-900002", "lost in transit", "short 240", "short 600"]
+
+- question: "08:75:Q2"
+  story: |
+    Three wholesale customers have open orders for SKU-100035 totalling 15,000 units: PTN-002 WOL-900010 6,000 (account £1.2m), PTN-004
+    WOL-900011 5,000 (£920k), PTN-005 WOL-900012 4,000 (£750k), matching the oms story. Short-shipment notices are written for the losers.
+  checks:
+    - tool: get_customer_account_value
+      args: {partner_id: PTN-004}
+      expect: ["PTN-004", "920000", "5000", "2022"]
+    - tool: get_customer_account_value
+      args: {partner_id: PTN-005}
+      expect: ["PTN-005", "750000", "4000"]
+    - tool: send_short_shipment_notice_to_customers
+      args: {partner_id: PTN-005, order_id: WOL-900012, qty_short: 4000, reason: "Stock unavailable"}
+      expect: ["SSN-", "PTN-005", "WOL-900012", "4000", "sent"]
+
+- question: "08:75:Q4"
+  story: |
+    Ten key accounts PTN-001..PTN-010 (same positions as the demand forecast). PTN-001, PTN-005 and PTN-006 hold over six weeks of cover (likely to
+    cut orders); PTN-007 and PTN-008 are thin on stock. PTN-003 and PTN-006 have stale feeds; PTN-007 and PTN-010 have thin SKU coverage (71%, 76%),
+    so those four are low confidence.
+  checks:
+    - tool: get_key_account_sell_through_and_stock
+      args: {}
+      expect: ["PTN-006", "6.4", "PTN-007", "1.2", "620", "1200000", "stale"]
+    - tool: get_data_feed_coverage_by_account
+      args: {}
+      expect: ["PTN-003", "PTN-007", "PTN-010", "low", "high", "medium"]
+
+- question: "09:83:Q1"
+  story: |
+    After PO_ACK map v1.1 went live, 200 PO_ACK messages from 38 suppliers (SUP-0001..SUP-0038) failed overnight: 171 mapping (ACK_STATUS code not
+    in the v1.1 list), 17 format, 12 partner-side HTTP 500 from SUP-0004, SUP-0015 and SUP-0030 (their connections show failed). Same numbers as integration.
+  checks:
+    - tool: get_failed_edi_messages
+      args: {message_type: PO_ACK, error_category: mapping}
+      expect: ["171 rows", "MAPPING_ERROR", "ACK_STATUS"]
+    - tool: get_failed_edi_messages
+      args: {message_type: PO_ACK, error_category: format}
+      expect: ["17 rows", "FORMAT_ERROR"]
+    - tool: get_failed_edi_messages
+      args: {message_type: PO_ACK, error_category: partner_side}
+      expect: ["12 rows", "HTTP 500"]
+    - tool: get_edi_partner_status
+      args: {connection_status: failed}
+      expect: ["SUP-0004", "SUP-0015", "SUP-0030"]
+    - tool: submit_edi_message_reprocess
+      args: {message_id: EDI-900001, retry_reason: "Mapping corrected"}
+      expect: ["EDI-900001", "reprocessing", "Mapping corrected"]
+
+- question: "09:83:Q2"
+  story: |
+    Active endpoints that send ASN are the supplier endpoints (EP-SUP-...), 25 of the first 40 suppliers; scope for the new pallet-level ASN segment.
+  checks:
+    - tool: list_trading_partners_using_message_type
+      args: {message_type: ASN}
+      expect: ["25 rows", "SUP-0001", "SUP-0002", "ASN"]

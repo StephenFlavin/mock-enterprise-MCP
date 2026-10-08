@@ -1,0 +1,1802 @@
+id: documents
+name: Documents
+instructions: 'Document generation, reading and extraction. Read and extract data from documents (PDFs, CSVs, Excel, images). Draft tools create formatted documents from structured data. Document reference
+  codes look like DOC-000123.
+
+  '
+tables:
+  documents:
+    key: doc_id
+    cols:
+      doc_id:
+        type: str
+        desc: Document id, e.g. DOC-000123
+      title:
+        type: str
+        desc: Document title
+      doc_type:
+        type: enum
+        values:
+        - csv
+        - xlsx
+        - pdf
+        - image
+        - txt
+        - archive
+        - docx
+        desc: Document type
+      path:
+        type: str
+        desc: File path in files/
+      created_at:
+        type: timestamp
+        desc: Upload or creation timestamp
+      description:
+        type: str
+        desc: Brief description or notes
+  contract_register:
+    key: contract_id
+    cols:
+      contract_id:
+        type: str
+        desc: Contract reference, e.g. CTR-000003
+      party_id:
+        type: str
+        desc: Supplier or carrier id of the counterparty, blank for services
+      party_name:
+        type: str
+        desc: Counterparty name
+      contract_type:
+        type: enum
+        values:
+        - supplier
+        - carrier
+        - service
+        desc: Contract type
+      category:
+        type: str
+        desc: Category or scope of the contract
+      owner_id:
+        type: str
+        desc: Employee who owns the contract, e.g. EMP-00058
+      end_date:
+        type: date
+        desc: Contract expiry date
+      renewal_notice_days:
+        type: int
+        desc: Days of notice needed before expiry
+      auto_renewal:
+        type: bool
+        desc: True if the contract renews automatically
+      annual_value_gbp:
+        type: float
+        desc: Annual contract value in GBP
+  supplier_documents:
+    key: doc_req_id
+    cols:
+      doc_req_id:
+        type: str
+        desc: Document requirement id, e.g. SDR-000123
+      supplier_id:
+        type: str
+        desc: Supplier id, e.g. SUP-0013
+      sku:
+        type: str
+        desc: Product SKU the document is needed for, e.g. K-1700
+      market_country:
+        type: str
+        desc: Country the product is sold in, e.g. Ireland
+      document_type:
+        type: enum
+        values:
+        - test_report
+        - certificate
+        - labelling_approval
+        - declaration_of_conformity
+        desc: Compliance document type
+      status:
+        type: enum
+        values:
+        - missing
+        - received
+        desc: Whether the supplier has sent the document
+      required_by:
+        type: date
+        desc: Date the document is needed by
+      received_at:
+        type: date
+        desc: Date received, blank if missing
+tools:
+- name: read_document
+  desc: Read an attached file (CSV, XLSX, PDF or text). CSV and spreadsheet files come back as rows with totals; filter, group and sort them to analyse large files.
+  kind: py
+  fn: read_document
+  limit: 400
+  args:
+    path:
+      type: str
+      required: true
+      desc: File name, e.g. adj_Q3.csv
+    where:
+      type: str
+      desc: Keep rows matching column=value or column~text, separated by ;, e.g. status=disputable;carrier_id=CAR-002
+    exclude:
+      type: str
+      desc: Drop rows matching column=value pairs separated by ;, e.g. reversed_within_48h=yes
+    min_amount:
+      type: float
+      desc: Keep rows whose first _gbp amount column is at least this, e.g. 500
+    group_by:
+      type: str
+      desc: Comma-separated columns to total by, e.g. cause_code,location_zone,shift; largest value first
+    sort_by:
+      type: str
+      desc: Column to sort by, e.g. stock_value_gbp (add ' asc' for ascending)
+    max_rows:
+      type: int
+      default: 150
+      desc: Maximum rows or groups to return
+  example:
+    path: adj_Q3.csv
+    min_amount: 500
+- name: read_document_attachment
+  desc: Read an attached text or PDF file in full and return its contents, e.g. a supplier quote with its terms.
+  kind: sql
+  args:
+    filename:
+      type: str
+      required: true
+      desc: Attached filename, e.g. quote_A.pdf
+  sql: 'SELECT parse_filename(filename) AS filename, content FROM read_text(''{files}/'' || $filename)
+
+    '
+  limit: 1
+  example:
+    filename: quote_A.pdf
+- name: read_spreadsheet_document
+  desc: Read a spreadsheet file into rows with totals. Filter, group or sort and limit them, e.g. the top lines by value.
+  kind: py
+  fn: read_spreadsheet
+  limit: 400
+  args:
+    filename:
+      type: str
+      required: true
+      desc: Spreadsheet filename, e.g. aged_lines.xlsx
+    where:
+      type: str
+      desc: Keep rows matching column=value or column~text, separated by ;, e.g. category=Bags
+    exclude:
+      type: str
+      desc: Drop rows matching column=value pairs separated by ;
+    min_amount:
+      type: float
+      desc: Keep rows whose first _gbp amount column is at least this
+    group_by:
+      type: str
+      desc: Comma-separated columns to total by, e.g. category
+    sort_by:
+      type: str
+      desc: Column to sort by, e.g. stock_value_gbp; largest first unless ' asc'
+    max_rows:
+      type: int
+      default: 150
+      desc: Maximum rows or groups to return
+  example:
+    filename: aged_lines.xlsx
+    sort_by: stock_value_gbp
+    max_rows: 10
+- name: get_document_contents
+  desc: Read an attached or shared file or archive, parse and return structured content.
+  kind: sql
+  args:
+    file_reference:
+      type: str
+      required: true
+      desc: File name or path in archive
+  sql: 'SELECT content FROM read_text(''{files}/'' || $file_reference)
+
+    WHERE TRUE
+
+    '
+  limit: 1
+  example:
+    file_reference: cmms_export.xlsx
+- name: extract_quote_line_items
+  desc: Extract the cost lines of a supplier quote (component, quantity, unit price, total, note) plus its key terms such as MOQ, incoterm, material grade and tooling.
+  kind: py
+  fn: extract_quote_lines
+  limit: 60
+  args:
+    quote_file:
+      type: str
+      required: true
+      desc: Quote filename, e.g. quote_A.pdf
+  example:
+    quote_file: quote_A.pdf
+- name: extract_bid_pricing_and_terms
+  desc: Extract each bidder's price, payment terms, call-out fees, consumables, minimum hours, price review, service level and references from a bid archive, with the three-year cost including hidden costs,
+    cheapest first.
+  kind: py
+  fn: extract_bids
+  limit: 60
+  args:
+    bid_file:
+      type: str
+      required: true
+      desc: Bid file or archive path, e.g. bids.zip
+    call_out_per_year:
+      type: int
+      desc: Expected call-outs a year, if different from the tender assumption
+    term_years:
+      type: int
+      default: 3
+      desc: Contract term in years used for the total cost
+  example:
+    bid_file: bids.zip
+- name: extract_label_text_from_images
+  desc: OCR text and symbols from label images. Returns recognized text, barcodes and product info.
+  kind: sql
+  args:
+    image_file:
+      type: str
+      required: true
+      desc: Image filename with label, e.g. label_SKU.jpg
+  sql: 'SELECT content FROM read_text(''{files}/'' || $image_file)
+
+    WHERE TRUE
+
+    '
+  limit: 1
+  example:
+    image_file: label_sample.jpg
+- name: get_dispute_documents
+  desc: Read documents from the attached dispute pack (zip or folder). Returns order, delivery notes and email thread.
+  kind: sql
+  args:
+    pack_reference:
+      type: str
+      required: true
+      desc: Dispute pack filename, e.g. dispute_pack.zip
+  sql: 'SELECT content FROM read_text(''{files}/'' || $pack_reference)
+
+    WHERE TRUE
+
+    '
+  limit: 1
+  example:
+    pack_reference: dispute_pack.zip
+- name: get_po_and_payment_data
+  desc: Read a PO and payment file into rows (supplier, vendor age, invoice and payment dates, amount, weekend, round-sum and bank-change flags) with totals. Filter, group and sort to test anomalies.
+  kind: py
+  fn: get_po_payment
+  limit: 200
+  args:
+    file_reference:
+      type: str
+      desc: CSV or Excel with PO and payment data, e.g. po_pay_FY26.csv
+      required: true
+    where:
+      type: str
+      desc: Keep rows matching column=value or column~text, separated by ;, e.g. weekend_payment=yes
+    exclude:
+      type: str
+      desc: Drop rows matching column=value pairs separated by ;
+    min_amount:
+      type: float
+      desc: Keep rows whose amount_gbp is at least this
+    group_by:
+      type: str
+      desc: Comma-separated columns to total by, e.g. supplier_id,invoice_num (rows shows how many times each appears)
+    sort_by:
+      type: str
+      desc: Column to sort by, e.g. amount_gbp (add ' asc' for ascending)
+    max_rows:
+      type: int
+      default: 200
+      desc: Maximum rows or groups to return
+  example:
+    file_reference: po_pay_FY26.csv
+- name: get_pl_extract_from_document
+  desc: Parse the attached P&L extract into rows by line item, legal entity, category, driver and timing or permanent nature, with planned, actual and variance. Filter, group and sort.
+  kind: py
+  fn: get_pl_extract
+  limit: 200
+  args:
+    pl_file:
+      type: str
+      desc: P&L file, e.g. sept_pl.xlsx
+      required: true
+    where:
+      type: str
+      desc: Keep rows matching column=value or column~text, separated by ;, e.g. nature=unclear;legal_entity=LE-UK
+    exclude:
+      type: str
+      desc: Drop rows matching column=value pairs separated by ;
+    group_by:
+      type: str
+      desc: Comma-separated columns to total by, e.g. driver or legal_entity,nature
+    sort_by:
+      type: str
+      desc: Column to sort by, e.g. variance_gbp asc (largest adverse first)
+    max_rows:
+      type: int
+      default: 200
+      desc: Maximum rows or groups to return
+  example:
+    pl_file: sept_pl.xlsx
+- name: list_suppliers_with_missing_documents
+  desc: List suppliers with compliance documents still missing for a target market, with the SKUs, document types and earliest deadline. Use to decide who to chase.
+  kind: sql
+  args:
+    market_country:
+      type: str
+      required: true
+      desc: Target country, e.g. Ireland
+    document_type:
+      type: str
+      desc: Only this document type, e.g. test_report, certificate, labelling_approval, declaration_of_conformity
+  sql: "SELECT d.supplier_id, s.name AS supplier_name,\n       count(*) AS missing_document_count,\n       string_agg(DISTINCT d.sku, '; ') AS skus,\n       string_agg(DISTINCT d.document_type, '; ') AS\
+    \ missing_document_types,\n       min(d.required_by) AS earliest_required_by\nFROM supplier_documents d JOIN master.suppliers s USING (supplier_id)\nWHERE d.status = 'missing'\n  AND lower(d.market_country)\
+    \ IN (lower($market_country), CASE WHEN lower($market_country) = 'ie' THEN 'ireland' END)\n  AND ($document_type IS NULL OR lower(d.document_type) = lower($document_type))\nGROUP BY ALL\nORDER BY missing_document_count\
+    \ DESC, d.supplier_id\n"
+  limit: 50
+  example:
+    market_country: Ireland
+- name: draft_recommendation_summary
+  desc: Draft a one-page recommendation comparing two options on cost, with the saving worked out and the recommendation and rationale stated.
+  kind: draft
+  args:
+    topic:
+      type: str
+      required: true
+      desc: Summary topic, e.g. Peak labour cover
+    option_a:
+      type: str
+      desc: First option, e.g. Late shift for eight weeks
+    option_a_cost_gbp:
+      type: float
+      desc: Total cost of option A in GBP
+    option_b:
+      type: str
+      desc: Second option, e.g. Overtime on existing shifts
+    option_b_cost_gbp:
+      type: float
+      desc: Total cost of option B in GBP
+    recommendation:
+      type: str
+      required: true
+      desc: Recommended option and the main reason
+  sql:
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'RECOMMENDATION SUMMARY
+
+
+    Topic: {{ topic }}
+
+    Date: {{ calendar[0].date if calendar else ''Current'' }}
+
+    Recommendation: {{ recommendation }}
+
+
+    {% if option_a and option_b and option_a_cost_gbp is not none and option_b_cost_gbp is not none -%}
+
+    OPTIONS COMPARED
+
+    | Option | Total cost |
+
+    |---|---|
+
+    | A: {{ option_a }} | £{{ ''%d''|format(option_a_cost_gbp) }} |
+
+    | B: {{ option_b }} | £{{ ''%d''|format(option_b_cost_gbp) }} |
+
+
+    COST COMPARISON
+
+    {% if option_a_cost_gbp < option_b_cost_gbp -%}
+
+    Option A is cheaper by £{{ ''%d''|format(option_b_cost_gbp - option_a_cost_gbp) }} ({{ "%.1f"|format((option_b_cost_gbp - option_a_cost_gbp) / option_b_cost_gbp * 100) }}% below option B).
+
+    {%- elif option_a_cost_gbp > option_b_cost_gbp -%}
+
+    Option B is cheaper by £{{ ''%d''|format(option_a_cost_gbp - option_b_cost_gbp) }} ({{ "%.1f"|format((option_a_cost_gbp - option_b_cost_gbp) / option_a_cost_gbp * 100) }}% below option A).
+
+    {%- else -%}
+
+    The two options cost the same.
+
+    {%- endif %}
+
+
+    {% endif -%}
+
+
+    RATIONALE
+
+    {{ recommendation }}
+
+
+    NEXT STEPS
+
+    1. Confirm the decision with the sponsor
+
+    2. Raise the requests needed for the chosen option
+
+    3. Review cost and performance after the first two weeks
+
+    '
+  example:
+    topic: Peak labour cover
+    option_a: Late shift
+    option_a_cost_gbp: 412000
+    option_b: Overtime
+    option_b_cost_gbp: 486000
+    recommendation: 'Late shift: cheaper and lower fatigue risk'
+- name: draft_sourcing_recommendation
+  desc: Draft a supplier award recommendation for a category using the winning supplier's master data against the other active suppliers in that category.
+  kind: draft
+  args:
+    category:
+      type: str
+      required: true
+      desc: Product category being sourced, e.g. Bedding
+    winning_supplier_id:
+      type: str
+      required: true
+      desc: Supplier ID of the winning bid, e.g. SUP-0039
+    compare_supplier_ids:
+      type: str
+      desc: Comma-separated supplier ids to compare against, e.g. SUP-0011,SUP-0004. Default all active suppliers in the category
+  sql:
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = $winning_supplier_id
+    own: 'SELECT count(*) AS skus, round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days, min(moq) AS moq
+
+      FROM master.products WHERE supplier_id = $winning_supplier_id AND lower(category) = lower($category)
+
+      '
+    market: 'SELECT round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days
+
+      FROM master.products WHERE lower(category) = lower($category)
+
+      '
+    fac: "SELECT f.factory_id, f.name, f.country, f.capacity_units_month, f.certifications, f.audit_rating\nFROM master.factories f\nWHERE f.supplier_id = $winning_supplier_id\n  AND f.factory_id IN (SELECT\
+      \ factory_id FROM master.products WHERE lower(category) = lower($category))\nORDER BY f.factory_id\n"
+    rivals: "SELECT s.supplier_id, s.name, s.otif_pct_12m, s.payment_terms_days, s.risk_rating,\n       round(avg(p.unit_cost_gbp), 2) AS avg_unit_cost, round(avg(p.lead_time_days), 0) AS lead_days\nFROM\
+      \ master.suppliers s JOIN master.products p ON p.supplier_id = s.supplier_id\nWHERE lower(p.category) = lower($category) AND s.supplier_id <> $winning_supplier_id AND s.status = 'active'\n  AND ($compare_supplier_ids\
+      \ IS NULL OR list_contains(string_split(replace(upper($compare_supplier_ids), ' ', ''), ','), s.supplier_id))\nGROUP BY ALL ORDER BY s.otif_pct_12m DESC\n"
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'SOURCING RECOMMENDATION
+
+
+    Category: {{ category|upper }}
+
+    Recommended supplier: {{ supplier[0].name if supplier else ''Unknown'' }} ({{ winning_supplier_id }})
+
+    Date: {{ calendar[0].date if calendar else ''Current'' }}
+
+
+    1. WHY THIS SUPPLIER
+
+    {% if supplier -%}
+
+    - On-time-in-full, last 12 months: {{ supplier[0].otif_pct_12m }}%
+
+    - Payment terms: {{ supplier[0].payment_terms_days }} days, incoterm {{ supplier[0].incoterm }}, currency {{ supplier[0].currency }}
+
+    - Risk rating: {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}
+
+    {% if own[0].skus -%}
+
+    - Range in this category: {{ own[0].skus }} SKUs, average unit cost £{{ own[0].avg_unit_cost }} against a category average of £{{ market[0].avg_unit_cost }}
+
+    {% set d = (own[0].avg_unit_cost - market[0].avg_unit_cost) / market[0].avg_unit_cost * 100 -%}
+
+    - Unit cost is {{ "%.0f"|format(d|abs) }}% {{ ''above'' if d > 0 else ''below'' }} the category average
+
+    - Lead time: {{ own[0].lead_days|int }} days against a category average of {{ market[0].lead_days|int }} days; MOQ {{ own[0].moq }} units
+
+    {% else -%}
+
+    - No SKUs in this category yet, so cost and lead time must come from the supplier''s quote
+
+    {% endif -%}
+
+    {% else -%}
+
+    - Supplier not found
+
+    {% endif %}
+
+    2. COMPARISON WITH OTHER ACTIVE SUPPLIERS IN THE CATEGORY
+
+    | Supplier | OTIF % | Avg unit cost | Lead days | Payment days | Risk |
+
+    |---|---|---|---|---|---|
+
+    {% if supplier and own[0].skus -%}
+
+    | {{ supplier[0].name }} (recommended) | {{ supplier[0].otif_pct_12m }} | £{{ own[0].avg_unit_cost }} | {{ own[0].lead_days|int }} | {{ supplier[0].payment_terms_days }} | {{ supplier[0].risk_rating
+    }} |
+
+    {% endif -%}
+
+    {% for r in rivals -%}
+
+    | {{ r.name }} | {{ r.otif_pct_12m }} | £{{ r.avg_unit_cost }} | {{ r.lead_days|int }} | {{ r.payment_terms_days }} | {{ r.risk_rating }} |
+
+    {% endfor %}
+
+    3. CAPACITY, QUALITY AND COMPLIANCE
+
+    {% for f in fac -%}
+
+    - {{ f.name }} ({{ f.factory_id }}, {{ f.country }}): {{ "{:,}".format(f.capacity_units_month|int) }} units a month, audit rating {{ f.audit_rating }}, certifications {{ f.certifications }}
+
+    {% else -%}
+
+    - No factory in this category on file for this supplier
+
+    {% endfor %}
+
+    4. APPROVAL REQUIRED
+
+    Award of the {{ category }} volume to {{ supplier[0].name if supplier else ''the supplier'' }}, subject to confirming the quoted price and landed cost.
+
+    '
+  example:
+    category: Bedding
+    winning_supplier_id: SUP-0039
+- name: draft_sourcing_calendar
+  desc: Draft a sourcing calendar from the contract register for the next months, listing each expiry with notice deadline, tender kick-off date, owner and auto-renewal warning.
+  kind: draft
+  args:
+    months_ahead:
+      type: int
+      default: 12
+      desc: How many months ahead to cover, e.g. 12
+    exclude_contract_ids:
+      type: str
+      desc: Comma-separated contract ids to leave out, e.g. CTR-000008,CTR-000042
+    tender_threshold_gbp:
+      type: float
+      default: 1000000
+      desc: Annual value at or above which a contract needs a tender
+    tender_lead_days:
+      type: int
+      default: 150
+      desc: Days before expiry to start the tender
+  sql:
+    rows: "SELECT c.contract_id, c.party_name, c.contract_type, c.category, c.owner_id, e.name AS owner_name,\n       c.end_date, c.renewal_notice_days, c.auto_renewal, c.annual_value_gbp,\n       c.end_date\
+      \ - CAST(c.renewal_notice_days AS INTEGER) AS notice_deadline,\n       c.end_date - CAST($tender_lead_days AS INTEGER) AS tender_kickoff,\n       c.annual_value_gbp >= $tender_threshold_gbp AS needs_tender,\n\
+      \       c.end_date - CAST(c.renewal_notice_days AS INTEGER) < CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) AS notice_passed,\n       c.end_date - CAST($tender_lead_days AS INTEGER) < CAST(date_trunc('week',\
+      \ CAST($as_of AS DATE)) AS DATE) AS kickoff_passed\nFROM contract_register c LEFT JOIN master.employees e ON e.employee_id = c.owner_id\nWHERE c.end_date BETWEEN date_trunc('week', CAST($as_of AS\
+      \ DATE)) AND CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) + CAST($months_ahead AS INTEGER) * 30\n  AND ($exclude_contract_ids IS NULL OR NOT list_contains(string_split(replace(upper($exclude_contract_ids),\
+      \ ' ', ''), ','), c.contract_id))\nORDER BY c.end_date, c.contract_id\n"
+  template: 'SOURCING CALENDAR
+
+
+    Period: next {{ months_ahead }} months
+
+    Contracts expiring: {{ rows|length }}; needing a tender (annual value of {{ "£{:,}".format(tender_threshold_gbp|int) }} or more): {{ rows|selectattr(''needs_tender'')|list|length }}; auto-renewing:
+    {{ rows|selectattr(''auto_renewal'')|list|length }}; auto-renewing with the notice deadline already passed: {{ rows|selectattr(''auto_renewal'')|selectattr(''notice_passed'')|list|length }}
+
+    Tender kick-off is {{ tender_lead_days }} days before expiry.
+
+    {% if exclude_contract_ids %}Left out: {{ exclude_contract_ids }}
+
+    {% endif %}
+
+    | Contract | Party | Expires | Notice deadline | Tender | Tender kick-off | Auto-renews | Owner |
+
+    |---|---|---|---|---|---|---|---|
+
+    {% for r in rows -%}
+
+    | {{ r.contract_id }} | {{ r.party_name }} | {{ r.end_date }} | {{ r.notice_deadline }} | {{ ''YES'' if r.needs_tender else ''no'' }} | {{ ((r.tender_kickoff|string) ~ ('' (start now)'' if r.kickoff_passed
+    else '''')) if r.needs_tender else ''-'' }} | {{ ''YES'' if r.auto_renewal else ''no'' }} | {{ r.owner_name or r.owner_id }} |
+
+    {% else -%}
+
+    | none | | | | | | | |
+
+    {% endfor %}
+
+    AUTO-RENEWAL WARNINGS (miss the notice deadline and the contract rolls over)
+
+    {% for r in rows if r.auto_renewal -%}
+
+    - {{ r.contract_id }} {{ r.party_name }}: give notice by {{ r.notice_deadline }}{{ '' - DEADLINE PASSED, the contract may already have rolled over'' if r.notice_passed else '''' }}
+
+    {% else -%}
+
+    - none
+
+    {% endfor %}
+
+    '
+  example:
+    months_ahead: 12
+- name: draft_supplier_shortlist_comparison
+  desc: Draft a shortlist comparison of approved factories in the given countries with the required certification and season capacity, ranked on category experience, audit rating and capacity.
+  kind: draft
+  args:
+    category:
+      type: str
+      required: true
+      desc: Product type being sourced, e.g. technical outerwear
+    countries:
+      type: str
+      default: PT,TR
+      desc: Comma-separated country codes, e.g. PT,TR
+    certification:
+      type: str
+      default: OEKO-TEX
+      desc: Certification the factory must hold
+    min_season_capacity:
+      type: int
+      default: 30000
+      desc: Minimum units per season (three months of capacity)
+    product_category:
+      type: str
+      default: Outerwear
+      desc: Our product category used as evidence the factory can make it
+    num_suppliers:
+      type: int
+      default: 3
+      desc: Number of factories on the shortlist
+  sql:
+    eligible: "SELECT f.factory_id, f.name AS factory, f.country, f.capacity_units_month * 3 AS season_capacity, f.certifications,\n       f.audit_rating, s.supplier_id, s.name AS supplier, s.otif_pct_12m,\
+      \ s.payment_terms_days, s.risk_rating,\n       (SELECT count(*) FROM master.products p WHERE p.factory_id = f.factory_id AND lower(p.category) = lower($product_category)) AS category_skus\nFROM master.factories\
+      \ f JOIN master.suppliers s ON s.supplier_id = f.supplier_id\nWHERE list_contains(string_split(replace(upper($countries), ' ', ''), ','), f.country)\n  AND f.certifications ILIKE '%' || $certification\
+      \ || '%'\n  AND f.capacity_units_month * 3 >= $min_season_capacity AND f.status = 'approved' AND s.status = 'active'\nORDER BY category_skus DESC, f.audit_rating ASC, season_capacity DESC\n"
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'SUPPLIER SHORTLIST COMPARISON
+
+
+    Category: {{ category|upper }}
+
+    Date: {{ calendar[0].date if calendar else ''Current'' }}
+
+    Criteria: factories in {{ countries }} holding {{ certification }}, with at least {{ "{:,}".format(min_season_capacity|int) }} units per season
+
+    Eligible factories found: {{ eligible|length }}; shortlisted: {{ [eligible|length, num_suppliers|int]|min }}
+
+
+    | Rank | Factory | Supplier | Country | Season capacity | Audit rating | {{ product_category }} SKUs made | OTIF % | Payment days |
+
+    |---|---|---|---|---|---|---|---|---|
+
+    {% for r in eligible[:num_suppliers|int] -%}
+
+    | {{ loop.index }} | {{ r.factory }} ({{ r.factory_id }}) | {{ r.supplier }} ({{ r.supplier_id }}) | {{ r.country }} | {{ "{:,}".format(r.season_capacity|int) }} | {{ r.audit_rating }} | {{ r.category_skus
+    }} | {{ r.otif_pct_12m }} | {{ r.payment_terms_days }} |
+
+    {% else -%}
+
+    | none | no factory meets the criteria | | | | | | | |
+
+    {% endfor %}
+
+    RANKING BASIS
+
+    1. Experience: factories already making our {{ product_category }} SKUs rank first
+
+    2. Latest audit rating (A best), then season capacity
+
+
+    OTHER ELIGIBLE FACTORIES
+
+    {% for r in eligible[num_suppliers|int:] -%}
+
+    - {{ r.factory }} ({{ r.factory_id }}, {{ r.country }}): audit {{ r.audit_rating }}, season capacity {{ "{:,}".format(r.season_capacity|int) }}
+
+    {% else -%}
+
+    - none
+
+    {% endfor %}
+
+    CAVEAT
+
+    Seam-sealing capability is not recorded in our supplier data. Confirm it in the RFQ for every shortlisted factory.
+
+    '
+  example:
+    category: technical outerwear
+- name: draft_supplier_recovery_plan
+  desc: Draft a supplier recovery plan from the supplier's master record, last six months of orders and deliveries, with root causes, phased actions, a decision gate and fallback suppliers.
+  kind: draft
+  args:
+    supplier_id: {}
+    issue_summary:
+      type: str
+      default: Performance decline
+      desc: Summary of the issue
+    decision_weeks:
+      type: int
+      default: 8
+      desc: Weeks until the go/no-go decision gate, e.g. 8
+    target_otif_pct:
+      type: float
+      default: 95
+      desc: OTIF the supplier must reach, in percent
+  sql:
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+    orders: "SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp\nFROM master.purchase_orders\nWHERE supplier_id = $supplier_id AND status NOT IN ('cancelled', 'draft')\n  AND order_date\
+      \ BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))\n"
+    ships: "SELECT count(*) AS shipments, count(*) FILTER (WHERE sh.ata > sh.eta) AS late,\n       coalesce(round(avg(datediff('day', sh.eta, sh.ata)) FILTER (WHERE sh.ata > sh.eta), 1), 0) AS avg_days_late\n\
+      FROM master.shipments sh JOIN master.purchase_orders pur ON pur.po_id = sh.po_id\nWHERE pur.supplier_id = $supplier_id AND sh.ata IS NOT NULL\n  AND sh.eta BETWEEN date_trunc('week', CAST($as_of AS\
+      \ DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))\n"
+    lines: "SELECT coalesce(sum(l.qty_ordered), 0) AS ordered, coalesce(sum(l.qty_received), 0) AS received\nFROM master.po_lines l JOIN master.purchase_orders pur ON pur.po_id = l.po_id\nWHERE pur.supplier_id\
+      \ = $supplier_id AND pur.status IN ('received', 'closed')\n  AND pur.order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 180 DAY AND date_trunc('week', CAST($as_of AS DATE))\n"
+    gate: SELECT CAST($as_of AS DATE) + CAST($decision_weeks AS INTEGER) * 7 AS gate_date
+    alts: "SELECT s.supplier_id, s.name, s.country, s.otif_pct_12m, s.payment_terms_days, s.risk_rating\nFROM master.suppliers s\nWHERE s.status = 'active' AND s.supplier_id <> $supplier_id\n  AND s.category_focus\
+      \ = (SELECT category_focus FROM master.suppliers WHERE supplier_id = $supplier_id)\nORDER BY s.otif_pct_12m DESC LIMIT 3\n"
+  template: "SUPPLIER RECOVERY PLAN\n\n{% if supplier -%}\nSupplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}, {{ supplier[0].category_focus }}\nIssue: {{ issue_summary }}\n\
+    Annual spend: {{ \"£{:,}\".format(supplier[0].annual_spend_gbp|int) }}; risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}\n\n1. SITUATION ASSESSMENT\n- OTIF over the last 12 months:\
+    \ {{ supplier[0].otif_pct_12m }}% against a target of {{ target_otif_pct|int }}% (gap {{ \"%.1f\"|format(target_otif_pct - supplier[0].otif_pct_12m) }} points)\n- Last 6 months: {{ orders[0].pos }}\
+    \ purchase orders worth {{ \"£{:,}\".format(orders[0].value_gbp|int) }}\n- Deliveries: {{ ships[0].late }} of {{ ships[0].shipments }} shipments arrived after their ETA{{ (', on average ' ~ ships[0].avg_days_late\
+    \ ~ ' days late') if ships[0].late else '' }}\n{% if lines[0].ordered -%}\n- Quantities: {{ \"{:,}\".format(lines[0].received|int) }} of {{ \"{:,}\".format(lines[0].ordered|int) }} units received on\
+    \ completed orders{{ (' (' ~ (\"%.1f\"|format((lines[0].ordered - lines[0].received) / lines[0].ordered * 100)) ~ '% short)') if lines[0].received < lines[0].ordered else ' (no shortfall)' }}\n{% endif\
+    \ %}\n\n2. ROOT CAUSE ANALYSIS (to confirm with the supplier and our own order history)\n{% if ships[0].shipments and ships[0].late / ships[0].shipments > 0.25 -%}\n- Late shipping: {{ \"%.0f\"|format(ships[0].late\
+    \ / ships[0].shipments * 100) }}% of shipments miss the ETA, so the delivery problem is in production or dispatch rather than a few outliers\n{% endif -%}\n{% if lines[0].ordered and (lines[0].ordered\
+    \ - lines[0].received) / lines[0].ordered > 0.005 -%}\n- Short deliveries: the supplier is not completing order quantities\n{% endif -%}\n- Our own late changes to quantities or dates: check the purchase\
+    \ order change history before assigning blame\n- Capacity, quality control staffing and raw material supply: ask the supplier for evidence\n\n3. RECOVERY PLAN\nPhase 1: Stabilise (weeks 1-4). Weekly\
+    \ steering call with the supplier's operations lead and our buyer; quality audit visit in week 2; confirm dates on every open order.\n  Success measure: OTIF of at least {{ (target_otif_pct - 5)|int\
+    \ }}% on the next 3 orders.\nPhase 2: Improve (weeks 5-{{ decision_weeks }}). Agreed corrective actions on late shipping and short deliveries; freeze changes to confirmed orders inside the lead time.\n\
+    \  Success measure: OTIF of {{ target_otif_pct|int }}% sustained for 4 weeks.\nPhase 3: Sustain (after week {{ decision_weeks }}). Monthly business reviews and a standing performance dashboard.\n\n\
+    4. DECISION GATE: WEEK {{ decision_weeks }} ({{ gate[0].gate_date }})\nWe decide on that date whether to continue the plan or switch volume.\nGO if OTIF is at least {{ target_otif_pct|int }}% sustained\
+    \ and shipments are on time.\nNO-GO: begin moving volume to a fallback supplier.\n\n5. FALLBACK SUPPLIERS (same category focus, best OTIF first)\n{% for a in alts -%}\n- {{ a.name }} ({{ a.supplier_id\
+    \ }}, {{ a.country }}): OTIF {{ a.otif_pct_12m }}%, {{ a.payment_terms_days }} days, risk {{ a.risk_rating }}\n{% else -%}\n- No other active supplier with the same category focus\n{% endfor -%}\n{%\
+    \ else -%}\nSupplier {{ supplier_id }} not found.\n{% endif %}\n"
+  example:
+    supplier_id: SUP-0053
+    issue_summary: Delivery and quality decline over 2 quarters
+- name: draft_sponsor_challenge_brief
+  desc: 'Draft anticipated sponsor objections and responses for a capex portfolio: for every project that is phased, deferred or cancelled, its return rank, risk and the likely objection and response.'
+  kind: py
+  args:
+    project_name:
+      type: str
+      desc: Portfolio or project name being challenged
+      required: true
+    total_investment_gbp:
+      type: float
+      desc: Total investment asked for in GBP
+    portfolio:
+      type: str
+      desc: Projects separated by ;, each as project|sponsor|capex_gbp|irr_pct|risk|decision (fund/phase/defer/cancel)|year1_capex_gbp
+    envelope_gbp:
+      type: float
+      desc: Funding envelope in GBP
+    hurdle_irr_pct:
+      type: float
+      desc: Hurdle IRR in percent
+  example:
+    project_name: FY27 capex portfolio
+    envelope_gbp: 22000000
+    portfolio: Automation|COO|8000000|18|medium|fund;Refit|Retail|6000000|11|low|phase|2000000
+  fn: draft_sponsor_challenge_brief
+  limit: 1
+- name: draft_audit_findings_report
+  desc: 'Draft findings in audit report format: findings ordered by risk rating with observation, value at risk, next-step test and owner, a summary table and the total value at risk.'
+  kind: py
+  args:
+    audit_subject:
+      type: str
+      desc: Audit subject, e.g. PO and payment controls
+    findings:
+      type: str
+      desc: Findings separated by ;, each as title|rating (HIGH/MEDIUM/LOW)|observation|value_gbp|owner|next_test
+  example:
+    audit_subject: PO and payment controls
+    findings: Split orders|HIGH|Three POs just under the limit|143500|Procurement|Review approvals
+  fn: draft_audit_findings_report
+  limit: 1
+- name: draft_board_paper
+  desc: Draft a board paper comparing investment options on IRR and IRR after a revenue miss, funded by return within the envelope, flagging options below the hurdle rate to defer.
+  kind: py
+  args:
+    topic:
+      type: str
+      desc: Paper title, e.g. Capital Allocation
+      required: true
+    options:
+      type: str
+      desc: Options separated by ;, each as name|capex_gbp|irr_pct|irr_pct_after_revenue_miss|risk
+    envelope_gbp:
+      type: float
+      desc: Total capital available in GBP
+    hurdle_rate_pct:
+      type: float
+      desc: Hurdle rate in percent
+    revenue_miss_pct:
+      type: float
+      desc: Revenue miss tested in percent
+      default: 10
+  example:
+    topic: Capital Allocation
+    options: Automation|12000000|18|13|medium;New DC|20000000|14|9|high
+    envelope_gbp: 30000000
+    hurdle_rate_pct: 12
+  fn: draft_board_paper
+  limit: 1
+- name: draft_bid_recommendation
+  desc: Draft a bid recommendation for a steering group from the evaluated three-year costs, showing the saving of the recommended bidder against the runner-up and the cheapest headline bid.
+  kind: draft
+  args:
+    category:
+      type: str
+      required: true
+      desc: Category or contract type being evaluated, e.g. Warehouse cleaning
+    recommended_bidder:
+      type: str
+      required: true
+      desc: Name of the bidder recommended
+    recommended_total_gbp:
+      type: float
+      desc: Three-year total cost of the recommended bid in GBP, hidden costs included
+    runner_up_bidder:
+      type: str
+      desc: Name of the second-best bidder
+    runner_up_total_gbp:
+      type: float
+      desc: Three-year total cost of the runner-up in GBP
+    cheapest_headline_bidder:
+      type: str
+      desc: Bidder with the lowest headline price, if not the recommended one
+    bid_summary:
+      type: str
+      default: Evaluation complete
+      desc: 'Summary of the evaluation: price, service levels, references, risks'
+  sql:
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'BID RECOMMENDATION
+
+
+    Category: {{ category|upper }}
+
+    Date: {{ calendar[0].date if calendar else ''Current'' }}
+
+    Status: RECOMMENDATION TO STEERING GROUP
+
+
+    RECOMMENDATION
+
+    Award the {{ category }} contract to {{ recommended_bidder }}.
+
+    {% if recommended_total_gbp is not none -%}
+
+    Three-year total cost including hidden costs: {{ "£{:,}".format(recommended_total_gbp|int) }}
+
+    {% endif -%}
+
+    {% if recommended_total_gbp is not none and runner_up_bidder and runner_up_total_gbp is not none -%}
+
+    Runner-up: {{ runner_up_bidder }} at {{ "£{:,}".format(runner_up_total_gbp|int) }}, which is {{ "£{:,}".format((runner_up_total_gbp - recommended_total_gbp)|int) }} ({{ "%.1f"|format((runner_up_total_gbp
+    - recommended_total_gbp) / runner_up_total_gbp * 100) }}%) more over three years.
+
+    {% endif -%}
+
+    {% if cheapest_headline_bidder and cheapest_headline_bidder != recommended_bidder -%}
+
+    Note: {{ cheapest_headline_bidder }} has the lowest headline price but is not recommended because of hidden costs and service risk.
+
+    {% endif %}
+
+    EVALUATION SUMMARY
+
+    {{ bid_summary }}
+
+
+    RISKS AND MITIGATION
+
+    - Price review clause: cap the annual uplift in the contract
+
+    - Service continuity: monthly service-level audit with credits for misses
+
+    - References: confirm the references before signature
+
+
+    STEERING GROUP DECISION REQUIRED
+
+    [ ] Approve {{ recommended_bidder }} as the {{ category }} supplier
+
+    [ ] Authorise contract negotiation and signature
+
+    '
+  example:
+    category: Warehouse cleaning
+    recommended_bidder: Gleam Industrial Ltd
+    recommended_total_gbp: 328294
+    runner_up_bidder: Meridian Hygiene Group
+    runner_up_total_gbp: 361182
+    bid_summary: Best three-year cost and references
+- name: draft_breach_notice
+  desc: Draft a formal notice of breach for a late purchase order, stating the supplier, due date, days late, units and value outstanding, and the response and remedy deadlines.
+  kind: draft
+  args:
+    po_id: {}
+    contract_id:
+      type: str
+      desc: Supply contract reference, e.g. CTR-000045
+    response_days:
+      type: int
+      default: 5
+      desc: Business days the supplier has to respond
+    cure_days:
+      type: int
+      default: 10
+      desc: Days the supplier has to deliver a remedial plan
+  sql:
+    po: SELECT * FROM master.purchase_orders WHERE po_id = $po_id
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = (SELECT supplier_id FROM master.purchase_orders WHERE po_id = $po_id)
+    lines: "SELECT coalesce(sum(qty_ordered), 0) AS ordered, coalesce(sum(qty_received), 0) AS received,\n       coalesce(sum((qty_ordered - qty_received) * unit_cost), 0) AS outstanding_gbp\nFROM master.po_lines\
+      \ WHERE po_id = $po_id\n"
+    ship: SELECT status, eta FROM master.shipments WHERE po_id = $po_id ORDER BY etd DESC LIMIT 1
+    dates: "SELECT CAST($as_of AS DATE) AS today, datediff('day', (SELECT due_date FROM master.purchase_orders WHERE po_id = $po_id), CAST($as_of AS DATE)) AS days_late,\n       CAST($as_of AS DATE) + CAST($response_days\
+      \ AS INTEGER) AS respond_by, CAST($as_of AS DATE) + CAST($cure_days AS INTEGER) AS cure_by\n"
+  template: 'FORMAL NOTICE OF BREACH
+
+
+    Date: {{ dates[0].today }}
+
+    RE: Purchase order {{ po[0].po_id if po else ''Unknown'' }}{{ ('' under supply contract '' ~ contract_id) if contract_id else '''' }}
+
+
+    To: {{ supplier[0].name if supplier else ''Unknown'' }}{{ ('' ('' ~ supplier[0].supplier_id ~ '')'') if supplier else '''' }}
+
+
+
+    This notice is issued under the terms of our supply contract.
+
+
+    BREACH DETAILS
+
+    PO reference: {{ po[0].po_id if po else ''Unknown'' }}
+
+    Contracted delivery date: {{ po[0].due_date if po else ''TBD'' }}
+
+    {% if po and dates[0].days_late > 0 -%}
+
+    Days overdue: {{ dates[0].days_late }}
+
+    {% endif -%}
+
+    Order value: {{ "£{:,}".format(po[0].total_value|int) if po else '''' }} for {{ "{:,}".format(po[0].total_units|int) if po else '''' }} units
+
+    {% if lines and lines[0].ordered -%}
+
+    Units not received: {{ "{:,}".format((lines[0].ordered - lines[0].received)|int) }} of {{ "{:,}".format(lines[0].ordered|int) }}, worth {{ "£{:,}".format(lines[0].outstanding_gbp|int) }}
+
+    {% endif -%}
+
+    {% if ship -%}
+
+    Shipment status: {{ ship[0].status }}, estimated arrival {{ ship[0].eta }}
+
+    {% endif %}
+
+    You have failed to deliver this order by the contracted date.
+
+
+    REQUIRED ACTIONS
+
+    1. Respond in writing by {{ dates[0].respond_by }} ({{ response_days }} days)
+
+    2. Provide a remedial plan with a confirmed delivery date by {{ dates[0].cure_by }} ({{ cure_days }} days)
+
+    3. Deliver the outstanding units without further delay
+
+
+    We reserve all rights and remedies under the contract, including damages for delay, cancellation of the undelivered units and termination if the breach is not remedied.
+
+
+    Regards,
+
+    Procurement Team
+
+    '
+  example:
+    po_id: PO-2026-004301
+- name: draft_business_review_pack
+  desc: Draft a supplier business review pack for the last quarter from the supplier's master record and orders, comparing scorecard results with SLA and proposing focus topics.
+  kind: draft
+  args:
+    supplier_id: {}
+    quarter_otif_pct:
+      type: float
+      desc: Quarter OTIF from the scorecard, in percent, e.g. 85.4
+    otif_sla_pct:
+      type: float
+      default: 95
+      desc: OTIF service level in percent
+    quarter_defect_pct:
+      type: float
+      desc: Quarter AQL defect rate from the scorecard, in percent, e.g. 2.8
+    defect_sla_pct:
+      type: float
+      default: 1.5
+      desc: Maximum defect rate in percent
+  sql:
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+    orders: "SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp, coalesce(sum(total_units), 0) AS units\nFROM master.purchase_orders\nWHERE supplier_id = $supplier_id AND status\
+      \ <> 'cancelled'\n  AND order_date >= CAST(date_trunc('quarter', CAST($as_of AS DATE)) - INTERVAL 3 MONTH AS DATE) AND order_date < CAST(date_trunc('quarter', CAST($as_of AS DATE)) AS DATE)\n"
+    ships: "SELECT count(*) AS shipments, count(*) FILTER (WHERE sh.ata > sh.eta) AS late\nFROM master.shipments sh JOIN master.purchase_orders pur ON pur.po_id = sh.po_id\nWHERE pur.supplier_id = $supplier_id\
+      \ AND sh.ata IS NOT NULL\n  AND sh.eta >= CAST(date_trunc('quarter', CAST($as_of AS DATE)) - INTERVAL 3 MONTH AS DATE) AND sh.eta < CAST(date_trunc('quarter', CAST($as_of AS DATE)) AS DATE)\n"
+    products: 'SELECT count(*) AS skus, count(DISTINCT category) AS categories, string_agg(DISTINCT category, '', '') AS category_list
+
+      FROM master.products WHERE supplier_id = $supplier_id
+
+      '
+  template: 'BUSINESS REVIEW PACK
+
+
+    {% if supplier -%}
+
+    Supplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}
+
+    Review period: last completed quarter
+
+
+    1. PERFORMANCE SCORECARD
+
+    - OTIF over 12 months (master record): {{ supplier[0].otif_pct_12m }}%
+
+    {% if quarter_otif_pct is not none -%}
+
+    - OTIF this quarter: {{ quarter_otif_pct }}% against an SLA of {{ otif_sla_pct }}% ({{ "%.1f"|format(otif_sla_pct - quarter_otif_pct) }} points {{ ''below'' if quarter_otif_pct < otif_sla_pct else ''above''
+    }} SLA)
+
+    {% endif -%}
+
+    {% if quarter_defect_pct is not none -%}
+
+    - Defect rate this quarter: {{ quarter_defect_pct }}% against a limit of {{ defect_sla_pct }}% ({{ ''breached'' if quarter_defect_pct > defect_sla_pct else ''within limit'' }})
+
+    {% endif -%}
+
+    - Risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}, payment terms {{ supplier[0].payment_terms_days }} days
+
+
+    2. ORDER PATTERN (last completed quarter)
+
+    - {{ orders[0].pos }} purchase orders, {{ "{:,}".format(orders[0].units|int) }} units, {{ "£{:,}".format(orders[0].value_gbp|int) }}
+
+    - {{ ships[0].late }} of {{ ships[0].shipments }} delivered shipments arrived after their ETA
+
+    - Range with us: {{ products[0].skus }} SKUs in {{ products[0].category_list }}
+
+
+    3. JOINT OPPORTUNITIES
+
+    - Forecast sharing and fixed ordering windows to cut late order changes
+
+    - Consolidated shipments to cut freight cost per unit
+
+    - Quality at source: joint inspection plan for the highest-defect styles
+
+
+    4. SUGGESTED FOCUS TOPICS FOR THE MEETING
+
+    {% if quarter_otif_pct is not none and quarter_otif_pct < otif_sla_pct -%}
+
+    1. Delivery: recover OTIF from {{ quarter_otif_pct }}% to the {{ otif_sla_pct }}% SLA
+
+    {% else -%}
+
+    1. Delivery: hold OTIF at or above SLA
+
+    {% endif -%}
+
+    {% if quarter_defect_pct is not none and quarter_defect_pct > defect_sla_pct -%}
+
+    2. Quality: bring the defect rate from {{ quarter_defect_pct }}% back under {{ defect_sla_pct }}%
+
+    {% else -%}
+
+    2. Quality: keep the defect rate under {{ defect_sla_pct }}%
+
+    {% endif -%}
+
+    3. Ways of working: our order changes, payment performance and the joint opportunities above
+
+    {% else -%}
+
+    Supplier {{ supplier_id }} not found.
+
+    {% endif %}
+
+    '
+  example:
+    supplier_id: SUP-0012
+    quarter_otif_pct: 85.4
+    quarter_defect_pct: 2.8
+- name: draft_commodity_brief
+  desc: Draft the weekly commodity brief for the buying team from the supplied prices and news, working out the weekly and year-to-date moves and flagging moves above the alert threshold.
+  kind: draft
+  args:
+    commodity:
+      type: str
+      required: true
+      desc: Commodity name, e.g. cotton
+    unit:
+      type: str
+      default: GBP per tonne
+      desc: Price unit, e.g. GBP per tonne
+    price_now:
+      type: float
+      required: true
+      desc: Price this week
+    price_last_week:
+      type: float
+      desc: Price a week ago
+    price_year_start:
+      type: float
+      desc: Price at the start of the year
+    key_news:
+      type: str
+      desc: Key news and drivers this week
+    alert_threshold_pct:
+      type: float
+      default: 5
+      desc: Weekly move in percent that triggers a faster response
+  sql:
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'WEEKLY COMMODITY BRIEF
+
+
+    Commodity: {{ commodity|upper }}
+
+    Week of: {{ calendar[0].date if calendar else ''Current'' }}
+
+
+    PRICE SUMMARY
+
+    Price now: {{ price_now }} {{ unit }}
+
+    {% if price_last_week -%}
+
+    {% set w = (price_now - price_last_week) / price_last_week * 100 -%}
+
+    Week change: {{ "%+.1f"|format(w) }}% (from {{ price_last_week }})
+
+    {% endif -%}
+
+    {% if price_year_start -%}
+
+    {% set y = (price_now - price_year_start) / price_year_start * 100 -%}
+
+    Year-to-date change: {{ "%+.1f"|format(y) }}% (from {{ price_year_start }})
+
+    {% endif %}
+
+    KEY NEWS AND DRIVERS
+
+    {{ key_news or ''No significant news supplied'' }}
+
+
+    RECOMMENDED ACTIONS
+
+    {% if price_last_week and (w|abs) >= alert_threshold_pct -%}
+
+    1. ALERT: the weekly move of {{ "%+.1f"|format(w) }}% is above the {{ alert_threshold_pct }}% trigger. Escalate to the category lead and review open commitments today.
+
+    {% else -%}
+
+    1. Weekly move is inside the {{ alert_threshold_pct }}% alert threshold: no escalation needed.
+
+    {% endif -%}
+
+    {% if price_year_start and y > 10 -%}
+
+    2. Price is well above the start of the year: review hedging cover for the next quarter.
+
+    {% else -%}
+
+    2. Review hedging and forward cover against the next month''s purchases.
+
+    {% endif -%}
+
+    3. Confirm demand forecasts with planning before the next purchase.
+
+
+    SUGGESTED ALERT TRIGGERS
+
+    - Weekly move of {{ alert_threshold_pct }}% or more: same-day escalation
+
+    - Move of {{ (alert_threshold_pct * 2)|round|int }}% or more over a month: refresh the buying plan
+
+    '
+  example:
+    commodity: cotton
+    price_now: 1520
+    price_last_week: 1480
+    price_year_start: 1390
+    key_news: Weak harvest forecast in the main growing regions
+- name: draft_commodity_summary
+  desc: Draft a commodity summary for category buyers from the supplied price, 12-month average, outlook and drivers, working out price versus average and expected 6 and 12 month prices.
+  kind: draft
+  args:
+    commodity:
+      type: str
+      required: true
+      desc: Commodity name, e.g. polyester chips
+    unit:
+      type: str
+      default: GBP per tonne
+      desc: Price unit, e.g. GBP per tonne
+    current_price:
+      type: float
+      required: true
+      desc: Current price in the given unit
+    avg_12m_price:
+      type: float
+      desc: 12-month average price in the same unit
+    outlook_6m_pct:
+      type: float
+      desc: Analyst expected price change over 6 months, in percent, e.g. 3
+    outlook_12m_pct:
+      type: float
+      desc: Analyst expected price change over 12 months, in percent
+    drivers:
+      type: str
+      desc: Recent price drivers, e.g. weak harvest and strong demand
+  sql:
+    calendar: SELECT * FROM master.calendar WHERE date = CAST($as_of AS DATE) LIMIT 1
+  template: 'COMMODITY SUMMARY: {{ commodity|upper }}
+
+
+    CURRENT STATUS
+
+    Price: {{ current_price }} {{ unit }}
+
+    {% if avg_12m_price -%}
+
+    {% set d = (current_price - avg_12m_price) / avg_12m_price * 100 -%}
+
+    Versus 12-month average ({{ avg_12m_price }}): {{ "%+.1f"|format(d) }}% ({{ ''above'' if d > 0 else ''below'' }} average)
+
+    {% endif -%}
+
+    {% if drivers %}Recent drivers: {{ drivers }}
+
+    {% endif %}
+
+    FORECAST
+
+    {% if outlook_6m_pct is not none -%}
+
+    6-month: {{ "%+.1f"|format(outlook_6m_pct) }}%, expected price about {{ "%.1f"|format(current_price * (1 + outlook_6m_pct / 100)) }} {{ unit }}
+
+    {% endif -%}
+
+    {% if outlook_12m_pct is not none -%}
+
+    12-month: {{ "%+.1f"|format(outlook_12m_pct) }}%, expected price about {{ "%.1f"|format(current_price * (1 + outlook_12m_pct / 100)) }} {{ unit }}
+
+    {% endif %}
+
+    FOR BUYERS
+
+    {% if outlook_6m_pct is not none and outlook_6m_pct > 0 -%}
+
+    Prices are expected to rise: consider covering part of the requirement before the increase.
+
+    {% elif outlook_6m_pct is not none and outlook_6m_pct < 0 -%}
+
+    Prices are expected to ease: avoid committing early beyond the base requirement.
+
+    {% else -%}
+
+    Prices are expected to be stable: buy to plan.
+
+    {% endif %}
+
+    '
+  example:
+    commodity: polyester chips
+    current_price: 780
+    avg_12m_price: 810
+    outlook_6m_pct: -2
+    outlook_12m_pct: 1
+- name: draft_dispute_response
+  desc: 'Draft a reply to a customer dispute: works out overbilling from invoiced against agreed price and delivered units, then states our position and the settlement.'
+  kind: py
+  args:
+    partner_id: {}
+    invoice_number:
+      type: str
+      desc: Disputed invoice number
+    invoiced_units:
+      type: float
+      desc: Units invoiced
+    delivered_units:
+      type: float
+      desc: Units actually delivered per the delivery notes
+    invoiced_unit_price_gbp:
+      type: float
+      desc: Unit price charged on the invoice in GBP
+    agreed_unit_price_gbp:
+      type: float
+      desc: Unit price on the agreed price list in GBP
+    dispute_amount_gbp:
+      type: float
+      desc: Amount the customer is withholding in GBP; defaults to the invoice total
+    offer_valid_days:
+      type: int
+      default: 10
+      desc: Business days the offer stays open
+  example:
+    partner_id: PTN-041
+    invoice_number: INV-2026-900040
+    invoiced_units: 8000
+    delivered_units: 7640
+    invoiced_unit_price_gbp: 60
+    agreed_unit_price_gbp: 60
+  fn: draft_dispute_response
+  limit: 1
+- name: draft_executive_briefing
+  desc: 'Draft an executive briefing from supplied findings: performance against plan, top issues ranked by impact with cause and time to fix, those fixable within a quarter.'
+  kind: py
+  args:
+    topic:
+      type: str
+      desc: Briefing topic, e.g. Supply chain end to end
+      required: true
+    scorecard:
+      type: str
+      desc: Areas separated by ;, each as area|actual|plan|higher_better or lower_better
+    issues:
+      type: str
+      desc: Issues separated by ;, each as issue|cause|annual_impact_gbp|weeks_to_fix
+    fix_window_weeks:
+      type: int
+      default: 13
+      desc: Weeks counted as one quarter
+  example:
+    topic: Supply chain
+    scorecard: OTIF %|91.2|95|higher_better
+    issues: Late inbound|Port delays|900000|10
+  fn: draft_executive_briefing
+  limit: 1
+- name: draft_highlight_report
+  desc: 'Draft a programme highlight report from the status supplied: overall status as the worst of scope, schedule, budget and benefits, budget variance, top risks and the decisions required.'
+  kind: py
+  args:
+    programme_name:
+      type: str
+      desc: Programme name, e.g. ERP Transformation
+      required: true
+    status:
+      type: str
+      desc: Dimension:RAG pairs separated by ;, e.g. scope:GREEN;schedule:AMBER;budget:RED;benefits:AMBER
+    budget_gbp:
+      type: float
+      desc: Approved budget in GBP
+    forecast_gbp:
+      type: float
+      desc: Forecast cost in GBP
+    go_live_date:
+      type: str
+      desc: Go-live date
+    schedule_slip_weeks:
+      type: float
+      desc: Weeks of schedule slip
+    top_risks:
+      type: str
+      desc: Risks separated by ;, each as title|status|impact
+    decisions_needed:
+      type: str
+      desc: Decisions separated by ;
+  example:
+    programme_name: ERP Transformation
+    status: schedule:AMBER;budget:GREEN
+  fn: draft_highlight_report
+  limit: 1
+- name: draft_improvement_programme_plan
+  desc: Draft a joint supplier improvement programme plan from the supplier's current lead times and open orders, with the target in days, milestones and what each side commits.
+  kind: draft
+  args:
+    supplier_id: {}
+    improvement_goal:
+      type: str
+      default: reduce lead time by 20%
+      desc: Improvement target in words
+    target_reduction_pct:
+      type: float
+      default: 20
+      desc: Lead time reduction wanted, in percent
+    programme_weeks:
+      type: int
+      default: 26
+      desc: Length of the programme in weeks
+  sql:
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+    lead: 'SELECT count(*) AS skus, round(avg(lead_time_days), 0) AS avg_days, min(lead_time_days) AS min_days, max(lead_time_days) AS max_days
+
+      FROM master.products WHERE supplier_id = $supplier_id
+
+      '
+    cats: 'SELECT category, count(*) AS skus, round(avg(lead_time_days), 0) AS avg_days
+
+      FROM master.products WHERE supplier_id = $supplier_id GROUP BY category ORDER BY avg_days DESC, skus DESC LIMIT 3
+
+      '
+    po: "SELECT count(*) AS pos, round(avg(datediff('day', order_date, due_date)), 0) AS order_to_due_days\nFROM master.purchase_orders WHERE supplier_id = $supplier_id AND status <> 'cancelled'\n  AND\
+      \ order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 365 DAY AND date_trunc('week', CAST($as_of AS DATE))\n"
+    openpo: 'SELECT count(*) AS pos, round(coalesce(sum(total_value), 0), 0) AS value_gbp
+
+      FROM master.purchase_orders WHERE supplier_id = $supplier_id AND status IN (''open'', ''confirmed'', ''shipped'')
+
+      '
+  template: "JOINT IMPROVEMENT PROGRAMME PLAN\n\n{% if supplier and lead[0].skus -%}\nSupplier: {{ supplier[0].name }} ({{ supplier_id }}), {{ supplier[0].country }}\nGoal: {{ improvement_goal }}\n{% set\
+    \ base = lead[0].avg_days|int -%}\n{% set target = (base * (1 - target_reduction_pct / 100))|round|int -%}\n\n1. CURRENT STATE\n- Standard lead time across {{ lead[0].skus }} SKUs: {{ base }} days on\
+    \ average (range {{ lead[0].min_days }} to {{ lead[0].max_days }})\n- Actual order-to-due time on our last 12 months of orders ({{ po[0].pos }} orders): {{ po[0].order_to_due_days|int }} days\n- Target:\
+    \ {{ target }} days, a cut of {{ base - target }} days ({{ target_reduction_pct|int }}%)\n- OTIF over 12 months: {{ supplier[0].otif_pct_12m }}%; payment terms {{ supplier[0].payment_terms_days }} days\n\
+    - Pilot scope, longest lead times first:\n{% for c in cats -%}\n  - {{ c.category }}: {{ c.skus }} SKUs, {{ c.avg_days|int }} days\n{% endfor %}\n2. WORKSTREAMS\nA. Material and trim pre-positioning:\
+    \ hold agreed fabric and trim stock for forecast demand\nB. Production scheduling: reserve line capacity and release orders in fixed weekly windows\nC. Quality at source: inline inspection to remove\
+    \ rework and re-inspection time\nD. Transport: booked shipping slots and consolidated loads\n\n3. MILESTONES ({{ programme_weeks }}-week programme)\n- Week 2: baseline lead time mapped step by step\
+    \ with the supplier, owners named\n- Week {{ (programme_weeks * 0.25)|round|int }}: pilot range running at {{ base - ((base - target) * 0.25)|round|int }} days\n- Week {{ (programme_weeks * 0.5)|round|int\
+    \ }}: {{ base - ((base - target) * 0.6)|round|int }} days, review of what has worked\n- Week {{ programme_weeks }}: {{ target }} days across the range, roll out and hand over to business as usual\n\n\
+    4. WHAT THE SUPPLIER NEEDS FROM US\n- Rolling forecast: {{ openpo[0].pos }} open orders worth {{ \"£{:,}\".format(openpo[0].value_gbp|int) }} today, shared weekly\n- Freeze on changes to confirmed orders\
+    \ inside the lead time\n- Prompt payment on the agreed {{ supplier[0].payment_terms_days }} days, and technical support from our quality team\n\n5. BENEFITS\n- {{ base - target }} fewer days of stock\
+    \ in transit and on order per order cycle\n- Lower safety stock and faster response to demand changes\n{% else -%}\nSupplier {{ supplier_id }} not found or has no SKUs.\n{% endif %}\n"
+  example:
+    supplier_id: SUP-0046
+    improvement_goal: reduce lead time by 20%
+- name: draft_incident_summary
+  desc: Draft an incident summary for a named audience covering what happened, impact, root cause, next steps and decisions needed, from the details supplied.
+  kind: py
+  args:
+    incident_type:
+      type: enum
+      values:
+      - security
+      - operational
+      - quality
+      - safety
+      - financial
+      required: true
+      desc: Incident type
+    site_id:
+      type: str
+      required: true
+      desc: Site affected, e.g. DC1 or HQ1
+    what_happened:
+      type: str
+      default: Details being confirmed
+      desc: What happened and when it started, e.g. 140 orders stuck in allocation failed since 6am
+    impact:
+      type: str
+      default: Under assessment
+      desc: Business impact, e.g. 140 orders delayed
+    root_cause:
+      type: str
+      default: Under investigation
+      desc: Root cause if known
+    next_steps:
+      type: str
+      default: Complete root cause analysis and confirm the fix with the owning team
+      desc: Actions and owners
+    audience:
+      type: str
+      desc: Who the summary is for, e.g. CISO
+    decisions_needed:
+      type: str
+      desc: Decisions needed from the reader, separated by ;
+  example:
+    incident_type: operational
+    site_id: DC1
+    what_happened: 140 orders stuck in allocation failed since 6am
+  fn: draft_incident_summary
+  limit: 1
+- name: draft_investment_roadmap
+  desc: 'Draft a sequenced investment roadmap: phases from the dependencies between initiatives, ordered by return, funded within the envelope, with the biggest dependency and what is cut if the envelope
+    shrinks.'
+  kind: py
+  args:
+    investment_theme:
+      type: str
+      desc: Theme, e.g. Supply chain investment
+      required: true
+    budget_million_gbp:
+      type: float
+      desc: Total envelope in GBP millions
+    initiatives:
+      type: str
+      desc: Initiatives separated by ;, each as name|cost_m_gbp|return_pct|risk|depends_on (comma separated names)|years
+    reduced_budget_million_gbp:
+      type: float
+      desc: Smaller envelope to test in GBP millions
+  example:
+    investment_theme: Supply chain
+    budget_million_gbp: 80
+    initiatives: Digital planning|10|20|low||1;Automation|30|15|medium|Digital planning|3
+  fn: draft_investment_roadmap
+  limit: 1
+- name: draft_leadership_summary
+  desc: 'Draft a leadership summary: revenue and operating profit against budget with variance and overall status, then the top issues, risks and opportunities supplied.'
+  kind: py
+  args:
+    reporting_period:
+      type: str
+      desc: Period, e.g. September
+    revenue_actual_gbp:
+      type: float
+      desc: Revenue actual in GBP
+    revenue_budget_gbp:
+      type: float
+      desc: Revenue budget in GBP
+    operating_profit_actual_gbp:
+      type: float
+      desc: Operating profit actual in GBP
+    operating_profit_budget_gbp:
+      type: float
+      desc: Operating profit budget in GBP
+    top_issues:
+      type: str
+      desc: Top issues separated by ;
+    risks:
+      type: str
+      desc: Risks separated by ;
+    opportunities:
+      type: str
+      desc: Opportunities separated by ;
+  example:
+    reporting_period: September
+    revenue_actual_gbp: 14100000
+    revenue_budget_gbp: 15000000
+    top_issues: Profit pressure;Inventory ageing
+  fn: draft_leadership_summary
+  limit: 1
+- name: draft_management_accounts_commentary
+  desc: 'Draft variance commentary for the management accounts from the variances supplied: splits the operating profit variance by driver, separates timing from permanent and unexplained, and writes the
+    commentary.'
+  kind: py
+  args:
+    period:
+      type: str
+      desc: Period, e.g. September
+    operating_profit_variance_gbp:
+      type: float
+      desc: Operating profit variance to budget in GBP, negative = adverse; defaults to the sum of the drivers
+    volume_variance_gbp:
+      type: float
+      desc: Volume variance in GBP
+      default: 0
+    price_mix_variance_gbp:
+      type: float
+      desc: Price and mix variance in GBP
+      default: 0
+    cost_variance_gbp:
+      type: float
+      desc: Cost variance in GBP
+      default: 0
+    one_off_variance_gbp:
+      type: float
+      desc: One-off items in GBP
+      default: 0
+    timing_gbp:
+      type: float
+      desc: Net timing items in GBP that reverse later
+      default: 0
+    unexplained_gbp:
+      type: float
+      desc: Variance not yet explained in GBP
+      default: 0
+  example:
+    period: September
+    operating_profit_variance_gbp: -1800000
+    volume_variance_gbp: -810000
+    price_mix_variance_gbp: -600000
+    cost_variance_gbp: -20000
+    one_off_variance_gbp: -150000
+    timing_gbp: 80000
+    unexplained_gbp: -220000
+  fn: draft_management_accounts_commentary
+  limit: 1
+- name: draft_market_entry_brief
+  desc: 'Draft a market entry brief for one country: regulations, duty and VAT, consumer preferences, products needing modification and a margin test against the typical retail margin.'
+  kind: py
+  args:
+    market_country:
+      type: str
+      desc: Country name, e.g. Poland
+      required: true
+    product_category:
+      type: str
+      desc: Product category
+      default: home range
+    requirements:
+      type: str
+      desc: Regulatory, language, labelling and import requirements separated by ;
+    consumer_preferences:
+      type: str
+      desc: Consumer style preferences separated by ;
+    products_needing_modification:
+      type: str
+      desc: Products needing modification separated by ;
+    economics:
+      type: str
+      desc: 'key=value pairs separated by ;: import_duty_pct, vat_pct, unit_cost_gbp, price_low_gbp, price_high_gbp, typical_retail_margin_pct'
+  example:
+    market_country: Poland
+    economics: import_duty_pct=0;vat_pct=23;unit_cost_gbp=6;price_low_gbp=12;price_high_gbp=20;typical_retail_margin_pct=50
+  fn: draft_market_entry_brief
+  limit: 1
+- name: draft_negotiation_brief
+  desc: Draft a negotiation brief for a supplier or a carrier covering share of spend, performance, benchmarks against alternatives, likely asks, trade-offs and best alternative.
+  kind: draft
+  args:
+    supplier_id: {}
+    carrier_id: {}
+    category:
+      type: str
+      desc: Product category the brief covers, e.g. Cookware
+    negotiation_type:
+      type: enum
+      values:
+      - price
+      - terms
+      - capacity
+      - quality
+      default: price
+      desc: Focus
+    volume_shift_pct:
+      type: int
+      default: 0
+      desc: Percent of volume we could move to an alternative, e.g. 40
+  sql:
+    supplier: SELECT * FROM master.suppliers WHERE supplier_id = $supplier_id
+    spend: "SELECT count(DISTINCT pur.po_id) AS pos, round(coalesce(sum(l.qty_ordered * l.unit_cost), 0), 0) AS spend_gbp\nFROM master.purchase_orders pur JOIN master.po_lines l ON l.po_id = pur.po_id JOIN\
+      \ master.products p ON p.sku = l.sku\nWHERE pur.supplier_id = $supplier_id AND ($category IS NULL OR lower(p.category) = lower($category))\n  AND pur.order_date BETWEEN date_trunc('week', CAST($as_of\
+      \ AS DATE)) - INTERVAL 365 DAY AND date_trunc('week', CAST($as_of AS DATE))\n"
+    cat_spend: "SELECT round(coalesce(sum(l.qty_ordered * l.unit_cost), 0), 0) AS spend_gbp\nFROM master.purchase_orders pur JOIN master.po_lines l ON l.po_id = pur.po_id JOIN master.products p ON p.sku\
+      \ = l.sku\nWHERE ($category IS NULL OR lower(p.category) = lower($category))\n  AND pur.order_date BETWEEN date_trunc('week', CAST($as_of AS DATE)) - INTERVAL 365 DAY AND date_trunc('week', CAST($as_of\
+      \ AS DATE))\n"
+    own: 'SELECT count(*) AS skus, round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(lead_time_days), 0) AS lead_days
+
+      FROM master.products WHERE supplier_id = $supplier_id AND ($category IS NULL OR lower(category) = lower($category))
+
+      '
+    market: "SELECT round(avg(unit_cost_gbp), 2) AS avg_unit_cost, round(avg(s.payment_terms_days), 0) AS payment_days, round(avg(s.otif_pct_12m), 1) AS otif\nFROM master.products p JOIN master.suppliers\
+      \ s ON s.supplier_id = p.supplier_id\nWHERE s.status = 'active' AND (lower(p.category) = lower($category)\n      OR ($category IS NULL AND p.category IN (SELECT category FROM master.products WHERE\
+      \ supplier_id = $supplier_id)))\n"
+    alts: "SELECT s.supplier_id, s.name, s.country, s.otif_pct_12m, s.payment_terms_days, s.risk_rating, round(avg(p.unit_cost_gbp), 2) AS avg_unit_cost\nFROM master.suppliers s JOIN master.products p ON\
+      \ p.supplier_id = s.supplier_id\nWHERE s.status = 'active' AND s.supplier_id <> $supplier_id\n  AND (lower(p.category) = lower($category)\n       OR ($category IS NULL AND p.category IN (SELECT category\
+      \ FROM master.products WHERE supplier_id = $supplier_id)))\nGROUP BY ALL ORDER BY s.otif_pct_12m DESC LIMIT 5\n"
+    carrier: 'SELECT c.*, datediff(''month'', CAST($as_of AS DATE), c.contract_end) AS months_left FROM master.carriers c WHERE c.carrier_id = $carrier_id
+
+      '
+    carrier_alts: 'SELECT a.carrier_id, a.name, a.contract_end FROM master.carriers a, master.carriers c
+
+      WHERE c.carrier_id = $carrier_id AND a.mode = c.mode AND a.scope = c.scope AND a.carrier_id <> c.carrier_id ORDER BY a.name
+
+      '
+  template: 'NEGOTIATION BRIEF
+
+
+    {% if supplier -%}
+
+    Supplier: {{ supplier[0].name }} ({{ supplier[0].supplier_id }}), {{ supplier[0].country }}
+
+    Focus: {{ negotiation_type|upper }}{% if category %}, category {{ category }}{% endif %}
+
+
+    1. OUR POSITION AND LEVERAGE
+
+    - Spend with them in the last 12 months{% if category %} on {{ category }}{% endif %}: {{ "£{:,}".format(spend[0].spend_gbp|int) }} across {{ spend[0].pos }} purchase orders
+
+    {% if cat_spend[0].spend_gbp and cat_spend[0].spend_gbp > 0 -%}
+
+    - Share of our {{ category or ''category'' }} spend: {{ "%.1f"|format(spend[0].spend_gbp / cat_spend[0].spend_gbp * 100) }}% (total {{ "£{:,}".format(cat_spend[0].spend_gbp|int) }})
+
+    {% endif -%}
+
+    - Performance: OTIF {{ supplier[0].otif_pct_12m }}% against a market average of {{ market[0].otif }}%; risk rating {{ supplier[0].risk_rating }}, tier {{ supplier[0].tier }}
+
+    - Overall annual spend with them: {{ "£{:,}".format(supplier[0].annual_spend_gbp|int) }}
+
+
+    2. BENCHMARKS
+
+    - Average unit cost of their SKUs: £{{ own[0].avg_unit_cost }} ({{ own[0].skus }} SKUs) against a market average of £{{ market[0].avg_unit_cost }}
+
+    - Payment terms: {{ supplier[0].payment_terms_days }} days against a market average of {{ market[0].payment_days|int }} days; incoterm {{ supplier[0].incoterm }}
+
+
+    3. WHAT THEY ARE LIKELY TO ASK FOR
+
+    - A price increase citing material, labour and freight costs
+
+    - Longer volume commitments or a higher MOQ
+
+    {% if supplier[0].payment_terms_days|int > market[0].payment_days|int -%}
+
+    - Faster payment (our terms are longer than the market average)
+
+    {% else -%}
+
+    - Protection of current payment terms
+
+    {% endif %}
+
+    4. WHAT WE COULD TRADE
+
+    - Multi-season volume commitment and forecast visibility
+
+    - Earlier payment in return for a price reduction
+
+    - Joint cost-down work on the {{ category or "product" }} range
+
+
+    5. OUR BEST ALTERNATIVE (BATNA)
+
+    {% for a in alts -%}
+
+    - {{ a.name }} ({{ a.supplier_id }}, {{ a.country }}): OTIF {{ a.otif_pct_12m }}%, {{ a.payment_terms_days }} days, average unit cost £{{ a.avg_unit_cost }}, risk {{ a.risk_rating }}
+
+    {% else -%}
+
+    - No active alternative supplier found in the master data
+
+    {% endfor -%}
+
+    {% if volume_shift_pct %}If talks fail, move {{ volume_shift_pct }}% of volume to the alternatives above.{% endif %}
+
+
+    6. STRATEGY
+
+    Open on {{ negotiation_type }}: ask for a cost-down tied to our volume share and their OTIF record, and keep the alternatives above in reserve.
+
+    {%- elif carrier %}
+
+    Carrier: {{ carrier[0].name }} ({{ carrier[0].carrier_id }}), {{ carrier[0].mode }}, {{ carrier[0].scope }}
+
+    Focus: {{ negotiation_type|upper }}
+
+
+    1. OUR POSITION AND LEVERAGE
+
+    - Contract ends {{ carrier[0].contract_end }}, about {{ carrier[0].months_left }} months from now
+
+    {% if volume_shift_pct %}- Moving {{ volume_shift_pct }}% of volume away reduces their share of our lanes and needs a volume-tolerance or minimum-volume clause to be renegotiated
+
+    {% endif %}
+
+    2. TERMS WE WOULD HAVE TO NEGOTIATE
+
+    - Volume commitment and tolerance if {{ volume_shift_pct }}% of volume moves to another network
+
+    - Rate card and fuel surcharge cap for the remaining volume
+
+    - On-time delivery service level and penalties
+
+    - Notice period and exit terms before {{ carrier[0].contract_end }}
+
+
+    3. ALTERNATIVES
+
+    {% for a in carrier_alts -%}
+
+    - {{ a.name }} ({{ a.carrier_id }}), contract ends {{ a.contract_end }}
+
+    {% else -%}
+
+    - No other carrier with the same mode and scope in the master data
+
+    {% endfor -%}
+
+    {%- else %}
+
+    Provide a supplier_id or a carrier_id to build the brief.
+
+    {%- endif %}
+
+    '
+  example:
+    supplier_id: SUP-0074
+    category: Cookware
+    negotiation_type: price

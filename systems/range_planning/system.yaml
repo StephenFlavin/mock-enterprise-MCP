@@ -1,0 +1,210 @@
+id: range_planning
+name: Range Planning & Assortment Tool
+instructions: >
+  Product range decisions: which to extend, refresh, reprice or delete based on performance and
+  strategic role. Identify category whitespace, flag SKUs for review, and test new trends.
+  Gap request ids look like RQR-000123, gap ids RGP-000123, plan entries PRP-000123 (one per SKU), task ids like RVW-000123.
+
+tables:
+  product_strategic_roles:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU, e.g. SKU-100234"}
+      strategic_role: {type: enum, values: [core, growth, seasonal, experimental, clearance], desc: "Strategic role in the range"}
+      rationale: {type: text, desc: "Why the product holds that role"}
+
+  product_range_plan:
+    key: sku
+    cols:
+      sku: {type: str, desc: "SKU being actioned (one plan entry per SKU)"}
+      plan_id: {type: str, desc: "Range plan entry, e.g. PRP-000123"}
+      action: {type: enum, values: [extend, refresh, reprice, delete], desc: "Planned range action"}
+      status: {type: enum, values: [draft, approved, in_progress, completed, cancelled], desc: "Action status"}
+      approved_by: {type: str, desc: "Employee who approved (if approved)"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  range_gaps:
+    key: gap_id
+    cols:
+      gap_id: {type: str, desc: "Range gap, e.g. RGP-000123"}
+      category: {type: str, desc: "Product category with whitespace, e.g. Small Kitchen Appliances"}
+      segment: {type: str, desc: "Sub-segment of the category, e.g. Soup makers; 'All' for the whole category"}
+      gap_description: {type: text, desc: "What's missing and why"}
+      market_size_gbp: {type: float, desc: "UK market size of the segment in GBP"}
+      market_growth_pct: {type: float, desc: "Market growth, % year on year"}
+      opportunity_size_gbp: {type: float, desc: "Annual revenue we could realistically win in GBP"}
+      est_margin_pct: {type: float, desc: "Typical retail margin of the segment, %"}
+      competitor_count: {type: int, desc: "How many competitors address this gap"}
+      competitors: {type: text, desc: "Competitors already in the segment"}
+      product_count_current: {type: int, desc: "How many SKUs we currently have in this segment"}
+      fill_feasibility: {type: enum, values: [high, medium, low], desc: "How realistic it is for us to fill the gap"}
+      created_at: {type: timestamp, desc: "When identified"}
+
+  range_gap_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Range gap request, e.g. RQR-000123"}
+      category: {type: str, desc: "Product category"}
+      reason: {type: text, desc: "Why this gap matters (e.g. high search interest, competitor presence)"}
+      status: {type: enum, values: [submitted, approved, rejected, investigated], desc: "Request status"}
+      created_by: {type: str, desc: "Employee who submitted (e.g. EMP-00123)"}
+      created_at: {type: timestamp, desc: "When submitted"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  sku_review_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Review task, e.g. RVW-000123"}
+      sku: {type: str, desc: "SKU to review"}
+      reason: {type: text, desc: "Why flagged for review (e.g. loss-making, poor sales)"}
+      owner: {type: str, desc: "Employee responsible for review (e.g. EMP-00123)"}
+      status: {type: enum, values: [open, in_progress, completed, cancelled], desc: "Task status"}
+      recommendation: {type: str, desc: "Recommended action (delete, refresh, reprice, etc)"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_product_strategic_role
+    desc: Return the strategic role (core, growth, seasonal, experimental, clearance) and rationale for a product, or list products holding a given role.
+    kind: sql
+    args:
+      sku: {desc: "SKU id, e.g. K-1700. Omit to list by role."}
+      strategic_role: {type: enum, values: [core, growth, seasonal, experimental, clearance], desc: "Only products with this role"}
+    sql: |
+      SELECT r.sku, p.name, p.category, p.status AS product_status, r.strategic_role, r.rationale
+      FROM product_strategic_roles r JOIN master.products p USING (sku)
+      WHERE ($sku IS NULL OR r.sku = $sku) AND ($strategic_role IS NULL OR r.strategic_role = $strategic_role)
+      ORDER BY r.sku
+    limit: 20
+    example: {sku: K-1700}
+
+  - name: list_range_gaps_by_category
+    desc: List whitespace opportunities by category and segment with market size, our realistic opportunity, margin, competitors and fill feasibility, largest first.
+    kind: sql
+    args:
+      category: {type: str, desc: "Category or words from it, e.g. small kitchen appliances, soup makers, audio"}
+      fill_feasibility: {type: enum, values: [high, medium, low], desc: "Only gaps with this feasibility"}
+    sql: |
+      SELECT gap_id, category, segment, gap_description, market_size_gbp, market_growth_pct, opportunity_size_gbp,
+             est_margin_pct, competitor_count, competitors, product_count_current, fill_feasibility
+      FROM range_gaps
+      WHERE ($fill_feasibility IS NULL OR fill_feasibility = $fill_feasibility)
+        AND ($category IS NULL OR list_bool_and(list_transform(str_split(lower(trim($category)), ' '),
+              w -> contains(lower(category || ' ' || segment || ' ' || gap_description), w))))
+      ORDER BY opportunity_size_gbp DESC
+    limit: 20
+    example: {category: small kitchen appliances}
+
+  - name: calculate_minimum_test_order_volume
+    desc: Calculate the minimum test order units for a category from its sell rate per SKU, the test length and supplier lead time, with cost and earliest test start.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category as in the range, e.g. Lighting, Bedding, Small Appliances"}
+      lead_time_days: {type: int, desc: "Supplier lead time in days; defaults to the category's average lead time"}
+      test_duration_weeks: {type: int, default: 8, desc: "How many weeks the test runs"}
+    sql: |
+      WITH cat AS (
+        SELECT sku, unit_cost_gbp, lead_time_days FROM master.products
+        WHERE lower(category) = lower(trim($category)) AND status IN ('active', 'new')
+      ), rate AS (
+        SELECT sum(store_units + online_units) / 13.0 AS weekly_units_all
+        FROM master.sales_weekly
+        WHERE sku IN (SELECT sku FROM cat) AND CAST(week_start AS DATE) > CAST($as_of AS DATE) - INTERVAL 91 DAY
+      ), p AS (
+        SELECT count(*) AS active_skus, round(avg(unit_cost_gbp), 2) AS avg_unit_cost_gbp,
+               CAST(round(avg(lead_time_days)) AS INT) AS avg_lead_time_days
+        FROM cat
+      )
+      SELECT $category AS category, p.active_skus,
+             round(rate.weekly_units_all / p.active_skus, 1) AS avg_weekly_units_per_sku,
+             COALESCE($lead_time_days, p.avg_lead_time_days) AS lead_time_days,
+             $test_duration_weeks AS test_duration_weeks,
+             CASE WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 30 THEN 10
+                  WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 60 THEN 20 ELSE 30 END AS lead_time_buffer_pct,
+             CAST(ceil(rate.weekly_units_all / p.active_skus * 0.5 * $test_duration_weeks
+               * (1 + CASE WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 30 THEN 0.10
+                           WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 60 THEN 0.20 ELSE 0.30 END) / 10) * 10 AS INT) AS minimum_test_units,
+             round(ceil(rate.weekly_units_all / p.active_skus * 0.5 * $test_duration_weeks
+               * (1 + CASE WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 30 THEN 0.10
+                           WHEN COALESCE($lead_time_days, p.avg_lead_time_days) <= 60 THEN 0.20 ELSE 0.30 END) / 10) * 10
+               * p.avg_unit_cost_gbp, 0) AS est_test_cost_gbp,
+             CAST(CAST($as_of AS DATE) + CAST(COALESCE($lead_time_days, p.avg_lead_time_days) AS INT) * INTERVAL 1 DAY AS DATE) AS earliest_test_start,
+             'minimum units = avg weekly units per SKU x 50% (new-line sell rate) x test weeks x (1 + lead-time buffer: 10% up to 30 days, 20% up to 60, 30% beyond), rounded up to 10' AS formula
+      FROM p, rate WHERE p.active_skus > 0
+    limit: 1
+    example: {category: Lighting, lead_time_days: 50}
+
+  - name: calculate_range_action_impact
+    desc: Calculate the projected weekly and annual margin impact of extending, refreshing, repricing or deleting a SKU, from its last 13 weeks of sales.
+    kind: sql
+    args:
+      sku: {required: true, desc: "SKU id, e.g. K-1700"}
+      action: {type: enum, values: [extend, refresh, reprice, delete], required: true, desc: "Planned action"}
+      current_price_gbp: {type: float, desc: "Current selling price; defaults to the average price realised over the last 13 weeks"}
+    sql: |
+      WITH sales AS (
+        SELECT sku, sum(store_units + online_units) AS units, sum(revenue_gbp) AS revenue
+        FROM master.sales_weekly
+        WHERE sku = $sku AND CAST(week_start AS DATE) > CAST($as_of AS DATE) - INTERVAL 91 DAY
+        GROUP BY sku
+      ), base AS (
+        SELECT p.sku, p.name, p.category, p.unit_cost_gbp,
+               COALESCE($current_price_gbp, s.revenue / NULLIF(s.units, 0), p.retail_price_gbp) AS price,
+               COALESCE(s.units, 0) / 13.0 AS weekly_units
+        FROM master.products p LEFT JOIN sales s ON s.sku = p.sku
+        WHERE p.sku = $sku
+      ), a AS (
+        SELECT * FROM (VALUES ('extend', 12.0, 0.0, 0.0), ('refresh', 18.0, 0.0, 2.0),
+                              ('reprice', -4.0, 5.0, 0.0), ('delete', -100.0, 0.0, 0.0)) t(action, units_pct, price_pct, cost_pct)
+        WHERE action = $action
+      )
+      SELECT b.sku, b.name, b.category, a.action, round(b.price, 2) AS price_gbp, b.unit_cost_gbp,
+             round(b.weekly_units, 0) AS current_weekly_units,
+             round(b.weekly_units * (b.price - b.unit_cost_gbp), 0) AS current_weekly_margin_gbp,
+             round(b.weekly_units * (1 + a.units_pct / 100), 0) AS projected_weekly_units,
+             round(CASE WHEN a.action = 'delete' THEN 0
+                        ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) END, 0) AS projected_weekly_margin_gbp,
+             round((CASE WHEN a.action = 'delete' THEN 0
+                         ELSE b.weekly_units * (1 + a.units_pct / 100) * (b.price * (1 + a.price_pct / 100) - b.unit_cost_gbp * (1 + a.cost_pct / 100)) END
+                   - (b.weekly_units * (b.price - b.unit_cost_gbp))) * 52, 0) AS annual_margin_impact_gbp,
+             'impact = (projected - current weekly margin) x 52; assumptions per action: extend units +12%, refresh units +18% and unit cost +2%, reprice price +5% and units -4%, delete all sales and margin lost' AS formula
+      FROM base b, a
+    limit: 1
+    example: {sku: K-1700, action: refresh}
+
+  - name: create_range_gap_request
+    desc: Submit a request to investigate a category gap. Returns the request id and status.
+    kind: insert
+    table: range_gap_requests
+    id_prefix: RQR-
+    defaults: {status: submitted}
+    args:
+      category: {required: true, desc: "Product category with whitespace, e.g. Audio, Small Appliances"}
+      reason: {required: true, desc: "Why this gap matters (e.g. high search interest, customer need)"}
+      created_by: {required: true, desc: "Employee id of requester, e.g. EMP-00010"}
+    example: {category: Audio, reason: "Search interest up 38% and social mentions up 44% but few SKUs", created_by: "EMP-00010"}
+
+  - name: create_sku_review_task
+    desc: Flag a SKU for range review with a reason, owner and optional recommended action. Returns the new task id.
+    kind: insert
+    table: sku_review_tasks
+    id_prefix: RVW-
+    defaults: {status: open}
+    args:
+      sku: {required: true, desc: "SKU id to flag for review, e.g. SKU-105775"}
+      reason: {required: true, desc: "Reason for review (e.g. loss-making, poor sales, margin decline)"}
+      owner: {required: true, desc: "Employee id responsible for the review, e.g. EMP-00013"}
+      recommendation: {type: str, desc: "Recommended action (delete, refresh, reprice, investigate)"}
+    example: {sku: "SKU-105775", reason: "Loses £3.89 per unit after cost to serve", owner: "EMP-00013", recommendation: reprice}
+
+  - name: update_product_range_status
+    desc: Update the range plan entry for a SKU, setting its status and approver (and optionally the action extend/refresh/reprice/delete).
+    kind: update
+    table: product_range_plan
+    set: {status: "{status}", approved_by: "{approved_by}", updated_at: "$as_of"}
+    args:
+      status: {type: enum, values: [draft, approved, in_progress, completed, cancelled], required: true, desc: "New status"}
+      approved_by: {type: str, desc: "Employee id if approving, e.g. EMP-00010"}
+      action: {type: enum, values: [extend, refresh, reprice, delete], desc: "Change the planned action"}
+    example: {sku: "K-1700", status: "approved", approved_by: "EMP-00010"}

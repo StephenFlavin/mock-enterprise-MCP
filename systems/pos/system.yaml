@@ -1,0 +1,479 @@
+id: pos
+name: Point of Sale (POS)
+instructions: >
+  Store and self-checkout POS: hourly sales lines by SKU and store, exceptions (voids, refunds, discounts) by till and
+  employee, self-checkout rules and scan exception rates, size curves and store sell-through. Ids: TXN-000123,
+  EXC-000123, SCR-000123; stores ST001, SKUs SKU-100234, employees EMP-00481.
+
+tables:
+  sales_transactions:
+    desc: Sales by SKU, store and trading hour (one row per SKU line sold in a store at a time)
+    key: transaction_id
+    cols:
+      transaction_id: {type: str, desc: "Transaction id, e.g. TXN-900001"}
+      store_id: {type: str, desc: "Store, e.g. ST001"}
+      sku: {type: str, desc: "Product SKU, e.g. SKU-100234"}
+      quantity: {type: int, desc: "Units sold"}
+      revenue_gbp: {type: float, desc: "Sale revenue in GBP"}
+      margin_gbp: {type: float, desc: "Gross margin in GBP"}
+      transaction_time: {type: timestamp, desc: "Sale timestamp"}
+      availability_pct: {type: int, desc: "Shelf availability at time of sale (0-100)"}
+      size: {type: str, desc: "Size sold (the SKU's size), e.g. 12 or M; ONE for one-size lines"}
+      channel: {type: enum, values: [store, self_checkout], desc: "Sales channel"}
+
+  pos_exceptions:
+    key: exception_id
+    cols:
+      exception_id: {type: str, desc: "Exception id, e.g. EXC-900001"}
+      store_id: {type: str, desc: "Store"}
+      till_id: {type: str, desc: "Till number, e.g. T01"}
+      employee_id: {type: str, desc: "Employee who processed it"}
+      exception_type: {type: enum, values: [void, refund, discount, scan_exception], desc: "Type of exception"}
+      sku: {type: str, desc: "Product SKU (if applicable)"}
+      amount_gbp: {type: float, desc: "Amount in GBP"}
+      quantity: {type: int, desc: "Units involved"}
+      reason: {type: str, desc: "Reason code or description"}
+      exception_time: {type: timestamp, desc: "When the exception occurred"}
+      region: {type: str, desc: "Region of store"}
+
+  self_checkout_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Rule id, e.g. SCR-000001"}
+      store_id: {type: str, desc: "Store (empty = chain-wide)"}
+      rule_name: {type: str, desc: "Rule name, e.g. weight tolerance"}
+      rule_type: {type: enum, values: [weight_tolerance, unexpected_item, age_verification], desc: "Type of rule"}
+      threshold_value: {type: float, desc: "Tolerance or threshold value"}
+      threshold_unit: {type: str, desc: "Unit, e.g. kg or percent"}
+      status: {type: enum, values: [active, paused, archived], desc: "Rule status"}
+      scan_exception_rate_pct: {type: float, desc: "Current scan exception rate under this rule"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  self_checkout_weekly:
+    key: [store_id, rule_type, week_start]
+    cols:
+      store_id: {type: str, desc: "Store with self-checkout, e.g. ST159"}
+      rule_type: {type: enum, values: [weight_tolerance, unexpected_item, age_verification], desc: "Exception rule type"}
+      week_start: {type: date, desc: "Monday of the week"}
+      scans: {type: int, desc: "Items scanned at self-checkout that week"}
+      exceptions: {type: int, desc: "Scan exceptions raised under this rule that week"}
+      exception_rate_pct: {type: float, desc: "Exceptions as % of scans"}
+
+  size_curves:
+    desc: Size mix each category was bought to (expected share of sales by size)
+    key: [category, size]
+    cols:
+      category: {type: str, desc: "Product category, e.g. Tops"}
+      size: {type: str, desc: "Size, e.g. 12"}
+      expected_pct: {type: float, desc: "Share of buy planned for this size (%)"}
+
+  store_range_allocation:
+    desc: Units allocated to each store by category, with the planned 30-day sell-through
+    key: [store_id, category]
+    cols:
+      store_id: {type: str, desc: "Store, e.g. ST214"}
+      category: {type: str, desc: "Product category, e.g. Tops"}
+      allocated_units: {type: int, desc: "Units allocated to the store for the period"}
+      plan_sell_through_pct: {type: float, desc: "Planned 30-day sell-through (%)"}
+
+  region_sales_ly:
+    desc: Last-year daily sales by region on the same trading day (364 days earlier)
+    key: [region, sale_date]
+    cols:
+      region: {type: str, desc: "Trading region, e.g. UK North"}
+      sale_date: {type: date, desc: "Trading date last year"}
+      units: {type: int, desc: "Units sold"}
+      revenue_gbp: {type: float, desc: "Revenue in GBP"}
+      margin_gbp: {type: float, desc: "Gross margin in GBP"}
+
+
+tools:
+  - name: get_hourly_sales_for_product
+    desc: Hourly units, revenue, margin and shelf availability for one SKU, optionally at one store, over the latest 72 hours of trading.
+    kind: sql
+    args:
+      sku: {required: true}
+      store_id: {}
+      hours_back: {type: int, default: 72, desc: "Hours of trading to look back from the latest sale"}
+    sql: |
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions)
+      SELECT DATE_TRUNC('hour', t.transaction_time) AS hour, t.store_id, s.name AS store_name,
+             COUNT(*) AS sales_lines, SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 2) AS revenue_gbp,
+             ROUND(SUM(t.margin_gbp), 2) AS margin_gbp, ROUND(AVG(t.availability_pct), 1) AS avg_availability_pct
+      FROM sales_transactions t
+      JOIN master.sites s ON t.store_id = s.site_id
+      CROSS JOIN anchor a
+      WHERE t.sku = $sku
+        AND ($store_id IS NULL OR t.store_id = $store_id)
+        AND t.transaction_time > a.latest - (CAST($hours_back AS INT) * INTERVAL 1 HOUR)
+      GROUP BY ALL
+      ORDER BY hour DESC, t.store_id
+    limit: 100
+    example: {sku: "SKU-100007", store_id: "ST214"}
+
+  - name: get_period_sales_to_date_for_region
+    desc: Period-to-date units, revenue, margin and margin % for a region versus the same days last year. Period is this period, last period or last N days.
+    kind: sql
+    args:
+      region: {}
+      period: {type: str, default: "this period", desc: "this period (fiscal period to date), last period, or last N days"}
+    sql: |
+      WITH cal AS (SELECT fy, fy_period FROM master.calendar WHERE date = CAST($as_of AS DATE)),
+      cur AS (SELECT MIN(c.date) AS d FROM master.calendar c JOIN cal USING (fy, fy_period)),
+      prev AS (
+        SELECT MIN(c.date) AS d_from, MAX(c.date) AS d_to FROM master.calendar c
+        WHERE (c.fy, c.fy_period) = (SELECT (fy, fy_period) FROM master.calendar WHERE date = (SELECT d FROM cur) - 1)
+      ),
+      win AS (
+        SELECT CASE WHEN lower($period) LIKE '%last%period%' THEN prev.d_from
+                    WHEN regexp_matches(lower($period), '[0-9]+ *day') THEN CAST($as_of AS DATE) - CAST(regexp_extract(lower($period), '([0-9]+)', 1) AS INT)
+                    ELSE cur.d END AS d_from,
+               CASE WHEN lower($period) LIKE '%last%period%' THEN prev.d_to ELSE CAST($as_of AS DATE) END AS d_to
+        FROM cur, prev
+      ),
+      this_year AS (
+        SELECT s.region, SUM(t.quantity) AS units_sold, SUM(t.revenue_gbp) AS revenue, SUM(t.margin_gbp) AS margin
+        FROM sales_transactions t JOIN master.sites s ON t.store_id = s.site_id, win w
+        WHERE ($region IS NULL OR s.region = $region)
+          AND CAST(t.transaction_time AS DATE) BETWEEN w.d_from AND w.d_to
+        GROUP BY s.region
+      ),
+      last_year AS (
+        SELECT l.region, SUM(l.units) AS units_sold, SUM(l.revenue_gbp) AS revenue, SUM(l.margin_gbp) AS margin
+        FROM region_sales_ly l, win w
+        WHERE l.sale_date BETWEEN w.d_from - 364 AND w.d_to - 364
+        GROUP BY l.region
+      )
+      SELECT y.region, w.d_from AS period_from, w.d_to AS period_to, y.units_sold, ROUND(y.revenue, 0) AS revenue_gbp,
+             ROUND(y.margin, 0) AS margin_gbp, ROUND(100.0 * y.margin / NULLIF(y.revenue, 0), 1) AS margin_pct,
+             l.units_sold AS last_year_units, ROUND(l.revenue, 0) AS last_year_revenue_gbp,
+             ROUND(100.0 * l.margin / NULLIF(l.revenue, 0), 1) AS last_year_margin_pct,
+             ROUND(100.0 * (y.units_sold - l.units_sold) / NULLIF(l.units_sold, 0), 1) AS units_vs_last_year_pct,
+             ROUND(100.0 * (y.revenue - l.revenue) / NULLIF(l.revenue, 0), 1) AS revenue_vs_last_year_pct
+      FROM this_year y CROSS JOIN win w LEFT JOIN last_year l USING (region)
+      ORDER BY y.revenue DESC
+    limit: 20
+    example: {region: "UK North"}
+
+  - name: get_sales_history_for_store_dates
+    desc: Daily units, revenue, margin, margin % and availability for one store over a date range, with each day versus the period average.
+    kind: sql
+    args:
+      store_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Start date"}
+      date_to: {type: date, default: "today", desc: "End date (today if omitted)"}
+    sql: |
+      WITH d AS (
+        SELECT t.store_id, CAST(t.transaction_time AS DATE) AS sale_date, SUM(t.quantity) AS units_sold,
+               ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp, ROUND(SUM(t.margin_gbp), 0) AS margin_gbp,
+               ROUND(100.0 * SUM(t.margin_gbp) / SUM(t.revenue_gbp), 1) AS margin_pct,
+               ROUND(AVG(t.availability_pct), 1) AS avg_availability_pct
+        FROM sales_transactions t
+        WHERE t.store_id = $store_id
+          AND CAST(t.transaction_time AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(t.transaction_time AS DATE) <= CAST($date_to AS DATE)
+        GROUP BY ALL
+      )
+      SELECT store_id, sale_date, dayname(sale_date) AS weekday, units_sold, revenue_gbp, margin_gbp, margin_pct,
+             avg_availability_pct, ROUND(100.0 * (revenue_gbp / AVG(revenue_gbp) OVER () - 1), 1) AS revenue_vs_period_avg_pct
+      FROM d
+      ORDER BY sale_date DESC
+    limit: 100
+    example: {store_id: "ST214"}
+
+  - name: get_sales_and_margin_history_for_category
+    desc: Weekly units, revenue, average selling price, price realised versus list, margin and margin % for a category, newest week first.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Small Appliances or Tops"}
+      weeks_back: {type: int, default: 26, desc: "Whole weeks to look back"}
+    sql: |
+      SELECT DATE_TRUNC('week', t.transaction_time) AS week_start, COUNT(DISTINCT t.sku) AS skus,
+             SUM(t.quantity) AS units_sold, ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp,
+             ROUND(SUM(t.revenue_gbp) / SUM(t.quantity), 2) AS avg_selling_price_gbp,
+             ROUND(100.0 * SUM(t.revenue_gbp) / SUM(t.quantity * p.retail_price_gbp), 1) AS price_realised_vs_list_pct,
+             ROUND(SUM(t.margin_gbp), 0) AS margin_gbp, ROUND(100.0 * SUM(t.margin_gbp) / SUM(t.revenue_gbp), 1) AS margin_pct
+      FROM sales_transactions t
+      JOIN master.products p ON t.sku = p.sku
+      WHERE p.category = $category
+        AND t.transaction_time >= DATE_TRUNC('week', CAST($as_of AS TIMESTAMP)) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+      GROUP BY ALL
+      ORDER BY week_start DESC
+    limit: 60
+    example: {category: "Small Appliances"}
+
+  - name: get_sales_mix_shift_for_category
+    desc: Weekly unit and revenue mix with margin % by category (give a department) or by style (give a category), showing how the mix shifted.
+    kind: sql
+    args:
+      category: {desc: "Product category, e.g. Tops. Splits the mix by style."}
+      department: {desc: "Department, e.g. Home. Splits the mix by category."}
+      weeks_back: {type: int, default: 8, desc: "Whole weeks to look back"}
+    sql: |
+      WITH base AS (
+        SELECT DATE_TRUNC('week', t.transaction_time) AS week,
+               CASE WHEN $category IS NULL THEN p.category ELSE p.style_id END AS segment,
+               SUM(t.quantity) AS units, SUM(t.revenue_gbp) AS rev, SUM(t.margin_gbp) AS mar
+        FROM sales_transactions t
+        JOIN master.products p ON t.sku = p.sku
+        WHERE ($category IS NULL OR p.category = $category)
+          AND ($department IS NULL OR p.department = $department)
+          AND t.transaction_time >= DATE_TRUNC('week', CAST($as_of AS TIMESTAMP)) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+        GROUP BY ALL
+      ),
+      mix AS (
+        SELECT week, segment, units, ROUND(100.0 * units / SUM(units) OVER (PARTITION BY week), 1) AS unit_mix_pct,
+               ROUND(100.0 * rev / SUM(rev) OVER (PARTITION BY week), 1) AS revenue_mix_pct,
+               ROUND(100.0 * mar / rev, 1) AS segment_margin_pct,
+               ROUND(100.0 * SUM(mar) OVER (PARTITION BY week) / SUM(rev) OVER (PARTITION BY week), 1) AS week_margin_pct
+        FROM base
+      )
+      SELECT week, segment, units, unit_mix_pct,
+             ROUND(unit_mix_pct - LAG(unit_mix_pct) OVER (PARTITION BY segment ORDER BY week), 1) AS mix_change_pts,
+             revenue_mix_pct, segment_margin_pct, week_margin_pct
+      FROM mix
+      ORDER BY week DESC, unit_mix_pct DESC
+    limit: 150
+    example: {department: "Home"}
+
+  - name: get_pos_voids_and_refunds_for_store
+    desc: Voids, refunds and discounts by till and employee at one store, with peak hour and the average per peer store in the region.
+    kind: sql
+    args:
+      store_id: {required: true}
+      date_from: {type: date, default: "-28d", desc: "Start date"}
+    sql: |
+      WITH peers AS (
+        SELECT p.exception_type, ROUND(COUNT(*) * 1.0 / COUNT(DISTINCT p.store_id), 1) AS peer_avg_count_per_store
+        FROM pos_exceptions p
+        JOIN master.sites s ON p.store_id = s.site_id
+        WHERE s.region = (SELECT region FROM master.sites WHERE site_id = $store_id)
+          AND p.store_id <> $store_id
+          AND p.exception_time >= CAST($date_from AS DATE)
+        GROUP BY p.exception_type
+      )
+      SELECT p.store_id, p.employee_id, e.name AS employee_name, p.till_id, p.exception_type, COUNT(*) AS count,
+             ROUND(SUM(p.amount_gbp), 0) AS amount_gbp, ROUND(AVG(p.amount_gbp), 2) AS avg_amount_gbp,
+             MODE(HOUR(p.exception_time)) AS peak_hour, pe.peer_avg_count_per_store
+      FROM pos_exceptions p
+      LEFT JOIN master.employees e ON p.employee_id = e.employee_id
+      LEFT JOIN peers pe ON pe.exception_type = p.exception_type
+      WHERE p.store_id = $store_id
+        AND p.exception_time >= CAST($date_from AS DATE)
+      GROUP BY ALL
+      ORDER BY amount_gbp DESC
+    limit: 50
+    example: {store_id: "ST159"}
+
+  - name: get_pos_voids_and_refunds_for_region
+    desc: Voids, refunds and discounts by store and exception type in a region, last 6 weeks, with each store's share and peak hour. Use to spot outlier stores.
+    kind: sql
+    args:
+      region: {required: true, desc: "Trading region, e.g. UK North"}
+      date_from: {type: date, default: "-42d", desc: "Start date"}
+    sql: |
+      WITH x AS (
+        SELECT s.site_id, s.name AS store_name, p.exception_type, COUNT(*) AS count, SUM(p.amount_gbp) AS amount,
+               MODE(HOUR(p.exception_time)) AS peak_hour
+        FROM pos_exceptions p
+        JOIN master.sites s ON p.store_id = s.site_id
+        WHERE s.region = $region
+          AND p.exception_time >= CAST($date_from AS DATE)
+        GROUP BY ALL
+      )
+      SELECT site_id, store_name, exception_type, count, ROUND(amount, 0) AS amount_gbp,
+             ROUND(100.0 * amount / SUM(amount) OVER (PARTITION BY exception_type), 1) AS share_of_region_amount_pct,
+             ROUND(count / AVG(count) OVER (PARTITION BY exception_type), 1) AS count_vs_region_avg_x, peak_hour
+      FROM x
+      ORDER BY amount DESC
+    limit: 100
+    example: {region: "UK North"}
+
+  - name: list_pos_exceptions
+    desc: List individual voids, refunds and discounts with till, employee, reason and time, newest first. Filter by store, type, till, employee or date.
+    kind: select
+    from: pos_exceptions
+    filters:
+      store_id: {}
+      exception_type: {}
+      till_id: {}
+      employee_id: {}
+      from_time: {col: exception_time, op: ">=", default: "-28d", desc: "Start date"}
+      to_time: {col: exception_time, op: "<=", desc: "End date"}
+    columns: [exception_id, store_id, till_id, employee_id, exception_type, sku, amount_gbp, reason, exception_time]
+    order: exception_time DESC
+    limit: 100
+    example: {store_id: "ST159", exception_type: void}
+
+  - name: run_pos_exception_report
+    desc: Weekly voids, refunds and discounts value by type for a region or store, with week-on-week change and the store contributing most.
+    kind: sql
+    args:
+      region: {}
+      store_id: {}
+      weeks_back: {type: int, default: 26, desc: "Whole weeks to look back"}
+    sql: |
+      WITH per_store AS (
+        SELECT DATE_TRUNC('week', p.exception_time) AS week, p.exception_type, p.store_id, SUM(p.amount_gbp) AS amt,
+               COUNT(*) AS n
+        FROM pos_exceptions p
+        WHERE p.exception_time >= DATE_TRUNC('week', CAST($as_of AS TIMESTAMP)) - (CAST($weeks_back AS INT) * INTERVAL 7 DAY)
+          AND ($region IS NULL OR p.region = $region)
+          AND ($store_id IS NULL OR p.store_id = $store_id)
+        GROUP BY ALL
+      ),
+      exc AS (
+        SELECT week, exception_type, SUM(amt) AS week_amount, SUM(n) AS week_count,
+               arg_max(store_id, amt) AS top_store, ROUND(100.0 * MAX(amt) / SUM(amt), 1) AS top_store_share_pct
+        FROM per_store GROUP BY week, exception_type
+      )
+      SELECT week, exception_type, week_count AS count, ROUND(week_amount, 0) AS amount_gbp,
+             ROUND(LAG(week_amount) OVER (PARTITION BY exception_type ORDER BY week), 0) AS prior_week_amount_gbp,
+             ROUND(100.0 * (week_amount - LAG(week_amount) OVER (PARTITION BY exception_type ORDER BY week)) /
+                   NULLIF(LAG(week_amount) OVER (PARTITION BY exception_type ORDER BY week), 0), 1) AS week_on_week_pct_change,
+             top_store, top_store_share_pct
+      FROM exc
+      ORDER BY week DESC, exception_type
+    limit: 100
+    example: {region: "UK North"}
+
+  - name: get_store_sell_through_ranking
+    desc: Stores ranked by sell-through % (units sold over units allocated) for a category versus plan. Returns the top 10 and bottom 10 stores.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Tops"}
+      days_back: {type: int, default: 30, desc: "Days to look back"}
+    sql: |
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      s AS (
+        SELECT t.store_id, SUM(t.quantity) AS units_sold, COUNT(DISTINCT t.sku) AS skus_sold,
+               ROUND(SUM(t.revenue_gbp), 0) AS revenue_gbp
+        FROM sales_transactions t
+        JOIN master.products p ON t.sku = p.sku
+        CROSS JOIN anchor a
+        WHERE p.category = $category
+          AND t.transaction_time > a.latest - CAST($days_back AS INT) * INTERVAL 1 DAY
+        GROUP BY t.store_id
+      ),
+      r AS (
+        SELECT s.store_id, si.name AS store_name, si.region, si.cluster, s.units_sold, a.allocated_units,
+               ROUND(100.0 * s.units_sold / a.allocated_units, 1) AS sell_through_pct, a.plan_sell_through_pct,
+               ROUND(100.0 * SUM(s.units_sold) OVER () / SUM(a.allocated_units) OVER (), 1) AS chain_sell_through_pct,
+               ROW_NUMBER() OVER (ORDER BY 1.0 * s.units_sold / a.allocated_units DESC) AS rank,
+               ROW_NUMBER() OVER (ORDER BY 1.0 * s.units_sold / a.allocated_units ASC) AS rank_from_bottom
+        FROM s
+        JOIN store_range_allocation a ON a.store_id = s.store_id AND a.category = $category
+        JOIN master.sites si ON si.site_id = s.store_id AND si.type = 'store'
+      )
+      SELECT rank, store_id, store_name, region, cluster, units_sold, allocated_units, sell_through_pct,
+             ROUND(sell_through_pct - plan_sell_through_pct, 1) AS vs_plan_pts, plan_sell_through_pct,
+             chain_sell_through_pct
+      FROM r
+      WHERE rank <= 10 OR rank_from_bottom <= 10
+      ORDER BY rank
+    limit: 20
+    example: {category: "Tops"}
+
+  - name: get_size_curve_vs_sales
+    desc: Share of units sold by size for a category in the last 30 days versus the size curve it was bought to, with the gap in points.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Tops"}
+    sql: |
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      a AS (
+        SELECT t.size, SUM(t.quantity) AS units
+        FROM sales_transactions t
+        JOIN master.products p ON t.sku = p.sku
+        CROSS JOIN anchor an
+        WHERE p.category = $category
+          AND t.transaction_time > an.latest - INTERVAL 30 DAY
+        GROUP BY t.size
+      ),
+      b AS (SELECT size, units, ROUND(100.0 * units / SUM(units) OVER (), 1) AS sales_pct FROM a)
+      SELECT b.size, b.units, b.sales_pct, c.expected_pct, ROUND(b.sales_pct - c.expected_pct, 1) AS variance_pts
+      FROM b LEFT JOIN size_curves c ON c.category = $category AND c.size = b.size
+      ORDER BY b.units DESC
+    limit: 50
+    example: {category: "Tops"}
+
+  - name: get_availability_impact_on_sales
+    desc: Units, revenue and units per SKU by shelf-availability band, with the shortfall versus the 90%+ band and an estimate of lost units. Optional ABC class.
+    kind: sql
+    args:
+      days_back: {type: int, default: 30, desc: "Days to look back"}
+      abc_class: {type: str, desc: "Sales velocity class: A (top sellers), B or C (long tail)"}
+    sql: |
+      WITH anchor AS (SELECT MAX(transaction_time) AS latest FROM sales_transactions),
+      sku AS (
+        SELECT t.sku, SUM(t.quantity) AS units, SUM(t.revenue_gbp) AS rev, AVG(t.availability_pct) AS avail
+        FROM sales_transactions t
+        JOIN master.products p ON t.sku = p.sku
+        CROSS JOIN anchor an
+        WHERE t.transaction_time > an.latest - CAST($days_back AS INT) * INTERVAL 1 DAY
+          AND ($abc_class IS NULL OR p.abc_class = $abc_class)
+        GROUP BY t.sku
+      ),
+      banded AS (
+        SELECT *, CASE WHEN avail >= 90 THEN '1 high (90%+)' WHEN avail >= 70 THEN '2 medium (70-89%)'
+                       WHEN avail >= 50 THEN '3 low (50-69%)' ELSE '4 critical (<50%)' END AS availability_level
+        FROM sku
+      ),
+      agg AS (
+        SELECT availability_level, COUNT(*) AS sku_count, SUM(units) AS total_units, ROUND(SUM(rev), 0) AS total_revenue_gbp,
+               ROUND(AVG(units), 1) AS units_per_sku, ROUND(AVG(avail), 1) AS avg_availability_pct
+        FROM banded GROUP BY availability_level
+      ),
+      hi AS (SELECT units_per_sku FROM agg WHERE availability_level LIKE '1%')
+      SELECT a.availability_level, a.sku_count, a.total_units, a.total_revenue_gbp, a.units_per_sku, a.avg_availability_pct,
+             ROUND(100.0 * (a.units_per_sku / hi.units_per_sku - 1), 1) AS units_per_sku_vs_high_pct,
+             ROUND(GREATEST(hi.units_per_sku - a.units_per_sku, 0) * a.sku_count, 0) AS est_lost_units,
+             (SELECT ROUND(CORR(avail, units), 2) FROM banded) AS availability_sales_correlation
+      FROM agg a CROSS JOIN hi
+      ORDER BY a.availability_level
+    limit: 10
+    example: {}
+
+  - name: get_self_checkout_scan_exception_rates
+    desc: Self-checkout scan exception rate by store and rule type for the last 4 weeks, with rule id, threshold and chain average. Worst first.
+    kind: sql
+    args:
+      store_id: {}
+      rule_type: {}
+    sql: |
+      WITH w AS (
+        SELECT store_id, rule_type, exception_rate_pct,
+               ROW_NUMBER() OVER (PARTITION BY store_id, rule_type ORDER BY week_start DESC) AS rn
+        FROM self_checkout_weekly
+      ),
+      l4 AS (
+        SELECT store_id, rule_type,
+               MAX(CASE WHEN rn = 4 THEN exception_rate_pct END) AS week_1_pct,
+               MAX(CASE WHEN rn = 3 THEN exception_rate_pct END) AS week_2_pct,
+               MAX(CASE WHEN rn = 2 THEN exception_rate_pct END) AS week_3_pct,
+               MAX(CASE WHEN rn = 1 THEN exception_rate_pct END) AS week_4_pct,
+               ROUND(AVG(exception_rate_pct), 2) AS avg_rate_pct
+        FROM w WHERE rn <= 4 GROUP BY store_id, rule_type
+      ),
+      chain AS (SELECT rule_type, ROUND(AVG(avg_rate_pct), 2) AS chain_avg_pct FROM l4 GROUP BY rule_type)
+      SELECT s.site_id, s.name AS store_name, l.rule_type, r.rule_id, r.threshold_value, r.threshold_unit,
+             l.week_1_pct, l.week_2_pct, l.week_3_pct, l.week_4_pct, ROUND(l.week_4_pct - l.week_1_pct, 2) AS change_pts,
+             l.avg_rate_pct, c.chain_avg_pct, ROUND(l.avg_rate_pct / c.chain_avg_pct, 1) AS x_chain_avg
+      FROM l4 l
+      JOIN master.sites s ON s.site_id = l.store_id
+      JOIN chain c ON c.rule_type = l.rule_type
+      LEFT JOIN self_checkout_rules r ON r.store_id = l.store_id AND r.rule_type = l.rule_type AND r.status = 'active'
+      WHERE ($store_id IS NULL OR l.store_id = $store_id)
+        AND ($rule_type IS NULL OR l.rule_type = $rule_type)
+      ORDER BY l.avg_rate_pct DESC
+    limit: 50
+    example: {}
+
+  - name: update_self_checkout_exception_rule
+    desc: Change a self-checkout exception rule threshold (e.g. weight tolerance, unexpected item). Returns the old and new values.
+    kind: update
+    table: self_checkout_rules
+    set: {threshold_value: "{threshold_value}", updated_at: "$as_of"}
+    args:
+      threshold_value: {type: float, required: true, desc: "New threshold value"}
+    example: {rule_id: "SCR-900002", threshold_value: 0.1}

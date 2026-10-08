@@ -1,0 +1,108 @@
+# Integration platform scenarios - one entry per question using this system's tools
+- question: "01:8:Q1"
+  story: >
+    140 orders sit in allocation failed because the pack specification sync PKSYNC-0410 (ERR-900002, ERP_to_WMS, evening before)
+    changed the minimum allocation unit from EACH to INNER PACK (4) for 14 SUP-0013 electricals SKUs including PF-220 and K-1700.
+    ERR-900001 on WMS_to_OMS shows the resulting 140-order backlog. An older resolved ERP_to_GL lock timeout is background.
+  checks:
+    - tool: list_interface_errors
+      args: {date_from: "-7d"}
+      expect: ["ERR-900001", "140", "ERR-900002", "PKSYNC-0410", "INNER PACK"]
+    - tool: list_interface_errors
+      args: {interface_name: ERP_to_WMS, status: active}
+      expect: ["ERR-900002", "config_mapping", "PF-220"]
+
+- question: "01:8:Q2"
+  story: >
+    SKU-100007 at DC1: ERP books 5392, WMS available is 5242, a 150-unit gap because 150 units sit in WMS quarantine while the
+    WMS_to_ERP stock sync posts quarantine to ERP as unrestricted stock (ERR-900006, status_mapping).
+  checks:
+    - tool: compare_erp_and_wms_stock
+      args: {sku: SKU-100007, site_id: DC1}
+      expect: ["REC-900027", "5392", "5242", "-150", "quarantine"]
+    - tool: list_interface_errors
+      args: {interface_name: WMS_to_ERP}
+      expect: ["ERR-900006", "status_mapping", "no blocked-stock mapping"]
+
+- question: "01:8:Q4"
+  story: >
+    The ERP/WMS gap is about 1.4m: 1.2m (86%) is status mapping (quarantine 1054350.72 across 16 SKUs, mostly DC3, led by SKU-100819),
+    182593.18 is timing (11 postings in one system only) and under 9k is real count variance. WMS_to_ERP produced the same
+    status-mapping error in July (about 980k) and April.
+  checks:
+    - tool: compare_erp_and_wms_stock
+      args: {view: by_cause}
+      expect: ["status_mapping", "quarantine", "1054350.72", "timing", "182593.18", "count_variance"]
+    - tool: compare_erp_and_wms_stock
+      args: {}
+      expect: ["SKU-100819", "129080.88", "DC3"]
+    - tool: list_interface_errors
+      args: {interface_name: WMS_to_ERP}
+      expect: ["ERR-900008", "980k", "ERR-900009", "status_mapping", "timing_cutoff"]
+
+- question: "09:81:Q1"
+  story: >
+    The inbound ASN feed changed with ASN map v1.4 (CFG-900001, about four weeks ago): delivery moved to an 8-hourly batch, so ASN data
+    arrives about 8 hours late, and PO number is read from the header only, so PO_ID completeness fell from about 99% to about 92%.
+  checks:
+    - tool: get_asn_feed_change_log
+      args: {days: 60}
+      expect: ["ASN map v1.4", "8-hourly batch", "degraded", "stable"]
+
+- question: "09:83:Q1"
+  story: >
+    200 PO_ACK failed overnight: 171 mapping errors (ACK_STATUS code not in PO_ACK map v1.1, deployed the evening before as CFG-900003,
+    MAP-900003) across 38 partners, 17 XML format errors and 12 partner-side HTTP 500s.
+  checks:
+    - tool: get_edi_error_log_summary
+      args: {message_type: PO_ACK}
+      expect: ["171", "85.5", "ACK_STATUS", "MAP-900003", "partner_side", "17"]
+    - tool: list_recent_mapping_and_config_changes
+      args: {change_type: mapping, days: 14}
+      expect: ["CFG-900003", "PO_ACK map v1.1", "ACK_STATUS"]
+
+- question: "09:83:Q2"
+  story: >
+    The current ASN map is v1.4 (MAP-900001): it maps header, carton-level and line segments but has no PAC (pallet packing)
+    or GIN (serial number) segments, so the deepest packing level it carries is carton.
+  checks:
+    - tool: get_edi_map_for_message_type
+      args: {message_type: ASN}
+      expect: ["MAP-900001", "1.4", "current", "PAC", "GIN", "carton"]
+
+- question: "09:83:Q3"
+  story: >
+    Per connection per month file transfer costs 130, REST API 250 and EDI 340; one-off setup for a new connection is 1800 for file
+    transfer, 4500 for EDI and 6500 for API.
+  checks:
+    - tool: get_integration_run_cost_by_pattern
+      args: {}
+      expect: ["FILE_TRANSFER", "130", "REST_API", "250", "EDI", "340", "6500"]
+
+- question: "09:83:Q5"
+  story: >
+    The stock feed schedule SCH-000001 was changed two weeks ago from every 5 minutes to every 15 minutes (CFG-900002). Batch wait rose
+    from 1 to 15 minutes, so end-to-end latency went from 5 to 20 minutes. update_stock_feed_schedule moves it back to every 5 minutes.
+  checks:
+    - tool: get_stock_feed_latency
+      args: {days: 28}
+      expect: ["SCH-000001", "every 15 minutes", "avg_batch_wait_minutes", "15", "20"]
+    - tool: update_stock_feed_schedule
+      args: {schedule_id: SCH-000001, run_frequency: "every 5 minutes"}
+      expect: ["SCH-000001", "every 5 minutes"]
+    - tool: get_stock_feed_latency
+      args: {days: 28}
+      expect: ["every 5 minutes"]
+
+- question: "09:85:Q3"
+  story: >
+    The highest-risk connections are critical and privileged: CON-900003 (SUP-0003, API gateway admin with customer and inventory data),
+    CON-900006 (SUP-0049, direct SFTP write to the ERP inbound folder) and CON-900007 (SUP-0044, API read/write on inventory, orders and
+    bank details). High-risk privileged ones follow: SUP-0057 and PTN-009.
+  checks:
+    - tool: list_third_party_connections
+      args: {privileged_access: true}
+      expect: ["CON-900003", "SUP-0049", "SUP-0044", "critical", "direct system access"]
+    - tool: list_third_party_connections
+      args: {security_risk_rating: critical}
+      expect: ["CON-900003", "CON-900006", "CON-900007"]

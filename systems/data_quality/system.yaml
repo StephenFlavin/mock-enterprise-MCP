@@ -1,0 +1,208 @@
+id: data_quality
+name: Data Quality & Observability Tool
+instructions: >
+  Data quality issues, checks and audit trail for upstream datasets and migration objects.
+  Issue ids look like DQI-000123. Use it for data quality problems, check results, pipeline changes,
+  and source data quality during migrations.
+
+tables:
+  data_quality_issues:
+    key: issue_id
+    cols:
+      issue_id: {type: str, desc: "Data quality issue, e.g. DQI-000123"}
+      dataset: {type: str, desc: "Dataset name, e.g. OTIF_daily"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Issue severity"}
+      description: {type: str, desc: "What the issue is"}
+      root_cause: {type: str, desc: "Root cause analysis"}
+      status: {type: enum, values: [open, assigned, in_progress, resolved, closed, reopened], desc: "Issue status"}
+      owner: {type: str, desc: "Employee id responsible for the fix, e.g. EMP-00095"}
+      raised_at: {type: timestamp, desc: "When issue was first raised"}
+      resolved_at: {type: timestamp, desc: "When issue was resolved"}
+      reopen_count: {type: int, desc: "Number of times this issue has reopened"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  data_quality_issue_events:
+    key: event_id
+    cols:
+      event_id: {type: str, desc: "Issue event, e.g. EVT-000123"}
+      issue_id: {type: str, desc: "Data quality issue, e.g. DQI-000123"}
+      event_type: {type: enum, values: [raised, resolved, reopened, reassigned], desc: "What happened to the issue"}
+      event_at: {type: timestamp, desc: "When it happened"}
+      actor: {type: str, desc: "Employee id who did it"}
+      note: {type: str, desc: "What was done or why"}
+
+  data_quality_checks:
+    key: check_id
+    cols:
+      check_id: {type: str, desc: "Check result, e.g. CHK-000123"}
+      dataset: {type: str, desc: "Dataset checked"}
+      check_type: {type: enum, values: [completeness, timeliness, consistency], desc: "Type of check"}
+      result: {type: enum, values: [pass, warning, fail], desc: "Check result"}
+      metric_value: {type: float, desc: "Metric value (%, hours, count)"}
+      threshold: {type: float, desc: "Threshold for pass/fail"}
+      description: {type: str, desc: "Details of the check"}
+      checked_at: {type: timestamp, desc: "When the check ran"}
+      related_issue_id: {type: str, desc: "DQI if this check found an issue"}
+
+  pipeline_changes:
+    key: change_id
+    cols:
+      change_id: {type: str, desc: "Change record, e.g. PCH-000123"}
+      dataset: {type: str, desc: "Dataset affected"}
+      change_type: {type: enum, values: [schema, pipeline, source, definition], desc: "Type of change"}
+      description: {type: str, desc: "What changed"}
+      impact: {type: str, desc: "Potential business impact"}
+      changed_at: {type: timestamp, desc: "When the change was deployed"}
+      changed_by: {type: str, desc: "Employee id who made the change, e.g. EMP-00095"}
+      rollback_possible: {type: bool, desc: "Can it be rolled back"}
+
+  migration_data_quality:
+    key: migration_id
+    cols:
+      migration_id: {type: str, desc: "Migration object, e.g. MIG-000123"}
+      object_type: {type: str, desc: "Type being migrated, e.g. purchase_orders"}
+      total_records: {type: int, desc: "Source records in scope"}
+      failing_records: {type: int, desc: "Source records failing any quality check"}
+      status: {type: enum, values: [not_started, in_progress, complete, blocked, remediation], desc: "Migration status"}
+      completeness_pct: {type: float, desc: "% of records with required fields"}
+      timeliness_pct: {type: float, desc: "% of records with valid dates"}
+      consistency_pct: {type: float, desc: "% of records with consistent references"}
+      overall_score: {type: float, desc: "Overall quality score 0-100"}
+      blocking_issue: {type: str, desc: "Blocking issue description if any"}
+      owner: {type: str, desc: "Employee id responsible for the object's data fix, e.g. EMP-00057"}
+      remediated_at: {type: timestamp, desc: "When remediation was completed"}
+      ready_for_cutover: {type: bool, desc: "Ready to migrate"}
+
+tools:
+  - name: list_data_quality_issues
+    desc: Unresolved data quality issues with severity, dataset, owner, root cause, age and reopen count, worst first. Use to see current data problems.
+    kind: sql
+    args:
+      dataset: {desc: "Dataset name, e.g. OTIF_daily (default all)"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Minimum severity (default all)"}
+      status: {type: enum, values: [open, assigned, in_progress, resolved, closed, reopened], desc: "Single status; default is every unresolved issue (open, assigned, in_progress, reopened)"}
+      raised_from: {type: date, default: "-180d", desc: "Issues raised on or after"}
+      min_reopens: {type: int, desc: "Only issues reopened at least this many times (default all)"}
+    sql: |
+      SELECT i.issue_id, i.dataset, i.severity, i.description, i.root_cause, i.status, i.owner,
+             e.name AS owner_name, CAST(i.raised_at AS DATE) AS raised_at, i.reopen_count,
+             CAST($as_of AS DATE) - CAST(i.raised_at AS DATE) AS days_open
+      FROM data_quality_issues i LEFT JOIN master.employees e ON e.employee_id = i.owner
+      WHERE ($dataset IS NULL OR lower(i.dataset) = lower($dataset))
+        AND (CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)
+            >= (CASE lower($severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END)
+        AND (CASE WHEN $status IS NULL THEN i.status IN ('open', 'assigned', 'in_progress', 'reopened')
+                  ELSE i.status = $status END)
+        AND CAST(i.raised_at AS DATE) >= CAST($raised_from AS DATE)
+        AND ($min_reopens IS NULL OR i.reopen_count >= CAST($min_reopens AS INT))
+      ORDER BY CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+               i.raised_at ASC
+    limit: 30
+    example: {}
+
+  - name: create_data_quality_ticket
+    desc: Creates a ticket for a data quality issue, assigned to the given owner. Returns the new issue.
+    kind: insert
+    table: data_quality_issues
+    id_prefix: DQI-
+    defaults: {status: open, reopen_count: 0}
+    args:
+      dataset: {required: true}
+      severity: {required: true}
+      description: {required: true}
+      owner: {type: str, desc: "Employee id to assign to, e.g. EMP-00095"}
+      root_cause: {type: str, desc: "Root cause if known"}
+    example: {dataset: OTIF_daily, severity: high, description: "ASN feed missing supplier data", owner: EMP-00095}
+
+  - name: reassign_data_quality_issue
+    desc: Changes the owner assigned to a data quality issue. Returns the old and new owner.
+    kind: update
+    table: data_quality_issues
+    set: {status: assigned, owner: "{owner}"}
+    args:
+      owner: {required: true, type: str, desc: "Employee id to reassign to, e.g. EMP-00095"}
+    example: {issue_id: DQI-900001, owner: EMP-00096}
+
+  - name: get_issue_recurrence_history
+    desc: How often an issue has reopened or recurred. Returns the issue, its raised/resolved/reopened timeline and related issues on the same dataset.
+    kind: sql
+    args:
+      issue_id: {required: true}
+      days: {type: int, default: 365, desc: "Look back this many days for related issues"}
+    sql: |
+      SELECT 1 AS seq, 'issue' AS record, i.issue_id, i.dataset, i.severity, i.status, i.owner, i.reopen_count,
+             CAST(NULL AS VARCHAR) AS event_type, CAST(i.raised_at AS DATE) AS event_date, i.description AS note
+      FROM data_quality_issues i WHERE i.issue_id = $issue_id
+      UNION ALL
+      SELECT 2, 'timeline', v.issue_id, i.dataset, i.severity, i.status, v.actor, i.reopen_count,
+             v.event_type, CAST(v.event_at AS DATE), v.note
+      FROM data_quality_issue_events v JOIN data_quality_issues i USING (issue_id)
+      WHERE v.issue_id = $issue_id
+      UNION ALL
+      SELECT 3, 'related issue on same dataset', r.issue_id, r.dataset, r.severity, r.status, r.owner, r.reopen_count,
+             CAST(NULL AS VARCHAR), CAST(r.raised_at AS DATE), r.description
+      FROM data_quality_issues r
+      WHERE r.dataset = (SELECT dataset FROM data_quality_issues WHERE issue_id = $issue_id)
+        AND r.issue_id != $issue_id
+        AND CAST(r.raised_at AS DATE) >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      ORDER BY seq, event_date
+    limit: 40
+    example: {issue_id: DQI-900003}
+
+  - name: run_data_quality_checks
+    desc: Completeness, timeliness and consistency check results for a dataset with metric vs threshold, newest first. Use to test whether a dataset is reliable.
+    kind: sql
+    args:
+      dataset: {required: true, desc: "Dataset to check, e.g. OTIF_daily"}
+      check_type: {type: enum, values: [completeness, timeliness, consistency], desc: "Type of check (default all)"}
+      days: {type: int, default: 60, desc: "Include checks run in the last this many days"}
+    sql: |
+      SELECT check_id, dataset, check_type, result, metric_value, threshold, description,
+             CAST(checked_at AS DATE) AS checked_at, related_issue_id,
+             CASE WHEN result = 'pass' THEN 'OK' WHEN result = 'warning' THEN 'NEEDS ATTENTION' ELSE 'FAILED' END AS status
+      FROM data_quality_checks
+      WHERE lower(dataset) = lower($dataset)
+        AND ($check_type IS NULL OR check_type = $check_type)
+        AND CAST(checked_at AS DATE) >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      ORDER BY checked_at DESC, check_type
+    limit: 30
+    example: {dataset: OTIF_daily}
+
+  - name: list_pipeline_and_schema_changes
+    desc: Upstream pipeline, schema, source and definition changes in a date range, newest first. Use to check what changed in a dataset before a problem.
+    kind: sql
+    args:
+      dataset: {desc: "Dataset affected, e.g. demand_forecast (default all)"}
+      change_type: {type: enum, values: [schema, pipeline, source, definition], desc: "Type of change (default all)"}
+      date_from: {type: date, default: "-120d", desc: "Changes on or after"}
+      date_to: {type: date, desc: "Changes on or before (default today)"}
+    sql: |
+      SELECT change_id, dataset, change_type, description, impact, CAST(changed_at AS DATE) AS changed_at,
+             changed_by, rollback_possible
+      FROM pipeline_changes
+      WHERE ($dataset IS NULL OR lower(dataset) = lower($dataset))
+        AND ($change_type IS NULL OR change_type = $change_type)
+        AND CAST(changed_at AS DATE) >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR CAST(changed_at AS DATE) <= CAST($date_to AS DATE))
+      ORDER BY changed_at DESC
+    limit: 50
+    example: {dataset: demand_forecast}
+
+  - name: get_data_quality_scores_for_migration_objects
+    desc: Source data quality scores per migration object (completeness, timeliness, consistency, failing records, blocker, owner), lowest first. Use to find what blocks cutover.
+    kind: sql
+    args:
+      object_type: {desc: "Object type being migrated, e.g. purchase_orders (default all)"}
+      status: {type: enum, values: [not_started, in_progress, complete, blocked, remediation], desc: "Filter by status (default all)"}
+      below_score: {type: float, desc: "Only objects with overall score below this, e.g. 95 (default all)"}
+    sql: |
+      SELECT migration_id, object_type, status, total_records, failing_records, completeness_pct, timeliness_pct,
+             consistency_pct, overall_score, blocking_issue, owner, CAST(remediated_at AS DATE) AS remediated_at,
+             ready_for_cutover
+      FROM migration_data_quality
+      WHERE ($object_type IS NULL OR lower(object_type) = lower($object_type))
+        AND ($status IS NULL OR status = $status)
+        AND ($below_score IS NULL OR overall_score < CAST($below_score AS DOUBLE))
+      ORDER BY overall_score ASC, object_type ASC
+    limit: 50
+    example: {}

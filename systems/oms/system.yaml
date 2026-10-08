@@ -1,0 +1,660 @@
+id: oms
+name: Order Management System (OMS)
+instructions: >
+  Sales orders, allocations and shipments for all channels (stores, online, wholesale).
+  Order ids look like ORD-000123. Tracks order status, holds, allocation rules and delivery.
+
+tables:
+  orders:
+    key: order_id
+    cols:
+      order_id: {type: str, desc: "Sales order, e.g. ORD-900001"}
+      customer_id: {type: str, desc: "Online customer (master customers), e.g. CUS-000134; blank for store and wholesale orders"}
+      partner_id: {type: str, desc: "Wholesale account (master partners, type wholesale), e.g. PTN-006; blank for store and online orders"}
+      site_id: {type: str, desc: "Destination store for store orders, e.g. ST159; blank otherwise"}
+      channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
+      status: {type: enum, values: [open, allocated, picked, shipped, delivered, cancelled], desc: Order status}
+      order_date: {type: date, desc: Date order was placed}
+      order_time: {type: timestamp, desc: Time order was placed}
+      due_date: {type: date, desc: "Promised delivery date; a delivery after this is late"}
+      fulfil_dc: {type: str, desc: "DC the order is fulfilled from (lane origin), e.g. DC1"}
+      hold_status: {type: enum, values: [none, credit, stock, other], desc: Hold reason if any}
+      hold_reason: {type: str, desc: Description of hold}
+      priority: {type: enum, values: [low, normal, high, urgent], desc: Wave release priority}
+      total_units: {type: int, desc: Total units ordered}
+      total_gbp: {type: float, desc: Order value in GBP}
+      created_at: {type: timestamp, desc: Created at}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  order_lines:
+    key: [order_id, line_no]
+    cols:
+      order_id: {type: str, desc: "Sales order"}
+      line_no: {type: int, desc: "Line number, starting from 1"}
+      sku: {type: str, desc: "Product SKU"}
+      qty_ordered: {type: int, desc: "Quantity ordered"}
+      qty_allocated: {type: int, desc: "Quantity allocated from stock"}
+      qty_shipped: {type: int, desc: "Quantity shipped"}
+      unit_price_gbp: {type: float, desc: "Unit price"}
+      allocation_source: {type: str, desc: "DC or location allocated from"}
+      batch_id: {type: str, desc: "Batch/lot id if tracked"}
+      status: {type: enum, values: [pending, allocated, picked, shipped, cancelled], desc: Line status}
+
+  allocation_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Allocation rule, e.g. AR-001"}
+      product_sku: {type: str, desc: "SKU this rule applies to, * = every product without its own rule"}
+      channel: {type: str, desc: "ALL = stock split across channels; or the single channel the sourcing rule is for"}
+      customer_id: {type: str, desc: "Customer this rule applies to, blank = all customers"}
+      store_pct: {type: float, desc: "Percentage allocated to stores (0-100)"}
+      online_pct: {type: float, desc: "Percentage allocated to online (0-100)"}
+      wholesale_pct: {type: float, desc: "Percentage allocated to wholesale (0-100)"}
+      hold_back_pct: {type: float, desc: "Percent of stock held back (e.g. for click-and-collect) before the split, 0 = none"}
+      description: {type: str, desc: "Rule description"}
+      status: {type: enum, values: [active, inactive], desc: Rule status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  allocation_decisions:
+    key: decision_id
+    cols:
+      decision_id: {type: str, desc: "Allocation decision, e.g. AD-001"}
+      order_id: {type: str, desc: "Sales order"}
+      line_no: {type: int, desc: "Line number"}
+      sku: {type: str, desc: "Product SKU"}
+      qty_requested: {type: int, desc: "Quantity requested"}
+      qty_allocated: {type: int, desc: "Quantity allocated"}
+      source_dc: {type: str, desc: "DC allocated from (DC1-DC5)"}
+      source_location: {type: str, desc: "Bin location"}
+      batch_id: {type: str, desc: "Batch/lot allocated"}
+      rule_id: {type: str, desc: "Allocation rule applied"}
+      cross_ship_reason: {type: str, desc: "Why stock came from a DC other than the destination's local DC: stock_not_at_local_dc or local_dc_capacity; blank if local"}
+      oversold: {type: bool, desc: "True if less was allocated than requested (stock sold that was not there)"}
+      decided_at: {type: timestamp, desc: Decision timestamp}
+
+  shipments:
+    key: shipment_id
+    cols:
+      shipment_id: {type: str, desc: "Shipment, e.g. SHP-001"}
+      order_id: {type: str, desc: "Sales order shipped"}
+      channel: {type: enum, values: [store, online, wholesale], desc: Channel}
+      customer_id: {type: str, desc: "Online customer; blank for store and wholesale shipments"}
+      partner_id: {type: str, desc: "Wholesale account; blank for store and online shipments"}
+      delivery_notes: {type: str, desc: "Delivery notes id/reference"}
+      shipped_date: {type: date, desc: "Date shipped"}
+      shipped_at: {type: timestamp, desc: "Timestamp shipped"}
+      delivered_date: {type: date, desc: "Date delivered, blank if not delivered yet"}
+      total_units: {type: int, desc: "Total units in shipment"}
+      is_split: {type: bool, desc: "True if order shipped in multiple waves"}
+      split_reason: {type: enum, values: [stock, location, wave, carrier, other], desc: "Why order was split; blank if not split"}
+      status: {type: enum, values: [shipped, in_transit, delivered], desc: Shipment status}
+      units_received: {type: int, desc: "Units the receiver signed for, blank until delivered"}
+      pod_signed_by: {type: str, desc: "Proof of delivery: who signed and any exception noted"}
+
+  shipment_lines:
+    key: [shipment_id, line_no]
+    cols:
+      shipment_id: {type: str, desc: "Shipment"}
+      line_no: {type: int, desc: "Line number"}
+      order_line_no: {type: int, desc: "Original order line number"}
+      sku: {type: str, desc: "Product SKU"}
+      qty_shipped: {type: int, desc: "Quantity shipped"}
+      batch_id: {type: str, desc: "Batch/lot shipped"}
+      country: {type: str, desc: "Destination country (ISO code)"}
+
+  batch_sales:
+    key: [batch_id, channel, country]
+    cols:
+      batch_id: {type: str, desc: "Batch/lot id"}
+      sku: {type: str, desc: "Product SKU"}
+      channel: {type: enum, values: [store, online, wholesale], desc: "Channel sold to"}
+      country: {type: str, desc: "Destination country (ISO code)"}
+      units_sold: {type: int, desc: "Units sold to this channel/country"}
+      shipped_date: {type: date, desc: "Date shipped"}
+
+  dc_catchments:
+    key: [region, channel]
+    desc: Which DC is local to a destination region, by channel. Used to tell cross-shipping from local fulfilment.
+    cols:
+      region: {type: str, desc: "Destination region, e.g. UK North"}
+      channel: {type: enum, values: [store, online, wholesale], desc: Sales channel}
+      local_dc: {type: str, desc: "Local DC, e.g. DC3"}
+
+tools:
+  - name: get_open_orders_for_customer
+    desc: Open orders for a wholesale account, newest first, with priority, due date and any credit or stock hold. Use for ship-or-hold decisions.
+    kind: sql
+    args:
+      partner_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Orders placed on or after this date"}
+    sql: |
+      SELECT o.order_id, o.partner_id, o.channel, o.status, o.priority, o.order_date, o.due_date,
+             o.hold_status, o.hold_reason, o.total_units, o.total_gbp
+      FROM orders o
+      WHERE o.partner_id = $partner_id
+        AND o.status IN ('open', 'allocated', 'picked')
+        AND o.order_date >= CAST($date_from AS DATE)
+      ORDER BY o.order_date DESC, o.order_id
+    limit: 20
+    example: {partner_id: PTN-032}
+
+  - name: list_split_orders_by_cause
+    desc: Orders shipped in more than one shipment, with cause (stock, location, wave, carrier, other), SKUs and value. Filter by cause, channel or SKU.
+    kind: sql
+    args:
+      cause: {type: str, desc: "Split cause: stock, location, wave, carrier, other (blank = all)"}
+      channel: {type: str, desc: "store, online or wholesale (blank = all)"}
+      product_sku: {type: str, desc: "Only orders containing this SKU, e.g. K-1700 (blank = all)"}
+      date_from: {type: date, default: "-60d", desc: "First shipped on or after this date"}
+    sql: |
+      WITH sp AS (
+        SELECT s.order_id, count(*) AS shipments, max(s.split_reason) AS cause, min(s.shipped_date) AS first_shipped,
+               sum(s.total_units) AS units
+        FROM shipments s GROUP BY s.order_id HAVING count(*) > 1)
+      SELECT o.order_id, o.customer_id, o.partner_id, o.site_id, o.channel, sp.cause, sp.shipments,
+             (SELECT string_agg(DISTINCT ol.sku, ', ') FROM order_lines ol WHERE ol.order_id = o.order_id) AS skus,
+             sp.units, o.total_gbp, sp.first_shipped
+      FROM sp JOIN orders o ON o.order_id = sp.order_id
+      WHERE sp.first_shipped >= CAST($date_from AS DATE)
+        AND ($cause IS NULL OR $cause = '' OR sp.cause = $cause)
+        AND ($channel IS NULL OR $channel = '' OR o.channel = $channel)
+        AND ($product_sku IS NULL OR $product_sku = ''
+             OR EXISTS (SELECT 1 FROM order_lines x WHERE x.order_id = o.order_id AND x.sku = $product_sku))
+      ORDER BY sp.first_shipped DESC, o.order_id
+    limit: 30
+    example: {cause: "stock", channel: "online"}
+
+  - name: get_allocation_decision_for_order
+    desc: How each order line was allocated (source DC, location, batch, rule) against what was requested and shipped. Use to diagnose short shipments.
+    kind: sql
+    args:
+      order_id: {required: true}
+    sql: |
+      SELECT ad.line_no, ad.sku, ad.qty_requested, ad.qty_allocated, ad.qty_requested - ad.qty_allocated AS short_at_allocation,
+             ol.qty_shipped, ad.source_dc, ad.source_location, ad.batch_id, ad.rule_id, ad.oversold, ad.decided_at
+      FROM allocation_decisions ad
+      LEFT JOIN order_lines ol ON ol.order_id = ad.order_id AND ol.line_no = ad.line_no
+      WHERE ad.order_id = $order_id
+      ORDER BY ad.line_no
+    limit: 50
+    example: {order_id: ORD-900070}
+
+  - name: get_allocation_rules
+    desc: Current stock allocation rules by product and channel, with store, online and wholesale shares. Use to understand split logic.
+    kind: sql
+    args:
+      product_sku: {type: str, desc: "Product SKU, e.g. K-1700 (blank = all)"}
+      channel: {type: str, desc: "ALL, store, online or wholesale (blank = all)"}
+      customer_id: {type: str, desc: "Customer the rule is for (blank = all)"}
+      status: {type: str, default: active, desc: "active or inactive"}
+    sql: |
+      SELECT r.rule_id, r.product_sku, r.channel, r.customer_id, r.store_pct, r.online_pct, r.wholesale_pct,
+             r.hold_back_pct, r.description, r.status, r.updated_at FROM (
+        SELECT rule_id, product_sku, channel, customer_id, store_pct, online_pct, wholesale_pct, hold_back_pct,
+               description, status, updated_at,
+               row_number() OVER (PARTITION BY product_sku, channel, COALESCE(customer_id, '')
+                                  ORDER BY updated_at DESC, rule_id DESC) AS rn
+        FROM allocation_rules) r
+      WHERE r.rn = 1 AND r.status = $status
+        AND ($product_sku IS NULL OR $product_sku = '' OR r.product_sku IN ($product_sku, '*'))
+        AND ($channel IS NULL OR $channel = '' OR r.channel IN ($channel, 'ALL'))
+        AND ($customer_id IS NULL OR $customer_id = '' OR r.customer_id = $customer_id)
+      ORDER BY (r.product_sku = '*'), r.product_sku, r.channel
+    limit: 30
+    example: {product_sku: K-1700}
+
+  - name: calculate_allocation_scenarios
+    desc: Compares ways to split scarce stock across store, online and wholesale (current rule, pro rata, online first, stores first), after any hold-back. Shows units and fill rate.
+    kind: sql
+    args:
+      product_sku: {required: true, type: str, desc: "Product SKU, e.g. K-1700"}
+      available_units: {type: int, required: true, desc: "Units available to allocate"}
+      store_demand: {type: int, required: true, desc: "Units needed for stores"}
+      online_demand: {type: int, required: true, desc: "Units needed for online"}
+      wholesale_demand: {type: int, default: 0, desc: "Units needed for wholesale"}
+      hold_back_pct: {type: float, desc: "Percent of units held back for click-and-collect (blank = the current rule's hold-back)"}
+    sql: |
+      WITH rule AS (
+        SELECT rule_id, store_pct, online_pct, wholesale_pct, hold_back_pct FROM allocation_rules
+        WHERE status = 'active' AND channel = 'ALL' AND product_sku IN ($product_sku, '*')
+        ORDER BY (product_sku = '*'), updated_at DESC, rule_id DESC LIMIT 1),
+      q AS (
+        SELECT rule.rule_id, rule.store_pct AS sp, rule.online_pct AS op, rule.wholesale_pct AS wp,
+               COALESCE($hold_back_pct, rule.hold_back_pct, 0) AS hold_pct,
+               CAST($available_units AS DOUBLE) * COALESCE($hold_back_pct, rule.hold_back_pct, 0) / 100.0 AS held,
+               CAST($available_units AS DOUBLE) * (1 - COALESCE($hold_back_pct, rule.hold_back_pct, 0) / 100.0) AS a
+        FROM rule),
+      sc AS (
+        SELECT 'current_rule' AS scenario, LEAST(q.a * q.sp / 100.0, $store_demand) AS s,
+               LEAST(q.a * q.op / 100.0, $online_demand) AS o, LEAST(q.a * q.wp / 100.0, $wholesale_demand) AS w FROM q
+        UNION ALL
+        SELECT 'pro_rata_to_demand',
+               LEAST($store_demand, q.a * $store_demand / nullif($store_demand + $online_demand + $wholesale_demand, 0)),
+               LEAST($online_demand, q.a * $online_demand / nullif($store_demand + $online_demand + $wholesale_demand, 0)),
+               LEAST($wholesale_demand, q.a * $wholesale_demand / nullif($store_demand + $online_demand + $wholesale_demand, 0)) FROM q
+        UNION ALL
+        SELECT 'online_first', LEAST($store_demand, q.a - LEAST($online_demand, q.a)), LEAST($online_demand, q.a),
+               LEAST($wholesale_demand, q.a - LEAST($online_demand, q.a) - LEAST($store_demand, q.a - LEAST($online_demand, q.a))) FROM q
+        UNION ALL
+        SELECT 'stores_first', LEAST($store_demand, q.a), LEAST($online_demand, q.a - LEAST($store_demand, q.a)),
+               LEAST($wholesale_demand, q.a - LEAST($store_demand, q.a) - LEAST($online_demand, q.a - LEAST($store_demand, q.a))) FROM q)
+      SELECT sc.scenario, round(sc.s) AS store_units, round(sc.o) AS online_units, round(sc.w) AS wholesale_units,
+             round(q.held) AS click_and_collect_hold_units,
+             round(sc.s + sc.o + sc.w) AS total_allocated,
+             $store_demand + $online_demand + $wholesale_demand - round(sc.s + sc.o + sc.w) AS unmet_demand_units,
+             round(100.0 * (sc.s + sc.o + sc.w) / nullif($store_demand + $online_demand + $wholesale_demand, 0), 1) AS fill_rate_pct,
+             round(100.0 * sc.s / nullif($store_demand, 0), 1) AS store_fill_pct,
+             round(100.0 * sc.o / nullif($online_demand, 0), 1) AS online_fill_pct,
+             q.rule_id AS rule_used, q.hold_pct AS hold_back_pct_used,
+             'allocation = (available - hold-back) split by scenario, capped at each channel demand' AS formula
+      FROM sc, q ORDER BY sc.scenario
+    limit: 4
+    example: {product_sku: "K-1700", available_units: 1000, store_demand: 800, online_demand: 600, hold_back_pct: 20}
+
+  - name: update_allocation_rule
+    desc: Edit an existing stock allocation rule's channel shares, hold-back or description. Applies to future orders. Returns old and new values.
+    kind: update
+    table: allocation_rules
+    args:
+      store_pct: {type: float, desc: "Store allocation percentage"}
+      online_pct: {type: float, desc: "Online allocation percentage"}
+      wholesale_pct: {type: float, desc: "Wholesale allocation percentage"}
+      hold_back_pct: {type: float, desc: "Percent of stock held back before the split"}
+      description: {type: str, desc: "Reason for the change"}
+    example: {rule_id: "AR-900002", store_pct: 55, online_pct: 35, wholesale_pct: 10}
+
+  - name: get_sell_through_by_channel
+    desc: Units, revenue and orders shipped by week and channel, with week-on-week change in units. Use for channel performance of a product.
+    kind: sql
+    args:
+      product_sku: {type: str, desc: "Product SKU, e.g. K-1700 (blank = all products)"}
+      date_from: {type: date, default: "-35d", desc: "Sales from the start of the week containing this date"}
+      date_to: {type: date, default: "+0d", desc: "Sales on or before this date"}
+    sql: |
+      WITH w AS (
+        SELECT date_trunc('week', s.shipped_date)::date AS week, s.channel,
+               sum(sl.qty_shipped) AS units, round(sum(ol.unit_price_gbp * sl.qty_shipped), 2) AS revenue_gbp,
+               count(DISTINCT s.order_id) AS orders
+        FROM shipments s
+        JOIN shipment_lines sl ON sl.shipment_id = s.shipment_id
+        JOIN order_lines ol ON ol.order_id = s.order_id AND ol.line_no = sl.order_line_no
+        WHERE ($product_sku IS NULL OR $product_sku = '' OR sl.sku = $product_sku)
+          AND s.shipped_date >= date_trunc('week', CAST($date_from AS DATE))
+          AND s.shipped_date <= CAST($date_to AS DATE)
+        GROUP BY 1, 2)
+      SELECT week, channel, units, revenue_gbp, orders,
+             round(100.0 * (units - lag(units) OVER (PARTITION BY channel ORDER BY week))
+                   / nullif(lag(units) OVER (PARTITION BY channel ORDER BY week), 0), 1) AS units_wow_pct
+      FROM w ORDER BY week DESC, channel
+    limit: 30
+    example: {product_sku: "K-1700"}
+
+  - name: get_split_order_rate
+    desc: Share and count of orders split across shipments, by cause, versus the previous period of equal length. Use for network efficiency.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-60d", desc: "Period start; compared with the same-length period before it"}
+      cause: {type: str, desc: "Only this split cause: stock, location, wave, carrier, other (blank = all)"}
+      channel: {type: str, desc: "store, online or wholesale (blank = all)"}
+    sql: |
+      WITH w AS (SELECT CAST($date_from AS DATE) AS d0, CAST($as_of AS DATE) - CAST($date_from AS DATE) AS len),
+      o AS (
+        SELECT s.order_id, min(s.shipped_date) AS first_ship, count(*) AS n_ship, max(s.split_reason) AS cause,
+               any_value(s.channel) AS channel
+        FROM shipments s GROUP BY s.order_id),
+      x AS (
+        SELECT o.*, CASE WHEN o.first_ship >= w.d0 THEN 'cur' WHEN o.first_ship >= w.d0 - CAST(w.len AS INTEGER) THEN 'prior' END AS per
+        FROM o, w WHERE ($channel IS NULL OR $channel = '' OR o.channel = $channel)),
+      tot AS (SELECT count(*) FILTER (WHERE per = 'cur') AS tc, count(*) FILTER (WHERE per = 'prior') AS tp FROM x),
+      agg AS (
+        SELECT cause, count(*) FILTER (WHERE per = 'cur') AS c, count(*) FILTER (WHERE per = 'prior') AS p
+        FROM x WHERE n_ship > 1 AND per IS NOT NULL AND ($cause IS NULL OR $cause = '' OR cause = $cause)
+        GROUP BY ROLLUP(cause))
+      SELECT COALESCE(a.cause, 'ALL') AS cause, a.c AS split_orders, t.tc AS orders_shipped,
+             round(100.0 * a.c / nullif(t.tc, 0), 2) AS split_rate_pct,
+             a.p AS prior_split_orders, t.tp AS prior_orders_shipped,
+             round(100.0 * a.p / nullif(t.tp, 0), 2) AS prior_split_rate_pct
+      FROM agg a, tot t ORDER BY (a.cause IS NULL) DESC, a.c DESC
+    limit: 10
+    example: {date_from: "-60d"}
+
+  - name: get_cross_shipping_rate
+    desc: Share of orders fulfilled from a DC other than the destination's local DC, by catchment, with value and whether stock placement or capacity caused it.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Orders allocated on or after this date"}
+      channel: {type: str, desc: "store, online or wholesale (blank = all)"}
+    sql: |
+      WITH d AS (
+        SELECT o.order_id, o.total_gbp, c.local_dc,
+               bool_or(ad.source_dc <> c.local_dc) AS cross_ship,
+               bool_or(ad.source_dc <> c.local_dc AND ad.cross_ship_reason = 'stock_not_at_local_dc') AS placement
+        FROM allocation_decisions ad
+        JOIN orders o ON o.order_id = ad.order_id
+        LEFT JOIN master.sites st ON st.site_id = o.site_id
+        LEFT JOIN master.customers cu ON cu.customer_id = o.customer_id
+        JOIN dc_catchments c ON c.region = COALESCE(st.region, cu.region, o.partner_id) AND c.channel = o.channel
+        WHERE ad.qty_allocated > 0 AND ad.decided_at >= CAST($date_from AS DATE)
+          AND ($channel IS NULL OR $channel = '' OR o.channel = $channel)
+        GROUP BY o.order_id, o.total_gbp, c.local_dc)
+      SELECT COALESCE(local_dc, 'ALL') AS local_dc, count(*) AS orders,
+             count(*) FILTER (WHERE cross_ship) AS cross_ship_orders,
+             round(100.0 * count(*) FILTER (WHERE cross_ship) / count(*), 1) AS cross_ship_rate_pct,
+             round(sum(total_gbp) FILTER (WHERE cross_ship), 2) AS cross_ship_value_gbp,
+             count(*) FILTER (WHERE placement) AS due_to_stock_placement,
+             count(*) FILTER (WHERE cross_ship AND NOT placement) AS due_to_dc_capacity,
+             round(100.0 * count(*) FILTER (WHERE placement) / nullif(count(*) FILTER (WHERE cross_ship), 0), 1) AS placement_share_of_cross_pct
+      FROM d GROUP BY ROLLUP(local_dc) ORDER BY (local_dc IS NULL) DESC, local_dc
+    limit: 10
+    example: {date_from: "-30d"}
+
+  - name: get_store_service_level_trend
+    desc: Store order service level (share delivered by the promised date) by week, with lane (source DC) and store detail for late orders. Use for store performance.
+    kind: sql
+    args:
+      site_id: {desc: "Store id, e.g. ST159 (blank = all stores)"}
+      date_from: {type: date, default: "-21d", desc: "Orders due from the start of the week containing this date"}
+      date_to: {type: date, default: "+0d", desc: "Orders due on or before this date"}
+    sql: |
+      WITH o AS (
+        SELECT o.order_id, o.site_id, o.fulfil_dc AS lane, date_trunc('week', o.due_date)::date AS week,
+               COALESCE(d.nd = d.n AND d.delivered <= o.due_date, false) AS on_time
+        FROM orders o
+        LEFT JOIN (SELECT order_id, max(delivered_date) AS delivered, count(*) AS n, count(delivered_date) AS nd
+                   FROM shipments GROUP BY order_id) d ON d.order_id = o.order_id
+        WHERE o.channel = 'store' AND o.status <> 'cancelled'
+          AND o.due_date >= date_trunc('week', CAST($date_from AS DATE))
+          AND o.due_date <= LEAST(CAST($date_to AS DATE), (SELECT max(order_date) FROM orders))
+          AND ($site_id IS NULL OR $site_id = '' OR o.site_id = $site_id)),
+      g AS (
+        SELECT week, lane, site_id, count(*) AS orders, count(*) FILTER (WHERE on_time) AS on_time_orders,
+               count(*) FILTER (WHERE NOT on_time) AS late_orders
+        FROM o GROUP BY GROUPING SETS ((week), (week, lane), (week, lane, site_id)))
+      SELECT week, CASE WHEN lane IS NULL THEN 'network' WHEN site_id IS NULL THEN 'lane' ELSE 'store' END AS level,
+             lane, site_id, orders, late_orders, round(100.0 * on_time_orders / orders, 1) AS service_level_pct
+      FROM g WHERE lane IS NULL OR site_id IS NULL OR late_orders > 0
+      ORDER BY week DESC, (lane IS NOT NULL)::int + (site_id IS NOT NULL)::int, late_orders DESC, lane, site_id
+    limit: 60
+    example: {}
+
+  - name: update_order_priority
+    desc: Raise or lower the priority of an order for wave release. Returns old and new priority.
+    kind: update
+    table: orders
+    set: {priority: "{priority}"}
+    args:
+      priority: {type: enum, values: [low, normal, high, urgent], required: true}
+    example: {order_id: ORD-900001, priority: urgent}
+
+  - name: get_order_profile_summary
+    desc: Order arrival profile by hour of day and channel, with lines and units per order. Use for wave and batch planning.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-14d", desc: "Orders from this date"}
+      date_to: {type: date, default: "+0d", desc: "Orders through this date"}
+      channel: {type: str, desc: "store, online or wholesale (blank = all)"}
+    sql: |
+      WITH l AS (SELECT order_id, count(*) AS n_lines FROM order_lines GROUP BY order_id)
+      SELECT hour(o.order_time) AS hour_of_day, o.channel, count(*) AS orders,
+             round(avg(l.n_lines), 2) AS avg_lines_per_order, round(avg(o.total_units), 1) AS avg_units_per_order,
+             round(100.0 * count(*) FILTER (WHERE l.n_lines = 1) / count(*), 1) AS single_line_pct,
+             round(100.0 * count(*) / sum(count(*)) OVER (PARTITION BY o.channel), 1) AS share_of_channel_orders_pct
+      FROM orders o JOIN l ON l.order_id = o.order_id
+      WHERE o.order_date >= CAST($date_from AS DATE) AND o.order_date <= CAST($date_to AS DATE)
+        AND ($channel IS NULL OR $channel = '' OR o.channel = $channel)
+      GROUP BY 1, 2
+      ORDER BY o.channel, hour_of_day
+    limit: 80
+    example: {channel: "online"}
+
+  - name: get_key_account_order_history
+    desc: Order count, units and revenue per wholesale account for the last N weeks versus the N weeks before, with last order date. Use for forecasting.
+    kind: sql
+    args:
+      partner_id: {}
+      periods: {type: int, default: 13, desc: "Weeks per period; compared with the previous period of the same length"}
+    sql: |
+      WITH w AS (SELECT CAST($as_of AS DATE) - 7 * $periods AS cut1, CAST($as_of AS DATE) - 14 * $periods AS cut0),
+      x AS (
+        SELECT o.partner_id, o.order_date, o.total_units, o.total_gbp,
+               CASE WHEN o.order_date > w.cut1 THEN 'recent' WHEN o.order_date > w.cut0 THEN 'prior' END AS per
+        FROM orders o, w
+        WHERE o.channel = 'wholesale' AND o.status <> 'cancelled'
+          AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id))
+      SELECT partner_id,
+             count(*) FILTER (WHERE per = 'recent') AS orders_recent, count(*) FILTER (WHERE per = 'prior') AS orders_prior,
+             sum(total_units) FILTER (WHERE per = 'recent') AS units_recent, sum(total_units) FILTER (WHERE per = 'prior') AS units_prior,
+             round(sum(total_gbp) FILTER (WHERE per = 'recent'), 2) AS revenue_recent_gbp,
+             round(sum(total_gbp) FILTER (WHERE per = 'prior'), 2) AS revenue_prior_gbp,
+             round(100.0 * (sum(total_gbp) FILTER (WHERE per = 'recent') - sum(total_gbp) FILTER (WHERE per = 'prior'))
+                   / nullif(sum(total_gbp) FILTER (WHERE per = 'prior'), 0), 1) AS revenue_change_pct,
+             max(order_date) AS last_order_date
+      FROM x WHERE per IS NOT NULL GROUP BY partner_id ORDER BY revenue_change_pct, partner_id
+    limit: 30
+    example: {}
+
+  - name: get_fill_rate_by_account
+    desc: Unit and order-line fill rate by wholesale account for shipped orders, lowest fill first. Use to find accounts at risk of fines.
+    kind: sql
+    args:
+      partner_id: {}
+      date_from: {type: date, default: "-90d", desc: "Orders placed on or after this date"}
+    sql: |
+      SELECT o.partner_id, count(DISTINCT o.order_id) AS orders, count(*) AS order_lines,
+             count(*) FILTER (WHERE ol.qty_shipped >= ol.qty_ordered) AS lines_in_full,
+             round(100.0 * count(*) FILTER (WHERE ol.qty_shipped >= ol.qty_ordered) / count(*), 1) AS line_fill_rate_pct,
+             sum(ol.qty_ordered) AS units_ordered, sum(ol.qty_shipped) AS units_shipped,
+             round(100.0 * sum(ol.qty_shipped) / nullif(sum(ol.qty_ordered), 0), 1) AS unit_fill_rate_pct,
+             sum(ol.qty_ordered - ol.qty_shipped) AS units_short
+      FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
+      WHERE o.channel = 'wholesale' AND o.status IN ('shipped', 'delivered')
+        AND o.order_date >= CAST($date_from AS DATE)
+        AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id)
+      GROUP BY o.partner_id ORDER BY unit_fill_rate_pct, o.partner_id
+    limit: 30
+    example: {}
+
+  - name: get_oversell_incidents
+    desc: Order lines sold without enough stock (allocated short), with outcome cancelled, short-shipped or awaiting stock. Filter by channel or SKU.
+    kind: sql
+    args:
+      channel: {type: str, desc: "store, online or wholesale (blank = all)"}
+      product_sku: {type: str, desc: "Product SKU, e.g. K-1700 (blank = all)"}
+      date_from: {type: date, default: "-30d", desc: "Allocated on or after this date"}
+    sql: |
+      SELECT ad.order_id, o.customer_id, o.partner_id, o.channel, ad.sku, ad.qty_requested, ad.qty_allocated,
+             ad.qty_requested - ad.qty_allocated AS short_units, o.status AS order_status,
+             CASE WHEN o.status = 'cancelled' THEN 'cancelled'
+                  WHEN o.status IN ('shipped', 'delivered') AND ol.qty_shipped < ol.qty_ordered THEN 'short_shipped'
+                  ELSE 'awaiting_stock' END AS outcome,
+             ad.decided_at
+      FROM allocation_decisions ad
+      JOIN orders o ON o.order_id = ad.order_id
+      LEFT JOIN order_lines ol ON ol.order_id = ad.order_id AND ol.line_no = ad.line_no
+      WHERE ad.oversold = true AND ad.decided_at >= CAST($date_from AS DATE)
+        AND ($channel IS NULL OR $channel = '' OR o.channel = $channel)
+        AND ($product_sku IS NULL OR $product_sku = '' OR ad.sku = $product_sku)
+      ORDER BY ad.decided_at DESC, ad.order_id
+    limit: 30
+    example: {channel: "online"}
+
+  - name: get_units_sold_by_batch
+    desc: Units sold by batch, channel and country, with batch totals. Use for traceability and recalls; give a SKU to see all its batches.
+    kind: sql
+    args:
+      batch_id: {type: str, desc: "Batch id, e.g. BATCH-PF220-2509-A (blank = all batches of the SKU)"}
+      product_sku: {type: str, desc: "Product SKU, e.g. PF-220 (blank = any)"}
+    sql: |
+      SELECT batch_id, sku, channel, country, sum(units_sold) AS units_sold,
+             sum(sum(units_sold)) OVER (PARTITION BY batch_id, sku) AS batch_total_units,
+             min(shipped_date) AS first_shipped, max(shipped_date) AS last_shipped
+      FROM batch_sales
+      WHERE ($batch_id IS NULL OR $batch_id = '' OR batch_id = $batch_id)
+        AND ($product_sku IS NULL OR $product_sku = '' OR sku = $product_sku)
+      GROUP BY batch_id, sku, channel, country
+      ORDER BY batch_id, channel, country
+    limit: 50
+    example: {product_sku: "PF-220"}
+
+  - name: get_shipped_units_by_lot
+    desc: Per lot, units already shipped, units allocated but not yet shipped, markets and ship dates. Use for recall and hold decisions.
+    kind: sql
+    args:
+      batch_id: {type: str, desc: "Lot or batch id, e.g. BATCH-POL-PINK-004 (blank = all lots of the SKU)"}
+      product_sku: {type: str, desc: "Product SKU, e.g. SKU-100007 (blank = any)"}
+    sql: |
+      WITH sh AS (
+        SELECT batch_id, sku, sum(units_sold) AS units_shipped, string_agg(DISTINCT country, ', ') AS countries,
+               string_agg(DISTINCT channel, ', ') AS channels, min(shipped_date) AS first_shipped, max(shipped_date) AS last_shipped
+        FROM batch_sales
+        WHERE ($batch_id IS NULL OR $batch_id = '' OR batch_id = $batch_id)
+          AND ($product_sku IS NULL OR $product_sku = '' OR sku = $product_sku)
+        GROUP BY batch_id, sku),
+      pend AS (
+        SELECT ol.batch_id, ol.sku, sum(ol.qty_allocated - ol.qty_shipped) AS units_allocated_not_shipped
+        FROM order_lines ol JOIN orders o ON o.order_id = ol.order_id
+        WHERE o.status IN ('open', 'allocated', 'picked') AND ol.status <> 'cancelled'
+          AND ($batch_id IS NULL OR $batch_id = '' OR ol.batch_id = $batch_id)
+          AND ($product_sku IS NULL OR $product_sku = '' OR ol.sku = $product_sku)
+        GROUP BY ol.batch_id, ol.sku HAVING sum(ol.qty_allocated - ol.qty_shipped) > 0)
+      SELECT COALESCE(sh.batch_id, pend.batch_id) AS batch_id, COALESCE(sh.sku, pend.sku) AS sku,
+             COALESCE(sh.units_shipped, 0) AS units_shipped,
+             COALESCE(pend.units_allocated_not_shipped, 0) AS units_allocated_not_shipped,
+             sh.countries, sh.channels, sh.first_shipped, sh.last_shipped
+      FROM sh FULL JOIN pend ON sh.batch_id = pend.batch_id AND sh.sku = pend.sku
+      ORDER BY batch_id
+    limit: 50
+    example: {product_sku: "SKU-100007"}
+
+  - name: get_countries_where_batch_sold
+    desc: Countries where a batch was sold, with units and channels per country. Use for regulatory notifications.
+    kind: sql
+    args:
+      batch_id: {type: str, required: true, desc: "Batch id, e.g. BATCH-PF220-2509-A"}
+      product_sku: {type: str, desc: "Product SKU, e.g. PF-220 (blank = any)"}
+    sql: |
+      SELECT country, sum(units_sold) AS units_sold, string_agg(DISTINCT channel, ', ') AS channels,
+             min(shipped_date) AS first_shipped, max(shipped_date) AS last_shipped
+      FROM batch_sales
+      WHERE batch_id = $batch_id AND ($product_sku IS NULL OR $product_sku = '' OR sku = $product_sku)
+      GROUP BY country ORDER BY units_sold DESC
+    limit: 50
+    example: {batch_id: "BATCH-PF220-2509-A"}
+
+  - name: get_daily_throughput_and_revenue_at_risk
+    desc: Orders, units and revenue entering OMS per day over whole Monday-Sunday weeks within the period, with the average daily revenue as the amount at risk per day of outage.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Period from this date"}
+      date_to: {type: date, default: "+0d", desc: "Period through this date"}
+    sql: |
+      WITH d AS (
+        SELECT o.order_date, count(*) AS orders, sum(o.total_units) AS units, round(sum(o.total_gbp), 2) AS revenue_gbp,
+               count(*) FILTER (WHERE o.channel = 'online') AS online_orders,
+               count(*) FILTER (WHERE o.channel = 'store') AS store_orders,
+               count(*) FILTER (WHERE o.channel = 'wholesale') AS wholesale_orders
+        FROM orders o
+        WHERE o.status <> 'cancelled' AND o.order_date >= date_trunc('week', CAST($date_from AS DATE) + 7) AND o.order_date < date_trunc('week', CAST($date_to AS DATE))
+        GROUP BY o.order_date)
+      SELECT d.*, round(avg(revenue_gbp) OVER (), 2) AS avg_daily_revenue_gbp, round(avg(orders) OVER (), 1) AS avg_daily_orders
+      FROM d ORDER BY order_date DESC
+    limit: 50
+    example: {}
+
+  - name: get_open_wholesale_orders_for_product
+    desc: Open wholesale order lines for a product, oldest first, with quantity ordered, allocated and still outstanding. Use for allocation decisions.
+    kind: sql
+    args:
+      product_sku: {type: str, required: true, desc: "Product SKU, e.g. SKU-100035"}
+      partner_id: {}
+    sql: |
+      SELECT o.order_id, ol.line_no, o.partner_id, o.order_date, o.status, o.priority, o.hold_status,
+             ol.qty_ordered, ol.qty_allocated, ol.qty_shipped, ol.qty_ordered - ol.qty_shipped AS qty_outstanding,
+             ol.unit_price_gbp, round((ol.qty_ordered - ol.qty_shipped) * ol.unit_price_gbp, 2) AS outstanding_value_gbp
+      FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
+      WHERE o.channel = 'wholesale' AND ol.sku = $product_sku
+        AND o.status IN ('open', 'allocated', 'picked') AND ol.status <> 'cancelled'
+        AND ($partner_id IS NULL OR $partner_id = '' OR o.partner_id = $partner_id)
+      ORDER BY o.order_date, o.order_id, ol.line_no
+    limit: 30
+    example: {product_sku: "SKU-100035"}
+
+  - name: update_wholesale_order_allocation
+    desc: Set the allocated quantity on one line of an open wholesale order. Use after an allocation decision. Returns old and new quantity.
+    kind: update
+    table: order_lines
+    set: {qty_allocated: "{qty_allocated}"}
+    args:
+      qty_allocated: {type: int, required: true}
+    example: {order_id: "ORD-900060", line_no: 1, qty_allocated: 3000}
+
+  - name: release_order_hold
+    desc: Release a held order for fulfilment (clears the credit, stock or other hold). Returns old and new hold status.
+    kind: update
+    table: orders
+    set: {hold_status: none, hold_reason: ""}
+    args: {}
+    example: {order_id: ORD-900050}
+
+  - name: update_channel_allocation_for_product
+    desc: Set the share of a product's stock allocated to store, online and wholesale, plus any hold-back (e.g. click-and-collect). Creates a new current rule.
+    kind: insert
+    table: allocation_rules
+    id_prefix: AR-
+    defaults: {status: active, channel: ALL, hold_back_pct: 0, description: "Channel allocation set via OMS"}
+    args:
+      product_sku: {required: true}
+      store_pct: {type: float, required: true}
+      online_pct: {type: float, required: true}
+      wholesale_pct: {type: float, required: true}
+      hold_back_pct: {type: float, desc: "Percent of stock held back for click-and-collect before the split"}
+      description: {type: str, desc: "Reason for the change"}
+    example: {product_sku: "K-1700", store_pct: 56, online_pct: 32, wholesale_pct: 12, hold_back_pct: 20}
+
+  - name: get_delivery_notes_for_invoice
+    desc: Delivery notes and proof of delivery for an order, with units shipped versus received and the order value. Use for invoice disputes.
+    kind: sql
+    args:
+      order_id: {required: true}
+    sql: |
+      SELECT s.delivery_notes, s.shipment_id, s.shipped_date, s.delivered_date, s.status,
+             sum(sl.qty_shipped) AS units_shipped, s.units_received,
+             sum(sl.qty_shipped) - s.units_received AS units_short_on_receipt, s.pod_signed_by,
+             o.total_units AS order_units, o.total_gbp AS order_value_gbp
+      FROM shipments s
+      JOIN shipment_lines sl ON sl.shipment_id = s.shipment_id
+      JOIN orders o ON o.order_id = s.order_id
+      WHERE s.order_id = $order_id
+      GROUP BY s.delivery_notes, s.shipment_id, s.shipped_date, s.delivered_date, s.status, s.units_received,
+               s.pod_signed_by, o.total_units, o.total_gbp
+      ORDER BY s.shipped_date, s.shipment_id
+    limit: 20
+    example: {order_id: ORD-900040}
+
+  - name: draft_short_shipment_message_to_customers
+    desc: Draft a message telling a customer which open order lines will ship short, with ordered and allocated quantities. Use for wholesale notifications.
+    kind: draft
+    args:
+      partner_id: {required: true}
+      product_sku: {type: str, desc: "Only lines for this SKU, e.g. SKU-100035 (blank = all short lines)"}
+    sql:
+      lines: |
+        SELECT o.order_id, ol.sku, ol.qty_ordered, ol.qty_allocated, ol.qty_ordered - ol.qty_allocated AS qty_short
+        FROM orders o JOIN order_lines ol ON ol.order_id = o.order_id
+        WHERE o.partner_id = $partner_id AND o.status IN ('open', 'allocated', 'picked')
+          AND ol.qty_allocated < ol.qty_ordered AND ol.status <> 'cancelled'
+          AND ($product_sku IS NULL OR $product_sku = '' OR ol.sku = $product_sku)
+        ORDER BY o.order_id, ol.line_no
+    template: |
+      To {{ partner_id }},
+
+      Due to limited stock, the following open order lines will be shipped short:
+
+      {% for l in lines -%}
+      - {{ l.order_id }} {{ l.sku }}: {{ l.qty_ordered }} ordered, {{ l.qty_allocated }} allocated, {{ l.qty_short }} short
+      {% endfor %}
+      We apologise for the inconvenience and will ship the balance as soon as stock is received.
+
+      Best regards,
+      Order Management Team
+    example: {partner_id: PTN-006}

@@ -1,0 +1,73 @@
+- question: "09:82:Q1"
+  story: >
+    The feature store holds FEAT-ocean-transit-history (Track&Trace, 24h), FEAT-carrier-eta-variance
+    (Carrier Portal, 12h) and FEAT-port-congestion (external port feed, 48h) for ocean transit work.
+  checks:
+    - tool: list_feature_store_features
+      args: {}
+      expect: ["Ocean transit times by lane", "Carrier ETA vs actual variance", "Port delay indicators"]
+
+- question: "09:82:Q2"
+  story: >
+    MOD-demand held about 85% accuracy and drift of about 5 until roughly 13 weeks ago, then degraded steadily to
+    76.4% accuracy and drift 28.6 today (category field removed from its features, model not retrained since June).
+    Dataset v2.1 (250000 rows) is stale; v2.2 (280000 rows) is available. A retraining job can be submitted.
+  checks:
+    - tool: get_model_accuracy_history
+      args: {model_id: MOD-demand}
+      expect: ["85.2", "76.4"]
+    - tool: get_feature_drift_report
+      args: {model_id: MOD-demand}
+      expect: ["28.6"]
+    - tool: get_model_training_dataset_summary
+      args: {model_id: MOD-demand}
+      expect: ["v2.1", "v2.2", "250000", "280000"]
+    - tool: submit_model_retraining_job
+      args: {model_id: MOD-demand, dataset_version: v2.2}
+      expect: ["RET-", "scheduled", "MOD-demand", "v2.2"]
+
+- question: "09:82:Q3"
+  story: >
+    Candidate MOD-demand-v3 backtested against MOD-demand: 85.0% vs 79.5% accuracy, 6.92% uplift, about 195000
+    GBP estimated benefit, recommendation deploy.
+  checks:
+    - tool: get_model_backtest_results
+      args: {candidate_model_id: MOD-demand-v3, current_model_id: MOD-demand}
+      expect: ["MOD-demand-v3", "85", "79.5", "6.92", "195000", "deploy"]
+
+- question: "09:82:Q5"
+  story: >
+    Five models. MOD-demand is degraded (76.4% accuracy, drift 28.6) and retrains soonest (8 days). MOD-pricing has a
+    noisy drift rule RULE-900003. MOD-churn (in review) has no drift alert, only a disabled data freshness rule.
+  checks:
+    - tool: list_registered_models
+      args: {}
+      expect: ["MOD-demand", "MOD-pricing", "MOD-supplier-delay", "MOD-churn", "MOD-inventory"]
+    - tool: get_model_health_summary
+      args: {}
+      expect: ["MOD-demand", "76.4", "28.6"]
+    - tool: get_feature_drift_report
+      args: {model_id: MOD-pricing, days_back: 30}
+      expect: ["MOD-pricing", "5.2"]
+    - tool: list_model_retraining_schedule
+      args: {}
+      expect: ["MOD-demand", "MOD-churn", "days_until_next_retrain"]
+    - tool: create_model_alert_rule
+      args: {model_id: MOD-churn, rule_type: drift, threshold: 15}
+      expect: ["RULE-", "MOD-churn", "drift"]
+    - tool: delete_model_alert_rule
+      args: {alert_rule_id: RULE-900003}
+      expect: ["Deleted", "RULE-900003"]
+
+- question: "09:82:Q6"
+  story: >
+    The feature store has FEAT-po-history-features, FEAT-asn-timeliness, FEAT-supplier-scorecards,
+    FEAT-payment-history, FEAT-port-congestion and FEAT-carrier-performance used by MOD-supplier-delay, plus
+    FEAT-weather-port-region (port and factory region weather) which no model uses yet.
+  checks:
+    - tool: list_feature_store_features
+      args: {data_source: "PO"}
+      expect: ["FEAT-po-history-features", "MOD-supplier-delay"]
+    - tool: list_feature_store_features
+      args: {}
+      expect: ["FEAT-supplier-scorecards", "FEAT-payment-history", "FEAT-port-congestion", "FEAT-weather-port-region"]

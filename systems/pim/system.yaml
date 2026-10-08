@@ -1,0 +1,475 @@
+id: pim
+name: Product Information Management (PIM)
+instructions: >
+  Product master data, attributes, taxonomy and claims. Tracks product attributes (dimensions, materials, care),
+  completeness metrics, sustainability claims, and EPR reporting fields. Attribute ids like ATTR-001, product claims
+  like CLM-000123, and attribute groups like GRP-001.
+
+tables:
+  attributes:
+    key: attribute_id
+    cols:
+      attribute_id: {type: str, desc: "Attribute id, e.g. ATTR-001"}
+      name: {type: str, desc: "Attribute name, e.g. Material Composition"}
+      attribute_type: {type: enum, values: [text, numeric, list, boolean, enum], desc: Data type}
+      category: {type: str, desc: "Category this attribute applies to, e.g. Small Appliances"}
+      data_format: {type: str, desc: "Format guidance, e.g. Percentage, ISO 639-1 code"}
+      is_mandatory: {type: bool, desc: "Required for compliance or marketplaces"}
+      description: {type: str, desc: "What this attribute means"}
+      status: {type: enum, values: [active, deprecated, proposed], desc: Attribute status}
+      canonical_name: {type: str, desc: "Proposed common name for this concept across categories, e.g. Dimensions"}
+      marketplace_field: {type: str, desc: "Marketplace attribute it feeds, e.g. dimensions, material, energy_label; blank if none"}
+      created_at: {type: timestamp, desc: When attribute was added}
+
+  attribute_groups:
+    key: group_id
+    cols:
+      group_id: {type: str, desc: "Attribute group id, e.g. GRP-001"}
+      name: {type: str, desc: "Group name, e.g. Textiles_Core"}
+      category: {type: str, desc: "Category, e.g. Textiles"}
+      description: {type: str, desc: "What attributes this group covers"}
+      attribute_count: {type: int, desc: "Number of attributes in this group"}
+      status: {type: enum, values: [active, proposed, deprecated], desc: Group status}
+      version: {type: str, desc: "Version, e.g. v1.0"}
+      created_at: {type: timestamp, desc: When group was created}
+
+  product_attributes:
+    key: [sku, attribute_id]
+    cols:
+      sku: {type: str, desc: "Product SKU, e.g. SKU-100234"}
+      attribute_id: {type: str, desc: "Attribute id"}
+      value: {type: text, desc: "Attribute value"}
+      confidence: {type: float, desc: "Confidence 0-100 (data quality score)"}
+      source: {type: enum, values: [supplier, internal, external, marketplace], desc: Data source}
+      last_updated: {type: timestamp, desc: "When this value was last verified"}
+      is_complete: {type: bool, desc: "True if value meets marketplace requirements"}
+
+  product_claims:
+    key: claim_id
+    cols:
+      claim_id: {type: str, desc: "Claim id, e.g. CLM-000123"}
+      sku: {type: str, desc: "Product SKU"}
+      claim_type: {type: enum, values: [organic, recycled_content, fair_trade, sustainable, ecolabel, other], desc: Claim category}
+      claim_text: {type: text, desc: "The claim as displayed"}
+      certification_type: {type: str, desc: "Certificate type, e.g. GOTS"}
+      has_evidence: {type: bool, desc: "True if we hold chain-of-custody or certification"}
+      evidence_ref: {type: str, desc: "Reference to evidence file or document"}
+      claimed_pct: {type: int, desc: "Recycled or certified content % stated in the claim wording, if any"}
+      certified_pct: {type: float, desc: "Content % the certificate actually covers, blank if no certificate"}
+      evidence_status: {type: enum, values: [valid, expired, none], desc: "Certificate status: valid, expired or none held"}
+      evidence_expires: {type: date, desc: "When the certificate expires"}
+      removal_reason: {type: text, desc: "Why the claim was removed from the listing"}
+      status: {type: enum, values: [active, pending_review, insufficient_evidence, removed], desc: Claim status}
+      created_at: {type: timestamp, desc: "When claim was created"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  epr_data_fields:
+    key: field_id
+    cols:
+      field_id: {type: str, desc: "Field id, e.g. EPR-001"}
+      field_name: {type: str, desc: "Field name, e.g. Unit Weight"}
+      category: {type: str, desc: "Product category"}
+      data_type: {type: enum, values: [numeric, text, date, enum], desc: Data type}
+      description: {type: str, desc: "What this field means for EPR compliance"}
+      is_held: {type: bool, desc: "True if we collect this data for most products"}
+      coverage_pct: {type: float, desc: "Percentage of products in category where we hold this"}
+      unit: {type: str, desc: "Unit if numeric, e.g. kg, cm"}
+      required_in: {type: str, desc: "Countries whose textile EPR scheme needs this field, e.g. GB; FR; NL"}
+      created_at: {type: timestamp, desc: When field was added}
+
+  market_fit_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Rule id, e.g. JPN-001"}
+      market: {type: str, desc: "Target market, e.g. Japan"}
+      category: {type: str, desc: "Product category the rule applies to, e.g. Small Appliances"}
+      attribute_name: {type: str, desc: "PIM attribute checked, e.g. Capacity"}
+      rule_type: {type: enum, values: [max_numeric, regex_match], desc: "max_numeric: value must be at most threshold_num; regex_match: value must match threshold_text"}
+      threshold_num: {type: float, desc: "Numeric limit for max_numeric rules"}
+      threshold_text: {type: str, desc: "Regular expression for regex_match rules"}
+      requirement: {type: str, desc: "What the market needs, in words"}
+      change_needed: {type: str, desc: "What to change when a product fails the rule"}
+
+tools:
+  - name: search_products
+    desc: Find SKUs by name, style, category or supplier; returns ids to use with other tools.
+    kind: select
+    from: master.products
+    filters:
+      name: {op: like, desc: "Words in the product name, e.g. glass kettle"}
+      style_id: {op: like, desc: "Style id or part of it, e.g. 5520"}
+      category: {}
+      supplier_id: {}
+    columns: [sku, style_id, name, category, colour, size, supplier_id, status]
+    order: sku
+    example: {name: kettle}
+
+  - name: get_pim_taxonomy_and_attributes
+    desc: Current attribute structure by category with each attribute's type, mandatory flag, common name and marketplace field. Category can be a department such as Home.
+    kind: sql
+    args:
+      category: {required: false, desc: "Category or department, e.g. Cookware or Home"}
+    sql: |
+      SELECT a.category, a.attribute_id, a.name, a.canonical_name, a.attribute_type, a.is_mandatory,
+             a.marketplace_field, COUNT(*) OVER (PARTITION BY a.category) AS attributes_in_category
+      FROM attributes a
+      WHERE a.status = 'active'
+        AND ($category IS NULL OR lower(a.category) = lower($category)
+             OR a.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+      ORDER BY a.category, a.is_mandatory DESC, a.name
+    limit: 100
+    example: {category: Home}
+
+  - name: get_pim_attribute_completeness
+    desc: Which product fields are missing and how often, worst first, for active and new products. Optional category or department; omit for all categories.
+    kind: sql
+    args:
+      category: {required: false, desc: "Category or department, e.g. Small Appliances or Home"}
+      min_completeness_pct: {type: int, desc: "Only fields below this completeness %", default: 100}
+    sql: |
+      WITH cells AS (
+        SELECT a.name, a.category, a.is_mandatory, p.sku, (NULLIF(pa.value, '') IS NOT NULL) AS has_value
+        FROM attributes a
+        JOIN master.products p ON p.category = a.category AND p.status IN ('active', 'new')
+        LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+        WHERE a.status = 'active'
+          AND ($category IS NULL OR lower(a.category) = lower($category)
+               OR a.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+      )
+      SELECT name AS attribute, bool_or(is_mandatory) AS is_mandatory, count(DISTINCT category) AS categories,
+             count(*) AS products_in_scope, count(*) FILTER (WHERE has_value) AS products_with_value,
+             count(*) FILTER (WHERE NOT has_value) AS products_missing,
+             round(100.0 * count(*) FILTER (WHERE has_value) / count(*), 1) AS completeness_pct
+      FROM cells
+      GROUP BY name
+      HAVING round(100.0 * count(*) FILTER (WHERE has_value) / count(*), 1) < $min_completeness_pct
+      ORDER BY completeness_pct ASC, is_mandatory DESC, attribute
+    limit: 50
+    example: {category: Small Appliances}
+
+  - name: get_pim_attribute_completeness_by_category
+    desc: Completeness by category - products, average completeness, products missing mandatory data and the worst mandatory fields. Optional category or department filter.
+    kind: sql
+    args:
+      category: {required: false, desc: "Category or department, e.g. Small Appliances or Home"}
+    sql: |
+      WITH cells AS (
+        SELECT p.category, p.sku, a.attribute_id, a.name, a.is_mandatory, (NULLIF(pa.value, '') IS NOT NULL) AS has_value
+        FROM master.products p
+        JOIN attributes a ON a.category = p.category AND a.status = 'active'
+        LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+        WHERE p.status IN ('active', 'new')
+          AND ($category IS NULL OR lower(p.category) = lower($category)
+               OR p.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+      ),
+      by_attr AS (
+        SELECT category, name, is_mandatory, round(100.0 * count(*) FILTER (WHERE has_value) / count(*), 0) AS pct
+        FROM cells GROUP BY ALL
+      ),
+      worst AS (
+        SELECT category, string_agg(name || ' (' || CAST(CAST(pct AS INTEGER) AS VARCHAR) || '% complete)', ', ' ORDER BY pct, name) AS worst_mandatory_fields
+        FROM (SELECT *, row_number() OVER (PARTITION BY category ORDER BY pct, name) AS rn FROM by_attr WHERE is_mandatory AND pct < 100)
+        WHERE rn <= 3 GROUP BY category
+      ),
+      agg AS (
+        SELECT category, count(DISTINCT sku) AS total_products, count(DISTINCT attribute_id) AS attributes_active,
+               round(100.0 * count(*) FILTER (WHERE has_value) / count(*), 1) AS avg_completeness_pct,
+               count(DISTINCT sku) FILTER (WHERE is_mandatory AND NOT has_value) AS products_missing_mandatory
+        FROM cells GROUP BY category
+      )
+      SELECT agg.*, worst.worst_mandatory_fields
+      FROM agg LEFT JOIN worst USING (category)
+      ORDER BY avg_completeness_pct ASC, total_products DESC
+    limit: 50
+    example: {}
+
+  - name: get_pim_attributes_for_product
+    desc: All attributes and values for one SKU with confidence, source and a data-quality flag (missing, low confidence, not marketplace-ready). Use to check a product's data.
+    kind: sql
+    args:
+      sku: {required: true}
+    sql: |
+      SELECT p.sku, p.name AS product_name, p.category, a.attribute_id, a.name AS attribute_name, a.is_mandatory,
+             pa.value, pa.confidence, pa.source, pa.is_complete,
+             COALESCE(pa.last_updated, p.launch_date) AS last_updated,
+             CASE WHEN NULLIF(pa.value, '') IS NULL THEN 'missing'
+                  WHEN pa.confidence < 70 THEN 'low confidence - verify with supplier'
+                  WHEN NOT pa.is_complete THEN 'not marketplace-ready'
+                  ELSE 'ok' END AS data_quality
+      FROM master.products p
+      LEFT JOIN attributes a ON a.category = p.category AND a.status = 'active'
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+      WHERE p.sku = $sku
+      ORDER BY a.is_mandatory DESC, a.name
+    limit: 100
+    example: {sku: SKU-100805}
+
+  - name: list_products_by_attribute_in_category
+    desc: List active and new products in a category whose attribute matches a filter such as Waterproof:true; without a filter lists all values. Optional department.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category, e.g. Outerwear"}
+      department: {type: str, desc: "Department, e.g. Womenswear, Menswear, Kids"}
+      attribute_filter: {type: text, desc: "Attribute name or id and value, e.g. Waterproof:true or Fit:slim"}
+    sql: |
+      WITH av AS (
+        SELECT pa.sku, a.attribute_id, a.name, pa.value
+        FROM product_attributes pa JOIN attributes a ON a.attribute_id = pa.attribute_id
+        WHERE NULLIF(pa.value, '') IS NOT NULL AND a.status = 'active'
+          AND ($attribute_filter IS NULL OR (
+                (lower(a.attribute_id) = lower(trim(split_part($attribute_filter, ':', 1)))
+                 OR lower(a.name) = lower(trim(split_part($attribute_filter, ':', 1))))
+                AND lower(pa.value) LIKE '%' || lower(trim(split_part($attribute_filter, ':', 2))) || '%'))
+      )
+      SELECT p.sku, p.name, p.department, p.colour, p.size, p.retail_price_gbp,
+             string_agg(av.name || ': ' || av.value, '; ' ORDER BY av.name) AS attributes_matched
+      FROM master.products p JOIN av ON av.sku = p.sku
+      WHERE lower(p.category) = lower($category) AND p.status IN ('active', 'new')
+        AND ($department IS NULL OR lower(p.department) = lower($department))
+      GROUP BY p.sku, p.name, p.department, p.colour, p.size, p.retail_price_gbp
+      ORDER BY p.sku
+    limit: 100
+    example: {category: Outerwear, attribute_filter: "Waterproof:true"}
+
+  - name: get_product_attributes_for_range
+    desc: Attribute values for every active or new product in a style range or a whole category, to judge market fit and what would need to change.
+    kind: sql
+    args:
+      style_id: {required: false, desc: "Style id, e.g. STY-5520"}
+      category: {required: false, desc: "Product category, e.g. Small Appliances"}
+    sql: |
+      SELECT p.style_id, p.sku, p.name, p.category, p.colour, p.size, a.attribute_id, a.name AS attribute_name,
+             a.is_mandatory, pa.value, pa.confidence
+      FROM master.products p
+      LEFT JOIN product_attributes pa ON pa.sku = p.sku
+      LEFT JOIN attributes a ON a.attribute_id = pa.attribute_id
+      WHERE p.status IN ('active', 'new')
+        AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($category IS NULL OR lower(p.category) = lower($category))
+      ORDER BY p.style_id, p.colour, p.size, a.name
+    limit: 200
+    example: {style_id: STY-5520}
+
+  - name: compare_range_fit_to_market
+    desc: Score how many active or new products per category meet a target market's rules (e.g. Japan), with sizes, fitting styles and the changes needed. Optional style or category.
+    kind: sql
+    args:
+      target_market: {required: true, desc: "Target country, e.g. Japan"}
+      category: {required: false, desc: "Product category, e.g. Small Appliances"}
+      style_id: {required: false, desc: "Style id, e.g. STY-5520"}
+    sql: |
+      WITH rules AS (SELECT * FROM market_fit_rules WHERE lower(market) = lower($target_market)),
+      vals AS (
+        SELECT pa.sku, a.name AS attribute_name, pa.value
+        FROM product_attributes pa JOIN attributes a ON a.attribute_id = pa.attribute_id
+        WHERE NULLIF(pa.value, '') IS NOT NULL
+      ),
+      checks AS (
+        SELECT p.sku, p.style_id, p.category, p.size, r.rule_id, r.change_needed,
+               coalesce(CASE WHEN r.rule_type = 'max_numeric'
+                             THEN try_cast(regexp_extract(v.value, '[0-9]+(\.[0-9]+)?') AS DOUBLE) <= r.threshold_num
+                             ELSE regexp_matches(v.value, r.threshold_text, 'i') END, false) AS ok
+        FROM master.products p
+        JOIN rules r ON r.category = p.category
+        LEFT JOIN vals v ON v.sku = p.sku AND v.attribute_name = r.attribute_name
+        WHERE p.status IN ('active', 'new')
+          AND ($style_id IS NULL OR p.style_id = $style_id)
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+      ),
+      prod AS (
+        SELECT sku, style_id, category, any_value(size) AS size, bool_and(ok) AS fits
+        FROM checks GROUP BY sku, style_id, category
+      ),
+      changes AS (
+        SELECT category, string_agg(DISTINCT change_needed, '; ') AS changes_needed
+        FROM checks WHERE NOT ok GROUP BY category
+      )
+      SELECT $target_market AS target_market, prod.category, count(*) AS products,
+             count(*) FILTER (WHERE fits) AS products_fit,
+             round(100.0 * count(*) FILTER (WHERE fits) / count(*), 1) AS fit_pct,
+             string_agg(DISTINCT prod.size, ', ') AS sizes_offered,
+             string_agg(DISTINCT prod.style_id, ', ') FILTER (WHERE fits) AS fitting_styles,
+             changes.changes_needed
+      FROM prod LEFT JOIN changes USING (category)
+      GROUP BY prod.category, changes.changes_needed
+      ORDER BY fit_pct DESC, products DESC
+    limit: 30
+    example: {target_market: Japan}
+
+  - name: list_product_claims
+    desc: Product claims (organic, recycled content, fair trade...) with claimed vs certified percentage and certificate status. Filter by SKU, claim type or status; removed claims listed last.
+    kind: select
+    from: product_claims
+    filters:
+      sku: {}
+      claim_type: {}
+      status: {}
+      evidence_status: {}
+    columns: [claim_id, sku, claim_type, claim_text, certification_type, claimed_pct, certified_pct, has_evidence, evidence_ref, evidence_status, evidence_expires, status, removal_reason, updated_at]
+    order: "CASE WHEN status = 'removed' THEN 1 ELSE 0 END, claim_type, sku"
+    limit: 100
+    example: {claim_type: recycled_content}
+
+  - name: get_available_epr_reporting_data_fields
+    desc: EPR reporting data fields (weights, materials, recyclability, recycled content...) with whether we hold them, coverage and which countries need them.
+    kind: sql
+    args:
+      category: {required: false, desc: "EPR product group, e.g. Textiles"}
+      held_only: {type: bool, desc: "Only fields we hold for most products", default: false}
+    sql: |
+      SELECT field_id, field_name, category, data_type, unit, description, is_held, coverage_pct,
+             CASE WHEN coverage_pct >= 80 THEN 'held' WHEN coverage_pct >= 50 THEN 'partly held' ELSE 'not held' END AS status,
+             required_in
+      FROM epr_data_fields
+      WHERE ($category IS NULL OR lower(category) = lower($category))
+        AND ($held_only IS FALSE OR is_held)
+      ORDER BY category, coverage_pct DESC, field_name
+    limit: 50
+    example: {category: Textiles}
+
+  - name: draft_attribute_taxonomy_proposal
+    desc: Draft a unified attribute structure for a category or department, merging differently named attributes, with coverage, marketplace field and the action needed.
+    kind: sql
+    args:
+      category: {required: true, desc: "Category or department, e.g. Cookware or Home"}
+    sql: |
+      WITH scope AS (
+        SELECT a.* FROM attributes a
+        WHERE a.status IN ('active', 'proposed')
+          AND (lower(a.category) = lower($category)
+               OR a.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+      ),
+      cov AS (
+        SELECT pa.attribute_id, count(*) AS n, count(*) FILTER (WHERE NULLIF(pa.value, '') IS NOT NULL) AS have
+        FROM product_attributes pa JOIN master.products p ON p.sku = pa.sku AND p.status IN ('active', 'new')
+        GROUP BY pa.attribute_id
+      )
+      SELECT s.canonical_name AS proposed_attribute, string_agg(DISTINCT s.name, '; ') AS current_names,
+             count(DISTINCT s.name) AS names_in_use, count(DISTINCT s.category) AS categories,
+             count(DISTINCT s.category) FILTER (WHERE s.is_mandatory) AS mandatory_in_categories,
+             coalesce(round(100.0 * sum(c.have) / nullif(sum(c.n), 0), 1), 0) AS current_coverage_pct,
+             max(s.marketplace_field) AS marketplace_field,
+             CASE WHEN bool_and(s.status = 'proposed') THEN 'Add: not held in PIM today'
+                  WHEN count(DISTINCT s.name) > 1 AND bool_or(s.is_mandatory) AND count(DISTINCT s.category) FILTER (WHERE s.is_mandatory) < count(DISTINCT s.category)
+                       THEN 'Unify names and make mandatory in every category'
+                  WHEN count(DISTINCT s.name) > 1 THEN 'Unify names under one attribute'
+                  WHEN count(DISTINCT s.category) FILTER (WHERE s.is_mandatory) < count(DISTINCT s.category) AND bool_or(s.is_mandatory)
+                       THEN 'Make mandatory in every category'
+                  ELSE 'Keep as is' END AS action
+      FROM scope s LEFT JOIN cov c USING (attribute_id)
+      GROUP BY s.canonical_name
+      ORDER BY names_in_use DESC, current_coverage_pct ASC, proposed_attribute
+    limit: 100
+    example: {category: Home}
+
+  - name: calculate_migration_effort_for_taxonomy
+    desc: Estimate effort in days and weeks to move a category or department to the unified taxonomy - renames, new attributes, value remapping, backfill and testing.
+    kind: sql
+    args:
+      category: {required: true, desc: "Category or department, e.g. Cookware or Home"}
+    sql: |
+      WITH scope AS (
+        SELECT a.* FROM attributes a
+        WHERE a.status IN ('active', 'proposed')
+          AND (lower(a.category) = lower($category)
+               OR a.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+      ),
+      m AS (
+        SELECT
+          (SELECT count(*) FROM scope WHERE status = 'active') AS current_attributes,
+          (SELECT count(DISTINCT canonical_name) FROM scope) AS target_attributes,
+          (SELECT count(*) FROM scope WHERE status = 'active' AND name <> canonical_name) AS attributes_to_rename,
+          (SELECT count(*) FROM scope WHERE status = 'proposed') AS attributes_to_add,
+          (SELECT count(*) FROM master.products p WHERE p.status IN ('active', 'new') AND p.category IN (SELECT category FROM scope)) AS products_affected,
+          (SELECT count(*) FROM product_attributes pa JOIN scope s ON s.attribute_id = pa.attribute_id
+            WHERE s.status = 'active' AND s.name <> s.canonical_name AND NULLIF(pa.value, '') IS NOT NULL) AS values_to_remap,
+          (SELECT count(*) FROM master.products p JOIN scope s ON s.category = p.category AND s.status = 'proposed'
+            WHERE p.status IN ('active', 'new')) AS values_to_backfill
+      )
+      SELECT $category AS scope, current_attributes, target_attributes, attributes_to_rename, attributes_to_add,
+             products_affected, values_to_remap, values_to_backfill,
+             round((attributes_to_rename + attributes_to_add) * 0.5, 1) AS mapping_days,
+             round(values_to_remap / 500.0, 1) AS remap_days,
+             round(values_to_backfill / 150.0, 1) AS backfill_days,
+             6.0 AS testing_days,
+             round((attributes_to_rename + attributes_to_add) * 0.5 + values_to_remap / 500.0 + values_to_backfill / 150.0 + 6.0, 1) AS estimated_effort_days,
+             ceil(((attributes_to_rename + attributes_to_add) * 0.5 + values_to_remap / 500.0 + values_to_backfill / 150.0 + 6.0) / 5.0) AS estimated_weeks,
+             'about ' || CAST(CAST(ceil(((attributes_to_rename + attributes_to_add) * 0.5 + values_to_remap / 500.0 + values_to_backfill / 150.0 + 6.0) / 5.0) AS INTEGER) AS VARCHAR) || ' weeks' AS estimate,
+             'days = (renames + new attributes) x 0.5 + values to remap / 500 + values to backfill / 150 + 6 testing days (2 per marketplace feed x 3)' AS formula
+      FROM m
+    limit: 1
+    example: {category: Home}
+
+  - name: draft_bulk_attribute_correction_file
+    desc: Draft the correction file, one row per missing attribute value with a suggested value from product master where possible. Filter by category or SKU list.
+    kind: sql
+    args:
+      category: {required: false, desc: "Category or department, e.g. Small Appliances"}
+      skus: {type: text, desc: "Comma-separated SKUs to include, e.g. K-1700,PF-220"}
+      mandatory_only: {type: bool, desc: "Only missing mandatory attributes", default: true}
+      fixable_only: {type: bool, desc: "Only rows that can be filled in bulk from product master", default: false}
+    sql: |
+      WITH f AS (
+        SELECT p.sku, p.name AS product_name, p.category, a.attribute_id, a.name AS attribute_name, a.is_mandatory,
+               CASE a.name WHEN 'Weight' THEN CAST(p.weight_kg AS VARCHAR) WHEN 'Colour' THEN p.colour
+                           WHEN 'Country of Origin' THEN p.country_of_origin END AS suggested_value
+        FROM master.products p
+        JOIN attributes a ON a.category = p.category AND a.status = 'active'
+        LEFT JOIN product_attributes pa ON pa.sku = p.sku AND pa.attribute_id = a.attribute_id
+        WHERE p.status IN ('active', 'new') AND NULLIF(pa.value, '') IS NULL
+          AND ($mandatory_only IS FALSE OR a.is_mandatory)
+          AND ($category IS NULL OR lower(p.category) = lower($category)
+               OR p.category IN (SELECT category FROM master.products WHERE lower(department) = lower($category)))
+          AND ($skus IS NULL OR list_contains(string_split(replace($skus, ' ', ''), ','), p.sku))
+      )
+      SELECT sku, product_name, category, attribute_id, attribute_name, is_mandatory, suggested_value,
+             CASE WHEN suggested_value IS NOT NULL THEN 'bulk fix from product master' ELSE 'supplier input needed' END AS fix_route,
+             'review_required' AS correction_status
+      FROM f
+      WHERE $fixable_only IS FALSE OR suggested_value IS NOT NULL
+      ORDER BY (suggested_value IS NULL), is_mandatory DESC, attribute_name, sku
+    limit: 500
+    example: {category: Small Appliances}
+
+  - name: update_pim_attributes_in_bulk
+    desc: Apply one checked row of a bulk correction file - sets a product's attribute value; call once per row in the file.
+    kind: update
+    table: product_attributes
+    set: {value: "{value}", last_updated: "$as_of", is_complete: true, confidence: 95, source: internal}
+    args:
+      value: {required: true, desc: "New attribute value"}
+    example: {sku: SKU-100539, attribute_id: ATTR-137, value: "0.76"}
+
+  - name: create_pim_attribute_group
+    desc: Create a new attribute group in the PIM taxonomy to organise attributes by theme. Returns the new group.
+    kind: insert
+    table: attribute_groups
+    id_prefix: GRP-
+    defaults: {status: proposed, version: "1.0", created_at: "$as_of"}
+    args:
+      name: {required: true, desc: "Group name, e.g. Home_Core_v2"}
+      category: {required: true, desc: "Category or department the group belongs to, e.g. Home"}
+      description: {required: true, desc: "What this group covers"}
+      attribute_count: {type: int, required: false, default: 0}
+    example: {name: "Home_Core_v2", category: "Home", description: "Unified core attributes for home products"}
+
+  - name: update_product_claim
+    desc: Change the wording, certificate type, evidence flag or claimed percentage of a product claim in PIM.
+    kind: update
+    table: product_claims
+    set: {updated_at: "$as_of"}
+    args:
+      claim_text: {required: false, desc: "New claim wording"}
+      certification_type: {required: false, desc: "Certificate type, e.g. GRS"}
+      has_evidence: {required: false, type: bool, desc: "Whether we hold evidence"}
+      claimed_pct: {required: false, type: int, desc: "Content percentage stated in the new wording"}
+    example: {claim_id: CLM-900002, claim_text: "Made with 70% recycled polyester (GRS certified)", claimed_pct: 70}
+
+  - name: remove_product_claim
+    desc: Remove a product claim from a listing in PIM, setting its status to removed with an optional reason.
+    kind: update
+    table: product_claims
+    set: {status: removed, updated_at: "$as_of"}
+    args:
+      removal_reason: {required: false, desc: "Why the claim is removed, e.g. no certificate on file"}
+    example: {claim_id: CLM-900004, removal_reason: "No certificate on file"}

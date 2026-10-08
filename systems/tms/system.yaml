@@ -1,0 +1,1422 @@
+id: tms
+name: Transport Management System (TMS)
+instructions: >
+  Shipment planning, carrier allocation and transport cost management. Shipment ids look like SHP-000123.
+  Use it for lane performance, carrier management, route planning, transport cost analysis and air freight.
+
+tables:
+  shipments:
+    key: shipment_id
+    cols:
+      shipment_id: {type: str, desc: "Shipment, e.g. SHP-000123"}
+      order_id: {type: str, desc: "Customer order if from OMS"}
+      po_id: {type: str, desc: "Inbound purchase order if applicable"}
+      origin_site_id: {type: str, desc: "Shipment origin site (DC or supplier)"}
+      dest_site_id: {type: str, desc: "Destination site (store or customer)"}
+      carrier_id: {type: str, desc: Assigned carrier}
+      lane: {type: str, desc: "Transport lane code, e.g. DC1-ST214"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: Transport mode}
+      service_level: {type: str, desc: "Parcel service: standard, next_day or same_day"}
+      status: {type: enum, values: [planned, booked, in_transit, delivered, failed, split, held], desc: Shipment status}
+      planned_departure: {type: date, desc: Planned departure date}
+      actual_departure: {type: date, desc: Actual departure date}
+      planned_arrival: {type: date, desc: Planned arrival date}
+      actual_arrival: {type: date, desc: Actual arrival date}
+      lines_count: {type: int, desc: Number of order lines}
+      volume_cbm: {type: float, desc: "Volume in cubic metres"}
+      weight_kg: {type: float, desc: "Weight in kilograms"}
+      pallets: {type: int, desc: Number of pallets}
+      cases: {type: int, desc: Number of cases}
+      units: {type: int, desc: Total units}
+      fill_rate_pct: {type: float, desc: "Vehicle utilisation percentage"}
+      freight_cost_gbp: {type: float, desc: Transport cost in GBP}
+      delay_minutes: {type: int, desc: "Minutes late vs planned arrival (null if on time)"}
+      is_split: {type: bool, desc: "True if order was split across shipments"}
+      reason: {type: str, desc: "Reason for the last manual change (reassignment, hold, reroute)"}
+      created_at: {type: timestamp, desc: Created timestamp}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  carriers_lanes:
+    key: [carrier_id, lane]
+    cols:
+      carrier_id: {type: str, desc: Carrier}
+      lane: {type: str, desc: "Lane code, e.g. DC1-ST214"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail], desc: Transport mode}
+      status: {type: enum, values: [active, paused, blocked, trial], desc: Allocation status}
+      weekly_capacity_trips: {type: int, desc: Weekly trips contracted}
+      weekly_capacity_pallets: {type: int, desc: Weekly pallets contracted}
+      rate_per_trip_gbp: {type: float, desc: "Contracted rate per trip"}
+      rate_per_pallet_gbp: {type: float, desc: "Contracted rate per pallet"}
+      min_pieces: {type: int, desc: "Minimum pieces per shipment"}
+      cutoff_hour: {type: int, desc: "Booking cutoff hour (24-hour format)"}
+      cutoff_day_offset: {type: int, desc: "Days in advance to book"}
+      pct_allocation: {type: float, desc: "Percentage of lane volume allocated"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  carrier_performance:
+    key: [carrier_id, lane, period_start]
+    cols:
+      carrier_id: {type: str, desc: Carrier}
+      lane: {type: str, desc: Lane}
+      period_start: {type: date, desc: "Period start date (usually Monday)"}
+      period_end: {type: date, desc: "Period end date (usually Sunday)"}
+      shipments_count: {type: int, desc: Number of shipments delivered}
+      on_time_count: {type: int, desc: Shipments delivered on time}
+      on_time_pct: {type: float, desc: "On-time percentage"}
+      avg_delay_minutes: {type: float, desc: "Average delay if late"}
+      fill_rate_avg_pct: {type: float, desc: "Average vehicle fill rate %"}
+      total_cost_gbp: {type: float, desc: Total freight cost}
+      cost_per_shipment_gbp: {type: float, desc: "Average cost per shipment"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  carrier_incidents:
+    key: incident_id
+    cols:
+      incident_id: {type: str, desc: "Incident, e.g. INC-000123"}
+      carrier_id: {type: str, desc: Carrier}
+      lane: {type: str, desc: Lane affected}
+      incident_type: {type: enum, values: [damage_claim, loss_claim, delay, service_failure, equipment_failure, compliance, other], desc: Type}
+      incident_date: {type: date, desc: When it occurred}
+      shipment_id: {type: str, desc: "Related shipment if any"}
+      description: {type: str, desc: Incident description}
+      claim_value_gbp: {type: float, desc: "Claimed or estimated value"}
+      recovery_value_gbp: {type: float, desc: "Amount recovered"}
+      status: {type: enum, values: [open, disputed, resolved, withdrawn], desc: Status}
+      extra_cost_gbp: {type: float, desc: "Extra cost incurred (air freight, rework, etc)"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  air_freight:
+    key: air_shipment_id
+    cols:
+      air_shipment_id: {type: str, desc: "Air shipment, e.g. AIR-000123"}
+      shipment_id: {type: str, desc: "The air shipment's row in shipments"}
+      po_id: {type: str, desc: "Purchase order flown"}
+      supplier_id: {type: str, desc: "Supplier of that purchase order"}
+      carrier_id: {type: str, desc: Air carrier}
+      origin_site_id: {type: str, desc: "Origin port or airport code, e.g. INNSA"}
+      dest_site_id: {type: str, desc: "Destination DC of the purchase order"}
+      reason_code: {type: enum, values: [stockout_recovery, peak_overflow, supplier_late, customer_request, demand_forecast_lift, carrier_rolled, expedite_order, other], desc: Reason for air}
+      reason_detail: {type: str, desc: Additional detail}
+      rolled_shipment_id: {type: str, desc: "Ocean booking that was rolled, when reason is carrier_rolled"}
+      planned_date: {type: date, desc: Planned delivery}
+      actual_date: {type: date, desc: Actual delivery}
+      units: {type: int, desc: Units shipped}
+      weight_kg: {type: float, desc: "Weight in kilograms"}
+      cost_gbp: {type: float, desc: Air freight cost}
+      avoidable: {type: bool, desc: "True if could have been prevented"}
+      avoided_by: {type: str, desc: "How it could have been avoided, e.g. earlier booking"}
+
+  route_plans:
+    key: route_id
+    cols:
+      route_id: {type: str, desc: "Route plan, e.g. RTE-000123"}
+      date: {type: date, desc: Route execution date}
+      lane: {type: str, desc: "Main lane"}
+      carrier_id: {type: str, desc: Carrier}
+      vehicle_type: {type: str, desc: "Vehicle type, e.g. articulated, 7.5t"}
+      stops_count: {type: int, desc: Number of stops}
+      planned_hours: {type: float, desc: "Planned drive + stop time"}
+      planned_utilisation_pct: {type: float, desc: "Planned load utilisation %"}
+      status: {type: enum, values: [planned, active, completed, cancelled], desc: Status}
+      created_at: {type: timestamp, desc: Created}
+
+  route_hours_breaches:
+    key: breach_id
+    cols:
+      breach_id: {type: str, desc: "Hours breach, e.g. BRC-000123"}
+      route_id: {type: str, desc: Route plan}
+      driver_id: {type: str, desc: "Driver name or id"}
+      breach_type: {type: enum, values: [daily_limit_exceeded, weekly_limit_exceeded, rest_period_insufficient], desc: Type}
+      hours_breached: {type: float, desc: "Hours over limit"}
+      status: {type: enum, values: [reported, remediated, waived], desc: Status}
+      remediation: {type: str, desc: "How it was fixed"}
+      created_at: {type: timestamp, desc: Created}
+
+  planned_stops:
+    key: stop_id
+    cols:
+      stop_id: {type: str, desc: "Stop record, e.g. STP-000123"}
+      lane: {type: str, desc: Lane}
+      customer_or_store: {type: str, desc: "Customer/store id or name"}
+      stop_time_minutes: {type: int, desc: "Planned unload time in minutes"}
+      frequency_per_week: {type: float, desc: "Visits per week"}
+      source: {type: str, desc: "Data source for assumption"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  allocation_scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Scenario, e.g. SCN-000123"}
+      scenario_type: {type: enum, values: [trial_allocation, tender_award, consolidation, network_redesign, carrier_exit], desc: Type}
+      description: {type: str, desc: Scenario description}
+      lanes_affected: {type: str, desc: "Comma-separated lanes"}
+      carriers_involved: {type: str, desc: "Comma-separated carriers"}
+      volume_units: {type: int, desc: "Total units in scenario"}
+      share_pct: {type: int, desc: "Share of the lanes' volume moved to the carriers involved, percent"}
+      total_cost_gbp: {type: float, desc: "Scenario total cost"}
+      projected_on_time_pct: {type: float, desc: "Projected on-time %"}
+      projected_fill_rate_pct: {type: float, desc: "Projected fill rate %"}
+      risk_rating: {type: enum, values: [low, medium, high], desc: Implementation risk}
+      status: {type: enum, values: [draft, approved, active, completed, cancelled], desc: Status}
+      created_at: {type: timestamp, desc: Created}
+
+
+  postcodes:
+    key: postcode_id
+    cols:
+      postcode_id: {type: str, desc: "Postcode record, e.g. PC-000001"}
+      postcode: {type: str, desc: "UK postcode, e.g. M1 1AA"}
+      region: {type: str, desc: "Region, e.g. North West"}
+      carrier_id: {type: str, desc: "Carrier offering next-day"}
+      next_day_available: {type: bool, desc: "Is next-day delivery offered"}
+      next_day_cost_gbp: {type: float, desc: "Cost premium for next-day"}
+      standard_cost_gbp: {type: float, desc: "Standard delivery cost"}
+      coverage_from: {type: date, desc: "Coverage start date"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  reverse_logistics:
+    key: [category, period_start]
+    cols:
+      category: {type: str, desc: "Product category"}
+      period_start: {type: date, desc: "Period start"}
+      period_end: {type: date, desc: "Period end"}
+      return_units: {type: int, desc: "Units returned"}
+      transport_cost_gbp: {type: float, desc: "Return transport cost"}
+      cost_per_unit_gbp: {type: float, desc: "Cost per returned unit"}
+      processing_cost_gbp: {type: float, desc: "Refurbishment/repair cost"}
+      resale_value_gbp: {type: float, desc: "Resale value recovered"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  shipment_lines:
+    key: [shipment_id, line_no]
+    cols:
+      shipment_id: {type: str, desc: "Inbound shipment"}
+      line_no: {type: int, desc: "Line number on the purchase order"}
+      sku: {type: str, desc: SKU}
+      units: {type: int, desc: "Units of this SKU on the shipment"}
+
+  lane_buffers:
+    key: buffer_lane
+    cols:
+      buffer_lane: {type: str, desc: "Inbound lane, e.g. CNSHA-GBFXT"}
+      planning_buffer_days: {type: int, desc: "Days added to the carrier transit time when planning arrivals"}
+      basis: {type: str, desc: "What the buffer is based on"}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  node_dwell:
+    key: [node_type, node, week_start]
+    cols:
+      node_type: {type: enum, values: [port, hub, depot, dc], desc: Node type}
+      node: {type: str, desc: "Port code or DC id, e.g. GBFXT"}
+      week_start: {type: date, desc: Monday of the week}
+      visits: {type: int, desc: "Containers or trailers handled"}
+      avg_dwell_hours: {type: float, desc: "Average hours from arrival to release or departure"}
+
+  lane_distances:
+    key: distance_lane
+    cols:
+      distance_lane: {type: str, desc: "Road lane code, e.g. DC1-ST214"}
+      distance_km: {type: int, desc: "Approximate road distance in km"}
+
+  freight_invoices:
+    key: invoice_id
+    cols:
+      invoice_id: {type: str, desc: "Carrier invoice, e.g. FINV-000123"}
+      carrier_id: {type: str, desc: Carrier}
+      week_start: {type: date, desc: "Monday of the week of shipments billed"}
+      amount_gbp: {type: float, desc: "Invoiced freight for the week"}
+      gl_account: {type: str, desc: "Ledger account the invoice was coded to; freight is 5110"}
+      posted_to_ledger: {type: bool, desc: "False if not yet accrued or posted"}
+
+tools:
+  # Stage 1: 21 read-only tools for analysis
+
+  - name: list_late_outbound_departures
+    desc: Outbound departures that left late, grouped by lane and carrier, with minutes late and loads affected. Use for late trailers.
+    kind: sql
+    args:
+      lane: {desc: "Lane code, e.g. DC1-ST150; blank for all"}
+      carrier_id: {}
+      date_from: {type: date, default: "-21d", desc: "Departures on or after"}
+      date_to: {type: date, default: "+0d", desc: "Departures on or before"}
+      min_days_late: {type: int, default: 1, desc: "Minimum days the departure slipped"}
+    sql: |
+      SELECT s.lane, s.dest_site_id, s.carrier_id, c.name AS carrier,
+             COUNT(*) AS late_departures,
+             ROUND(AVG(DATEDIFF('day', CAST(s.planned_departure AS DATE), CAST(s.actual_departure AS DATE))), 1) AS avg_days_late,
+             MAX(DATEDIFF('day', CAST(s.planned_departure AS DATE), CAST(s.actual_departure AS DATE))) AS max_days_late,
+             SUM(s.units) AS units_affected
+      FROM shipments s
+      LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
+      WHERE s.origin_site_id LIKE 'DC%' AND s.actual_departure IS NOT NULL
+        AND ($lane IS NULL OR s.lane = $lane)
+        AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+        AND CAST(s.actual_departure AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(s.actual_departure AS DATE) <= CAST($date_to AS DATE)
+        AND DATEDIFF('day', CAST(s.planned_departure AS DATE), CAST(s.actual_departure AS DATE)) >= $min_days_late
+      GROUP BY s.lane, s.dest_site_id, s.carrier_id, c.name
+      ORDER BY late_departures DESC, avg_days_late DESC
+    limit: 40
+    example: {}
+
+  - name: get_lane_performance_summary
+    desc: Per-lane on-time, fill rate and cost for a period, compared with the previous period of equal length. Worst lanes first.
+    kind: sql
+    args:
+      lane: {desc: "Lane code, e.g. DC1-ST214; blank for all"}
+      period_start: {type: date, default: "-14d", desc: "Summary period start"}
+      period_end: {type: date, default: "+0d", desc: "Summary period end"}
+    sql: |
+      WITH b AS (
+        SELECT *, CAST(period_start AS DATE) AS ps FROM carrier_performance
+        WHERE ($lane IS NULL OR lane = $lane)),
+      cur AS (
+        SELECT lane, SUM(shipments_count) AS shipments, SUM(shipments_count - on_time_count) AS late_shipments,
+               ROUND(100.0 * SUM(on_time_count) / SUM(shipments_count), 1) AS on_time_pct,
+               ROUND(AVG(fill_rate_avg_pct), 1) AS fill_rate_pct, ROUND(SUM(total_cost_gbp) / SUM(shipments_count), 0) AS cost_per_shipment_gbp
+        FROM b WHERE ps >= CAST($period_start AS DATE) - INTERVAL 6 DAY AND ps <= CAST($period_end AS DATE) GROUP BY lane),
+      prev AS (
+        SELECT lane, ROUND(100.0 * SUM(on_time_count) / SUM(shipments_count), 1) AS prior_on_time_pct, ROUND(AVG(fill_rate_avg_pct), 1) AS prior_fill_rate_pct
+        FROM b WHERE ps >= CAST($period_start AS DATE) - INTERVAL 6 DAY - CAST(CAST($period_end AS DATE) - CAST($period_start AS DATE) + 1 AS INTEGER) * INTERVAL 1 DAY
+          AND ps < CAST($period_start AS DATE) - INTERVAL 6 DAY GROUP BY lane)
+      SELECT cur.lane, cur.shipments, cur.late_shipments, cur.on_time_pct, prev.prior_on_time_pct,
+             ROUND(cur.on_time_pct - prev.prior_on_time_pct, 1) AS on_time_change_pts,
+             cur.fill_rate_pct, prev.prior_fill_rate_pct, ROUND(cur.fill_rate_pct - prev.prior_fill_rate_pct, 1) AS fill_rate_change_pts,
+             cur.cost_per_shipment_gbp
+      FROM cur LEFT JOIN prev USING (lane)
+      ORDER BY cur.late_shipments DESC
+    limit: 30
+    example: {lane: "DC1-ST214", period_start: "-14d"}
+
+  - name: list_shipment_exceptions_by_lane
+    desc: "Late, failed or split shipments grouped by lane: counts, average delay, cost and shipment ids."
+    kind: sql
+    args:
+      status: {type: enum, values: [delayed, failed, split], default: delayed, desc: "Exception type"}
+      date_from: {type: date, default: "-14d", desc: "Arrivals since this date"}
+      min_delay_minutes: {type: int, default: 120, desc: "Minimum minutes late to count as delayed"}
+      carrier_id: {}
+    sql: |
+      SELECT s.lane, COUNT(*) AS exception_count, string_agg(DISTINCT s.carrier_id, '; ') AS carriers,
+             array_to_string(list(s.shipment_id ORDER BY s.delay_minutes DESC NULLS LAST)[1:6], '; ') AS worst_shipment_ids,
+             ROUND(AVG(s.delay_minutes), 0) AS avg_delay_minutes, ROUND(SUM(s.freight_cost_gbp), 2) AS total_cost_gbp
+      FROM shipments s
+      WHERE s.origin_site_id LIKE 'DC%' AND s.actual_arrival >= CAST($date_from AS DATE)
+        AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+        AND (($status = 'delayed' AND s.delay_minutes >= $min_delay_minutes)
+             OR ($status = 'failed' AND s.status = 'failed')
+             OR ($status = 'split' AND s.is_split = TRUE))
+      GROUP BY s.lane ORDER BY exception_count DESC
+    limit: 30
+    example: {}
+  - name: get_lane_fill_rate_trend
+    desc: Weekly fill-rate trend for one lane, or for the lanes whose fill rate fell most when no lane is given.
+    kind: sql
+    args:
+      lane: {desc: "Lane code, e.g. DC1-ST214; blank for the lanes with the biggest fall"}
+      weeks_back: {type: int, default: 8, desc: "Number of weeks to analyse"}
+    sql: |
+      WITH w AS (
+        SELECT cp.lane, cp.period_start, ROUND(AVG(cp.fill_rate_avg_pct), 1) AS fill_rate_pct, SUM(cp.shipments_count) AS shipments,
+               ROUND(SUM(cp.total_cost_gbp), 0) AS weekly_cost_gbp
+        FROM carrier_performance cp
+        WHERE cp.period_start >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK) AND ($lane IS NULL OR cp.lane = $lane)
+        GROUP BY cp.lane, cp.period_start),
+      d AS (
+        SELECT lane, ROUND(AVG(fill_rate_pct) FILTER (WHERE period_start < CAST($as_of AS DATE) - INTERVAL 14 DAY)
+               - AVG(fill_rate_pct) FILTER (WHERE period_start >= CAST($as_of AS DATE) - INTERVAL 14 DAY), 1) AS fill_rate_fall_pts
+        FROM w GROUP BY lane)
+      SELECT w.lane, w.period_start, w.shipments, w.fill_rate_pct, w.weekly_cost_gbp, d.fill_rate_fall_pts
+      FROM w JOIN d USING (lane)
+      WHERE $lane IS NOT NULL OR d.lane IN (SELECT lane FROM d ORDER BY fill_rate_fall_pts DESC NULLS LAST LIMIT 3)
+      ORDER BY d.fill_rate_fall_pts DESC NULLS LAST, w.lane, w.period_start
+    limit: 52
+    example: {lane: "DC1-ST214"}
+
+  - name: get_carrier_on_time_performance
+    desc: On-time delivery by carrier on a lane or all lanes over a period, with fill rate and cost per shipment.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {desc: "Lane code, blank for all"}
+      lanes: {type: list, desc: "Several lane codes, e.g. DC1-ST150,DC1-ST151"}
+      period_start: {type: date, default: "-90d", desc: "Start of analysis period"}
+      period_end: {type: date, default: "+0d", desc: "End of analysis period"}
+    sql: |
+      SELECT cp.carrier_id, c.name AS carrier_name,
+             COUNT(DISTINCT cp.lane) AS lanes, SUM(cp.shipments_count) AS shipments,
+             SUM(cp.shipments_count - cp.on_time_count) AS late_shipments,
+             ROUND(100.0 * SUM(cp.on_time_count) / SUM(cp.shipments_count), 1) AS on_time_pct,
+             ROUND(AVG(cp.fill_rate_avg_pct), 1) AS fill_rate_pct,
+             ROUND(SUM(cp.total_cost_gbp) / SUM(cp.shipments_count), 0) AS cost_per_shipment_gbp
+      FROM carrier_performance cp
+      LEFT JOIN master.carriers c ON c.carrier_id = cp.carrier_id
+      WHERE ($carrier_id IS NULL OR cp.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR cp.lane = $lane)
+        AND ($lanes IS NULL OR list_contains($lanes, cp.lane))
+        AND cp.period_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY AND cp.period_start <= CAST($period_end AS DATE)
+      GROUP BY cp.carrier_id, c.name
+      ORDER BY on_time_pct DESC
+    limit: 50
+    example: {lane: "DC1-ST214"}
+
+  - name: get_carrier_cutoff_schedule
+    desc: "Carrier collection cut-off hour and days ahead to book, per lane and carrier. Parcel lanes from DC2 serve e-commerce; road lanes serve stores."
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane code or prefix, e.g. DC2-GB or DC2 for every lane from Daventry"}
+      mode: {type: enum, values: [road, parcel], desc: "Transport mode, blank for all"}
+    sql: |
+      SELECT cl.carrier_id, c.name AS carrier_name, cl.lane, cl.mode, cl.cutoff_hour,
+             printf('%02d:00', cl.cutoff_hour) AS collection_cutoff,
+             cl.cutoff_day_offset AS days_ahead_to_book, cl.weekly_capacity_trips AS collections_per_week, cl.pct_allocation, cl.status
+      FROM carriers_lanes cl LEFT JOIN master.carriers c ON c.carrier_id = cl.carrier_id
+      WHERE ($carrier_id IS NULL OR cl.carrier_id = $carrier_id) AND ($mode IS NULL OR cl.mode = $mode)
+        AND ($lane IS NULL OR cl.lane = $lane OR cl.lane LIKE $lane || '-%')
+      ORDER BY cl.lane, cl.cutoff_hour DESC, cl.carrier_id
+    limit: 100
+    example: {lane: "DC2"}
+
+  - name: get_carrier_for_inbound_shipment
+    desc: "Carrier, mode and delivery details for inbound shipments of a purchase order or supplier, with delays."
+    kind: sql
+    args:
+      po_id: {desc: "Purchase order id"}
+      supplier_id: {}
+      date_from: {type: date, default: "-56d", desc: "Planned arrival on or after (ignored when po_id is given)"}
+    sql: |
+      SELECT s.shipment_id, s.po_id, pur.supplier_id, s.carrier_id, c.name AS carrier_name,
+             s.mode, s.status, s.planned_arrival, s.actual_arrival, s.delay_minutes, s.weight_kg, s.units
+      FROM shipments s
+      JOIN master.purchase_orders pur ON pur.po_id = s.po_id
+      LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
+      WHERE s.po_id IS NOT NULL AND ($po_id IS NULL OR s.po_id = $po_id) AND ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+        AND ($po_id IS NOT NULL OR CAST(s.planned_arrival AS DATE) >= CAST($date_from AS DATE))
+      ORDER BY s.planned_arrival DESC
+    limit: 50
+    example: {po_id: "PO-2026-004003"}
+  - name: get_carrier_next_day_coverage_by_postcode
+    desc: "Retrieves carrier next-day delivery coverage by postcode."
+    kind: select
+    from: postcodes
+    filters:
+      postcode: {op: like, desc: "Postcode or prefix, e.g. M1"}
+      next_day_available: {desc: "true for areas the carrier covers next-day, false for areas it does not; blank for both"}
+      carrier_id: {desc: "Parcel carrier id, blank for all carriers"}
+      region: {desc: "Region, blank for all"}
+    columns: [postcode, region, carrier_id, next_day_available, next_day_cost_gbp]
+    order: postcode, carrier_id
+    limit: 100
+    example: {}
+
+  - name: get_carrier_claims_history
+    desc: "Damage and loss claims by carrier and type: counts, value claimed, recovered and still unrecovered, worst first."
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_type: {type: enum, values: [damage_claim, loss_claim], desc: "Claim type, blank for both"}
+      period_start: {type: date, default: "-365d", desc: "Claims from this date onwards"}
+    sql: |
+      SELECT ci.carrier_id, c.name AS carrier_name, ci.incident_type, COUNT(*) AS claims,
+             ROUND(SUM(ci.claim_value_gbp), 0) AS claim_value_gbp, ROUND(SUM(ci.recovery_value_gbp), 0) AS recovered_gbp,
+             ROUND(SUM(ci.claim_value_gbp - ci.recovery_value_gbp), 0) AS unrecovered_gbp,
+             COUNT(*) FILTER (WHERE ci.status IN ('open', 'disputed')) AS still_open
+      FROM carrier_incidents ci LEFT JOIN master.carriers c ON c.carrier_id = ci.carrier_id
+      WHERE ci.incident_type IN ('damage_claim', 'loss_claim') AND ($incident_type IS NULL OR ci.incident_type = $incident_type)
+        AND ($carrier_id IS NULL OR ci.carrier_id = $carrier_id) AND ci.incident_date >= CAST($period_start AS DATE)
+      GROUP BY ci.carrier_id, c.name, ci.incident_type
+      ORDER BY unrecovered_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_carrier_concentration_risk
+    desc: "Share of volume by carrier and dependency risk assessment."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT ci.carrier_id, c.name AS carrier_name,
+             COUNT(DISTINCT ci.lane) AS lanes_served,
+             SUM(ci.shipments_count) AS total_shipments,
+             ROUND(100.0 * SUM(ci.shipments_count) / SUM(SUM(ci.shipments_count)) OVER (), 1) AS pct_volume,
+             ROUND(AVG(ci.on_time_pct), 1) AS avg_on_time_pct
+      FROM carrier_performance ci
+      LEFT JOIN master.carriers c ON c.carrier_id = ci.carrier_id
+      WHERE ci.period_start >= CAST($period_start AS DATE)
+      GROUP BY ci.carrier_id, c.name
+      ORDER BY pct_volume DESC
+    limit: 50
+    example: {}
+
+  - name: calculate_lane_cost_scenario
+    desc: Costs a lane carrier-mix scenario from last quarter's pallets and rate cards, shifting a share to another rate per pallet.
+    kind: sql
+    args:
+      lanes: {type: list, required: true, desc: "Lane codes, e.g. DC1-ST150,DC1-ST151"}
+      shift_share_pct: {type: int, default: 0, desc: "Share of pallets moved to the new carrier or network, e.g. 40"}
+      shift_rate_per_pallet_gbp: {type: float, desc: "Rate per pallet for the moved share"}
+    sql: |
+      WITH vol AS (
+        SELECT s.lane, SUM(s.pallets) AS pallets FROM shipments s
+        WHERE list_contains($lanes, s.lane) AND s.actual_departure >= CAST($as_of AS DATE) - INTERVAL 91 DAY GROUP BY s.lane),
+      rate AS (
+        SELECT cl.lane, SUM(cl.rate_per_pallet_gbp * cl.pct_allocation) / SUM(cl.pct_allocation) AS rate_per_pallet
+        FROM carriers_lanes cl WHERE cl.status IN ('active', 'trial') AND list_contains($lanes, cl.lane) GROUP BY cl.lane)
+      SELECT COUNT(*) AS lanes, SUM(vol.pallets) AS pallets_last_91d,
+             ROUND(SUM(vol.pallets * rate.rate_per_pallet) / SUM(vol.pallets), 2) AS current_rate_per_pallet_gbp,
+             ROUND(SUM(vol.pallets * rate.rate_per_pallet), 0) AS current_cost_gbp,
+             $shift_share_pct AS shift_share_pct, $shift_rate_per_pallet_gbp AS shift_rate_per_pallet_gbp,
+             ROUND(SUM(vol.pallets * rate.rate_per_pallet) * (1 - $shift_share_pct / 100.0)
+                   + SUM(vol.pallets) * $shift_share_pct / 100.0 * COALESCE($shift_rate_per_pallet_gbp, SUM(vol.pallets * rate.rate_per_pallet) / SUM(vol.pallets)), 0) AS scenario_cost_gbp,
+             'scenario = cost x (1 - share) + pallets x share x new rate' AS formula
+      FROM vol JOIN rate USING (lane)
+    limit: 1
+    example: {lanes: "DC1-ST150,DC1-ST151", shift_share_pct: 40, shift_rate_per_pallet_gbp: 20}
+
+  - name: calculate_scenario_cost_and_service
+    desc: "Calculates cost and service outcome of an allocation scenario."
+    kind: sql
+    args:
+      scenario_id: {desc: "Scenario id, e.g. SCN-000001"}
+    sql: |
+      SELECT sce.scenario_id, sce.scenario_type, sce.lanes_affected,
+             sce.volume_units, ROUND(sce.total_cost_gbp, 2) AS total_cost_gbp,
+             ROUND(sce.projected_on_time_pct, 1) AS projected_on_time_pct,
+             ROUND(sce.projected_fill_rate_pct, 1) AS projected_fill_rate_pct,
+             sce.risk_rating,
+             CASE WHEN sce.total_cost_gbp > 0 THEN ROUND(sce.total_cost_gbp / sce.volume_units, 2) ELSE 0 END AS cost_per_unit_gbp
+      FROM allocation_scenarios sce
+      WHERE sce.scenario_id = $scenario_id
+    limit: 1
+    example: {scenario_id: "SCN-000001"}
+
+  - name: calculate_transfer_cost
+    desc: Transport cost to move units of a SKU between two sites, from contracted lane rates per pallet.
+    kind: sql
+    args:
+      from_site_id: {required: true, desc: "Source site, e.g. DC1"}
+      to_site_id: {required: true, desc: "Destination site, e.g. ST150"}
+      sku: {required: true}
+      units: {type: int, required: true, desc: "Units to transfer"}
+    sql: |
+      WITH p AS (SELECT sku, name, weight_kg FROM master.products WHERE sku = $sku),
+      lane_rate AS (
+        SELECT SUM(rate_per_pallet_gbp * pct_allocation) / SUM(pct_allocation) AS r FROM carriers_lanes
+        WHERE lane = $from_site_id || '-' || $to_site_id AND status IN ('active', 'trial')),
+      net AS (SELECT AVG(rate_per_pallet_gbp) AS r FROM carriers_lanes WHERE lane LIKE $from_site_id || '-%' AND status = 'active')
+      SELECT $from_site_id AS from_site, $to_site_id AS to_site, p.sku, p.name AS product, $units AS units,
+             GREATEST(10, CAST(FLOOR(400 / (p.weight_kg * 1.1)) AS INTEGER)) AS units_per_pallet,
+             CAST(CEIL($units / GREATEST(10, FLOOR(400 / (p.weight_kg * 1.1)))) AS INTEGER) AS pallets,
+             ROUND(COALESCE(lane_rate.r, net.r), 2) AS rate_per_pallet_gbp,
+             CASE WHEN lane_rate.r IS NOT NULL THEN 'contracted lane rate' ELSE 'average of lanes from the source site' END AS rate_basis,
+             ROUND(CEIL($units / GREATEST(10, FLOOR(400 / (p.weight_kg * 1.1)))) * COALESCE(lane_rate.r, net.r), 2) AS transport_cost_gbp,
+             'cost = pallets x rate per pallet; pallets from 400 kg per pallet' AS formula
+      FROM p, lane_rate, net
+    limit: 1
+    example: {from_site_id: "DC1", to_site_id: "ST150", sku: "SKU-100007", units: 500}
+
+  - name: calculate_transport_cost_impact
+    desc: Transport cost impact of centralising, distributing or moving air to sea, using observed cost per unit.
+    kind: sql
+    args:
+      scenario_description: {required: true, desc: "What-if scenario description"}
+      base_volume_units: {type: int, required: true, desc: "Number of units moved per year"}
+      mode_change: {type: enum, values: [centralise, distribute, air_to_ground], default: centralise, desc: "centralise: ship northern volume from DC1 instead of DC3; distribute: the reverse; air_to_ground: air to ocean"}
+    sql: |
+      WITH obs AS (
+        SELECT s.origin_site_id AS origin, SUM(s.freight_cost_gbp) / SUM(s.units) AS cpu
+        FROM shipments s JOIN master.sites st ON st.site_id = s.dest_site_id
+        WHERE st.region IN ('UK North', 'Scotland') AND s.origin_site_id IN ('DC1', 'DC3') AND s.actual_arrival IS NOT NULL
+          AND s.mode = 'road' AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 91 DAY
+        GROUP BY 1),
+      modes AS (
+        SELECT s.mode, SUM(s.freight_cost_gbp) / SUM(s.units) AS cpu FROM shipments s
+        WHERE s.po_id IS NOT NULL AND s.mode IN ('air', 'ocean') AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 364 DAY GROUP BY 1)
+      SELECT $scenario_description AS scenario, $mode_change AS mode_change, $base_volume_units AS base_volume_units,
+             ROUND(CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
+                                     WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
+                                     ELSE (SELECT cpu FROM modes WHERE mode = 'air') END, 3) AS baseline_cost_per_unit_gbp,
+             ROUND(CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
+                                     WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
+                                     ELSE (SELECT cpu FROM modes WHERE mode = 'ocean') END, 3) AS scenario_cost_per_unit_gbp,
+             ROUND($base_volume_units * CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
+                                     WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
+                                     ELSE (SELECT cpu FROM modes WHERE mode = 'air') END, 0) AS baseline_cost_gbp,
+             ROUND($base_volume_units * CASE $mode_change WHEN 'centralise' THEN (SELECT cpu FROM obs WHERE origin = 'DC1')
+                                     WHEN 'distribute' THEN (SELECT cpu FROM obs WHERE origin = 'DC3')
+                                     ELSE (SELECT cpu FROM modes WHERE mode = 'ocean') END, 0) AS scenario_cost_gbp,
+             'cost = units x observed cost per unit (north and Scotland store lanes, last 13 weeks; air and ocean, last 52 weeks)' AS formula
+    limit: 1
+    example: {scenario_description: "Centralise northern volume to DC1", base_volume_units: 50000, mode_change: centralise}
+
+  - name: compare_freight_ledger_to_tms
+    desc: Reconciles freight invoices posted to the ledger against TMS shipment cost by carrier, showing unposted and miscoded amounts.
+    kind: sql
+    args:
+      period_start: {type: date, default: "-28d", desc: "Reconciliation period start"}
+      period_end: {type: date, default: "+0d", desc: "Reconciliation period end"}
+    sql: |
+      WITH t AS (
+        SELECT s.carrier_id, SUM(s.freight_cost_gbp) AS tms_cost FROM shipments s
+        WHERE s.actual_departure IS NOT NULL
+          AND CAST(date_trunc('week', s.actual_departure) AS DATE) BETWEEN CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE)
+              AND CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE)
+        GROUP BY 1),
+      l AS (
+        SELECT fi.carrier_id, SUM(fi.amount_gbp) AS invoiced,
+               SUM(CASE WHEN fi.posted_to_ledger AND fi.gl_account = '5110' THEN fi.amount_gbp ELSE 0 END) AS posted_correctly,
+               SUM(CASE WHEN fi.posted_to_ledger AND fi.gl_account <> '5110' THEN fi.amount_gbp ELSE 0 END) AS miscoded,
+               SUM(CASE WHEN NOT fi.posted_to_ledger THEN fi.amount_gbp ELSE 0 END) AS unposted
+        FROM freight_invoices fi
+        WHERE fi.week_start BETWEEN CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE)
+        GROUP BY 1),
+      j AS (
+        SELECT t.carrier_id, ROUND(t.tms_cost, 0) AS tms_cost_gbp, ROUND(COALESCE(l.posted_correctly, 0), 0) AS ledger_posted_gbp,
+               ROUND(COALESCE(l.unposted, 0), 0) AS invoiced_not_posted_gbp, ROUND(COALESCE(l.miscoded, 0), 0) AS posted_to_wrong_account_gbp,
+               ROUND(t.tms_cost - COALESCE(l.invoiced, 0), 0) AS not_invoiced_or_short_billed_gbp,
+               ROUND(t.tms_cost - COALESCE(l.posted_correctly, 0), 0) AS variance_gbp
+        FROM t LEFT JOIN l USING (carrier_id))
+      SELECT * FROM j
+      UNION ALL
+      SELECT 'TOTAL', SUM(tms_cost_gbp), SUM(ledger_posted_gbp), SUM(invoiced_not_posted_gbp), SUM(posted_to_wrong_account_gbp),
+             SUM(not_invoiced_or_short_billed_gbp), SUM(variance_gbp) FROM j
+      ORDER BY 7 DESC
+    limit: 30
+    example: {}
+
+  - name: calculate_bottleneck_by_day
+    desc: "Per day, forecast pallets (same weekday last year plus growth) against contracted capacity by lane; shows lanes over capacity."
+    kind: sql
+    args:
+      from_date: {type: date, default: "+53d", desc: "First day, e.g. Black Friday"}
+      to_date: {type: date, default: "+80d", desc: "Last day, e.g. Christmas Eve"}
+      growth_pct: {type: int, default: 10, desc: "Growth over last year, percent"}
+    sql: |
+      WITH d AS (SELECT CAST(x AS DATE) AS day FROM generate_series(CAST($from_date AS DATE), CAST($to_date AS DATE), INTERVAL 1 DAY) t(x)),
+      py AS (SELECT s.lane, CAST(s.actual_departure AS DATE) AS pday, SUM(s.pallets) AS pallets FROM shipments s
+             WHERE s.actual_departure >= CAST($from_date AS DATE) - INTERVAL 365 DAY AND s.actual_departure < CAST($to_date AS DATE) - INTERVAL 363 DAY GROUP BY 1, 2),
+      cap AS (SELECT lane, SUM(weekly_capacity_pallets) / 6.0 AS daily FROM carriers_lanes WHERE status = 'active' GROUP BY 1),
+      ld AS (SELECT d.day, py.lane, py.pallets * (1 + $growth_pct / 100.0) AS fc, cap.daily
+             FROM d JOIN py ON py.pday = CAST(d.day - INTERVAL 364 DAY AS DATE) JOIN cap ON cap.lane = py.lane)
+      SELECT ld.day, dayname(ld.day) AS weekday, ROUND(SUM(fc), 0) AS forecast_pallets, ROUND(SUM(daily), 0) AS contracted_pallets_per_day,
+             COUNT(*) FILTER (WHERE fc > daily) AS lanes_over_capacity, ROUND(SUM(GREATEST(fc - daily, 0)), 0) AS pallets_over_capacity,
+             CASE WHEN SUM(GREATEST(fc - daily, 0)) > 0 THEN 'BOTTLENECK' ELSE 'OK' END AS congestion
+      FROM ld WHERE dayofweek(ld.day) <> 0 GROUP BY ld.day ORDER BY ld.day
+    limit: 40
+    example: {}
+  - name: calculate_capacity_gap_by_lane
+    desc: "Compares last year's peak weekly pallets plus growth with contracted weekly capacity per lane, largest gap first."
+    kind: sql
+    args:
+      period_start: {type: date, default: "+49d", desc: "Monday of this year's Black Friday week"}
+      weeks_ahead: {type: int, default: 5, desc: "Peak weeks to cover"}
+      growth_pct: {type: int, default: 10, desc: "Growth over last year's peak, percent"}
+      lane: {desc: "Lane code, blank for all"}
+    sql: |
+      WITH py AS (
+        SELECT s.lane, SUM(s.pallets) / $weeks_ahead AS weekly_pallets FROM shipments s
+        WHERE s.actual_departure >= CAST($period_start AS DATE) - INTERVAL 364 DAY
+          AND s.actual_departure < CAST($period_start AS DATE) - INTERVAL 364 DAY + (INTERVAL ($weeks_ahead) WEEK)
+          AND ($lane IS NULL OR s.lane = $lane) GROUP BY 1),
+      cap AS (SELECT lane, SUM(weekly_capacity_pallets) AS contracted FROM carriers_lanes WHERE status = 'active' GROUP BY 1)
+      SELECT py.lane, cap.contracted AS contracted_pallets_per_week,
+             ROUND(py.weekly_pallets, 0) AS last_year_peak_pallets_per_week,
+             ROUND(py.weekly_pallets * (1 + $growth_pct / 100.0), 0) AS forecast_pallets_per_week,
+             ROUND(py.weekly_pallets * (1 + $growth_pct / 100.0) - cap.contracted, 0) AS gap_pallets_per_week,
+             CASE WHEN py.weekly_pallets * (1 + $growth_pct / 100.0) > cap.contracted THEN 'CAPACITY_SHORT' ELSE 'OK' END AS capacity_status
+      FROM py JOIN cap USING (lane) ORDER BY gap_pallets_per_week DESC
+    limit: 30
+    example: {}
+
+  - name: calculate_delivery_cutoff_dates
+    desc: "Last order date and time per lane and carrier to deliver on a target date, from the carrier collection schedule. Parcel lanes allow for the service level's transit days."
+    kind: sql
+    args:
+      origin_site_id: {required: true, desc: "DC from which orders ship"}
+      delivery_target_date: {type: date, required: true, desc: "Required delivery date"}
+      service_level: {type: enum, values: [standard, next_day, same_day], default: next_day, desc: "Parcel service promised (road store lanes ignore it): standard 4 days from order, next_day 1, same_day 0"}
+      lane: {desc: "Lane code, e.g. DC2-GB; blank for all lanes from the DC"}
+    sql: |
+      SELECT DISTINCT cl.lane,
+             cl.carrier_id,
+             CAST($delivery_target_date AS DATE) - (INTERVAL (CASE WHEN cl.mode = 'parcel'
+                    THEN (CASE $service_level WHEN 'standard' THEN 4 WHEN 'same_day' THEN 0 ELSE 1 END)
+                    ELSE cl.cutoff_day_offset + 1 END) DAY) AS order_cutoff_date,
+             CONCAT(CAST(cl.cutoff_hour AS VARCHAR), ':00') AS cutoff_time,
+             'Orders must be placed by cutoff to deliver on target date' AS note
+      FROM carriers_lanes cl
+      WHERE SUBSTRING(cl.lane, 1, 3) = $origin_site_id
+        AND cl.status = 'active'
+        AND ($lane IS NULL OR cl.lane = $lane)
+      ORDER BY cl.lane, cl.carrier_id
+    limit: 200
+    example: {origin_site_id: "DC1", delivery_target_date: "+7d"}
+
+  - name: calculate_delivery_time_by_scenario
+    desc: Observed transit days from a DC to a store under the current, single-DC or regional-DC network, from last quarter's deliveries.
+    kind: sql
+    args:
+      origin_site_id: {required: true, desc: "Current origin DC, e.g. DC1"}
+      destination_site_id: {required: true, desc: "Store destination, e.g. ST150"}
+      scenario: {type: enum, values: [current, single_dc, regional_dc], default: current, desc: "current: origin as given; single_dc: serve from DC1; regional_dc: serve from DC3"}
+    sql: |
+      WITH o AS (SELECT CASE $scenario WHEN 'single_dc' THEN 'DC1' WHEN 'regional_dc' THEN 'DC3' ELSE $origin_site_id END AS origin)
+      SELECT o.origin AS origin, $destination_site_id AS destination, $scenario AS scenario, COUNT(*) AS deliveries_observed,
+             ROUND(AVG(DATEDIFF('day', CAST(s.actual_departure AS DATE), CAST(s.actual_arrival AS DATE))), 2) AS avg_transit_days,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE s.delay_minutes IS NULL OR s.delay_minutes <= 0) / COUNT(*), 1) AS on_time_pct,
+             'observed departures to arrivals, last 13 weeks' AS basis
+      FROM o JOIN shipments s ON s.origin_site_id = o.origin AND s.dest_site_id = $destination_site_id
+      WHERE s.actual_arrival IS NOT NULL AND s.actual_departure >= CAST(date_trunc('week', CAST($as_of AS DATE)) AS DATE) - INTERVAL 91 DAY
+      GROUP BY o.origin
+    limit: 1
+    example: {origin_site_id: "DC1", destination_site_id: "ST150", scenario: current}
+
+  - name: calculate_extra_shipping_cost_of_splits
+    desc: Freight cost of split-order shipments over a period, with the extra cost versus shipping each order whole.
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Analysis period start"}
+      date_to: {type: date, default: "+0d", desc: "Analysis period end"}
+    sql: |
+      WITH sp AS (
+        SELECT s.*, ROW_NUMBER() OVER (PARTITION BY s.order_id ORDER BY s.shipment_id) AS rn
+        FROM shipments s
+        WHERE s.is_split = TRUE AND s.mode = 'parcel' AND s.order_id IS NOT NULL AND CAST(s.actual_departure AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(s.actual_departure AS DATE) <= CAST($date_to AS DATE))
+      SELECT COUNT(DISTINCT order_id) AS split_orders, COUNT(*) AS shipments_from_splits,
+             ROUND(SUM(freight_cost_gbp), 2) AS split_freight_cost_gbp,
+             ROUND(SUM(freight_cost_gbp) FILTER (WHERE rn > 1), 2) AS extra_cost_gbp,
+             'extra cost = freight of every shipment after the first for the same order' AS formula
+      FROM sp
+    limit: 1
+    example: {}
+
+  - name: get_actual_delay_and_cost_impact
+    desc: "Observed delay and extra cost from a disruption."
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_id: {desc: "Incident id, blank for all"}
+      lanes: {type: list, desc: "Lane codes the disruption hit, e.g. DC1-ST214,DC1-ST215; blank for all"}
+      incident_from: {type: date, desc: "Only incidents on or after this date, e.g. -30d"}
+    sql: |
+      SELECT ci.incident_id, ci.carrier_id, c.name AS carrier,
+             ci.incident_type, ci.lane, ci.incident_date,
+             COUNT(DISTINCT s.shipment_id) AS affected_shipments,
+             ROUND(AVG(COALESCE(s.delay_minutes, 0)), 0) AS avg_delay_minutes,
+             ROUND(SUM(COALESCE(ci.extra_cost_gbp, 0)), 2) AS extra_cost_gbp,
+             ci.description
+      FROM carrier_incidents ci
+      LEFT JOIN master.carriers c ON c.carrier_id = ci.carrier_id
+      LEFT JOIN shipments s ON s.shipment_id = ci.shipment_id
+      WHERE ($incident_id IS NULL OR ci.incident_id = $incident_id)
+        AND ($carrier_id IS NULL OR ci.carrier_id = $carrier_id)
+        AND ($lanes IS NULL OR list_contains($lanes, ci.lane))
+        AND ($incident_from IS NULL OR ci.incident_date >= CAST($incident_from AS DATE))
+      GROUP BY ci.incident_id, ci.carrier_id, c.name, ci.incident_type,
+               ci.lane, ci.incident_date, ci.description
+      ORDER BY extra_cost_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_air_freight_cost_for_rolled_bookings
+    desc: Air freight cost of recovering rolled ocean bookings, by the ocean carrier that rolled them, with a total. Use for the cost of rolls.
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      period_end: {type: date, default: "+0d", desc: "Analysis period end"}
+    sql: |
+      WITH x AS (
+        SELECT COALESCE(o.carrier_id, 'unknown') AS rolling_carrier_id, af.units, af.cost_gbp
+        FROM air_freight af LEFT JOIN shipments o ON o.shipment_id = af.rolled_shipment_id
+        WHERE af.reason_code = 'carrier_rolled' AND af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)),
+      g AS (SELECT x.rolling_carrier_id, c.name AS carrier, COUNT(*) AS air_recovery_shipments, SUM(units) AS units_airfreighted,
+                   ROUND(SUM(cost_gbp), 2) AS total_air_cost_gbp, ROUND(AVG(cost_gbp), 2) AS avg_cost_per_shipment_gbp
+            FROM x LEFT JOIN master.carriers c ON c.carrier_id = x.rolling_carrier_id GROUP BY 1, 2),
+      u AS (
+        SELECT *, 0 AS sort_group FROM g
+        UNION ALL
+        SELECT 'TOTAL', NULL, SUM(air_recovery_shipments), SUM(units_airfreighted), SUM(total_air_cost_gbp), ROUND(SUM(total_air_cost_gbp) / SUM(air_recovery_shipments), 2), 1 FROM g)
+      SELECT rolling_carrier_id, carrier, air_recovery_shipments, units_airfreighted, total_air_cost_gbp, avg_cost_per_shipment_gbp
+      FROM u ORDER BY sort_group, air_recovery_shipments DESC, total_air_cost_gbp DESC
+    limit: 20
+    example: {period_start: "-90d"}
+
+  - name: get_air_freight_volumes_and_emissions
+    desc: Air freight volumes, cost and estimated CO2e by origin lane, with the CO2e if moved by sea. The first row is the TOTAL over all lanes.
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      period_end: {type: date, default: "+0d", desc: "Analysis period end"}
+    sql: |
+      WITH x AS (
+        SELECT af.origin_site_id || '-' || af.dest_site_id AS lane, COUNT(*) AS air_shipments, SUM(af.units) AS units,
+               ROUND(SUM(af.weight_kg), 0) AS weight_kg, ROUND(SUM(af.cost_gbp), 2) AS cost_gbp,
+               ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.602 / 1000, 2) AS est_air_tonnes_co2e,
+               ROUND(SUM(af.weight_kg) / 1000 * d.km * 0.016 / 1000, 2) AS est_sea_tonnes_co2e
+        FROM air_freight af
+        JOIN (VALUES ('INNSA', 7200), ('VNSGN', 10000), ('BDCGP', 8000), ('CNSHA', 9200), ('CNNGB', 9200), ('CNYTN', 9300), ('TRMER', 3300),
+                     ('NLRTM', 400), ('DEHAM', 800), ('PTLEI', 1500), ('MXZLO', 9000), ('USNYC', 5600)) AS d(port, km) ON d.port = af.origin_site_id
+        WHERE af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)
+        GROUP BY af.origin_site_id, af.dest_site_id, d.km)
+      SELECT *, 'tonnes CO2e = tonnes x km x 0.602 kg per tonne-km (air) or 0.016 (sea) / 1000' AS formula FROM (
+        SELECT 'TOTAL' AS lane, SUM(air_shipments) AS air_shipments, SUM(units) AS units, SUM(weight_kg) AS weight_kg, ROUND(SUM(cost_gbp), 2) AS cost_gbp,
+               ROUND(SUM(est_air_tonnes_co2e), 2) AS est_air_tonnes_co2e, ROUND(SUM(est_sea_tonnes_co2e), 2) AS est_sea_tonnes_co2e FROM x
+        UNION ALL SELECT * FROM x) ORDER BY (lane <> 'TOTAL'), cost_gbp DESC
+    limit: 100
+    example: {period_start: "-90d"}
+
+  - name: get_air_shipment_reason_codes
+    desc: Air freight cost, avoidable cost and shipments grouped by reason code or supplier for a period.
+    kind: sql
+    args:
+      group_by: {type: enum, values: [reason_code, supplier_id], default: reason_code, desc: "Grouping"}
+      reason_code: {type: str, desc: "Filter to one reason, e.g. supplier_late"}
+      supplier_id: {}
+      period_start: {type: date, default: "-90d", desc: "Air freight planned on or after"}
+      period_end: {type: date, default: "+0d", desc: "Air freight planned on or before"}
+    sql: |
+      SELECT CASE $group_by WHEN 'supplier_id' THEN af.supplier_id ELSE af.reason_code END AS grouped_by,
+             COUNT(*) AS shipments, SUM(af.units) AS units, ROUND(SUM(af.cost_gbp), 0) AS cost_gbp,
+             ROUND(SUM(af.cost_gbp) FILTER (WHERE af.avoidable), 0) AS avoidable_cost_gbp,
+             ROUND(100.0 * SUM(af.cost_gbp) FILTER (WHERE af.avoidable) / SUM(af.cost_gbp), 0) AS avoidable_pct,
+             string_agg(DISTINCT af.avoided_by, '; ') AS avoided_by
+      FROM air_freight af
+      WHERE af.planned_date >= CAST($period_start AS DATE) AND af.planned_date <= CAST($period_end AS DATE)
+        AND ($reason_code IS NULL OR af.reason_code = $reason_code) AND ($supplier_id IS NULL OR af.supplier_id = $supplier_id)
+      GROUP BY 1
+      ORDER BY cost_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_split_shipment_rate_trend
+    desc: "Weekly split-order rate: parcel orders, orders split across shipments, and cross-DC splits."
+    kind: sql
+    args:
+      weeks_back: {type: int, default: 8, desc: "Number of weeks to analyse"}
+    sql: |
+      SELECT CAST(date_trunc('week', CAST(s.actual_departure AS TIMESTAMP)) AS DATE) AS week_start,
+             COUNT(DISTINCT s.order_id) AS orders,
+             COUNT(DISTINCT CASE WHEN s.is_split THEN s.order_id END) AS split_orders,
+             ROUND(100.0 * COUNT(DISTINCT CASE WHEN s.is_split THEN s.order_id END) / NULLIF(COUNT(DISTINCT s.order_id), 0), 1) AS split_rate_pct,
+             COUNT(DISTINCT CASE WHEN s.is_split AND s.origin_site_id <> 'DC2' THEN s.order_id END) AS orders_with_second_shipment_from_other_dc
+      FROM shipments s
+      WHERE s.mode = 'parcel' AND s.order_id IS NOT NULL AND s.actual_departure >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK)
+      GROUP BY 1 ORDER BY 1
+    limit: 52
+    example: {}
+  - name: list_in_transit_shipments
+    desc: "In-transit shipments with planned arrival, units and days late versus plan where already delayed."
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {desc: "Lane code, blank for all"}
+      mode: {type: enum, values: [ocean, air, road, rail, parcel], desc: "Mode, blank for all"}
+    sql: |
+      SELECT s.shipment_id, s.po_id, s.carrier_id, s.lane, s.mode, s.planned_arrival, s.units, s.status,
+             GREATEST(0, CAST($as_of AS DATE) - CAST(s.planned_arrival AS DATE)) AS days_past_planned_arrival
+      FROM shipments s
+      WHERE s.status = 'in_transit' AND s.mode <> 'parcel' AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id) AND ($lane IS NULL OR s.lane = $lane)
+        AND ($mode IS NULL OR s.mode = $mode)
+      ORDER BY days_past_planned_arrival DESC, s.planned_arrival
+    limit: 100
+    example: {}
+
+  - name: list_open_shipments_by_lane
+    desc: "Open planned and booked shipments grouped by lane with units, cost and the shipment ids to act on."
+    kind: sql
+    args:
+      lane: {desc: "Lane code, blank for all"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+    sql: |
+      SELECT s.lane, COUNT(*) AS open_shipments, SUM(s.units) AS total_units, ROUND(SUM(s.freight_cost_gbp), 2) AS estimated_cost_gbp,
+             MIN(CAST(s.planned_departure AS DATE)) AS next_departure,
+             array_to_string(list(s.shipment_id ORDER BY s.planned_departure)[1:6], '; ') AS first_shipment_ids
+      FROM shipments s
+      WHERE s.status IN ('planned', 'booked') AND ($lane IS NULL OR s.lane = $lane) AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+      GROUP BY s.lane ORDER BY total_units DESC
+    limit: 50
+    example: {}
+
+  - name: list_planned_shipments_by_date_window
+    desc: "Planned and booked shipments departing in a date window, with carrier, lane and units."
+    kind: sql
+    args:
+      date_from: {type: date, default: "+0d", desc: "Departing on or after"}
+      date_to: {type: date, default: "+14d", desc: "Departing on or before"}
+      lane: {desc: "Lane code, blank for all"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+    sql: |
+      SELECT s.shipment_id, s.carrier_id, s.lane, s.planned_departure, s.planned_arrival, s.units, s.pallets, s.status
+      FROM shipments s
+      WHERE s.status IN ('planned', 'booked') AND CAST(s.planned_departure AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(s.planned_departure AS DATE) <= CAST($date_to AS DATE) AND ($lane IS NULL OR s.lane = $lane)
+        AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+      ORDER BY s.units DESC, s.planned_departure
+    limit: 100
+    example: {}
+
+  - name: list_routes_with_hours_breaches
+    desc: "Routes where drivers breached or neared hours limits."
+    kind: select
+    from: route_hours_breaches
+    filters:
+      route_id: {desc: "Route id, blank for all"}
+      breach_type: {desc: "Type of breach, blank for all"}
+      status: {default: reported, desc: "Status filter"}
+    columns: [breach_id, route_id, driver_id, breach_type, hours_breached, status]
+    order: hours_breached DESC
+    limit: 100
+    example: {}
+
+  - name: get_route_plan_utilisation
+    desc: "Planned utilisation, hours and stops per route in a date range, with hours-limit breaches reported against each."
+    kind: sql
+    args:
+      lane: {desc: "Lane code, blank for all"}
+      date_from: {type: date, default: "-28d", desc: "Routes on or after"}
+      date_to: {type: date, default: "+7d", desc: "Routes on or before"}
+    sql: |
+      SELECT rp.route_id, rp.date, rp.lane, rp.carrier_id, rp.vehicle_type, rp.stops_count, rp.planned_hours, rp.planned_utilisation_pct, rp.status,
+             COALESCE(SUM(b.hours_breached), 0) AS hours_breached
+      FROM route_plans rp LEFT JOIN route_hours_breaches b ON b.route_id = rp.route_id
+      WHERE ($lane IS NULL OR rp.lane = $lane) AND rp.date >= CAST($date_from AS DATE) AND rp.date <= CAST($date_to AS DATE)
+      GROUP BY ALL ORDER BY hours_breached DESC, rp.planned_utilisation_pct DESC
+    limit: 60
+    example: {}
+
+  - name: update_route_plan
+    desc: "Changes the stops, sequence or vehicle assignment in a route plan."
+    kind: update
+    table: route_plans
+    args:
+      stops_count: {type: int, desc: "New number of stops"}
+      vehicle_type: {desc: "New vehicle type, e.g. articulated"}
+      status: {type: enum, values: [planned, active, completed, cancelled], desc: "New status"}
+    example: {route_id: "RTE-900001", vehicle_type: "7.5t", stops_count: 9}
+
+  - name: get_planned_stop_time_assumptions
+    desc: "Stop-time and service-time assumptions used in route plans."
+    kind: select
+    from: planned_stops
+    filters:
+      lane: {desc: "Lane code, blank for all"}
+    columns: [stop_id, lane, customer_or_store, stop_time_minutes, frequency_per_week]
+    order: lane
+    limit: 200
+    example: {}
+
+  - name: update_planned_stop_time_assumption
+    desc: "Changes the planned stop-time allowance used for a customer or drop."
+    kind: update
+    table: planned_stops
+    set: {stop_time_minutes: "{stop_time_minutes}", updated_at: "$as_of"}
+    args:
+      stop_time_minutes: {required: true, type: int, desc: "New stop time in minutes"}
+    example: {stop_id: "STP-000001", stop_time_minutes: 40}
+
+  - name: update_planning_buffer_for_lane
+    desc: Changes the transit-time planning buffer in days for an inbound lane.
+    kind: update
+    table: lane_buffers
+    key_arg: lane
+    args:
+      planning_buffer_days: {required: true, type: int, desc: "New buffer in days"}
+      basis: {desc: "What the new buffer is based on, e.g. observed ETA variance"}
+    example: {lane: "CNSHA-GBFXT", planning_buffer_days: 4, basis: "Observed ETA variance"}
+
+  - name: update_shipment_routing
+    desc: "Changes the routing, hold status or departure window of an open shipment."
+    kind: update
+    table: shipments
+    set: {updated_at: "$as_of"}
+    args:
+      lane: {desc: "New lane if different"}
+      status: {type: enum, values: [planned, booked, in_transit, held], desc: "New status"}
+      reason: {desc: "Why the routing or hold changed"}
+    example: {shipment_id: "SHP-000001", status: planned}
+
+  - name: reassign_shipment_to_carrier
+    desc: "Changes the assigned carrier on a planned or open shipment."
+    kind: update
+    table: shipments
+    set: {updated_at: "$as_of"}
+    args:
+      carrier_id: {required: true, desc: "New carrier id"}
+      reason: {desc: "Why the load is being reassigned, e.g. backup carrier for lane disruption"}
+    example: {shipment_id: "SHP-000001", carrier_id: "CAR-001", reason: "Backup carrier"}
+
+  - name: remove_carrier_from_lane_allocation
+    desc: "Removes a carrier from a lane's allocation."
+    kind: update
+    table: carriers_lanes
+    set: {status: blocked}
+    args: []
+    example: {carrier_id: "CAR-003", lane: "DC1-ST214"}
+
+  - name: run_tender_award_scenario
+    desc: "Reallocates road volume after a tender: exited carriers' shipments move to the others pro rata; returns cost and on-time."
+    kind: sql
+    args:
+      exit_carrier_ids: {type: list, required: true, desc: "Carriers to exit, e.g. CAR-003"}
+      period_start: {type: date, default: "-90d", desc: "Volume and performance basis"}
+    sql: |
+      WITH b AS (
+        SELECT cp.carrier_id, SUM(cp.shipments_count) AS shipments, SUM(cp.total_cost_gbp) AS cost,
+               100.0 * SUM(cp.on_time_count) / SUM(cp.shipments_count) AS on_time
+        FROM carrier_performance cp WHERE cp.period_start >= CAST($period_start AS DATE) GROUP BY 1),
+      k AS (SELECT * FROM b WHERE NOT list_contains($exit_carrier_ids, carrier_id)),
+      mv AS (SELECT COALESCE(SUM(shipments), 0) AS moved FROM b WHERE list_contains($exit_carrier_ids, carrier_id)),
+      r AS (
+        SELECT k.carrier_id, k.shipments AS current_shipments,
+               ROUND(k.shipments + mv.moved * k.shipments / (SELECT SUM(shipments) FROM k), 0) AS scenario_shipments,
+               ROUND(k.on_time, 1) AS on_time_pct, ROUND(k.cost / k.shipments, 0) AS cost_per_shipment_gbp
+        FROM k, mv)
+      SELECT r.carrier_id, c.name AS carrier, r.current_shipments, r.scenario_shipments, r.on_time_pct, r.cost_per_shipment_gbp FROM r
+      LEFT JOIN master.carriers c USING (carrier_id)
+      UNION ALL
+      SELECT 'TOTAL', 'before: ' || ROUND((SELECT SUM(cost) FROM b), 0) || ' GBP, ' || ROUND((SELECT SUM(on_time * shipments) / SUM(shipments) FROM b), 1) || '% on time',
+             (SELECT SUM(shipments) FROM b), SUM(scenario_shipments), ROUND(SUM(on_time_pct * scenario_shipments) / SUM(scenario_shipments), 1),
+             ROUND(SUM(cost_per_shipment_gbp * scenario_shipments) / SUM(scenario_shipments), 0) FROM r
+      ORDER BY 1
+    limit: 20
+    example: {exit_carrier_ids: "CAR-003"}
+
+  - name: get_shipment_volumes_by_lane
+    desc: "Shipment volumes, pallets and freight cost by lane and carrier over a period. Set group_by=carrier for one total row per carrier."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      origin_site_id: {desc: "Origin site or port id, e.g. DC1; blank for all"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
+      carrier_id: {desc: "Carrier id, blank for all"}
+      group_by: {type: enum, values: [lane, carrier], default: lane, desc: "lane = one row per lane and carrier; carrier = one total row per carrier"}
+    sql: |
+      SELECT CASE WHEN $group_by = 'carrier' THEN 'all lanes' ELSE s.lane END AS lane, s.carrier_id, c.name AS carrier_name,
+             COUNT(*) AS shipments,
+             SUM(s.units) AS total_units,
+             SUM(s.pallets) AS total_pallets,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS total_cost_gbp
+      FROM shipments s
+      LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
+      WHERE s.actual_departure >= CAST($period_start AS DATE)
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($carrier_id IS NULL OR s.carrier_id = $carrier_id)
+      GROUP BY 1, s.carrier_id, c.name
+      ORDER BY total_cost_gbp DESC, 1, s.carrier_id
+    limit: 200
+    example: {}
+
+  - name: get_contracted_capacity_by_lane
+    desc: "Contracted carrier capacity by lane and week."
+    kind: select
+    from: carriers_lanes
+    filters:
+      lane: {desc: "Lane code, blank for all"}
+      status: {default: active, desc: "Allocation status"}
+    columns: [lane, carrier_id, mode, weekly_capacity_trips, weekly_capacity_pallets, rate_per_trip_gbp]
+    order: lane
+    limit: 100
+    example: {lane: "DC1-ST001"}
+
+  - name: get_load_volumes_by_lane
+    desc: Historic shipments, pallets and delivery windows for one or more lanes over recent weeks, with weekly averages.
+    kind: sql
+    args:
+      lanes: {type: list, required: true, desc: "Lane codes, e.g. DC1-ST150,DC1-ST151"}
+      weeks_back: {type: int, default: 13, desc: "Number of weeks to analyse"}
+    sql: |
+      SELECT s.lane, COUNT(*) AS shipments, SUM(s.pallets) AS pallets, SUM(s.units) AS units,
+             ROUND(SUM(s.pallets) / $weeks_back, 1) AS avg_pallets_per_week,
+             ROUND(AVG(s.fill_rate_pct), 1) AS avg_fill_rate_pct,
+             ROUND(SUM(s.freight_cost_gbp), 0) AS freight_cost_gbp,
+             'next day, planned arrival date' AS delivery_window
+      FROM shipments s
+      WHERE list_contains($lanes, s.lane) AND s.actual_departure IS NOT NULL
+        AND s.actual_departure >= CAST($as_of AS DATE) - (INTERVAL ($weeks_back) WEEK)
+      GROUP BY s.lane
+      ORDER BY s.lane
+    limit: 60
+    example: {lanes: "DC1-ST150,DC1-ST151"}
+
+  - name: get_dwell_time_by_node
+    desc: Average weekly dwell hours at ports and DCs for a period, with the change from the earlier period.
+    kind: sql
+    args:
+      node_type: {type: enum, values: [port, hub, depot, dc], desc: "Node type, blank for all"}
+      period_start: {type: date, default: "-35d", desc: "Recent period start; compared with the same length before"}
+    sql: |
+      WITH n AS (SELECT * FROM node_dwell WHERE $node_type IS NULL OR node_type = $node_type)
+      SELECT n.node_type, n.node, SUM(n.visits) FILTER (WHERE n.week_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY) AS visits,
+             ROUND(AVG(n.avg_dwell_hours) FILTER (WHERE n.week_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY), 1) AS avg_dwell_hours,
+             ROUND(AVG(n.avg_dwell_hours) FILTER (WHERE n.week_start < CAST($period_start AS DATE) - INTERVAL 6 DAY), 1) AS earlier_avg_dwell_hours,
+             ROUND(AVG(n.avg_dwell_hours) FILTER (WHERE n.week_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY)
+                   - AVG(n.avg_dwell_hours) FILTER (WHERE n.week_start < CAST($period_start AS DATE) - INTERVAL 6 DAY), 1) AS change_hours
+      FROM n GROUP BY 1, 2 ORDER BY change_hours DESC NULLS LAST
+    limit: 30
+    example: {}
+
+  - name: get_freight_cost_by_sku
+    desc: Inbound freight allocated to SKUs by units on each shipment, with cost per unit and change versus the prior period.
+    kind: sql
+    args:
+      sku: {}
+      supplier_id: {}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start (prior period is the same length before)"}
+      top_n: {type: int, default: 20, desc: "Number of top SKUs by freight cost"}
+    sql: |
+      WITH a AS (
+        SELECT l.sku, p.supplier_id, s.actual_departure, l.units,
+               s.freight_cost_gbp * l.units / SUM(l.units) OVER (PARTITION BY l.shipment_id) AS freight
+        FROM shipment_lines l JOIN shipments s USING (shipment_id) JOIN master.products p ON p.sku = l.sku
+        WHERE s.actual_departure IS NOT NULL AND ($sku IS NULL OR l.sku = $sku) AND ($supplier_id IS NULL OR p.supplier_id = $supplier_id)),
+      c AS (SELECT sku, supplier_id, SUM(units) AS units, SUM(freight) AS freight FROM a
+            WHERE CAST(actual_departure AS DATE) >= CAST($period_start AS DATE) GROUP BY 1, 2),
+      q AS (SELECT sku, SUM(units) AS units, SUM(freight) AS freight FROM a
+            WHERE CAST(actual_departure AS DATE) >= CAST($period_start AS DATE) - CAST(CAST($as_of AS DATE) - CAST($period_start AS DATE) AS INTEGER) * INTERVAL 1 DAY
+              AND CAST(actual_departure AS DATE) < CAST($period_start AS DATE) GROUP BY 1)
+      SELECT c.sku, c.supplier_id, c.units, ROUND(c.freight, 0) AS freight_cost_gbp, ROUND(c.freight / c.units, 3) AS freight_per_unit_gbp,
+             ROUND(q.freight / q.units, 3) AS prior_freight_per_unit_gbp,
+             ROUND(100.0 * (c.freight / c.units) / (q.freight / q.units) - 100, 1) AS change_pct
+      FROM c LEFT JOIN q USING (sku) ORDER BY c.freight DESC
+    limit: 50
+    example: {}
+
+  - name: get_freight_cost_from_tms
+    desc: Freight cost from the transport system by carrier or week for a period, with shipment and unit counts.
+    kind: sql
+    args:
+      group_by: {type: enum, values: [carrier_id, week], default: carrier_id, desc: "Grouping"}
+      period_start: {type: date, default: "-28d", desc: "Departures from this date"}
+      period_end: {type: date, default: "+0d", desc: "Departures up to this date"}
+    sql: |
+      SELECT CASE $group_by WHEN 'week' THEN CAST(CAST(date_trunc('week', s.actual_departure) AS DATE) AS VARCHAR) ELSE s.carrier_id END AS grouped_by,
+             COUNT(*) AS shipments, SUM(s.units) AS units, ROUND(SUM(s.freight_cost_gbp), 0) AS freight_cost_gbp
+      FROM shipments s
+      WHERE s.actual_departure IS NOT NULL
+        AND CAST(date_trunc('week', s.actual_departure) AS DATE) BETWEEN CAST(date_trunc('week', CAST($period_start AS DATE)) AS DATE) AND CAST(date_trunc('week', CAST($period_end AS DATE)) AS DATE)
+      GROUP BY 1 ORDER BY freight_cost_gbp DESC
+    limit: 60
+    example: {}
+
+  - name: get_inland_leg_transit_variance
+    desc: Variance of inland road legs from UK ports to DCs versus planned arrival, in days, by lane. Use to test whether the inland leg explains ETA error.
+    kind: sql
+    args:
+      lane: {desc: "Inland lane code, e.g. GBFXT-DC1; blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.lane, COUNT(*) AS shipments,
+             ROUND(AVG(CAST(s.actual_arrival AS DATE) - CAST(s.planned_arrival AS DATE)), 2) AS avg_days_variance,
+             ROUND(STDDEV(CAST(s.actual_arrival AS DATE) - CAST(s.planned_arrival AS DATE)), 2) AS stddev_days,
+             COUNT(*) FILTER (WHERE CAST(s.actual_arrival AS DATE) <= CAST(s.planned_arrival AS DATE)) AS on_time_count
+      FROM shipments s
+      WHERE s.mode = 'road' AND s.po_id IS NOT NULL AND s.origin_site_id LIKE 'GB%' AND (s.dest_site_id LIKE 'DC%' OR s.dest_site_id LIKE 'GB%')
+        AND s.actual_arrival IS NOT NULL AND ($lane IS NULL OR s.lane = $lane)
+        AND s.actual_arrival >= CAST($period_start AS DATE)
+      GROUP BY s.lane ORDER BY avg_days_variance DESC
+    limit: 50
+    example: {}
+
+  - name: get_long_haul_shipments
+    desc: "Long-haul shipments by lane: road legs above a distance in km, or ocean, air and rail legs, with cost per unit. Worst cost first."
+    kind: sql
+    args:
+      mode: {type: enum, values: [ocean, air, road, rail], default: road, desc: "Transport mode"}
+      origin_site_id: {desc: "Origin site, e.g. DC1; blank for all"}
+      min_distance_km: {type: int, default: 400, desc: "Minimum road distance in km (road only)"}
+      period_start: {type: date, default: "-90d", desc: "Departures from this date"}
+    sql: |
+      SELECT s.lane, s.mode, st.region AS destination_region, d.distance_km, COUNT(*) AS shipments, SUM(s.units) AS units,
+             ROUND(SUM(s.weight_kg), 0) AS weight_kg, ROUND(SUM(s.freight_cost_gbp), 0) AS freight_cost_gbp,
+             ROUND(SUM(s.freight_cost_gbp) / SUM(s.units), 3) AS cost_per_unit_gbp
+      FROM shipments s
+      LEFT JOIN lane_distances d ON d.distance_lane = s.lane
+      LEFT JOIN master.sites st ON st.site_id = s.dest_site_id
+      WHERE s.mode = $mode AND s.actual_departure >= CAST($period_start AS DATE)
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+        AND ($mode <> 'road' OR d.distance_km >= $min_distance_km)
+      GROUP BY s.lane, s.mode, st.region, d.distance_km ORDER BY freight_cost_gbp DESC
+    limit: 50
+    example: {origin_site_id: "DC1"}
+
+  - name: get_on_time_delivery_by_account
+    desc: On-time delivery and late deliveries by receiving account (store), worst first. TMS holds store deliveries only.
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.dest_site_id AS account, st.name AS account_name, COUNT(*) AS deliveries,
+             COUNT(*) FILTER (WHERE s.delay_minutes IS NULL OR s.delay_minutes <= 0) AS on_time_deliveries,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE s.delay_minutes IS NULL OR s.delay_minutes <= 0) / COUNT(*), 1) AS on_time_pct,
+             ROUND(AVG(s.delay_minutes) FILTER (WHERE s.delay_minutes > 0), 0) AS avg_delay_minutes_when_late
+      FROM shipments s LEFT JOIN master.sites st ON st.site_id = s.dest_site_id
+      WHERE s.actual_arrival >= CAST($period_start AS DATE) AND s.origin_site_id LIKE 'DC%' AND s.dest_site_id LIKE 'ST%'
+      GROUP BY s.dest_site_id, st.name HAVING COUNT(*) >= 5
+      ORDER BY on_time_pct ASC, deliveries DESC
+    limit: 50
+    example: {}
+
+  - name: get_outbound_transport_cost_by_channel
+    desc: Outbound transport cost by channel (stores, online) with cost per unit and per shipment for a period.
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT CASE WHEN s.mode = 'parcel' THEN 'online' ELSE 'stores' END AS channel, COUNT(*) AS shipments, SUM(s.units) AS units,
+             ROUND(SUM(s.freight_cost_gbp), 0) AS total_cost_gbp, ROUND(SUM(s.freight_cost_gbp) / SUM(s.units), 2) AS cost_per_unit_gbp,
+             ROUND(AVG(s.freight_cost_gbp), 2) AS avg_cost_per_shipment_gbp
+      FROM shipments s
+      WHERE s.origin_site_id LIKE 'DC%' AND s.mode IN ('road', 'parcel') AND s.actual_departure >= CAST($period_start AS DATE)
+      GROUP BY 1 ORDER BY total_cost_gbp DESC
+    limit: 10
+    example: {}
+
+  - name: get_parcel_volumes_by_service
+    desc: "Parcel volumes, units and cost per parcel by carrier and service level."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.carrier_id, c.name AS carrier_name, s.service_level, COUNT(*) AS parcels, SUM(s.units) AS total_units,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS cost_gbp, ROUND(AVG(s.freight_cost_gbp), 2) AS cost_per_parcel_gbp
+      FROM shipments s LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
+      WHERE s.mode = 'parcel' AND s.actual_departure >= CAST($period_start AS DATE)
+      GROUP BY s.carrier_id, c.name, s.service_level ORDER BY parcels DESC
+    limit: 50
+    example: {period_start: "-90d"}
+  - name: get_reverse_logistics_cost_by_category
+    desc: Returns transport cost, units, cost per unit and net recovery by product category for a period.
+    kind: sql
+    args:
+      category: {desc: "Department, e.g. Womenswear, Home, Electricals; blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Period start"}
+    sql: |
+      SELECT rl.category, SUM(rl.return_units) AS return_units, ROUND(SUM(rl.transport_cost_gbp), 0) AS transport_cost_gbp,
+             ROUND(SUM(rl.transport_cost_gbp) / SUM(rl.return_units), 2) AS transport_cost_per_unit_gbp,
+             ROUND(SUM(rl.processing_cost_gbp), 0) AS processing_cost_gbp, ROUND(SUM(rl.resale_value_gbp), 0) AS resale_value_gbp,
+             ROUND(SUM(rl.resale_value_gbp - rl.transport_cost_gbp - rl.processing_cost_gbp), 0) AS net_recovery_gbp
+      FROM reverse_logistics rl
+      WHERE ($category IS NULL OR lower(rl.category) = lower($category)) AND rl.period_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY
+      GROUP BY rl.category ORDER BY net_recovery_gbp DESC
+    limit: 20
+    example: {period_start: "-90d"}
+
+  - name: get_store_delivery_cost_by_route
+    desc: "Delivery cost per store by origin DC and lane: loads, cost, cost per pallet. Filter by region to compare DCs."
+    kind: sql
+    args:
+      origin_site_id: {desc: "Distribution centre, e.g. DC1"}
+      region: {type: str, desc: "Store region, e.g. UK North or Scotland"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.origin_site_id, s.dest_site_id, st.name AS store, s.lane, COUNT(*) AS shipments_count,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS total_cost_gbp, ROUND(AVG(s.freight_cost_gbp), 2) AS avg_cost_per_drop,
+             ROUND(SUM(s.freight_cost_gbp) / NULLIF(SUM(s.pallets), 0), 2) AS cost_per_pallet_gbp
+      FROM shipments s JOIN master.sites st ON st.site_id = s.dest_site_id
+      WHERE s.origin_site_id LIKE 'DC%' AND s.mode = 'road' AND s.dest_site_id LIKE 'ST%'
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id) AND ($region IS NULL OR lower(st.region) = lower($region))
+        AND s.actual_departure >= CAST($period_start AS DATE)
+      GROUP BY s.origin_site_id, s.dest_site_id, st.name, s.lane ORDER BY total_cost_gbp DESC
+    limit: 100
+    example: {origin_site_id: "DC1", period_start: "-28d"}
+
+  - name: get_tms_freight_cost_by_shipment
+    desc: "Freight cost and shipment-to-order links per shipment."
+    kind: select
+    from: shipments
+    filters:
+      order_id: {desc: "Order id, blank for all"}
+      status: {desc: "Shipment status, blank for all"}
+    columns: [shipment_id, order_id, carrier_id, mode, status, freight_cost_gbp, units, fill_rate_pct, is_split]
+    order: freight_cost_gbp DESC
+    limit: 1000
+    example: {}
+
+  - name: get_transport_spend_by_lane
+    desc: "Transport cost and volume by lane and mode. Set group_by=mode for one total row per mode."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
+      origin_site_id: {desc: "Origin site or port id, e.g. DC1; blank for all"}
+      group_by: {type: enum, values: [lane, mode], default: lane, desc: "lane = one row per lane and mode; mode = one total row per mode"}
+    sql: |
+      SELECT CASE WHEN $group_by = 'mode' THEN 'all lanes' ELSE s.lane END AS lane, s.mode,
+             COUNT(*) AS shipments,
+             SUM(s.units) AS units,
+             SUM(s.pallets) AS pallets,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS cost_gbp,
+             ROUND(SUM(s.freight_cost_gbp) / NULLIF(SUM(s.pallets), 0), 2) AS cost_per_pallet_gbp
+      FROM shipments s
+      WHERE s.actual_departure >= CAST($period_start AS DATE)
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($origin_site_id IS NULL OR s.origin_site_id = $origin_site_id)
+      GROUP BY 1, s.mode
+      ORDER BY cost_gbp DESC, 1, s.mode
+    limit: 200
+    example: {}
+
+  - name: get_carrier_scorecard
+    desc: "Carrier scorecard for a period: on-time, fill rate, cost per shipment, incidents and claims net of recovery."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      WITH p AS (
+        SELECT carrier_id, ROUND(100.0 * SUM(on_time_count) / SUM(shipments_count), 1) AS on_time_pct, ROUND(AVG(fill_rate_avg_pct), 1) AS fill_rate_pct,
+               ROUND(SUM(total_cost_gbp) / SUM(shipments_count), 0) AS cost_per_shipment_gbp, SUM(shipments_count) AS shipments
+        FROM carrier_performance WHERE period_start >= CAST($period_start AS DATE) - INTERVAL 6 DAY GROUP BY 1),
+      i AS (
+        SELECT carrier_id, COUNT(*) AS incidents, ROUND(SUM(claim_value_gbp - recovery_value_gbp + extra_cost_gbp), 0) AS incident_cost_gbp
+        FROM carrier_incidents WHERE incident_date >= CAST($period_start AS DATE) GROUP BY 1)
+      SELECT p.carrier_id, c.name AS carrier_name, p.shipments, p.on_time_pct, p.fill_rate_pct, p.cost_per_shipment_gbp,
+             COALESCE(i.incidents, 0) AS incidents, COALESCE(i.incident_cost_gbp, 0) AS incident_cost_gbp
+      FROM p LEFT JOIN i USING (carrier_id) LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id ORDER BY p.on_time_pct DESC
+    limit: 50
+    example: {}
+
+  - name: get_carrier_spend_and_volume
+    desc: "Carrier spend and volume over a period."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.carrier_id, c.name AS carrier_name,
+             COUNT(*) AS shipments,
+             SUM(s.units) AS units,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS spend_gbp,
+             ROUND(SUM(s.freight_cost_gbp) / NULLIF(SUM(s.units), 0), 2) AS cost_per_unit_gbp
+      FROM shipments s
+      LEFT JOIN master.carriers c ON c.carrier_id = s.carrier_id
+      WHERE s.actual_departure >= CAST($period_start AS DATE)
+      GROUP BY s.carrier_id, c.name
+      ORDER BY spend_gbp DESC
+    limit: 100
+    example: {}
+
+  - name: get_predicted_vs_actual_arrivals_by_lane
+    desc: "Planned versus actual arrival by lane: average days late, share late and early. Use for ETA accuracy."
+    kind: sql
+    args:
+      lane: {desc: "Lane code, e.g. CNSHA-GBFXT; blank for all"}
+      mode: {type: enum, values: [ocean, air, road, rail], desc: "Transport mode, blank for all"}
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+    sql: |
+      SELECT s.lane, s.mode, COUNT(*) AS shipments,
+             ROUND(AVG(DATEDIFF('day', CAST(s.planned_arrival AS DATE), CAST(s.actual_arrival AS DATE))), 2) AS variance_days,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(s.actual_arrival AS DATE) = CAST(s.planned_arrival AS DATE)) / COUNT(*), 1) AS on_time_pct,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(s.actual_arrival AS DATE) < CAST(s.planned_arrival AS DATE)) / COUNT(*), 1) AS early_pct,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE CAST(s.actual_arrival AS DATE) > CAST(s.planned_arrival AS DATE)) / COUNT(*), 1) AS late_pct,
+             MAX(lb.planning_buffer_days) AS planning_buffer_days
+      FROM shipments s LEFT JOIN lane_buffers lb ON lb.buffer_lane = s.lane
+      WHERE s.po_id IS NOT NULL AND s.actual_arrival IS NOT NULL AND ($lane IS NULL OR s.lane = $lane) AND ($mode IS NULL OR s.mode = $mode)
+        AND s.actual_arrival >= CAST($period_start AS DATE)
+      GROUP BY s.lane, s.mode HAVING COUNT(*) >= 3 ORDER BY variance_days DESC
+    limit: 50
+    example: {mode: ocean}
+
+  - name: get_prior_peak_capacity_utilisation
+    desc: Pallets shipped per lane in last year's peak (Black Friday to Christmas) against today's contracted weekly capacity.
+    kind: sql
+    args:
+      lane: {desc: "Lane code, blank for all"}
+      peak_start: {type: date, default: "-315d", desc: "Monday of last year's Black Friday week"}
+      weeks: {type: int, default: 5, desc: "Peak weeks to include"}
+    sql: |
+      WITH w AS (
+        SELECT s.lane, CAST(date_trunc('week', s.actual_departure) AS DATE) AS wk, COUNT(*) AS shipments, SUM(s.pallets) AS pallets,
+               AVG(s.fill_rate_pct) AS fill
+        FROM shipments s
+        WHERE s.actual_departure >= CAST($peak_start AS DATE) AND s.actual_departure < CAST($peak_start AS DATE) + (INTERVAL ($weeks) WEEK)
+          AND ($lane IS NULL OR s.lane = $lane)
+        GROUP BY 1, 2),
+      cap AS (SELECT lane, SUM(weekly_capacity_pallets) AS contracted FROM carriers_lanes WHERE status = 'active' GROUP BY 1)
+      SELECT w.lane, SUM(w.shipments) AS peak_shipments, SUM(w.pallets) AS peak_pallets, MAX(w.pallets) AS busiest_week_pallets,
+             ROUND(AVG(w.fill), 1) AS avg_fill_rate_pct, cap.contracted AS contracted_weekly_pallets,
+             ROUND(100.0 * MAX(w.pallets) / cap.contracted, 0) AS utilisation_pct, 'last year peak' AS source
+      FROM w LEFT JOIN cap USING (lane) GROUP BY w.lane, cap.contracted ORDER BY utilisation_pct DESC NULLS LAST
+    limit: 50
+    example: {lane: "DC1-ST214"}
+
+  - name: list_carrier_incidents_for_period
+    desc: "Carrier service failures and incidents for a period."
+    kind: select
+    from: carrier_incidents
+    filters:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      incident_type: {desc: "Incident type, blank for all"}
+      incident_date: {op: ">=", type: date, default: "-90d", desc: "Incidents from this date"}
+    columns: [incident_id, carrier_id, lane, incident_type, incident_date, claim_value_gbp, status]
+    order: incident_date DESC
+    limit: 100
+    example: {}
+
+  - name: get_carrier_service_failure_costs
+    desc: "Cost of carrier service failures by incident type or carrier: claims net of recovery plus extra cost, largest first."
+    kind: sql
+    args:
+      group_by: {type: enum, values: [incident_type, carrier_id], default: incident_type, desc: "Grouping"}
+      period_start: {type: date, default: "-365d", desc: "Analysis period start"}
+    sql: |
+      SELECT CASE $group_by WHEN 'carrier_id' THEN ci.carrier_id ELSE ci.incident_type END AS grouped_by,
+             COUNT(*) AS incidents, ROUND(SUM(ci.claim_value_gbp - ci.recovery_value_gbp), 0) AS unrecovered_claims_gbp,
+             ROUND(SUM(ci.extra_cost_gbp), 0) AS extra_cost_gbp,
+             ROUND(SUM(ci.claim_value_gbp - ci.recovery_value_gbp + ci.extra_cost_gbp), 0) AS total_cost_gbp
+      FROM carrier_incidents ci
+      WHERE ci.incident_date >= CAST($period_start AS DATE)
+      GROUP BY 1 ORDER BY total_cost_gbp DESC
+    limit: 30
+    example: {}
+
+  - name: search_carriers
+    desc: "Find carriers and forwarders by name or mode; returns carrier ids."
+    kind: select
+    from: master.carriers
+    filters:
+      name: {op: like, desc: "Carrier name or part of it"}
+      mode: {desc: "Transport mode, blank for all"}
+    columns: [carrier_id, name, mode, scope, country]
+    order: name
+    limit: 50
+    example: {}
+
+  - name: get_shipments_by_lane_and_mode
+    desc: "Shipments, units, weight and freight cost by lane and mode, to analyse multi-mode routing. Use origin_region=Asia for the Asia-Europe lanes and period_start/period_end to compare two periods."
+    kind: sql
+    args:
+      period_start: {type: date, default: "-90d", desc: "Analysis period start"}
+      period_end: {type: date, desc: "Analysis period end; blank for up to today"}
+      origin_region: {type: enum, values: [Asia, Europe, Americas], desc: "Region of the origin port, e.g. Asia for Asia-Europe lanes; blank for all lanes"}
+      mode: {type: enum, values: [road, air, ocean, parcel, rail, mixed], desc: "Transport mode, blank for all"}
+    sql: |
+      SELECT s.lane, s.mode,
+             COUNT(*) AS shipments_count,
+             SUM(s.units) AS units,
+             ROUND(SUM(s.weight_kg) / 1000, 1) AS tonnes,
+             ROUND(SUM(s.freight_cost_gbp), 2) AS freight_cost
+      FROM shipments s
+      WHERE s.actual_departure >= CAST($period_start AS DATE)
+        AND ($period_end IS NULL OR s.actual_departure <= CAST($period_end AS DATE))
+        AND ($mode IS NULL OR s.mode = $mode)
+        AND ($origin_region IS NULL OR s.origin_site_id IN (SELECT port_code FROM master.ports WHERE region = $origin_region))
+      GROUP BY s.lane, s.mode
+      ORDER BY freight_cost DESC, s.lane, s.mode
+    limit: 200
+    example: {period_start: "-90d"}
+
+  - name: create_carrier_trial_allocation
+    desc: "Creates a trial allocation sending a share of selected lanes' volume to a named carrier."
+    kind: insert
+    table: allocation_scenarios
+    id_prefix: "TRL-"
+    defaults: {scenario_type: trial_allocation, status: draft}
+    args:
+      lanes_affected: {required: true, desc: "Comma-separated lane codes"}
+      carriers_involved: {required: true, desc: "Comma-separated carrier ids in allocation"}
+      volume_units: {type: int, required: true, desc: "Volume units for trial"}
+      share_pct: {type: int, required: true, desc: "Share of the lanes' volume moved in the trial, e.g. 40"}
+      description: {required: true, desc: "Scenario description"}
+    example: {lanes_affected: "DC1-ST001,DC1-ST002", carriers_involved: "CAR-001", volume_units: 5000, share_pct: 40, description: "Trial with CAR-001"}

@@ -1,0 +1,990 @@
+id: tax_duty
+name: Tax & Duty System
+instructions: >
+  Customs duty rates, import entries, tariff scenarios, VAT returns and postings, transfer pricing policy,
+  tax incentives and compliance tasks. Entry ids look like ENT-000123, scenarios TSC-900001, VAT postings
+  VTX-000123, tasks TCT-000123. Entities are LE-UK, LE-PL, LE-HK. HS codes are matched by prefix (6110, 62046827).
+
+tables:
+  duty_rates:
+    key: [hs_code, origin_country, destination_market, effective_date]
+    cols:
+      hs_code: {type: str, desc: "HS heading, e.g. 6110; covers every longer code beginning with it"}
+      origin_country: {type: str, desc: "ISO country of origin, e.g. VN"}
+      destination_market: {type: str, desc: "Destination market: UK, EU, US"}
+      duty_rate_pct: {type: float, desc: "Standard duty as % of value"}
+      vat_rate_pct: {type: float, desc: "Import VAT as % of value plus duty"}
+      preferential_rate_pct: {type: float, desc: "Rate if preference conditions (proof of origin) are met"}
+      preference_scheme: {type: str, desc: "Trade agreement enabling the preference, e.g. CPTPP"}
+      effective_date: {type: date, desc: "Date this rate took effect"}
+      end_date: {type: date, desc: "Date this rate ended when superseded; blank for the current rate"}
+      last_updated: {type: timestamp, desc: "When this was last updated"}
+
+  import_entries:
+    key: entry_id
+    cols:
+      entry_id: {type: str, desc: "Customs entry, e.g. ENT-000123"}
+      po_id: {type: str, desc: "Purchase order"}
+      sku: {type: str, desc: "Product SKU"}
+      supplier_id: {type: str, desc: "Supplier on the purchase order"}
+      origin_country: {type: str, desc: "ISO country of origin (the supplier's country)"}
+      destination_market: {type: str, desc: "Market the goods were entered into: UK, EU, US"}
+      declared_value_gbp: {type: float, desc: "Declared value for customs"}
+      hs_code_used: {type: str, desc: "HS heading declared"}
+      quantity: {type: int, desc: "Units declared"}
+      duty_paid_gbp: {type: float, desc: "Duty actually paid; blank while held"}
+      vat_paid_gbp: {type: float, desc: "Import VAT actually paid; blank while held"}
+      insurance_gbp: {type: float, desc: "Insurance cost"}
+      freight_gbp: {type: float, desc: "Freight cost"}
+      entry_date: {type: date, desc: "Customs entry date"}
+      cleared_date: {type: date, desc: "Date goods cleared customs"}
+      status: {type: enum, values: [cleared, held, amended, reassessed], desc: "Entry status"}
+      reassessment_exposure_gbp: {type: float, desc: "Extra duty due if the declaration is reassessed"}
+      notes: {type: str, desc: "Classification, valuation or origin notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  vat_transactions:
+    key: vat_txn_id
+    cols:
+      vat_txn_id: {type: str, desc: "VAT posting id, e.g. VTX-000123"}
+      entity_id: {type: str, desc: "Legal entity posting the transaction"}
+      period: {type: str, desc: "VAT return period the posting sits in, e.g. 2026-Q3"}
+      transaction_date: {type: date, desc: "Date of transaction"}
+      invoice_number: {type: str, desc: "Related invoice or reference"}
+      vat_code: {type: str, desc: "VAT code as posted: S standard, Z zero, E exempt"}
+      amount_gbp: {type: float, desc: "Net transaction amount"}
+      vat_gbp: {type: float, desc: "VAT amount as posted"}
+      description: {type: str, desc: "Transaction description"}
+      po_id: {type: str, desc: "Related PO if applicable"}
+      status: {type: enum, values: [posted, corrected, reversed], desc: "Status"}
+      corrected_to_code: {type: str, desc: "VAT code it was corrected to, once corrected"}
+      direction: {type: enum, values: [output, input], desc: "output = VAT on sales, input = VAT on purchases"}
+      tax_point_period: {type: str, desc: "Period the supply actually belongs to, e.g. 2026-Q3"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  vat_returns:
+    key: [entity_id, period]
+    cols:
+      entity_id: {type: str, desc: "Legal entity"}
+      period: {type: str, desc: "VAT period, e.g. 2026-Q3"}
+      box_1_gbp: {type: float, desc: "Box 1: VAT due on sales"}
+      box_2_gbp: {type: float, desc: "Box 2: VAT due on EU acquisitions"}
+      box_4_gbp: {type: float, desc: "Box 4: total VAT due (box 1 + box 2)"}
+      box_5_gbp: {type: float, desc: "Box 5: VAT reclaimed on purchases"}
+      box_6_gbp: {type: float, desc: "Box 6: net VAT payable (box 4 - box 5)"}
+      box_7_gbp: {type: float, desc: "Box 7: sales value excluding VAT"}
+      box_8_gbp: {type: float, desc: "Box 8: purchases value excluding VAT"}
+      expected_box_6_gbp: {type: float, desc: "Expected box 6 based on activity"}
+      variance_gbp: {type: float, desc: "Box 6 minus expected box 6"}
+      submitted: {type: bool, desc: "Whether return submitted"}
+      submitted_date: {type: date, desc: "Date return was submitted"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  transfer_pricing_policies:
+    key: entity_id
+    cols:
+      entity_id: {type: str, desc: "Sourcing entity, e.g. LE-HK"}
+      policy_version: {type: str, desc: "Version of TP policy"}
+      profit_mark_up_pct: {type: float, desc: "Profit mark-up on cost %"}
+      benchmark_low_pct: {type: float, desc: "Low end of the comparables interquartile range for the mark-up %"}
+      benchmark_high_pct: {type: float, desc: "High end of the comparables interquartile range for the mark-up %"}
+      annual_cost_base_gbp: {type: float, desc: "Annual cost base the mark-up is applied to"}
+      challenge_tax_rate_pct: {type: float, desc: "Tax rate applied to profit an authority would reallocate"}
+      open_tax_years: {type: int, desc: "Years still open to challenge"}
+      functions_performed: {type: str, desc: "Functions: sourcing, quality, logistics, etc."}
+      assets_controlled: {type: str, desc: "Assets held"}
+      risks_assumed: {type: str, desc: "Business risks assumed"}
+      comparables_used: {type: bool, desc: "Based on comparable analysis"}
+      documentation_status: {type: enum, values: [complete, incomplete, missing], desc: "Documentation status"}
+      last_audit_date: {type: date, desc: "Date last audited"}
+      exposure_gbp: {type: float, desc: "Tax exposure if the mark-up is challenged, before interest"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  transfer_pricing_documents:
+    key: doc_id
+    cols:
+      doc_id: {type: str, desc: "Document id, e.g. TPD-900001"}
+      entity_id: {type: str, desc: "Entity policy it relates to"}
+      doc_type: {type: str, desc: "Type: functional analysis, comparables study, transfer pricing study"}
+      file_path: {type: str, desc: "Path to file in files/ when stored"}
+      held: {type: bool, desc: "Whether this document is held"}
+      required_by: {type: date, desc: "Deadline to produce if not held"}
+      summary: {type: str, desc: "Brief summary of content"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  tax_compliance_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Task id, e.g. TCT-000123"}
+      task_type: {type: str, desc: "Type: documentation, declaration, audit response, policy"}
+      description: {type: str, desc: "What needs to be done"}
+      entity_id: {type: str, desc: "Entity responsible"}
+      assigned_to: {type: str, desc: "Employee assigned"}
+      due_date: {type: date, desc: "When due"}
+      status: {type: enum, values: [open, in_progress, completed, overdue, cancelled], desc: "Status"}
+      priority: {type: enum, values: [low, medium, high, urgent], desc: "Priority"}
+      raised_date: {type: date, desc: "When task was raised"}
+      completed_date: {type: date, desc: "When task was completed"}
+      notes: {type: str, desc: "Task notes"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  incentive_records:
+    key: incentive_id
+    cols:
+      incentive_id: {type: str, desc: "Incentive record, e.g. INC-900001"}
+      incentive_type: {type: str, desc: "Type: automation relief, renewable energy, RD credit"}
+      entity_id: {type: str, desc: "Entity that qualifies"}
+      site_id: {type: str, desc: "DC or facility where the spend is"}
+      capex_gbp: {type: float, desc: "Planned capital expenditure"}
+      eligible_amount_gbp: {type: float, desc: "Part of the spend that is eligible for relief"}
+      relief_rate_pct: {type: float, desc: "Tax relief as % of eligible"}
+      estimated_relief_gbp: {type: float, desc: "Estimated tax benefit (eligible x rate)"}
+      conditions: {type: str, desc: "Eligibility conditions"}
+      application_deadline: {type: date, desc: "Deadline to apply"}
+      applied: {type: bool, desc: "Whether application submitted"}
+      applied_date: {type: date, desc: "Date applied"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  tariff_scenarios:
+    key: scenario_id
+    cols:
+      scenario_id: {type: str, desc: "Scenario, e.g. TSC-900001"}
+      scenario_name: {type: str, desc: "Scenario description, e.g. 10% tariff on Turkey-origin goods"}
+      base_period: {type: str, desc: "Period this applies to, e.g. 2027"}
+      origin_country: {type: str, desc: "Country affected"}
+      hs_code_range: {type: str, desc: "Goods affected: All goods or one HS heading"}
+      duty_rate_change_pct: {type: float, desc: "Extra duty in percentage points, e.g. 10"}
+      estimated_volume_gbp: {type: float, desc: "Import value affected over the last 12 months"}
+      estimated_duty_impact_gbp: {type: float, desc: "Extra annual duty (volume x change)"}
+      probability_pct: {type: float, desc: "Estimated probability of happening, %"}
+      mitigation_options: {type: str, desc: "Possible mitigations: origin shifts, pricing, etc."}
+      created_date: {type: date, desc: "Date scenario created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  market_rules:
+    key: market_code
+    cols:
+      market_code: {type: str, desc: "Market: UK, EU, US, PL, CZ"}
+      market_name: {type: str, desc: "Market name"}
+      customs_territory: {type: str, desc: "Customs territory whose duty rates apply: UK, EU or US"}
+      import_vat_rate_pct: {type: float, desc: "Standard import VAT rate"}
+      typical_dtc_duty_rate_pct: {type: float, desc: "Typical duty rate on our direct-to-consumer apparel parcels"}
+      duty_de_minimis_gbp: {type: float, desc: "Parcel value below which duty is not charged today"}
+      new_duty_de_minimis_gbp: {type: float, desc: "Threshold after the announced change (0 = removed)"}
+      change_effective_date: {type: date, desc: "When the announced threshold change takes effect"}
+      entry_requirements: {type: text, desc: "Documents and registrations needed to import"}
+      compliance_notes: {type: text, desc: "Other tariff and compliance rules"}
+
+  entity_structure_tax:
+    key: [market, structure]
+    cols:
+      market: {type: str, desc: "Market, e.g. MX"}
+      market_name: {type: str, desc: "Market name"}
+      structure: {type: enum, values: [subsidiary, franchise], desc: "Operating structure"}
+      corporate_tax_rate_pct: {type: float, desc: "Corporate income tax rate"}
+      royalty_withholding_pct: {type: float, desc: "Withholding tax on royalties paid to the UK"}
+      dividend_withholding_pct: {type: float, desc: "Withholding tax on dividends paid to the UK"}
+      vat_rate_pct: {type: float, desc: "Standard VAT rate"}
+      setup_cost_gbp: {type: float, desc: "One-off set-up cost"}
+      annual_compliance_cost_gbp: {type: float, desc: "Annual tax and statutory compliance cost"}
+      tax_treatment: {type: text, desc: "How profits, royalties and VAT are taxed"}
+      liability_and_exit: {type: text, desc: "Liability exposure and exit implications"}
+
+tools:
+  - name: get_current_duty_rates
+    desc: Current duty, VAT and preferential rates for an HS code by origin and market, with any change in the last 12 months. Omit market for UK, EU and US.
+    kind: sql
+    args:
+      hs_code: {required: true}
+      destination_market: {type: str, desc: "Market: UK, EU or US; omit for all three"}
+      origin_country: {desc: "Origin codes, comma-separated, e.g. VN,BD,TR; omit for all origins"}
+    sql: |
+      SELECT c.hs_code, c.origin_country, c.destination_market, c.duty_rate_pct, c.vat_rate_pct,
+             c.preferential_rate_pct, c.preference_scheme, c.effective_date,
+             p.duty_rate_pct AS previous_duty_rate_pct,
+             CASE WHEN p.duty_rate_pct IS NOT NULL
+                  THEN 'Changed in last 12 months: was ' || CAST(round(p.duty_rate_pct, 1) AS VARCHAR) || '% until ' || CAST(p.end_date AS VARCHAR)
+                  ELSE 'No change in last 12 months' END AS change_note
+      FROM duty_rates c
+      LEFT JOIN duty_rates p ON p.hs_code = c.hs_code AND p.origin_country = c.origin_country
+           AND p.destination_market = c.destination_market AND p.end_date IS NOT NULL
+           AND p.end_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+      WHERE c.end_date IS NULL AND starts_with($hs_code, c.hs_code)
+        AND ($destination_market IS NULL OR c.destination_market = $destination_market)
+        AND ($origin_country IS NULL OR list_contains(string_split(upper(replace($origin_country, ' ', '')), ','), c.origin_country))
+      ORDER BY c.destination_market, c.origin_country
+    limit: 60
+    example: {hs_code: "6110", origin_country: VN}
+
+  - name: calculate_duty_per_value
+    desc: Duty and VAT per £10,000 of goods by origin and market, with the duty gap to the cheapest origin listed. Pass several origins to compare.
+    kind: sql
+    args:
+      hs_code: {required: true}
+      origin_country: {desc: "Origin codes, comma-separated, e.g. VN,BD,TR; omit to compare all origins"}
+      destination_market: {type: str, desc: "Market: UK, EU or US; omit for all three"}
+      declared_value_gbp: {type: float, default: 10000, desc: "Value of goods to price"}
+    sql: |
+      WITH r AS (
+        SELECT d.hs_code, d.origin_country, d.destination_market, d.duty_rate_pct, d.vat_rate_pct, d.preferential_rate_pct,
+               round($declared_value_gbp * d.duty_rate_pct / 100.0, 2) AS duty_gbp,
+               round(($declared_value_gbp + $declared_value_gbp * d.duty_rate_pct / 100.0) * d.vat_rate_pct / 100.0, 2) AS vat_gbp,
+               round($declared_value_gbp * COALESCE(d.preferential_rate_pct, d.duty_rate_pct) / 100.0, 2) AS duty_if_preference_met_gbp
+        FROM duty_rates d
+        WHERE d.end_date IS NULL AND starts_with($hs_code, d.hs_code)
+          AND ($destination_market IS NULL OR d.destination_market = $destination_market)
+          AND ($origin_country IS NULL OR list_contains(string_split(upper(replace($origin_country, ' ', '')), ','), d.origin_country))
+      ), s AS (
+        SELECT *, round(duty_gbp - MIN(duty_gbp) OVER (PARTITION BY destination_market), 2) AS duty_above_cheapest_listed_origin_gbp
+        FROM r
+      )
+      SELECT hs_code, origin_country, destination_market, $declared_value_gbp AS declared_value_gbp,
+             duty_rate_pct, vat_rate_pct, duty_gbp, vat_gbp, duty_above_cheapest_listed_origin_gbp,
+             preferential_rate_pct, duty_if_preference_met_gbp,
+             'duty = value * duty_rate%; vat = (value + duty) * vat_rate%' AS formula
+      FROM s
+      ORDER BY destination_market, duty_gbp, origin_country
+    limit: 60
+    example: {hs_code: "6110", origin_country: VN}
+
+  - name: calculate_duty_difference_between_codes
+    desc: Duty difference between two HS codes for the same goods at a given volume. Use for classification disputes; omit origin to compare every origin.
+    kind: sql
+    args:
+      hs_code_1: {required: true, desc: "First HS code, e.g. 6110"}
+      hs_code_2: {required: true, desc: "Alternative HS code, e.g. 6202"}
+      origin_country: {desc: "Only this origin, e.g. VN; omit for all origins"}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+      units: {type: int, default: 80000, desc: "Units imported"}
+      unit_cost_gbp: {type: float, default: 50, desc: "Declared value per unit"}
+    sql: |
+      WITH r1 AS (SELECT origin_country, duty_rate_pct FROM duty_rates d
+                  WHERE d.end_date IS NULL AND d.destination_market = $destination_market AND starts_with($hs_code_1, d.hs_code)),
+           r2 AS (SELECT origin_country, duty_rate_pct FROM duty_rates d
+                  WHERE d.end_date IS NULL AND d.destination_market = $destination_market AND starts_with($hs_code_2, d.hs_code))
+      SELECT $hs_code_1 AS hs_code_1, $hs_code_2 AS hs_code_2, r1.origin_country, $destination_market AS destination_market,
+             $units AS units, $unit_cost_gbp AS unit_cost_gbp, round($units * $unit_cost_gbp, 2) AS total_value_gbp,
+             r1.duty_rate_pct AS code_1_duty_pct, r2.duty_rate_pct AS code_2_duty_pct,
+             round($units * $unit_cost_gbp * r1.duty_rate_pct / 100.0, 2) AS code_1_duty_gbp,
+             round($units * $unit_cost_gbp * r2.duty_rate_pct / 100.0, 2) AS code_2_duty_gbp,
+             round(abs($units * $unit_cost_gbp * (r1.duty_rate_pct - r2.duty_rate_pct) / 100.0), 2) AS duty_difference_gbp,
+             CASE WHEN r1.duty_rate_pct < r2.duty_rate_pct THEN $hs_code_1
+                  WHEN r1.duty_rate_pct > r2.duty_rate_pct THEN $hs_code_2 ELSE 'same duty' END AS cheaper_code,
+             'difference = |rate_1 - rate_2| * units * unit_cost / 100' AS formula
+      FROM r1 JOIN r2 USING (origin_country)
+      WHERE $origin_country IS NULL OR r1.origin_country = $origin_country
+      ORDER BY r1.origin_country
+    limit: 20
+    example: {hs_code_1: "6110", hs_code_2: "6202", origin_country: VN}
+
+  - name: get_duty_paid_by_entry
+    desc: Duty, VAT and insurance paid on cleared customs entries, largest duty first, with the total for the selection. Use for drawback and cost analysis.
+    kind: sql
+    args:
+      origin_country: {desc: "Filter by origin (optional)"}
+      supplier_id: {desc: "Filter by supplier (optional)"}
+      hs_code: {desc: "Filter by HS heading (optional)"}
+      date_from: {type: date, default: "-365d", desc: "Entries from this date"}
+      date_to: {type: date, desc: "Entries up to this date (optional)"}
+    sql: |
+      SELECT entry_id, po_id, sku, supplier_id, origin_country, hs_code_used, quantity, declared_value_gbp,
+             duty_paid_gbp, vat_paid_gbp, insurance_gbp, entry_date, status, notes,
+             COUNT(*) OVER () AS entries_in_selection,
+             round(SUM(duty_paid_gbp) OVER (), 2) AS total_duty_in_selection_gbp,
+             round(SUM(declared_value_gbp) OVER (), 2) AS total_value_in_selection_gbp
+      FROM import_entries
+      WHERE status IN ('cleared', 'amended')
+        AND ($origin_country IS NULL OR origin_country = $origin_country)
+        AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+        AND ($hs_code IS NULL OR starts_with(hs_code_used, $hs_code))
+        AND entry_date >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR entry_date <= CAST($date_to AS DATE))
+      ORDER BY duty_paid_gbp DESC
+    limit: 100
+    example: {origin_country: VN}
+
+  - name: calculate_duty_reassessment_exposure
+    desc: Exposure if past declarations are reassessed, for a supplier or origin. Returns held entries, duty paid, extra duty due and the most common issue.
+    kind: sql
+    args:
+      supplier_id: {desc: "Supplier whose entries to assess (optional)"}
+      origin_country: {desc: "Origin to assess (optional)"}
+      date_from: {type: date, default: "-365d", desc: "Entries from this date"}
+    sql: |
+      SELECT COALESCE($supplier_id, 'all suppliers') AS supplier_id, COALESCE($origin_country, 'all origins') AS origin_country,
+             COUNT(*) AS entries_total,
+             COUNT(*) FILTER (WHERE status = 'held') AS held_entries,
+             COUNT(*) FILTER (WHERE status IN ('cleared', 'amended')) AS cleared_entries,
+             round(SUM(declared_value_gbp), 2) AS total_declared_value_gbp,
+             round(SUM(duty_paid_gbp), 2) AS duty_paid_gbp,
+             round(SUM(reassessment_exposure_gbp) FILTER (WHERE status IN ('cleared', 'amended')), 2) AS exposure_on_cleared_entries_gbp,
+             round(SUM(reassessment_exposure_gbp) FILTER (WHERE status = 'held'), 2) AS exposure_on_held_entries_gbp,
+             round(SUM(reassessment_exposure_gbp), 2) AS total_exposure_gbp,
+             mode(notes) FILTER (WHERE reassessment_exposure_gbp > 0) AS most_common_issue,
+             'exposure = extra duty due on each entry if reassessed, summed' AS formula
+      FROM import_entries
+      WHERE ($supplier_id IS NULL OR supplier_id = $supplier_id)
+        AND ($origin_country IS NULL OR origin_country = $origin_country)
+        AND entry_date >= CAST($date_from AS DATE)
+    example: {supplier_id: SUP-0052}
+
+  - name: calculate_tariff_cost_impact
+    desc: Duty cost under the current versus a new tariff for one HS code and origin on a stated annual import value. Give extra tariff points or the new rate.
+    kind: sql
+    args:
+      hs_code: {required: true}
+      origin_country: {required: true}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+      additional_tariff_pct: {type: float, desc: "Extra tariff in percentage points, e.g. 15"}
+      new_rate_pct: {type: float, desc: "New total duty rate instead of extra points (optional)"}
+      annual_import_value_gbp: {type: float, default: 1000000, desc: "Annual import value of the goods affected"}
+    sql: |
+      WITH cur AS (
+        SELECT duty_rate_pct FROM duty_rates d
+        WHERE d.end_date IS NULL AND d.origin_country = $origin_country AND d.destination_market = $destination_market
+          AND starts_with($hs_code, d.hs_code)
+        ORDER BY length(d.hs_code) DESC LIMIT 1
+      ), x AS (
+        SELECT (SELECT duty_rate_pct FROM cur) AS cur_rate,
+               COALESCE($new_rate_pct, (SELECT duty_rate_pct FROM cur) + COALESCE($additional_tariff_pct, 0)) AS new_rate
+      )
+      SELECT $hs_code AS hs_code, $origin_country AS origin_country, $destination_market AS destination_market,
+             $annual_import_value_gbp AS annual_import_value_gbp,
+             cur_rate AS current_rate_pct, new_rate AS new_rate_pct,
+             round($annual_import_value_gbp * cur_rate / 100.0, 2) AS current_duty_gbp,
+             round($annual_import_value_gbp * new_rate / 100.0, 2) AS new_duty_gbp,
+             round($annual_import_value_gbp * (new_rate - cur_rate) / 100.0, 2) AS duty_increase_gbp,
+             'increase = value * (new_rate - current_rate) / 100; current rate from the duty rate table' AS formula
+      FROM x
+    example: {hs_code: "6403", origin_country: VN, additional_tariff_pct: 15, annual_import_value_gbp: 4000000}
+
+  - name: calculate_duty_impact_scenario
+    desc: Extra annual duty if a tariff rises on all goods from an origin, sized from our last 12 months of imports. Give a scenario or an origin.
+    kind: sql
+    args:
+      scenario_id: {desc: "Tariff scenario, e.g. TSC-900001 (optional)"}
+      origin_country: {desc: "Origin whose goods are hit, e.g. TR (optional)"}
+      tariff_increase_pct: {type: float, desc: "Extra tariff in percentage points; overrides the scenario's own change"}
+    sql: |
+      WITH s AS (
+        SELECT scenario_id, scenario_name, origin_country, hs_code_range, duty_rate_change_pct, probability_pct, mitigation_options
+        FROM tariff_scenarios
+        WHERE ($scenario_id IS NULL OR scenario_id = $scenario_id) AND ($origin_country IS NULL OR origin_country = $origin_country)
+      ), t AS (
+        SELECT * FROM s
+        UNION ALL
+        SELECT CAST(NULL AS VARCHAR), 'Ad hoc tariff on ' || $origin_country, $origin_country, 'All goods',
+               CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE), CAST(NULL AS VARCHAR)
+        WHERE $origin_country IS NOT NULL AND NOT EXISTS (SELECT 1 FROM s)
+      ), v AS (
+        SELECT t.scenario_id, t.scenario_name, t.origin_country, t.hs_code_range,
+               COALESCE($tariff_increase_pct, t.duty_rate_change_pct) AS pct,
+               t.probability_pct, t.mitigation_options,
+               COUNT(e.entry_id) AS n, SUM(e.declared_value_gbp) AS val, SUM(e.duty_paid_gbp) AS duty
+        FROM t LEFT JOIN import_entries e
+          ON e.origin_country = t.origin_country AND e.status IN ('cleared', 'amended')
+         AND e.entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+         AND (t.hs_code_range = 'All goods' OR e.hs_code_used = t.hs_code_range)
+        GROUP BY ALL
+      )
+      SELECT scenario_id, scenario_name, origin_country, hs_code_range, pct AS tariff_increase_pct,
+             n AS entries_last_12_months, round(val, 2) AS import_value_last_12_months_gbp,
+             round(duty, 2) AS duty_paid_last_12_months_gbp,
+             round(duty / NULLIF(val, 0) * 100, 2) AS current_effective_duty_rate_pct,
+             round(val * pct / 100.0, 2) AS extra_duty_per_year_gbp,
+             round(duty + val * pct / 100.0, 2) AS duty_per_year_after_tariff_gbp,
+             probability_pct, round(val * pct / 100.0 * probability_pct / 100.0, 2) AS probability_weighted_extra_duty_gbp,
+             mitigation_options,
+             'extra duty = import value * tariff increase / 100' AS formula
+      FROM v
+      ORDER BY extra_duty_per_year_gbp DESC
+    example: {origin_country: TR, tariff_increase_pct: 10}
+
+  - name: get_import_volumes_by_origin
+    desc: Import value, units and duty paid by origin and HS heading, with each row's share of the total. Use for diversification and tariff exposure.
+    kind: sql
+    args:
+      origin_country: {desc: "Filter by origin (optional)"}
+      hs_code: {desc: "Filter by HS heading (optional)"}
+      date_from: {type: date, default: "-365d", desc: "Entries from this date"}
+    sql: |
+      WITH v AS (
+        SELECT origin_country, hs_code_used, COUNT(*) AS entry_count, SUM(quantity) AS total_units,
+               SUM(declared_value_gbp) AS val, SUM(duty_paid_gbp) AS duty
+        FROM import_entries
+        WHERE status IN ('cleared', 'amended')
+          AND ($origin_country IS NULL OR origin_country = $origin_country)
+          AND ($hs_code IS NULL OR starts_with(hs_code_used, $hs_code))
+          AND entry_date >= CAST($date_from AS DATE)
+        GROUP BY origin_country, hs_code_used
+      )
+      SELECT origin_country, hs_code_used, entry_count, total_units,
+             round(val, 2) AS total_import_value_gbp, round(duty, 2) AS total_duty_paid_gbp,
+             round(duty / NULLIF(val, 0) * 100, 2) AS avg_duty_rate_pct,
+             round(val / SUM(val) OVER () * 100, 1) AS share_of_selection_pct,
+             round(SUM(val) OVER (), 2) AS selection_total_value_gbp
+      FROM v
+      ORDER BY val DESC
+    limit: 100
+    example: {origin_country: TR}
+
+  - name: get_tariff_rates_for_category_origin
+    desc: Duty rates for a product category or department (e.g. Trousers, Lighting, Home) by origin into a market, with preference eligibility and any pending tariff scenario with its probability.
+    kind: sql
+    args:
+      category: {required: true, desc: "Product category or department, e.g. Trousers, Lighting, Home; housewares and denim also work"}
+      origin_country: {desc: "ISO country (optional, returns all)"}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+    sql: |
+      WITH q AS (
+        SELECT CASE WHEN lower($category) IN ('housewares', 'homewares', 'homeware') THEN 'home'
+                    WHEN lower($category) IN ('denim', 'jeans') THEN 'trousers'
+                    ELSE lower($category) END AS c
+      ), h AS (
+        SELECT left(p.hs_code, 4) AS heading, p.department,
+               string_agg(DISTINCT p.category, ', ' ORDER BY p.category) AS categories
+        FROM master.products p, q
+        WHERE lower(p.category) = q.c OR lower(p.department) = q.c
+        GROUP BY left(p.hs_code, 4), p.department
+      )
+      SELECT h.categories AS category, h.department, d.hs_code, d.origin_country, d.duty_rate_pct, d.vat_rate_pct,
+             d.preferential_rate_pct, d.preference_scheme, d.effective_date,
+             s.scenario_name AS pending_scenario, s.duty_rate_change_pct AS pending_change_pct,
+             s.probability_pct AS pending_probability_pct
+      FROM h JOIN duty_rates d ON d.hs_code = h.heading
+      LEFT JOIN tariff_scenarios s ON s.origin_country = d.origin_country
+           AND (s.hs_code_range = 'All goods' OR starts_with(d.hs_code, s.hs_code_range))
+      WHERE d.end_date IS NULL AND d.destination_market = $destination_market
+        AND ($origin_country IS NULL OR d.origin_country = $origin_country)
+      ORDER BY h.department, d.hs_code, d.origin_country
+    limit: 60
+    example: {category: Trousers, origin_country: VN}
+
+  - name: get_tariff_rates_for_commodity_code
+    desc: Current tariff rates for a commodity code by origin, with any pending tariff scenario and its probability. Use for pricing decisions under tariff changes.
+    kind: sql
+    args:
+      hs_code: {required: true}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+      origin_country: {desc: "Only this origin (optional)"}
+    sql: |
+      SELECT d.hs_code, d.origin_country, d.destination_market, d.duty_rate_pct, d.vat_rate_pct,
+             d.preferential_rate_pct, d.preference_scheme, d.effective_date,
+             s.scenario_name AS pending_scenario, s.duty_rate_change_pct AS pending_change_pct,
+             s.probability_pct AS pending_probability_pct
+      FROM duty_rates d
+      LEFT JOIN tariff_scenarios s ON s.origin_country = d.origin_country
+           AND (s.hs_code_range = 'All goods' OR starts_with($hs_code, s.hs_code_range))
+      WHERE d.end_date IS NULL AND starts_with($hs_code, d.hs_code) AND d.destination_market = $destination_market
+        AND ($origin_country IS NULL OR d.origin_country = $origin_country)
+      ORDER BY d.origin_country
+    limit: 30
+    example: {hs_code: "85165829"}
+
+  - name: get_tariff_scenario_rates
+    desc: Tariff scenarios with the current effective duty rate, the rate after the change and the import value hit, by origin. Use to size diversification.
+    kind: sql
+    args:
+      scenario_id: {desc: "Tariff scenario, e.g. TSC-900002 (optional)"}
+      origin_country: {desc: "Origin affected, e.g. CN (optional)"}
+    sql: |
+      WITH alt AS (
+        SELECT origin_country, avg(COALESCE(preferential_rate_pct, duty_rate_pct)) AS r
+        FROM duty_rates WHERE destination_market = 'UK' AND end_date IS NULL GROUP BY origin_country
+      ), cur AS (
+        SELECT ts.scenario_id,
+               SUM(e.duty_paid_gbp) / NULLIF(SUM(e.declared_value_gbp), 0) * 100 AS rate
+        FROM tariff_scenarios ts JOIN import_entries e
+          ON e.origin_country = ts.origin_country AND e.status IN ('cleared', 'amended')
+         AND e.entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+         AND (ts.hs_code_range = 'All goods' OR e.hs_code_used = ts.hs_code_range)
+        GROUP BY ts.scenario_id
+      )
+      SELECT ts.scenario_id, ts.scenario_name, ts.origin_country, ts.hs_code_range,
+             ts.duty_rate_change_pct, ts.estimated_volume_gbp, ts.estimated_duty_impact_gbp, ts.probability_pct,
+             round(c.rate, 2) AS current_effective_duty_rate_pct,
+             round(c.rate + ts.duty_rate_change_pct, 2) AS rate_after_change_pct,
+             (SELECT string_agg(a.origin_country || ' ' || CAST(round(a.r, 1) AS VARCHAR) || '%', '; ' ORDER BY a.r)
+              FROM alt a WHERE a.origin_country <> ts.origin_country AND a.origin_country NOT IN ('IT', 'FR', 'DE', 'PL', 'GB')) AS alternative_origins_avg_uk_duty,
+             ts.mitigation_options
+      FROM tariff_scenarios ts LEFT JOIN cur c ON c.scenario_id = ts.scenario_id
+      WHERE ($scenario_id IS NULL OR ts.scenario_id = $scenario_id)
+        AND ($origin_country IS NULL OR ts.origin_country = $origin_country)
+      ORDER BY ts.estimated_duty_impact_gbp DESC
+    limit: 10
+    example: {origin_country: CN}
+
+  - name: calculate_import_duty_and_vat_per_order
+    desc: Duty and VAT per cross-border order today and after the de minimis change, with the extra cost per order. Use for direct-to-consumer baskets.
+    kind: sql
+    args:
+      destination_market: {required: true, desc: "UK, EU or US"}
+      basket_value_gbp: {type: float, default: 62, desc: "Order value"}
+      include_vat: {type: bool, default: true, desc: "Include VAT in calculation"}
+    sql: |
+      WITH m AS (
+        SELECT *, CASE WHEN $basket_value_gbp < duty_de_minimis_gbp THEN 0.0 ELSE round($basket_value_gbp * typical_dtc_duty_rate_pct / 100.0, 2) END AS duty_now,
+                  CASE WHEN $basket_value_gbp < new_duty_de_minimis_gbp THEN 0.0 ELSE round($basket_value_gbp * typical_dtc_duty_rate_pct / 100.0, 2) END AS duty_after
+        FROM market_rules WHERE market_code = $destination_market
+      )
+      SELECT market_code AS destination_market, $basket_value_gbp AS basket_value_gbp,
+             typical_dtc_duty_rate_pct AS duty_rate_pct, import_vat_rate_pct AS vat_rate_pct,
+             duty_de_minimis_gbp AS duty_threshold_now_gbp, new_duty_de_minimis_gbp AS duty_threshold_after_gbp,
+             change_effective_date,
+             duty_now AS duty_now_gbp,
+             CASE WHEN $include_vat THEN round(($basket_value_gbp + duty_now) * import_vat_rate_pct / 100.0, 2) ELSE 0 END AS vat_now_gbp,
+             duty_after AS duty_after_gbp,
+             CASE WHEN $include_vat THEN round(($basket_value_gbp + duty_after) * import_vat_rate_pct / 100.0, 2) ELSE 0 END AS vat_after_gbp,
+             round(duty_after - duty_now, 2) AS extra_duty_per_order_gbp,
+             CASE WHEN $include_vat THEN round(($basket_value_gbp + duty_after) * import_vat_rate_pct / 100.0 - ($basket_value_gbp + duty_now) * import_vat_rate_pct / 100.0, 2) ELSE 0 END AS extra_vat_per_order_gbp,
+             'duty applies at or above the threshold; vat = (basket + duty) * vat rate; extra = after - now' AS formula
+      FROM m
+    example: {destination_market: UK, basket_value_gbp: 62}
+
+  - name: calculate_low_value_parcel_impact
+    desc: Annual duty and VAT impact of low-value parcel rule changes by market for a parcel volume and average value. Omit market for all markets.
+    kind: sql
+    args:
+      parcel_volume_count: {type: int, default: 10000, desc: "Annual parcel volume"}
+      avg_value_gbp: {type: float, default: 62, desc: "Average parcel value"}
+      destination_market: {type: str, desc: "Market: UK, EU or US; omit for all three"}
+      old_threshold_gbp: {type: float, desc: "Duty threshold today; defaults to the market's current threshold"}
+      new_threshold_gbp: {type: float, desc: "Duty threshold after the change; defaults to the announced one"}
+    sql: |
+      WITH m AS (
+        SELECT market_code, typical_dtc_duty_rate_pct AS dr, import_vat_rate_pct AS vr, change_effective_date,
+               COALESCE($old_threshold_gbp, duty_de_minimis_gbp) AS old_t, COALESCE($new_threshold_gbp, new_duty_de_minimis_gbp) AS new_t
+        FROM market_rules
+        WHERE market_code IN ('UK', 'EU', 'US') AND ($destination_market IS NULL OR market_code = $destination_market)
+      ), p AS (
+        SELECT *, CASE WHEN $avg_value_gbp < old_t THEN 0.0 ELSE $avg_value_gbp * dr / 100.0 END AS duty_old,
+                  CASE WHEN $avg_value_gbp < new_t THEN 0.0 ELSE $avg_value_gbp * dr / 100.0 END AS duty_new
+        FROM m
+      )
+      SELECT market_code AS destination_market, $parcel_volume_count AS parcel_volume_count, $avg_value_gbp AS avg_value_gbp,
+             old_t AS duty_threshold_now_gbp, new_t AS duty_threshold_after_gbp, change_effective_date,
+             round(duty_new - duty_old, 2) AS extra_duty_per_parcel_gbp,
+             round((duty_new - duty_old) * vr / 100.0, 2) AS extra_vat_per_parcel_gbp,
+             round($parcel_volume_count * (duty_new - duty_old), 2) AS extra_duty_per_year_gbp,
+             round($parcel_volume_count * (duty_new - duty_old) * vr / 100.0, 2) AS extra_vat_per_year_gbp,
+             round($parcel_volume_count * (duty_new - duty_old) * (1 + vr / 100.0), 2) AS total_extra_cost_per_year_gbp,
+             'extra duty = volume * value * duty rate if value falls under the old threshold but not the new one; vat on top of duty' AS formula
+      FROM p
+      ORDER BY market_code
+    example: {parcel_volume_count: 120000, avg_value_gbp: 62}
+
+  - name: calculate_duty_deferral_benefit
+    desc: Duty suspended and cash-flow benefit of a bonded warehouse or inward processing relief on re-exported goods, using our actual effective duty rate.
+    kind: sql
+    args:
+      annual_re_export_value_gbp: {type: float, default: 5000000, desc: "Value of goods re-exported annually"}
+      avg_dwell_days: {type: int, default: 45, desc: "Average days goods sit under the regime"}
+      financing_rate_pct: {type: float, default: 5, desc: "Cost of funds %"}
+      duty_rate_pct: {type: float, desc: "Duty rate to use; defaults to our effective rate over the last 12 months"}
+    sql: |
+      WITH r AS (
+        SELECT COALESCE($duty_rate_pct, round(SUM(duty_paid_gbp) / NULLIF(SUM(declared_value_gbp), 0) * 100, 2)) AS rate
+        FROM import_entries WHERE status IN ('cleared', 'amended') AND entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+      )
+      SELECT $annual_re_export_value_gbp AS annual_re_export_value_gbp, rate AS duty_rate_pct_used,
+             round($annual_re_export_value_gbp * rate / 100.0, 2) AS duty_suspended_per_year_gbp,
+             round($annual_re_export_value_gbp * rate / 100.0 * $avg_dwell_days / 365.0, 2) AS average_duty_deferred_gbp,
+             round($annual_re_export_value_gbp * rate / 100.0 * $avg_dwell_days / 365.0 * $financing_rate_pct / 100.0, 2) AS cash_flow_benefit_per_year_gbp,
+             'suspended = value * duty rate; cash benefit = suspended * dwell_days / 365 * financing rate' AS formula
+      FROM r
+    example: {annual_re_export_value_gbp: 5000000, avg_dwell_days: 45}
+
+  - name: calculate_cash_flow_benefit
+    desc: Financing saving from delaying duty payment under a customs regime such as a deferment account, using our actual effective duty rate.
+    kind: sql
+    args:
+      annual_import_value_gbp: {type: float, default: 2000000, desc: "Annual import value"}
+      avg_deferral_days: {type: int, default: 60, desc: "Days duty payment is deferred"}
+      financing_rate_pct: {type: float, default: 5, desc: "Financing cost %"}
+      duty_rate_pct: {type: float, desc: "Duty rate to use; defaults to our effective rate over the last 12 months"}
+    sql: |
+      WITH r AS (
+        SELECT COALESCE($duty_rate_pct, round(SUM(duty_paid_gbp) / NULLIF(SUM(declared_value_gbp), 0) * 100, 2)) AS rate
+        FROM import_entries WHERE status IN ('cleared', 'amended') AND entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+      )
+      SELECT $annual_import_value_gbp AS annual_import_value_gbp, $avg_deferral_days AS avg_deferral_days,
+             rate AS duty_rate_pct_used,
+             round($annual_import_value_gbp * rate / 100.0 * $avg_deferral_days / 365.0, 2) AS average_deferred_duty_gbp,
+             round($annual_import_value_gbp * rate / 100.0 * $avg_deferral_days / 365.0 * $financing_rate_pct / 100.0, 2) AS annual_financing_saving_gbp,
+             'saving = annual_value * duty rate * (deferral_days / 365) * financing rate' AS formula
+      FROM r
+    example: {annual_import_value_gbp: 2000000, avg_deferral_days: 60}
+
+  - name: calculate_duty_saving_estimate
+    desc: Estimated annual duty saving from drawback, first-sale valuation or a bonded warehouse, using our actual duty rate, with audit risk and effort.
+    kind: sql
+    args:
+      relief_type: {type: enum, values: [drawback, first_sale, bonded_warehouse], required: true, desc: "Relief option"}
+      annual_re_export_gbp: {type: float, desc: "Annual value of goods re-exported (drawback, bonded warehouse)"}
+      annual_purchase_gbp: {type: float, desc: "Annual purchase value (first-sale)"}
+      first_sale_reduction_pct: {type: float, default: 8, desc: "Value reduction first-sale valuation achieves, %"}
+      origin_country: {desc: "Use our duty rate on this origin only (optional)"}
+    sql: |
+      WITH r AS (
+        SELECT round(SUM(duty_paid_gbp) / NULLIF(SUM(declared_value_gbp), 0) * 100, 2) AS rate
+        FROM import_entries
+        WHERE status IN ('cleared', 'amended') AND entry_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+          AND ($origin_country IS NULL OR origin_country = $origin_country)
+      )
+      SELECT $relief_type AS relief_type, rate AS effective_duty_rate_pct,
+             CASE $relief_type WHEN 'first_sale' THEN round(COALESCE($annual_purchase_gbp, 0) * rate / 100.0 * $first_sale_reduction_pct / 100.0, 2)
+                  ELSE round(COALESCE($annual_re_export_gbp, 0) * rate / 100.0, 2) END AS estimated_annual_saving_gbp,
+             CASE $relief_type WHEN 'drawback' THEN 'Medium: refund claims need export and import entries matched, 3-year claim window'
+                  WHEN 'first_sale' THEN 'High: customs challenge the middleman sale and supplier price evidence'
+                  ELSE 'Medium: stock records and goods tracking audited by customs' END AS audit_risk,
+             CASE $relief_type WHEN 'drawback' THEN 'Easiest: no authorisation needed, claim per export'
+                  WHEN 'first_sale' THEN 'Hardest: needs supplier contracts restructured and documented'
+                  ELSE 'Hard: authorisation, guarantee and warehouse set-up' END AS implementation_effort,
+             CASE $relief_type WHEN 'first_sale' THEN 'saving = annual_purchase * duty rate * first-sale reduction'
+                  ELSE 'saving = annual_re_export * duty rate' END AS formula
+      FROM r
+    example: {relief_type: drawback, annual_re_export_gbp: 5000000}
+
+  - name: calculate_incentive_value
+    desc: Tax relief on eligible planned spend for DC automation, renewable energy or R&D incentives, with conditions and deadlines. Filter by type or site.
+    kind: sql
+    args:
+      incentive_type: {desc: "Words in the incentive type, e.g. automation, renewable (optional)"}
+      site_id: {desc: "Site where the spend is, e.g. DC1 (optional)"}
+      incentive_id: {desc: "Incentive record, e.g. INC-900001 (optional)"}
+      planned_spend_gbp: {type: float, desc: "Planned spend to value instead of the recorded capex; applies to each matching incentive"}
+    sql: |
+      SELECT incentive_id, incentive_type, entity_id, site_id,
+             COALESCE($planned_spend_gbp, capex_gbp) AS planned_spend_gbp,
+             round(eligible_amount_gbp / capex_gbp * 100, 1) AS eligible_share_pct,
+             round(COALESCE($planned_spend_gbp, capex_gbp) * eligible_amount_gbp / capex_gbp, 2) AS eligible_amount_gbp,
+             relief_rate_pct,
+             round(COALESCE($planned_spend_gbp, capex_gbp) * eligible_amount_gbp / capex_gbp * relief_rate_pct / 100.0, 2) AS estimated_relief_gbp,
+             conditions, application_deadline,
+             application_deadline - CAST($as_of AS DATE) AS days_to_deadline,
+             applied, applied_date,
+             'relief = planned spend * eligible share * relief rate' AS formula
+      FROM incentive_records
+      WHERE ($incentive_id IS NULL OR incentive_id = $incentive_id)
+        AND ($incentive_type IS NULL OR incentive_type ILIKE '%' || $incentive_type || '%')
+        AND ($site_id IS NULL OR site_id = $site_id)
+      ORDER BY application_deadline
+    limit: 20
+    example: {incentive_type: automation}
+
+  - name: get_transfer_pricing_policy
+    desc: Transfer pricing policy by sourcing entity with mark-up against the benchmark range, functions, risks, documentation status and exposure. Omit entity for all.
+    kind: sql
+    args:
+      entity_id: {desc: "Sourcing entity, e.g. LE-HK; omit for all"}
+    sql: |
+      SELECT entity_id, policy_version, profit_mark_up_pct, benchmark_low_pct, benchmark_high_pct,
+             CASE WHEN profit_mark_up_pct > benchmark_high_pct THEN 'Above benchmark range'
+                  WHEN profit_mark_up_pct < benchmark_low_pct THEN 'Below benchmark range'
+                  ELSE 'Within benchmark range' END AS markup_vs_benchmark,
+             functions_performed, assets_controlled, risks_assumed, comparables_used, documentation_status,
+             last_audit_date, annual_cost_base_gbp, exposure_gbp,
+             CASE WHEN documentation_status = 'complete' THEN 'Well-documented'
+                  WHEN documentation_status = 'incomplete' THEN 'Documentation gaps'
+                  ELSE 'Missing documentation' END AS audit_risk
+      FROM transfer_pricing_policies
+      WHERE $entity_id IS NULL OR entity_id = $entity_id
+      ORDER BY entity_id
+    limit: 10
+    example: {entity_id: "LE-HK"}
+
+  - name: list_transfer_pricing_documentation
+    desc: Transfer pricing documents held and missing by entity, with the deadline to produce missing ones. Use to check documentation readiness.
+    kind: sql
+    args:
+      entity_id: {desc: "Entity, e.g. LE-HK; omit for all"}
+    sql: |
+      SELECT doc_id, entity_id, doc_type, held,
+             CASE WHEN held THEN 'held' ELSE 'missing' END AS status,
+             required_by, summary
+      FROM transfer_pricing_documents
+      WHERE $entity_id IS NULL OR entity_id = $entity_id
+      ORDER BY held ASC, required_by ASC, entity_id, doc_type
+    limit: 50
+    example: {entity_id: "LE-HK"}
+
+  - name: calculate_transfer_pricing_exposure
+    desc: Tax, interest and probability-weighted exposure if an entity's mark-up is challenged to the benchmark range. Can test another mark-up.
+    kind: sql
+    args:
+      entity_id: {required: true}
+      proposed_markup_pct: {type: float, desc: "Mark-up to test instead of the policy's"}
+      annual_cost_base_gbp: {type: float, desc: "Cost base to use instead of the recorded one"}
+      challenge_probability_pct: {type: float, default: 25, desc: "Estimated audit probability %"}
+      interest_rate_pct: {type: float, default: 5, desc: "Annual interest rate on underpaid tax"}
+    sql: |
+      WITH p AS (
+        SELECT tp.entity_id, tp.profit_mark_up_pct AS policy_markup, COALESCE($proposed_markup_pct, tp.profit_mark_up_pct) AS m,
+               tp.benchmark_low_pct AS lo, tp.benchmark_high_pct AS hi,
+               COALESCE($annual_cost_base_gbp, tp.annual_cost_base_gbp) AS cb,
+               tp.challenge_tax_rate_pct AS tr, tp.open_tax_years AS yrs
+        FROM transfer_pricing_policies tp WHERE tp.entity_id = $entity_id
+      ), c AS (
+        SELECT *, GREATEST(m - hi, lo - m, 0) AS adj FROM p
+      )
+      SELECT entity_id, policy_markup AS policy_markup_pct, m AS markup_tested_pct, lo AS benchmark_low_pct, hi AS benchmark_high_pct,
+             round(adj, 2) AS adjustment_pts, cb AS annual_cost_base_gbp, yrs AS open_tax_years,
+             round(cb * adj / 100.0, 2) AS profit_reallocated_per_year_gbp,
+             round(cb * adj / 100.0 * tr / 100.0, 2) AS additional_tax_per_year_gbp,
+             round(cb * adj / 100.0 * tr / 100.0 * yrs, 2) AS additional_tax_open_years_gbp,
+             round(cb * adj / 100.0 * tr / 100.0 * $interest_rate_pct / 100.0 * yrs * (yrs + 1) / 2.0, 2) AS interest_gbp,
+             round(cb * adj / 100.0 * tr / 100.0 * yrs + cb * adj / 100.0 * tr / 100.0 * $interest_rate_pct / 100.0 * yrs * (yrs + 1) / 2.0, 2) AS total_exposure_gbp,
+             $challenge_probability_pct AS challenge_probability_pct,
+             round((cb * adj / 100.0 * tr / 100.0 * yrs + cb * adj / 100.0 * tr / 100.0 * $interest_rate_pct / 100.0 * yrs * (yrs + 1) / 2.0) * $challenge_probability_pct / 100.0, 2) AS expected_exposure_gbp,
+             'adjustment = distance of mark-up outside benchmark range; tax = cost base * adjustment * tax rate * open years; interest on each year' AS formula
+      FROM c
+    example: {entity_id: "LE-HK"}
+
+  - name: get_vat_return_summary
+    desc: VAT return boxes for an entity and period versus the prior period and expectation. Returns variance and whether it needs investigating.
+    kind: sql
+    args:
+      entity_id: {required: true}
+      period: {required: true, desc: "VAT period, e.g. 2026-Q3"}
+    sql: |
+      WITH r AS (
+        SELECT *, LAG(period) OVER (PARTITION BY entity_id ORDER BY period) AS prior_period,
+               LAG(box_6_gbp) OVER (PARTITION BY entity_id ORDER BY period) AS prior_box_6_gbp
+        FROM vat_returns WHERE entity_id = $entity_id
+      )
+      SELECT entity_id, period, box_1_gbp, box_2_gbp, box_4_gbp, box_5_gbp, box_6_gbp, box_7_gbp, box_8_gbp,
+             expected_box_6_gbp, round(box_6_gbp - expected_box_6_gbp, 2) AS variance_gbp,
+             prior_period, prior_box_6_gbp, round(box_6_gbp - prior_box_6_gbp, 2) AS change_vs_prior_gbp,
+             CASE WHEN abs(box_6_gbp - expected_box_6_gbp) > abs(expected_box_6_gbp) * 0.10 THEN 'High variance - investigate'
+                  ELSE 'Within normal range' END AS variance_note,
+             submitted, submitted_date
+      FROM r
+      WHERE period = $period OR period LIKE '%' || $period
+    limit: 1
+    example: {entity_id: "LE-PL", period: "2026-Q3"}
+
+  - name: compare_vat_return_to_expectation
+    desc: Variance of a VAT return to expectation split by driver (miscoded postings, duplicate postings, timing) with corrections already posted.
+    kind: sql
+    args:
+      entity_id: {required: true}
+      period: {required: true, desc: "VAT period, e.g. 2026-Q3"}
+    sql: |
+      WITH t AS (
+        SELECT v.*, CASE WHEN v.direction = 'output' THEN 1 ELSE -1 END AS sign,
+               CASE WHEN v.description ILIKE '%export%' THEN 'Z' WHEN v.description ILIKE '%exempt%' THEN 'E' ELSE 'S' END AS expected_code,
+               row_number() OVER (PARTITION BY v.entity_id, v.period, v.invoice_number, v.amount_gbp ORDER BY v.vat_txn_id) AS dup_rank,
+               CASE WHEN v.status = 'corrected' AND v.corrected_to_code IN ('Z', 'E') THEN 0 ELSE v.vat_gbp END AS current_vat_gbp
+        FROM vat_transactions v
+        WHERE v.entity_id = $entity_id AND (v.period = $period OR v.period LIKE '%' || $period)
+      ), f AS (
+        SELECT *, CASE WHEN dup_rank > 1 THEN 'duplicate' WHEN tax_point_period <> period THEN 'timing'
+                       WHEN vat_code <> expected_code THEN 'miscoded' ELSE '' END AS driver
+        FROM t
+      ), r AS (
+        SELECT vr.entity_id, vr.period, vr.box_6_gbp, vr.expected_box_6_gbp, round(vr.box_6_gbp - vr.expected_box_6_gbp, 2) AS variance
+        FROM vat_returns vr WHERE vr.entity_id = $entity_id AND (vr.period = $period OR vr.period LIKE '%' || $period)
+      ), d AS (
+        SELECT COALESCE(SUM(sign * vat_gbp) FILTER (WHERE driver = 'miscoded'), 0) AS coding,
+               COUNT(*) FILTER (WHERE driver = 'miscoded') AS coding_n,
+               COALESCE(SUM(sign * vat_gbp) FILTER (WHERE driver = 'duplicate'), 0) AS dup,
+               COUNT(*) FILTER (WHERE driver = 'duplicate') AS dup_n,
+               COALESCE(SUM(sign * vat_gbp) FILTER (WHERE driver = 'timing'), 0) AS timing,
+               COUNT(*) FILTER (WHERE driver = 'timing') AS timing_n,
+               COALESCE(SUM(sign * (vat_gbp - current_vat_gbp)), 0) AS corrected
+        FROM f
+      )
+      SELECT r.entity_id, r.period, r.box_6_gbp AS actual_net_gbp, r.expected_box_6_gbp AS expected_net_gbp,
+             r.variance AS variance_gbp,
+             CASE WHEN r.variance > 0 THEN 'Higher than expected' WHEN r.variance < 0 THEN 'Lower than expected' ELSE 'On expectation' END AS variance_type,
+             round(d.coding, 2) AS miscoded_postings_gbp, d.coding_n AS miscoded_postings,
+             round(d.dup, 2) AS duplicate_postings_gbp, d.dup_n AS duplicate_postings,
+             round(d.timing, 2) AS timing_gbp, d.timing_n AS timing_postings,
+             round(r.variance - d.coding - d.dup - d.timing, 2) AS volume_or_unexplained_gbp,
+             round(d.corrected, 2) AS corrections_already_posted_gbp,
+             round(r.variance - d.corrected, 2) AS variance_after_corrections_gbp,
+             'variance = actual box 6 - expected box 6; drivers = miscoded + duplicate + timing + remainder (volume or unexplained)' AS formula
+      FROM r, d
+    limit: 1
+    example: {entity_id: "LE-PL", period: "2026-Q3"}
+
+  - name: list_vat_transactions_by_entity
+    desc: VAT postings for an entity and period with a review flag for miscoded, duplicate or early-booked items. Use to find transactions to correct.
+    kind: sql
+    args:
+      entity_id: {required: true}
+      period: {required: true, desc: "VAT period, e.g. 2026-Q3"}
+      vat_code: {desc: "Filter by VAT code as posted: S, Z or E (optional)"}
+      issue: {type: enum, values: [any, miscoded, duplicate, timing], desc: "Only flagged postings of this kind; any = every flagged posting"}
+    sql: |
+      WITH t AS (
+        SELECT v.*,
+               CASE WHEN v.description ILIKE '%export%' THEN 'Z' WHEN v.description ILIKE '%exempt%' THEN 'E' ELSE 'S' END AS expected_code,
+               row_number() OVER (PARTITION BY v.entity_id, v.period, v.invoice_number, v.amount_gbp ORDER BY v.vat_txn_id) AS dup_rank
+        FROM vat_transactions v
+        WHERE v.entity_id = $entity_id AND (v.period = $period OR v.period LIKE '%' || $period)
+      ), f AS (
+        SELECT vat_txn_id, entity_id, period, transaction_date, invoice_number, direction, vat_code, corrected_to_code,
+               amount_gbp, vat_gbp, description, po_id, status,
+               CASE WHEN dup_rank > 1 THEN 'duplicate posting'
+                    WHEN tax_point_period <> period THEN 'timing: belongs to ' || tax_point_period
+                    WHEN COALESCE(corrected_to_code, vat_code) <> expected_code THEN 'miscoded: should be ' || expected_code
+                    ELSE '' END AS review_flag
+        FROM t
+      )
+      SELECT * FROM f
+      WHERE ($vat_code IS NULL OR vat_code = $vat_code)
+        AND ($issue IS NULL OR ($issue = 'any' AND review_flag <> '') OR review_flag LIKE $issue || '%')
+      ORDER BY (review_flag = ''), vat_gbp DESC, transaction_date DESC
+    limit: 100
+    example: {entity_id: "LE-PL", period: "2026-Q3"}
+
+  - name: create_tax_compliance_task
+    desc: Creates a tax compliance task with owner, due date and priority. Returns the new task.
+    kind: insert
+    table: tax_compliance_tasks
+    id_prefix: TCT-
+    defaults: {status: open, priority: medium}
+    args:
+      task_type: {required: true, desc: "Task type: documentation, declaration, audit response, policy"}
+      description: {required: true, desc: "What needs to be done"}
+      entity_id: {required: true}
+      assigned_to: {required: true, desc: "Employee id of the owner, e.g. EMP-00085"}
+      due_date: {required: true, type: date}
+      priority: {type: enum, values: [low, medium, high, urgent], desc: "Priority; medium if not given"}
+      notes: {type: str, desc: "Extra context for the owner"}
+    example: {task_type: documentation, description: "Prepare transfer pricing comparables study for LE-HK", entity_id: "LE-HK", assigned_to: "EMP-00085", due_date: "+30d"}
+
+  - name: update_vat_code_on_transaction
+    desc: Corrects the VAT code on a posted transaction; the posting becomes corrected and keeps its original code. Returns the old and new values.
+    kind: update
+    table: vat_transactions
+    set: {status: corrected}
+    args:
+      corrected_to_code: {required: true, type: str, desc: "Correct VAT code, e.g. Z"}
+    example: {vat_txn_id: "VTX-000001", corrected_to_code: "Z"}
+
+  - name: get_import_rules_and_tariffs_for_market
+    desc: Import rules, VAT, entry requirements and tariff levels for a market such as UK, EU, US, PL or CZ.
+    kind: sql
+    args:
+      destination_market: {required: true, desc: "Market: UK, EU, US, PL, CZ"}
+    sql: |
+      SELECT m.market_code AS destination_market, m.market_name, m.customs_territory, m.import_vat_rate_pct,
+             m.entry_requirements, m.compliance_notes,
+             (SELECT COUNT(DISTINCT d.hs_code) FROM duty_rates d WHERE d.destination_market = m.customs_territory AND d.end_date IS NULL) AS hs_codes_configured,
+             (SELECT string_agg(o.origin_country || ' ' || CAST(round(o.r, 1) AS VARCHAR) || '%', '; ' ORDER BY o.origin_country)
+              FROM (SELECT d.origin_country, avg(COALESCE(d.preferential_rate_pct, d.duty_rate_pct)) AS r
+                    FROM duty_rates d WHERE d.destination_market = m.customs_territory AND d.end_date IS NULL
+                    GROUP BY d.origin_country) o) AS average_duty_by_origin
+      FROM market_rules m
+      WHERE upper(m.market_code) = upper($destination_market) OR lower(m.market_name) = lower($destination_market)
+    limit: 1
+    example: {destination_market: PL}
+
+  - name: get_tax_treatment_of_subsidiary_vs_franchise
+    desc: Tax treatment, withholding, VAT, costs, liability and exit terms of a local subsidiary versus a franchise partner in a market.
+    kind: sql
+    args:
+      destination_market: {required: true, desc: "Market code or name, e.g. MX or Mexico"}
+    sql: |
+      SELECT market, market_name, structure, corporate_tax_rate_pct, royalty_withholding_pct,
+             dividend_withholding_pct, vat_rate_pct, setup_cost_gbp, annual_compliance_cost_gbp,
+             tax_treatment, liability_and_exit
+      FROM entity_structure_tax
+      WHERE upper(market) = upper($destination_market) OR lower(market_name) = lower($destination_market)
+      ORDER BY structure DESC
+    limit: 4
+    example: {destination_market: MX}
+
+  - name: get_duty_and_insurance_by_sku
+    desc: Duty and insurance cost per unit for a SKU, with the duty rate now versus its previous rate and actual duty paid in the last 90 days.
+    kind: sql
+    args:
+      sku: {required: true}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+    sql: |
+      WITH p AS (
+        SELECT sku, name, unit_cost_gbp, hs_code, country_of_origin FROM master.products WHERE sku = $sku
+      ), r AS (
+        SELECT d.hs_code, d.duty_rate_pct, d.vat_rate_pct, d.effective_date FROM duty_rates d, p
+        WHERE d.end_date IS NULL AND d.destination_market = $destination_market AND d.origin_country = p.country_of_origin
+          AND starts_with(p.hs_code, d.hs_code)
+        ORDER BY length(d.hs_code) DESC LIMIT 1
+      ), prev AS (
+        SELECT d.duty_rate_pct FROM duty_rates d, p, r
+        WHERE d.hs_code = r.hs_code AND d.destination_market = $destination_market AND d.origin_country = p.country_of_origin
+          AND d.end_date IS NOT NULL AND d.end_date >= CAST($as_of AS DATE) - INTERVAL 365 DAY
+        ORDER BY d.end_date DESC LIMIT 1
+      ), e AS (
+        SELECT SUM(quantity) AS q, SUM(duty_paid_gbp) AS d, SUM(insurance_gbp) AS i, COUNT(*) AS n
+        FROM import_entries
+        WHERE sku = $sku AND destination_market = $destination_market AND status IN ('cleared', 'amended')
+          AND entry_date >= CAST($as_of AS DATE) - INTERVAL 90 DAY
+      )
+      SELECT p.sku, p.name, p.unit_cost_gbp, p.hs_code, p.country_of_origin,
+             r.duty_rate_pct, r.vat_rate_pct,
+             round(p.unit_cost_gbp * r.duty_rate_pct / 100.0, 2) AS duty_per_unit_gbp,
+             (SELECT duty_rate_pct FROM prev) AS previous_duty_rate_pct,
+             round(p.unit_cost_gbp * (SELECT duty_rate_pct FROM prev) / 100.0, 2) AS previous_duty_per_unit_gbp,
+             CASE WHEN (SELECT duty_rate_pct FROM prev) IS NULL THEN 'No rate change in last 12 months'
+                  ELSE 'Rate changed in last 12 months, effective ' || CAST(r.effective_date AS VARCHAR) END AS rate_change_note,
+             e.n AS entries_last_90_days,
+             round(e.d / NULLIF(e.q, 0), 2) AS actual_duty_per_unit_last_90_days_gbp,
+             round(COALESCE(e.i / NULLIF(e.q, 0), p.unit_cost_gbp * 0.005), 2) AS insurance_per_unit_gbp,
+             'duty = unit cost * duty rate; insurance from recent customs entries' AS formula
+      FROM p LEFT JOIN r ON true CROSS JOIN e
+    limit: 1
+    example: {sku: "SKU-102009"}
+
+  - name: get_duty_cost_trend
+    desc: Duty paid by complete month with average duty rate and change on the prior month, for all origins or one. Use for margin bridges and forecasting.
+    kind: sql
+    args:
+      origin_country: {desc: "Filter by origin; omit for all origins combined"}
+      category: {desc: "Product category or department, e.g. Womenswear, Trousers (optional)"}
+      destination_market: {type: str, desc: "Market the goods were entered into: UK, EU or US (optional)"}
+      date_from: {type: date, default: "-180d", desc: "Entries from the start of this date's month"}
+    sql: |
+      WITH m AS (
+        SELECT date_trunc('month', ie.entry_date)::DATE AS month, COUNT(*) AS entries, SUM(ie.quantity) AS total_units,
+               SUM(ie.declared_value_gbp) AS val, SUM(ie.duty_paid_gbp) AS duty
+        FROM import_entries ie JOIN master.products p ON p.sku = ie.sku
+        WHERE ie.status IN ('cleared', 'amended')
+          AND ($origin_country IS NULL OR ie.origin_country = $origin_country)
+          AND ($category IS NULL OR lower(p.category) = lower($category) OR lower(p.department) = lower($category))
+          AND ($destination_market IS NULL OR ie.destination_market = $destination_market)
+          AND ie.entry_date >= date_trunc('month', CAST($date_from AS DATE))
+          AND ie.entry_date < date_trunc('month', CAST($as_of AS DATE))
+        GROUP BY 1
+      )
+      SELECT month, COALESCE($origin_country, 'ALL') AS origin_country, COALESCE($category, 'ALL') AS category,
+             entries, total_units, round(val, 2) AS total_value_gbp, round(duty, 2) AS total_duty_gbp,
+             round(duty / NULLIF(val, 0) * 100, 2) AS avg_duty_rate_pct,
+             round(duty / NULLIF(val, 0) * 100 - LAG(duty / NULLIF(val, 0) * 100) OVER (ORDER BY month), 2) AS rate_change_vs_prior_month_pts
+      FROM m
+      ORDER BY month DESC
+    limit: 24
+    example: {origin_country: CN}
+
+  - name: get_duty_rate_by_hs_code_and_origin
+    desc: Duty rate for costing by HS code and origin into a market, with the best available rate and any pending tariff scenario. Omit origin to compare.
+    kind: sql
+    args:
+      hs_code: {required: true}
+      origin_country: {desc: "Only this origin, e.g. VN; omit to compare all origins"}
+      destination_market: {type: str, default: UK, desc: "Market: UK, EU or US"}
+    sql: |
+      SELECT d.hs_code, d.origin_country, d.destination_market, d.duty_rate_pct, d.vat_rate_pct,
+             d.preferential_rate_pct, d.preference_scheme,
+             COALESCE(d.preferential_rate_pct, d.duty_rate_pct) AS best_available_rate_pct, d.effective_date,
+             s.scenario_name AS pending_scenario, s.duty_rate_change_pct AS pending_change_pct,
+             s.probability_pct AS pending_probability_pct
+      FROM duty_rates d
+      LEFT JOIN tariff_scenarios s ON s.origin_country = d.origin_country
+           AND (s.hs_code_range = 'All goods' OR starts_with($hs_code, s.hs_code_range))
+      WHERE d.end_date IS NULL AND starts_with($hs_code, d.hs_code) AND d.destination_market = $destination_market
+        AND ($origin_country IS NULL OR d.origin_country = $origin_country)
+      ORDER BY best_available_rate_pct, d.origin_country
+    limit: 30
+    example: {hs_code: "6110", origin_country: VN}

@@ -1,0 +1,1722 @@
+id: wms
+name: Warehouse Management System (WMS)
+instructions: >
+  DC stock levels, cycle counting, goods receipts, and warehouse operations for Northampton, Daventry, Leeds and smaller DCs.
+  Stock location ids look like DC1-C-14-02. Goods receipt ids look like GR-000123. Cycle count task ids look like CCT-000123.
+  Stock transfer ids look like STR-000123.
+
+tables:
+  goods_receipts:
+    key: receipt_id
+    cols:
+      receipt_id: {type: str, desc: "Goods receipt id, e.g. GR-000123"}
+      po_id: {type: str, desc: "Purchase order being received"}
+      site_id: {type: str, desc: "DC receiving, e.g. DC1"}
+      sku: {type: str, desc: "Product being received"}
+      qty_ordered: {type: int, desc: "Quantity ordered on the PO line (equals the quantity advised on the ASN)"}
+      qty_received: {type: int, desc: "Quantity physically received"}
+      qty_accepted: {type: int, desc: "Quantity accepted (received less damaged)"}
+      received_at: {type: timestamp, desc: "Date and time of receipt"}
+      received_by: {type: str, desc: "Employee id of receiving person"}
+      dock: {type: str, desc: "Dock number, e.g. D07"}
+      carrier_id: {type: str, desc: "Carrier that delivered"}
+      batch_number: {type: str, desc: "Product batch/lot number if applicable"}
+      expiry_date: {type: date, desc: "Product expiry date if applicable"}
+      damage_qty: {type: int, desc: "Units damaged on receipt"}
+      short_qty: {type: int, desc: "Units short on receipt against the ordered quantity"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+      notes: {type: text, desc: "Goods-in notes, e.g. pallet count against ASN"}
+
+  location_inventory:
+    key: stock_id
+    cols:
+      stock_id: {type: str, desc: "Stock record id, e.g. LI-000123"}
+      location_id: {type: str, desc: "DC bin location holding the stock, e.g. DC1-C-14-02"}
+      site_id: {type: str, desc: "DC, e.g. DC1"}
+      sku: {type: str, desc: "Product held"}
+      lot_number: {type: str, desc: "Lot if tracked"}
+      status: {type: enum, values: [on-hand, quarantine, damaged, expired, reserved, in-transit], desc: "WMS inventory status"}
+      qty: {type: int, desc: "System quantity held in this status at the location"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  pallet_position_history:
+    key: [week_start, site_id, zone, category]
+    cols:
+      week_start: {type: date, desc: "Monday of the week the snapshot was taken"}
+      site_id: {type: str, desc: "DC"}
+      zone: {type: str, desc: "Warehouse zone (pick, reserve, bulk, mezzanine, hazmat)"}
+      category: {type: str, desc: "Product category held"}
+      positions_occupied: {type: int, desc: "Pallet positions (reserve and bulk locations) holding this category"}
+
+  cycle_count_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Cycle count task id, e.g. CCT-000123"}
+      location_id: {type: str, desc: "DC bin location to count, e.g. DC1-C-14-02"}
+      site_id: {type: str, desc: "DC, e.g. DC1"}
+      status: {type: enum, values: [planned, released, completed, cancelled], desc: "Task status"}
+      assigned_to: {type: str, desc: "Employee id assigned to count"}
+      created_at: {type: timestamp, desc: "When task was created"}
+      released_at: {type: timestamp, desc: "When released to handheld"}
+      completed_at: {type: timestamp, desc: "When completed"}
+      cancelled_at: {type: timestamp, desc: "When cancelled"}
+      cancel_reason: {type: str, desc: "Reason for cancellation"}
+      reason: {type: str, desc: "Why the count was requested, e.g. Recount after variance"}
+      priority: {type: int, desc: "Priority score for counting order (higher = count sooner)"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+      category: {type: str, desc: "Product category to count when the task covers a whole category at the DC rather than one bin"}
+      scheduled_date: {type: date, desc: "Date the count is planned for"}
+
+  cycle_count_results:
+    key: result_id
+    cols:
+      result_id: {type: str, desc: "Cycle count result id, e.g. CCR-000123"}
+      task_id: {type: str, desc: "Related cycle count task"}
+      location_id: {type: str, desc: "DC bin location"}
+      sku: {type: str, desc: "Product counted"}
+      system_qty: {type: int, desc: "Quantity in system before count"}
+      counted_qty: {type: int, desc: "Quantity physically counted"}
+      variance: {type: int, desc: "counted_qty minus system_qty"}
+      variance_pct: {type: float, desc: "Variance as percentage of system quantity"}
+      counted_at: {type: timestamp, desc: "When the count was performed"}
+      counted_by: {type: str, desc: "Employee id who counted"}
+      accuracy_issue: {type: bool, desc: "True if the variance is 2% or more of system quantity"}
+      reversed_within_48h: {type: bool, desc: "True if the count correction was reversed within 48 hours"}
+      reversed_at: {type: timestamp, desc: "When the correction was reversed, if it was"}
+      cause_code: {type: str, desc: "Cause code on the correction, e.g. cycle_count_variance or other"}
+      lot_number: {type: str, desc: "Product lot if tracked"}
+      condition: {type: str, desc: "Product condition noted (good, damaged, expired)"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  stock_movements:
+    key: movement_id
+    cols:
+      movement_id: {type: str, desc: "Stock movement id, e.g. MOV-000123"}
+      location_id: {type: str, desc: "DC bin location affected"}
+      site_id: {type: str, desc: "DC"}
+      sku: {type: str, desc: "Product moved"}
+      movement_type: {type: enum, values: [receipt, putaway, pick, transfer, adjustment, return], desc: "Type of movement"}
+      qty: {type: int, desc: "Quantity moved (positive for receipt/putaway/adjustment up, negative for pick/adjustment down)"}
+      reference_id: {type: str, desc: "Receipt id, transfer id, order id or adjustment id"}
+      moved_at: {type: timestamp, desc: "When movement occurred"}
+      moved_by: {type: str, desc: "Employee id"}
+      batch_number: {type: str, desc: "Product lot if applicable"}
+      status: {type: str, desc: "Movement status (completed, reversed)"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+      notes: {type: text, desc: "Reason or comment recorded with the movement"}
+
+  stock_transfers:
+    key: transfer_id
+    cols:
+      transfer_id: {type: str, desc: "Stock transfer order id, e.g. STR-000123"}
+      from_site_id: {type: str, desc: "Source DC or store"}
+      to_site_id: {type: str, desc: "Destination DC or store"}
+      sku: {type: str, desc: "Product being transferred"}
+      qty_requested: {type: int, desc: "Quantity requested for transfer"}
+      qty_allocated: {type: int, desc: "Quantity allocated from source"}
+      qty_shipped: {type: int, desc: "Quantity shipped"}
+      qty_received: {type: int, desc: "Quantity received at destination"}
+      created_at: {type: timestamp, desc: "When transfer was requested"}
+      shipped_at: {type: timestamp, desc: "When shipped from source"}
+      received_at: {type: timestamp, desc: "When received at destination"}
+      status: {type: enum, values: [draft, confirmed, allocated, shipped, received, cancelled], desc: "Transfer status"}
+      reason: {type: str, desc: "Reason for transfer (rebalance, stockout, disposal, clearance)"}
+      created_by: {type: str, desc: "Employee id who created transfer"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  pack_specifications:
+    key: pack_spec_id
+    cols:
+      pack_spec_id: {type: str, desc: "Pack spec id, e.g. PKS-000123"}
+      sku: {type: str, desc: "Product"}
+      pack_type: {type: str, desc: "Pack type (polybag, carton, hanging, tray, pouch)"}
+      material: {type: str, desc: "Pack material (corrugated, moulded_pulp, recycled_plastic, plastic_film, hanger)"}
+      units_per_pack: {type: int, desc: "Units in one pack (minimum allocation unit)"}
+      packs_per_pallet: {type: int, desc: "Packs per pallet"}
+      units_per_pallet: {type: int, desc: "Total units per pallet"}
+      pallet_height_cm: {type: int, desc: "Pallet height in cm"}
+      pallet_weight_kg: {type: float, desc: "Pallet weight in kg"}
+      bonded_suitable: {type: bool, desc: "Can this SKU go in bonded storage"}
+      created_at: {type: timestamp, desc: "When spec was created"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  cause_codes:
+    key: cause_code
+    cols:
+      cause_code: {type: str, desc: "Cause code, e.g. receiving_variance or other"}
+      description: {type: str, desc: "Cause description"}
+      category: {type: str, desc: "Cause category, e.g. receiving, picking, loss, catch_all"}
+      intended_use: {type: text, desc: "When and why this code should be used"}
+      catch_all: {type: bool, desc: "True for the catch-all code that should be rare"}
+
+  location_blocks:
+    key: block_id
+    cols:
+      block_id: {type: str, desc: "Block record id, e.g. LB-000123"}
+      location_id: {type: str, desc: "DC bin location"}
+      site_id: {type: str, desc: "DC"}
+      reason: {type: str, desc: "Reason for blocking"}
+      blocked_at: {type: timestamp, desc: "When the location was blocked"}
+      blocked_by: {type: str, desc: "Employee who blocked it"}
+      unblocked_at: {type: timestamp, desc: "When unblocked (if released)"}
+      status: {type: enum, values: [blocked, released], desc: "Current status"}
+
+  allocation_retries:
+    key: retry_id
+    cols:
+      retry_id: {type: str, desc: "Retry record id, e.g. RETRY-000123"}
+      order_id: {type: str, desc: "Order that was retried"}
+      previous_status: {type: str, desc: "Status before retry"}
+      new_status: {type: str, desc: "Status after retry (retry_queued until allocation runs)"}
+      result: {type: str, desc: "Result of retry (queued, success, partial, failed)"}
+      retried_at: {type: timestamp, desc: "When the retry was requested"}
+      created_by: {type: str, desc: "Employee who initiated retry"}
+      notes: {type: text, desc: "Notes on retry outcome"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  order_lines:
+    key: [order_id, line_no]
+    cols:
+      order_id: {type: str, desc: "Customer order id, e.g. ORD-2026-0100001"}
+      line_no: {type: int, desc: "Line number within the order"}
+      site_id: {type: str, desc: "DC fulfilling the order"}
+      sku: {type: str, desc: "Product on the line"}
+      qty: {type: int, desc: "Units on the line"}
+      status: {type: enum, values: [allocation_failed, allocated, picking, shipped], desc: "Line status"}
+      status_at: {type: timestamp, desc: "When the line reached its current status"}
+      failure_code: {type: str, desc: "Allocation failure code, e.g. PACK_UOM_MISMATCH, LOCATION_BLOCKED"}
+      failure_detail: {type: text, desc: "Why allocation failed"}
+      pick_zone: {type: str, desc: "Zone the line is picked from"}
+      released_at: {type: timestamp, desc: "When released to the floor"}
+      picked_at: {type: timestamp, desc: "When picked"}
+      shipped_at: {type: timestamp, desc: "When shipped"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  pick_exceptions:
+    key: exception_id
+    cols:
+      exception_id: {type: str, desc: "Exception id, e.g. EXC-000123"}
+      site_id: {type: str, desc: "DC where it happened"}
+      process_stage: {type: enum, values: [wave_release, picking, loading], desc: "Process stage"}
+      exception_type: {type: enum, values: [late_wave, short_pick, loading_exception], desc: "Exception type"}
+      to_site_id: {type: str, desc: "Destination store of the wave or load"}
+      wave_id: {type: str, desc: "Wave id, e.g. W-DC1-0929-AM"}
+      sku: {type: str, desc: "Product for a short pick"}
+      expected_qty: {type: int, desc: "Quantity that should have been picked"}
+      actual_qty: {type: int, desc: "Quantity actually picked"}
+      delay_minutes: {type: int, desc: "Minutes late for a late wave or loading exception"}
+      occurred_at: {type: timestamp, desc: "When it happened"}
+      cause: {type: str, desc: "Recorded cause"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  configuration_changes:
+    key: change_id
+    cols:
+      change_id: {type: str, desc: "Change record id, e.g. CFG-000123"}
+      scope: {type: str, desc: "DC the change applies to, or ALL for network-wide"}
+      change_type: {type: str, desc: "Kind of change, e.g. wave_template, pack_specification, cycle_count"}
+      parameter: {type: str, desc: "Parameter or rule that changed"}
+      old_value: {type: str, desc: "Value before"}
+      new_value: {type: str, desc: "Value after"}
+      description: {type: text, desc: "What changed and why"}
+      changed_at: {type: timestamp, desc: "When the change went live"}
+      changed_by: {type: str, desc: "Employee id who made the change"}
+      status: {type: str, desc: "applied, pending or rolled_back"}
+
+  wms_patches:
+    key: patch_id
+    cols:
+      patch_id: {type: str, desc: "Patch id, e.g. WMS-9.2.7"}
+      version: {type: str, desc: "Version or patch level, e.g. 9.2.7"}
+      patch_type: {type: enum, values: [release, fix, security, feature], desc: "Kind of patch"}
+      status: {type: enum, values: [current, applied, available], desc: "current = installed build, applied = earlier patch, available = not installed"}
+      released_at: {type: date, desc: "Vendor release date"}
+      applied_at: {type: timestamp, desc: "When installed, if installed"}
+      summary: {type: str, desc: "One-line summary"}
+      details: {type: text, desc: "Contents of the patch and test notes"}
+      fixes_known_issue: {type: text, desc: "Known issues fixed by this patch"}
+
+  replenishment_tasks:
+    key: task_id
+    cols:
+      task_id: {type: str, desc: "Replenishment task id, e.g. RPL-000123"}
+      site_id: {type: str, desc: "DC"}
+      sku: {type: str, desc: "Product being replenished"}
+      to_location_id: {type: str, desc: "Pick face being replenished"}
+      qty: {type: int, desc: "Quantity to move"}
+      status: {type: str, desc: "Task status"}
+      created_at: {type: timestamp, desc: "When the task was created (to the second)"}
+      trigger_receipt_id: {type: str, desc: "Goods receipt that triggered the task"}
+      created_by: {type: str, desc: "Creator, WMS-AUTO for system-created tasks"}
+
+  handling_damage_reports:
+    key: report_id
+    cols:
+      report_id: {type: str, desc: "Handling damage report id, e.g. HDR-000123"}
+      site_id: {type: str, desc: "DC where the damage was logged"}
+      sku: {type: str, desc: "Product damaged"}
+      location_id: {type: str, desc: "Bin or area where the damage happened"}
+      process_stage: {type: enum, values: [receiving, putaway, replenishment, picking, packing, loading], desc: "Warehouse process step where the damage happened"}
+      damage_qty: {type: int, desc: "Units damaged"}
+      cause: {type: text, desc: "What happened, as logged by the operative"}
+      reported_at: {type: timestamp, desc: "When the damage was reported"}
+      reported_by: {type: str, desc: "Employee id of the reporter"}
+
+  wave_configurations:
+    key: config_id
+    cols:
+      config_id: {type: str, desc: "Wave configuration id, e.g. WVC-000001"}
+      site_id: {type: str, desc: "DC the configuration applies to"}
+      channel: {type: str, desc: "Order channel served: ecommerce, store_replenishment or click_collect"}
+      wave_template: {type: str, desc: "Wave template name, e.g. W-ECOM"}
+      release_times: {type: str, desc: "Daily wave release times, e.g. 06:00, 10:00, 13:00"}
+      wave_cutoff_time: {type: str, desc: "Order cut-off for the last wave of the day"}
+      shipping_cutoff: {type: str, desc: "Time picked orders must be packed and staged for the first carrier collection"}
+      waves_per_day: {type: int, desc: "Number of waves released per day"}
+      picking_method: {type: str, desc: "Picking method used, e.g. wave picking with zone batching"}
+      avg_orders_per_wave: {type: int, desc: "Average orders released per wave"}
+      min_wave_size: {type: int, desc: "Minimum orders needed before a wave releases"}
+      release_trigger: {type: str, desc: "What releases a wave: scheduled time or order count"}
+      updated_at: {type: timestamp, desc: "When the configuration was last changed"}
+
+  inventory_status_mapping:
+    key: wms_status
+    cols:
+      wms_status: {type: str, desc: "Inventory status in the WMS, e.g. quarantine"}
+      erp_status: {type: str, desc: "Status the interface maps it to in the ERP"}
+      definition: {type: text, desc: "What the status means"}
+      wms_counts_as_available: {type: bool, desc: "Whether WMS counts stock in this status as available to allocate"}
+      erp_counts_in_book_stock: {type: bool, desc: "Whether ERP still counts stock in this status in its book stock"}
+      note: {type: text, desc: "How the difference arises and when it clears"}
+      sort_order: {type: int, desc: "Display order"}
+
+  process_capacity:
+    key: capacity_id
+    cols:
+      capacity_id: {type: str, desc: "Capacity row id, e.g. CAP-DC2-PACK"}
+      site_id: {type: str, desc: "DC, e.g. DC2"}
+      process: {type: enum, values: [receiving, picking, packing, despatch], desc: "Warehouse process"}
+      rated_units_per_hour: {type: int, desc: "Rated throughput in units per hour at standard staffing"}
+      shift_hours_per_day: {type: float, desc: "Productive hours per day on the normal shift pattern"}
+      operating_days_per_week: {type: int, desc: "Days per week the process runs"}
+      peak_extra_hours_per_day: {type: float, desc: "Extra hours a day available in peak with overtime or a added shift"}
+      avg_utilisation_pct: {type: float, desc: "Average share of rated daily capacity used over the last 13 weeks"}
+      peak_utilisation_pct: {type: float, desc: "Share of rated daily capacity used in the busiest week of last peak (over 100 means overtime was needed)"}
+      limiting_factor: {type: text, desc: "Main physical or equipment constraint on the process"}
+      updated_at: {type: timestamp, desc: "When the rating was last reviewed"}
+
+  handling_rate_card:
+    key: driver
+    cols:
+      driver: {type: str, desc: "Cost driver, e.g. pick_per_line"}
+      rate_gbp: {type: float, desc: "Cost in GBP per unit of the driver"}
+      unit: {type: str, desc: "What the rate applies to, e.g. order line"}
+      basis: {type: text, desc: "How the rate was set"}
+      updated_at: {type: timestamp, desc: "When the rate was last changed"}
+
+  inbound_field_schema:
+    key: field_id
+    cols:
+      field_id: {type: str, desc: "Field row id, e.g. IFS-001"}
+      entity: {type: str, desc: "Inbound entity: ASN Header, ASN Line, Receipt, Pack Specification or ASN Pallet"}
+      field_name: {type: str, desc: "Field name as the supplier ASN or receipt calls it"}
+      field_type: {type: str, desc: "Data type, e.g. string, int, date"}
+      requirement: {type: enum, values: [Required, Optional, Not held], desc: "Whether the WMS needs the field, treats it as optional, or does not hold it at all"}
+      description: {type: text, desc: "What the field means"}
+      wms_table: {type: str, desc: "WMS table that stores it, blank if none"}
+      wms_column: {type: str, desc: "WMS column that stores it, blank if none"}
+      wms_supported: {type: bool, desc: "True if the WMS stores this field today"}
+      gap_note: {type: text, desc: "What is missing or how it is held today"}
+      sort_order: {type: int, desc: "Display order"}
+
+  rollback_requirements:
+    key: requirement_id
+    cols:
+      requirement_id: {type: str, desc: "Requirement id, e.g. RBK-001"}
+      data_type: {type: str, desc: "Kind of WMS data that must be dealt with in a rollback"}
+      sequence: {type: int, desc: "Order in which it is rolled back"}
+      reversible: {type: bool, desc: "True if the data can be cleanly reversed"}
+      rollback_method: {type: text, desc: "How the data is reversed or restored"}
+      depends_on: {type: text, desc: "What must be in place first"}
+      est_hours: {type: float, desc: "Estimated hours to roll this back for one DC"}
+      owner_role: {type: str, desc: "Role that owns the step"}
+      point_of_no_return: {type: text, desc: "When the step can no longer be reversed"}
+
+tools:
+  - name: block_location
+    desc: Place a hold on a bin location so no picks or putaways are directed to it. Returns the block record.
+    kind: insert
+    table: location_blocks
+    id_prefix: LB-
+    defaults: {status: blocked, blocked_by: "EMP-00112", blocked_at: "$as_of"}
+    args:
+      location_id: {required: true, desc: "DC bin location to hold, e.g. DC1-C-14-02"}
+      site_id: {required: true, desc: "DC the bin is in"}
+      reason: {required: true, desc: "Reason for blocking, e.g. Damaged racking, awaiting recount"}
+      blocked_by: {desc: "Employee id placing the hold"}
+    example: {location_id: DC1-C-14-02, site_id: DC1, reason: Awaiting recount}
+
+  - name: calculate_count_priority_score
+    desc: Rank bins to count first by stock value, count accuracy history and days since last count, skipping recently counted bins. Returns scores, highest first, with any planned task id.
+    kind: sql
+    args:
+      site_id: {required: true}
+      zone: {type: str, desc: "Warehouse zone filter, e.g. pick, reserve, mezzanine"}
+      aisle: {type: str, desc: "Aisle letter filter, e.g. D"}
+      exclude_counted_within_days: {type: int, default: 30, desc: "Skip bins counted in the last N days"}
+      min_value_gbp: {type: float, desc: "Only bins holding at least this stock value in GBP"}
+      history_days: {type: int, default: 180, desc: "Days of count history used for the accuracy measure"}
+    sql: |
+      WITH val AS (
+        SELECT li.location_id, sum(li.qty * p.unit_cost_gbp) AS value_gbp
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE li.site_id = $site_id GROUP BY li.location_id
+      ), hist AS (
+        SELECT cr.location_id, count(*) AS counted_lines, count(*) FILTER (WHERE cr.accuracy_issue) AS issue_lines,
+               max(CAST(cr.counted_at AS DATE)) AS last_count_date
+        FROM cycle_count_results cr JOIN master.locations l2 ON l2.location_id = cr.location_id
+        WHERE l2.site_id = $site_id AND CAST(cr.counted_at AS DATE) >= CAST($as_of AS DATE) - CAST($history_days AS INT) * INTERVAL 1 DAY
+        GROUP BY cr.location_id
+      ), planned AS (
+        SELECT location_id, min(task_id) AS planned_task_id FROM cycle_count_tasks WHERE status IN ('planned', 'released') GROUP BY location_id
+      ), scored AS (
+        SELECT l.location_id, l.zone, l.aisle, round(v.value_gbp) AS value_gbp, h.counted_lines,
+               round(100.0 * h.issue_lines / NULLIF(h.counted_lines, 0), 1) AS issue_pct,
+               round(100.0 * (coalesce(h.issue_lines, 0) + 0.15) / (coalesce(h.counted_lines, 0) + 3), 1) AS smoothed_issue_pct, h.last_count_date,
+               datediff('day', h.last_count_date, CAST($as_of AS DATE)) AS days_since_count, pl.planned_task_id
+        FROM master.locations l JOIN val v ON v.location_id = l.location_id
+        LEFT JOIN hist h ON h.location_id = l.location_id LEFT JOIN planned pl ON pl.location_id = l.location_id
+        WHERE l.site_id = $site_id AND ($zone IS NULL OR l.zone = $zone) AND ($aisle IS NULL OR l.aisle = upper($aisle))
+          AND ($min_value_gbp IS NULL OR v.value_gbp >= $min_value_gbp)
+      )
+      SELECT location_id, zone, aisle, value_gbp, counted_lines, issue_pct AS accuracy_issue_pct, last_count_date, days_since_count, planned_task_id,
+             round(least(value_gbp / 2500.0, 100) + smoothed_issue_pct * 0.5 + least(coalesce(days_since_count, 120), 120) / 6.0, 1) AS priority_score,
+             'score = min(value_gbp / 2500, 100) + 0.5 * smoothed_accuracy_issue_pct + min(days_since_count, 120) / 6; never counted = 120 days' AS formula
+      FROM scored
+      WHERE days_since_count IS NULL OR days_since_count >= $exclude_counted_within_days
+      ORDER BY priority_score DESC
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: calculate_pallet_fill_by_pack_spec
+    desc: Units per pallet for each pack specification of a SKU (pack type and material), with pallets needed for an annual volume.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      pack_type: {desc: "Pack type, e.g. carton, tray, pouch"}
+      material: {desc: "Pack material: corrugated, moulded_pulp or recycled_plastic"}
+      annual_units: {type: int, default: 100000, desc: "Annual volume to size pallets for"}
+    sql: |
+      SELECT pack_spec_id, sku, pack_type, material, units_per_pack, packs_per_pallet,
+             units_per_pack * packs_per_pallet AS units_per_pallet, pallet_height_cm, pallet_weight_kg,
+             $annual_units AS annual_units,
+             CAST(ceil($annual_units * 1.0 / (units_per_pack * packs_per_pallet)) AS BIGINT) AS pallets_per_year,
+             'units_per_pallet = units_per_pack * packs_per_pallet; pallets_per_year = ceil(annual_units / units_per_pallet)' AS formula
+      FROM pack_specifications
+      WHERE sku = $sku AND ($pack_type IS NULL OR pack_type = $pack_type) AND ($material IS NULL OR material = $material)
+      ORDER BY units_per_pallet DESC
+    limit: 10
+    example: {sku: PF-220}
+
+  - name: cancel_cycle_count_task
+    desc: Cancel a planned or released cycle count task for a location. Returns the old and new status.
+    kind: update
+    table: cycle_count_tasks
+    set: {status: cancelled, cancelled_at: $as_of}
+    args:
+      cancel_reason: {required: true, desc: "Reason for cancellation, e.g. Location blocked, duplicate count"}
+    example: {task_id: CCT-900103, cancel_reason: Location blocked}
+
+  - name: compare_receipts_to_asns
+    desc: Line-level variance between received quantity and ASN quantity, or totals per supplier, carrier or dock. Negative variance = short shipment. Filter by supplier, carrier, site or variance.
+    kind: sql
+    args:
+      supplier_id: {desc: "Filter by supplier"}
+      carrier_id: {desc: "Filter by carrier that delivered"}
+      site_id: {desc: "Filter by receiving DC"}
+      variance: {type: enum, values: [any, short, over], default: any, desc: "short = received less than ASN, over = received more"}
+      group_by: {type: enum, values: [line, supplier, carrier, dock], default: line, desc: "line = one row per receipt line; otherwise totals per supplier, carrier or dock"}
+      date_from: {type: date, default: "-56d", desc: "Receipts from or after this date"}
+      date_to: {type: date, desc: "Receipts up to this date (default today)"}
+    sql: |
+      WITH base AS (
+        SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name, gr.carrier_id, c.name AS carrier_name, gr.site_id, gr.dock,
+               gr.received_by, gr.sku, pol.qty_ordered AS asn_qty, gr.qty_received, gr.damage_qty,
+               gr.qty_received - pol.qty_ordered AS variance_qty,
+               round(100.0 * (gr.qty_received - pol.qty_ordered) / pol.qty_ordered, 1) AS variance_pct,
+               round((gr.qty_received - pol.qty_ordered) * pr.unit_cost_gbp, 2) AS variance_value_gbp, gr.received_at, gr.notes
+        FROM goods_receipts gr
+        JOIN master.purchase_orders pur ON pur.po_id = gr.po_id
+        JOIN master.po_lines pol ON pol.po_id = gr.po_id AND pol.sku = gr.sku
+        JOIN master.products pr ON pr.sku = gr.sku
+        JOIN master.suppliers s ON s.supplier_id = pur.supplier_id
+        LEFT JOIN master.carriers c ON c.carrier_id = gr.carrier_id
+        WHERE ($supplier_id IS NULL OR pur.supplier_id = $supplier_id) AND ($carrier_id IS NULL OR gr.carrier_id = $carrier_id)
+          AND ($site_id IS NULL OR gr.site_id = $site_id)
+          AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(gr.received_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+          AND ($variance IS NULL OR $variance = 'any' OR ($variance = 'short' AND gr.qty_received < pol.qty_ordered)
+               OR ($variance = 'over' AND gr.qty_received > pol.qty_ordered))
+      ), tot AS (
+        SELECT coalesce(sum(-variance_value_gbp) FILTER (WHERE variance_qty < 0), 0) AS short_total FROM base
+      ), u AS (
+        SELECT 'line' AS grouped_by, receipt_id, po_id, supplier_id, supplier_name, carrier_id, carrier_name, site_id, dock, sku, 1 AS receipts,
+               asn_qty, qty_received, variance_qty, variance_pct, variance_value_gbp,
+               CASE WHEN variance_qty < 0 THEN -variance_value_gbp ELSE 0 END AS short_value_gbp, received_at, notes
+        FROM base
+        UNION ALL
+        SELECT 'supplier', NULL, NULL, supplier_id, any_value(supplier_name), NULL, NULL, NULL, NULL, NULL, count(*),
+               sum(asn_qty), sum(qty_received), sum(variance_qty), round(100.0 * sum(variance_qty) / sum(asn_qty), 1), sum(variance_value_gbp),
+               coalesce(sum(-variance_value_gbp) FILTER (WHERE variance_qty < 0), 0), NULL, NULL
+        FROM base GROUP BY supplier_id
+        UNION ALL
+        SELECT 'carrier', NULL, NULL, NULL, NULL, carrier_id, any_value(carrier_name), NULL, NULL, NULL, count(*),
+               sum(asn_qty), sum(qty_received), sum(variance_qty), round(100.0 * sum(variance_qty) / sum(asn_qty), 1), sum(variance_value_gbp),
+               coalesce(sum(-variance_value_gbp) FILTER (WHERE variance_qty < 0), 0), NULL, NULL
+        FROM base GROUP BY carrier_id
+        UNION ALL
+        SELECT 'dock', NULL, NULL, NULL, NULL, NULL, NULL, site_id, dock, NULL, count(*),
+               sum(asn_qty), sum(qty_received), sum(variance_qty), round(100.0 * sum(variance_qty) / sum(asn_qty), 1), sum(variance_value_gbp),
+               coalesce(sum(-variance_value_gbp) FILTER (WHERE variance_qty < 0), 0), NULL, NULL
+        FROM base GROUP BY site_id, dock
+      )
+      SELECT u.*, CASE WHEN tot.short_total > 0 THEN round(100.0 * u.short_value_gbp / tot.short_total, 1) END AS share_of_short_value_pct
+      FROM u, tot
+      WHERE u.grouped_by = coalesce($group_by, 'line')
+      ORDER BY u.short_value_gbp DESC, u.variance_value_gbp
+    limit: 100
+    example: {}
+
+  - name: create_cycle_count_task
+    desc: "Create a count task: a recount of one bin location or a count of a whole product category at a DC. Returns the new task with status and assignment."
+    kind: insert
+    table: cycle_count_tasks
+    id_prefix: CCT-
+    defaults: {status: planned, priority: 50}
+    args:
+      site_id: {required: true, desc: "DC the count is for"}
+      location_id: {desc: "DC bin location to count, e.g. DC1-C-14-02; leave blank for a category count"}
+      category: {desc: "Product category to count across the DC, e.g. Small Appliances"}
+      scheduled_date: {type: date, desc: "Date the count is planned for"}
+      assigned_to: {desc: "Employee id to assign counting to"}
+      priority: {type: int, desc: "Priority score, higher counts sooner"}
+      reason: {desc: "Why the count is needed, e.g. Recount after variance"}
+    example: {location_id: DC1-C-14-02, site_id: DC1, reason: Recount after variance}
+
+  - name: create_stock_transfer
+    desc: Creates a transfer order moving stock from one DC or store to another. Returns the new transfer with status and dates.
+    kind: insert
+    table: stock_transfers
+    id_prefix: STR-
+    defaults: {status: draft, qty_allocated: 0, qty_shipped: 0, qty_received: 0, created_by: "EMP-00112"}
+    args:
+      from_site_id: {required: true, desc: "Source DC or store"}
+      to_site_id: {required: true, desc: "Destination DC or store"}
+      sku: {required: true, desc: "Product being transferred"}
+      qty_requested: {required: true, type: int, desc: "Quantity to transfer"}
+      reason: {required: true, desc: "Reason for transfer, e.g. rebalance, stockout, outlet, clearance"}
+      created_by: {desc: "Employee id raising the transfer"}
+    example: {from_site_id: DC1, to_site_id: DC3, sku: PF-220, qty_requested: 500, reason: rebalance}
+
+  - name: draft_cycle_count_sheet
+    desc: Draft a printable cycle count sheet for a list of bins, with the SKUs and system quantities expected in each. Pass bin ids separated by commas.
+    kind: draft
+    args:
+      location_ids: {required: true, desc: "Comma-separated bin ids, e.g. DC1-F-13-04,DC1-B-21-02"}
+    sql:
+      locations: |
+        SELECT l.location_id, l.zone, l.aisle, l.bay, l.level,
+               (SELECT max(CAST(cr.counted_at AS DATE)) FROM cycle_count_results cr WHERE cr.location_id = l.location_id) AS last_counted
+        FROM master.locations l
+        WHERE list_contains(string_split(replace($location_ids, ' ', ''), ','), l.location_id)
+        ORDER BY l.location_id
+      skus: |
+        SELECT li.location_id, li.sku, p.name, li.lot_number, li.status, li.qty
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE list_contains(string_split(replace($location_ids, ' ', ''), ','), li.location_id)
+        ORDER BY li.location_id, li.sku
+    template: |
+      CYCLE COUNT SHEET
+      {% for loc in locations %}
+
+      ========================================
+      Location: {{ loc.location_id }}   Zone: {{ loc.zone }}  Aisle: {{ loc.aisle }}  Bay: {{ loc.bay }}  Level: {{ loc.level }}
+      Last counted: {{ loc.last_counted or 'never' }}
+      SKU | Product | Lot | Status | System qty | Counted qty
+      {% for s in skus %}{% if s.location_id == loc.location_id %}{{ s.sku }} | {{ s.name }} | {{ s.lot_number or 'n/a' }} | {{ s.status }} | {{ s.qty }} | ________
+      {% endif %}{% endfor %}
+      Counted by: __________   Date: __________   Time: __________
+      {% endfor %}
+    example: {location_ids: "DC1-F-13-04,DC1-B-21-02"}
+
+  - name: get_asn_timeliness_history
+    desc: "ASN and receipt timeliness and accuracy by supplier or PO: transit lead time, days late, late share, quantity accuracy against advised. Use for supplier delay risk."
+    kind: sql
+    args:
+      supplier_id: {desc: "Filter by supplier"}
+      po_id: {desc: "Filter by purchase order"}
+      date_from: {type: date, default: -90d, desc: "Receipts from or after"}
+      date_to: {type: date, desc: "Receipts up to (default today)"}
+      group_by: {type: enum, values: [supplier, po], default: supplier, desc: "supplier = one row per supplier, latest running first; po = one row per purchase order"}
+    sql: |
+      WITH r AS (
+        SELECT pur.supplier_id, s.name AS supplier_name, pur.po_id, pur.due_date, gr.receipt_id, gr.site_id,
+               DATEDIFF('day', pur.ship_date, CAST(gr.received_at AS DATE)) AS lead_days,
+               DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late,
+               gr.qty_received, pol.qty_ordered AS qty_advised
+        FROM goods_receipts gr
+        JOIN master.purchase_orders pur ON pur.po_id = gr.po_id
+        JOIN master.po_lines pol ON pol.po_id = gr.po_id AND pol.sku = gr.sku
+        JOIN master.suppliers s ON s.supplier_id = pur.supplier_id
+        WHERE ($supplier_id IS NULL OR pur.supplier_id = $supplier_id) AND ($po_id IS NULL OR pur.po_id = $po_id)
+          AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(gr.received_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ), u AS (
+        SELECT 'supplier' AS grouped_by, supplier_id, any_value(supplier_name) AS supplier_name, CAST(NULL AS VARCHAR) AS po_id,
+               count(DISTINCT po_id) AS po_count, count(*) AS receipt_count, round(avg(lead_days), 1) AS avg_lead_time_days,
+               round(avg(days_late), 1) AS avg_days_late, max(days_late) AS worst_days_late,
+               round(100.0 * count(*) FILTER (WHERE days_late > 0) / count(*), 1) AS late_receipt_pct,
+               round(avg(abs(qty_received - qty_advised) / NULLIF(qty_advised, 0) * 100), 2) AS avg_variance_pct,
+               round(100.0 * count(*) FILTER (WHERE qty_received = qty_advised) / count(*), 1) AS accuracy_pct
+        FROM r GROUP BY supplier_id
+        UNION ALL
+        SELECT 'po', any_value(supplier_id), any_value(supplier_name), po_id, 1, count(*), round(avg(lead_days), 1), round(avg(days_late), 1),
+               max(days_late), round(100.0 * count(*) FILTER (WHERE days_late > 0) / count(*), 1),
+               round(avg(abs(qty_received - qty_advised) / NULLIF(qty_advised, 0) * 100), 2),
+               round(100.0 * count(*) FILTER (WHERE qty_received = qty_advised) / count(*), 1)
+        FROM r GROUP BY po_id
+      )
+      SELECT *, 'late_receipt_pct = receipts after PO due date / receipts; accuracy_pct = receipts equal to advised qty / receipts' AS formula
+      FROM u WHERE grouped_by = coalesce($group_by, 'supplier')
+      ORDER BY avg_days_late DESC
+    limit: 30
+    example: {supplier_id: SUP-0013}
+
+  - name: get_bonded_warehouse_volumes
+    desc: On-hand stock suitable for bonded storage (non-UK origin, non-hazmat pack specs) by DC, category or SKU, with units, pallets and value at cost.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      category: {desc: "Product category, e.g. Small Appliances"}
+      country_of_origin: {desc: "Origin country code, e.g. CN"}
+      group_by: {desc: "site (default), category or sku", default: site}
+    sql: |
+      WITH h AS (
+        SELECT li.site_id, li.sku, p.name AS product_name, p.category, p.country_of_origin, sum(li.qty) AS units,
+               sum(li.qty * p.unit_cost_gbp) AS value_gbp,
+               sum(li.qty * 1.0 / (SELECT max(ps.units_per_pallet) FROM pack_specifications ps WHERE ps.sku = li.sku)) AS pallets
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE li.status = 'on-hand' AND p.country_of_origin <> 'GB'
+          AND EXISTS (SELECT 1 FROM pack_specifications ps WHERE ps.sku = li.sku AND ps.bonded_suitable)
+          AND ($site_id IS NULL OR li.site_id = $site_id) AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND ($country_of_origin IS NULL OR p.country_of_origin = upper($country_of_origin))
+        GROUP BY ALL
+      )
+      SELECT site_id, CASE $group_by WHEN 'category' THEN category WHEN 'sku' THEN sku || ' ' || product_name ELSE 'all categories' END AS breakdown,
+             count(DISTINCT sku) AS skus, sum(units) AS on_hand_units, CAST(ceil(sum(pallets)) AS BIGINT) AS pallets_needed,
+             round(sum(value_gbp), 2) AS stock_value_gbp
+      FROM h
+      GROUP BY ALL
+      ORDER BY stock_value_gbp DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_cause_code_definitions
+    desc: Reference list of adjustment cause codes and their intended use. Use to understand and classify adjustments.
+    kind: select
+    from: cause_codes
+    filters:
+      category: {}
+    columns: [cause_code, description, category, catch_all, intended_use]
+    order: category, cause_code
+    limit: 50
+    example: {}
+
+  - name: get_dc_daily_capacity
+    desc: "Rated daily capacity of a DC by process (receiving, picking, packing, despatch), with peak extra capacity and average and last-peak usage. Use to find the first process to run out."
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC site"}
+      process: {type: enum, values: [receiving, picking, packing, despatch], desc: "Only this process"}
+    sql: |
+      SELECT site_id, process, rated_units_per_hour, shift_hours_per_day,
+             CAST(round(rated_units_per_hour * shift_hours_per_day) AS BIGINT) AS daily_capacity_units,
+             CAST(round(rated_units_per_hour * (shift_hours_per_day + peak_extra_hours_per_day)) AS BIGINT) AS peak_daily_capacity_units,
+             avg_utilisation_pct, peak_utilisation_pct,
+             CAST(round(rated_units_per_hour * shift_hours_per_day * avg_utilisation_pct / 100) AS BIGINT) AS avg_daily_units,
+             CAST(round(rated_units_per_hour * shift_hours_per_day * peak_utilisation_pct / 100) AS BIGINT) AS last_peak_daily_units,
+             limiting_factor,
+             'daily_capacity = rated_units_per_hour * shift_hours; peak = rated_units_per_hour * (shift_hours + peak_extra_hours)' AS formula
+      FROM process_capacity
+      WHERE site_id = $site_id AND ($process IS NULL OR process = $process)
+      ORDER BY CASE process WHEN 'receiving' THEN 1 WHEN 'picking' THEN 2 WHEN 'packing' THEN 3 ELSE 4 END
+    limit: 10
+    example: {site_id: DC2}
+
+  - name: get_dc_inbound_delays
+    desc: Late goods receipts against PO due date, as receipts or grouped by supplier or DC, with days late and units. Use to find which suppliers and DCs run late.
+    kind: sql
+    args:
+      site_id: {desc: "DC site"}
+      supplier_id: {}
+      days_late_threshold: {type: int, default: 3, desc: "Only receipts this many days late or more"}
+      date_from: {type: date, default: -90d, desc: "Receipts from or after"}
+      group_by: {desc: "receipt (default), supplier or site", default: receipt}
+    sql: |
+      WITH d AS (
+        SELECT gr.receipt_id, gr.po_id, gr.site_id, pur.supplier_id, s.name AS supplier_name, gr.sku, p.name AS product_name,
+               DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late, gr.qty_received, gr.received_at, c.name AS carrier_name
+        FROM goods_receipts gr
+        JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
+        JOIN master.products p ON gr.sku = p.sku
+        JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
+        LEFT JOIN master.carriers c ON gr.carrier_id = c.carrier_id
+        WHERE ($site_id IS NULL OR gr.site_id = $site_id) AND ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+          AND DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) >= $days_late_threshold
+          AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+      )
+      SELECT receipt_id, po_id, site_id, supplier_id, supplier_name, sku, product_name, days_late, 1 AS late_receipts, qty_received AS units_received,
+             received_at, carrier_name, 'days_late = receipt_date - po_due_date' AS formula
+      FROM d WHERE $group_by NOT IN ('supplier', 'site')
+      UNION ALL
+      SELECT NULL, NULL, gsite, gsup, CASE WHEN gsup IS NOT NULL THEN any_value(supplier_name) END, NULL, NULL, round(avg(days_late), 1),
+             count(DISTINCT po_id), sum(qty_received), max(received_at), NULL,
+             'days_late = receipt_date - po_due_date (average per receipt); late_receipts counts late POs' AS formula
+      FROM (SELECT d.*, CASE WHEN $group_by = 'site' THEN site_id END AS gsite, CASE WHEN $group_by = 'supplier' THEN supplier_id END AS gsup FROM d) g
+      WHERE $group_by IN ('supplier', 'site')
+      GROUP BY gsite, gsup
+      ORDER BY days_late DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_dc_product_mix_and_volume
+    desc: "Volume, order profile and category mix by DC over a look-back period: units, orders, units per order, SKU and category counts, largest category, share of network volume."
+    kind: sql
+    args:
+      site_id: {desc: "DC site; leave blank for all DCs so they can be compared"}
+      period_days: {type: int, default: 30, desc: "Look back this many days"}
+      group_by: {type: enum, values: [site, category], default: site, desc: "site = one row per DC; category = category mix"}
+    sql: |
+      WITH mv AS (
+        SELECT m.site_id, m.movement_type, m.reference_id, m.sku, m.qty, p.category
+        FROM stock_movements m LEFT JOIN master.products p ON p.sku = m.sku
+        WHERE CAST(m.moved_at AS DATE) >= CAST($as_of AS DATE) - CAST($period_days AS INT) * INTERVAL 1 DAY
+      ), cat AS (
+        SELECT site_id, category, sum(abs(qty)) AS units, count(DISTINCT reference_id) AS orders
+        FROM mv WHERE movement_type = 'pick' GROUP BY site_id, category
+      ), st AS (
+        SELECT s.site_id, s.name AS site_name, s.sqft,
+               count(DISTINCT mv.reference_id) FILTER (WHERE mv.movement_type = 'pick') AS orders_processed,
+               coalesce(sum(abs(mv.qty)) FILTER (WHERE mv.movement_type = 'pick'), 0) AS units_picked,
+               count(*) FILTER (WHERE mv.movement_type = 'pick') AS lines_picked,
+               coalesce(sum(mv.qty) FILTER (WHERE mv.movement_type = 'receipt'), 0) AS units_received,
+               count(DISTINCT mv.sku) AS sku_count, count(DISTINCT mv.category) AS category_count
+        FROM master.sites s LEFT JOIN mv ON mv.site_id = s.site_id
+        WHERE s.type = 'dc' GROUP BY s.site_id, s.name, s.sqft
+      ), top AS (
+        SELECT site_id, arg_max(category, units) AS top_category, max(units) AS top_units FROM cat GROUP BY site_id
+      ), u AS (
+        SELECT 'site' AS grouped_by, st.site_id, st.site_name, CAST(NULL AS VARCHAR) AS category, st.sqft, st.orders_processed, st.units_picked,
+               round(st.units_picked * 1.0 / NULLIF(st.orders_processed, 0), 2) AS units_per_order,
+               round(st.lines_picked * 1.0 / NULLIF(st.orders_processed, 0), 2) AS lines_per_order,
+               st.units_received, st.sku_count, st.category_count, top.top_category,
+               round(100.0 * top.top_units / NULLIF(st.units_picked, 0), 1) AS top_category_share_pct,
+               round(100.0 * st.units_picked / NULLIF(sum(st.units_picked) OVER (), 0), 1) AS share_of_network_units_pct
+        FROM st LEFT JOIN top USING (site_id)
+        UNION ALL
+        SELECT 'category', cat.site_id, s.name, cat.category, s.sqft, cat.orders, cat.units, CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE),
+               CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS VARCHAR),
+               round(100.0 * cat.units / sum(cat.units) OVER (PARTITION BY cat.site_id), 1), CAST(NULL AS DOUBLE)
+        FROM cat JOIN master.sites s ON s.site_id = cat.site_id
+      )
+      SELECT *, 'volume = sum(units picked); mix = category units / site units' AS formula
+      FROM u WHERE grouped_by = coalesce($group_by, 'site') AND ($site_id IS NULL OR site_id = $site_id)
+      ORDER BY site_id, units_picked DESC
+    limit: 40
+    example: {site_id: DC1}
+
+  - name: get_dc_stock_for_product
+    desc: Current DC stock for a SKU by bin location and inventory status, with the total held at each DC. Returns on-hand quantity per location, largest first.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      site_id: {desc: "Filter by DC"}
+    sql: |
+      SELECT l.location_id, l.site_id, l.zone, l.aisle, li.sku, p.name AS product_name, li.status, li.qty AS on_hand, li.lot_number AS batch_number,
+             sum(li.qty) OVER (PARTITION BY li.site_id) AS site_total_qty,
+             (SELECT max(m.moved_at) FROM stock_movements m WHERE m.location_id = li.location_id AND m.sku = li.sku) AS last_movement
+      FROM location_inventory li
+      JOIN master.locations l ON l.location_id = li.location_id
+      JOIN master.products p ON p.sku = li.sku
+      WHERE li.sku = $sku AND ($site_id IS NULL OR li.site_id = $site_id)
+      ORDER BY l.site_id, li.qty DESC
+    limit: 100
+    example: {sku: PF-220}
+
+  - name: get_dc_stock_history_for_product
+    desc: Daily closing stock for a SKU by DC over a period, with receipts, picks and net movement each day. Use to see whether a DC held stock during a stockout.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      site_id: {desc: "Filter by DC"}
+      date_from: {type: date, default: -90d, desc: "History from or after"}
+      date_to: {type: date, desc: "History up to (default today)"}
+    sql: |
+      WITH cur AS (
+        SELECT li.site_id, sum(li.qty) AS qty FROM location_inventory li
+        WHERE li.sku = $sku AND ($site_id IS NULL OR li.site_id = $site_id) GROUP BY li.site_id
+      ), d AS (
+        SELECT CAST(x AS DATE) AS day FROM generate_series(CAST($date_from AS DATE), COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE)), INTERVAL 1 DAY) t(x)
+      ), mv AS (
+        SELECT m.site_id, CAST(m.moved_at AS DATE) AS day, sum(m.qty) AS net_movement,
+               sum(CASE WHEN m.movement_type = 'receipt' THEN m.qty ELSE 0 END) AS receipts,
+               sum(CASE WHEN m.movement_type = 'pick' THEN -m.qty ELSE 0 END) AS picks
+        FROM stock_movements m WHERE m.sku = $sku GROUP BY m.site_id, CAST(m.moved_at AS DATE)
+      )
+      SELECT d.day AS date, cur.site_id, $sku AS sku, p.name AS product_name,
+             cur.qty - coalesce((SELECT sum(x.net_movement) FROM mv x WHERE x.site_id = cur.site_id AND x.day > d.day), 0) AS closing_qty,
+             coalesce(mv.net_movement, 0) AS net_movement, coalesce(mv.receipts, 0) AS receipts, coalesce(mv.picks, 0) AS picks
+      FROM d CROSS JOIN cur JOIN master.products p ON p.sku = $sku LEFT JOIN mv ON mv.site_id = cur.site_id AND mv.day = d.day
+      ORDER BY d.day DESC, cur.site_id
+    limit: 200
+    example: {sku: SKU-100084}
+
+  - name: get_dc_utilisation
+    desc: Occupied and vacant bin locations with utilisation percent by DC and zone, or by DC with group_by site. Use to find underused sites.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      group_by: {desc: "zone (default) or site", default: zone}
+    sql: |
+      SELECT l.site_id, CASE WHEN $group_by = 'site' THEN 'all zones' ELSE l.zone END AS zone, count(*) AS locations,
+             count(*) FILTER (WHERE l.status = 'active') AS active_locations,
+             count(*) FILTER (WHERE l.status = 'blocked') AS blocked_locations,
+             count(*) FILTER (WHERE li.location_id IS NOT NULL) AS occupied,
+             count(*) - count(*) FILTER (WHERE li.location_id IS NOT NULL) AS vacant,
+             round(count(*) FILTER (WHERE li.location_id IS NOT NULL) * 100.0 / count(*), 1) AS utilisation_pct
+      FROM master.locations l LEFT JOIN (SELECT DISTINCT location_id FROM location_inventory) li ON li.location_id = l.location_id
+      WHERE $site_id IS NULL OR l.site_id = $site_id
+      GROUP BY ALL
+      ORDER BY l.site_id, 2
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_goods_receipts_for_product
+    desc: Retrieve goods receipts for product. Returns recent receipts, quantities and timelines.
+    kind: sql
+    args:
+      sku: {required: true, desc: "Product SKU"}
+      site_id: {desc: "Filter by receiving DC"}
+      date_from: {type: date, default: "-90d", desc: "Receipts from or after"}
+    sql: |
+      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, s.name AS supplier_name,
+             gr.site_id, gr.sku, p.name AS product_name,
+             gr.qty_ordered, gr.qty_received, gr.qty_accepted,
+             gr.damage_qty, gr.short_qty,
+             gr.received_at, gr.carrier_id,
+             DATEDIFF('day', pur.due_date, CAST(gr.received_at AS DATE)) AS days_late,
+             p.unit_cost_gbp,
+             ROUND(gr.qty_received * p.unit_cost_gbp, 2) AS receipt_value_gbp
+      FROM goods_receipts gr
+      JOIN master.purchase_orders pur ON gr.po_id = pur.po_id
+      JOIN master.suppliers s ON pur.supplier_id = s.supplier_id
+      JOIN master.products p ON gr.sku = p.sku
+      WHERE gr.sku = $sku
+        AND ($site_id IS NULL OR gr.site_id = $site_id)
+        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+      ORDER BY gr.received_at DESC
+    limit: 50
+    example: {sku: PF-220}
+
+  - name: get_historical_count_accuracy_by_location
+    desc: Historical count accuracy per bin, zone or aisle over recent weeks, worst first. Use group_by=zone or aisle to see what accuracy to expect in each area.
+    kind: sql
+    args:
+      site_id: {required: true}
+      zone: {type: str, desc: "Warehouse zone filter, e.g. pick, reserve, mezzanine"}
+      aisle: {type: str, desc: "Aisle letter filter, e.g. D"}
+      group_by: {type: enum, values: [location, zone, aisle], default: location, desc: "Level to report accuracy at"}
+      days: {type: int, default: 90, desc: "Look back this many days"}
+    sql: |
+      WITH base AS (
+        SELECT cr.location_id, l.zone, l.aisle, cr.accuracy_issue, abs(cr.variance_pct) AS abs_pct, cr.counted_at
+        FROM cycle_count_results cr JOIN master.locations l ON l.location_id = cr.location_id
+        WHERE l.site_id = $site_id AND ($zone IS NULL OR l.zone = $zone) AND ($aisle IS NULL OR l.aisle = upper($aisle))
+          AND CAST(cr.counted_at AS DATE) >= CAST($as_of AS DATE) - CAST($days AS INT) * INTERVAL 1 DAY
+      )
+      SELECT CASE coalesce($group_by, 'location') WHEN 'zone' THEN zone WHEN 'aisle' THEN aisle ELSE location_id END AS group_key,
+             coalesce($group_by, 'location') AS grouped_by,
+             any_value(zone) AS zone, any_value(aisle) AS aisle, count(*) AS counted_lines,
+             count(*) FILTER (WHERE accuracy_issue) AS issue_lines,
+             round(100 - 100.0 * count(*) FILTER (WHERE accuracy_issue) / count(*), 1) AS accuracy_pct,
+             round(avg(abs_pct), 2) AS avg_abs_variance_pct, round(max(abs_pct), 1) AS max_abs_variance_pct,
+             max(CAST(counted_at AS DATE)) AS latest_count
+      FROM base GROUP BY 1, 2
+      ORDER BY accuracy_pct, counted_lines DESC
+    limit: 60
+    example: {site_id: DC1, group_by: zone}
+
+  - name: get_inventory_status_mapping
+    desc: Mapping between WMS and ERP inventory statuses, whether ERP still books each one, and the units and value WMS holds in it now.
+    kind: sql
+    args: {}
+    sql: |
+      SELECT m.wms_status, m.erp_status, m.definition, m.wms_counts_as_available, m.erp_counts_in_book_stock, m.note,
+             coalesce(h.units, 0) AS wms_units_now, coalesce(h.value_gbp, 0) AS wms_value_gbp_now
+      FROM inventory_status_mapping m
+      LEFT JOIN (SELECT li.status, sum(li.qty) AS units, round(sum(li.qty * p.unit_cost_gbp), 2) AS value_gbp
+                 FROM location_inventory li JOIN master.products p ON p.sku = li.sku GROUP BY li.status) h ON h.status = m.wms_status
+      ORDER BY m.sort_order
+    limit: 10
+    example: {}
+
+  - name: get_location_inventory_balance
+    desc: Current system stock by SKU, lot and status for a bin, or for every bin in a bay when given a prefix such as DC1-C-14. Returns quantity and value held.
+    kind: sql
+    args:
+      location_id: {op: like, required: true, desc: "Bin id or bay prefix, e.g. DC1-C-14-02 or DC1-C-14"}
+      sku: {desc: "Filter by SKU"}
+      status: {type: enum, values: [on-hand, quarantine, damaged, expired, reserved, in-transit], desc: "Filter by inventory status"}
+    sql: |
+      SELECT li.location_id, l.zone, li.sku, p.name AS product_name, p.category, li.lot_number, li.status, li.qty AS system_qty,
+             round(li.qty * p.unit_cost_gbp, 2) AS value_gbp,
+             (SELECT max(m.moved_at) FROM stock_movements m WHERE m.location_id = li.location_id AND m.sku = li.sku) AS last_movement
+      FROM location_inventory li
+      JOIN master.locations l ON l.location_id = li.location_id
+      JOIN master.products p ON p.sku = li.sku
+      WHERE starts_with(upper(li.location_id), upper($location_id)) AND ($sku IS NULL OR li.sku = $sku)
+        AND ($status IS NULL OR li.status = $status)
+      ORDER BY li.location_id, li.qty DESC
+    limit: 100
+    example: {location_id: DC1-C-14}
+
+  - name: get_order_line_profile
+    desc: Order profile by period (units per order, lines per order, single-unit share) for orders shipped from a DC. Use period=all for one total over the dates.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Orders shipped from this date"}
+      date_to: {type: date, desc: "Orders shipped up to this date (default today)"}
+      period: {type: enum, values: [day, week, month, all], default: week, desc: "Grouping; all = a single row for the whole range"}
+    sql: |
+      WITH o AS (
+        SELECT ol.order_id, min(ol.shipped_at) AS shipped_at, sum(ol.qty) AS units, count(*) AS lines
+        FROM order_lines ol WHERE ol.site_id = $site_id AND ol.status = 'shipped'
+        GROUP BY ol.order_id
+        HAVING CAST(min(ol.shipped_at) AS DATE) >= CAST($date_from AS DATE)
+           AND CAST(min(ol.shipped_at) AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      )
+      SELECT CASE coalesce($period, 'week') WHEN 'day' THEN CAST(CAST(shipped_at AS DATE) AS VARCHAR)
+                  WHEN 'month' THEN CAST(CAST(date_trunc('month', shipped_at) AS DATE) AS VARCHAR)
+                  WHEN 'all' THEN 'all' ELSE CAST(CAST(date_trunc('week', shipped_at) AS DATE) AS VARCHAR) END AS period_start,
+             count(*) AS orders, sum(units) AS units, round(avg(units), 2) AS avg_units_per_order, round(avg(lines), 2) AS avg_lines_per_order,
+             count(*) FILTER (WHERE units = 1) AS single_unit_orders,
+             round(100.0 * count(*) FILTER (WHERE units = 1) / count(*), 1) AS single_unit_pct,
+             round(100.0 * count(*) FILTER (WHERE lines >= 2) / count(*), 1) AS multi_line_pct,
+             'single_unit_pct = orders with one unit / orders' AS formula
+      FROM o GROUP BY 1 ORDER BY 1
+    limit: 40
+    example: {site_id: DC1, date_from: "-56d"}
+
+  - name: get_order_mix_by_hour
+    desc: Order mix by hour of day for a DC (orders, lines per order, units per order, share of lines by zone). Shows whether order complexity changes at peak hours.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-14d", desc: "Orders picked from this date"}
+      date_to: {type: date, desc: "Orders picked up to this date (default today)"}
+    sql: |
+      WITH ln AS (
+        SELECT ol.order_id, ol.qty, ol.pick_zone, hour(ol.picked_at) AS hr
+        FROM order_lines ol
+        WHERE ol.site_id = $site_id AND ol.picked_at IS NOT NULL
+          AND CAST(ol.picked_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(ol.picked_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      )
+      SELECT hr AS hour, count(DISTINCT order_id) AS orders, count(*) AS lines,
+             round(1.0 * count(*) / count(DISTINCT order_id), 2) AS lines_per_order,
+             round(1.0 * sum(qty) / count(DISTINCT order_id), 2) AS units_per_order,
+             round(100.0 * count(*) FILTER (WHERE pick_zone = 'pick') / count(*), 1) AS pick_zone_pct,
+             round(100.0 * count(*) FILTER (WHERE pick_zone = 'reserve') / count(*), 1) AS reserve_zone_pct,
+             round(100.0 * count(*) FILTER (WHERE pick_zone = 'mezzanine') / count(*), 1) AS mezzanine_zone_pct,
+             round(100.0 * count(*) FILTER (WHERE pick_zone = 'bulk') / count(*), 1) AS bulk_zone_pct
+      FROM ln GROUP BY hr ORDER BY hr
+    limit: 24
+    example: {site_id: DC1}
+
+  - name: get_pallet_positions_by_category
+    desc: Pallet positions occupied by product category now and some weeks ago, with growth per week. Shows which categories are filling the building.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC; omit for every DC"}
+      zone: {type: str, desc: "Filter by zone, e.g. reserve"}
+      weeks_back: {type: int, default: 4, desc: "Compare with this many weeks ago"}
+    sql: |
+      WITH latest AS (SELECT max(week_start) AS wk FROM pallet_position_history),
+      now_ AS (
+        SELECT h.site_id, h.category, sum(h.positions_occupied) AS positions_now
+        FROM pallet_position_history h, latest
+        WHERE h.week_start = latest.wk AND ($site_id IS NULL OR h.site_id = $site_id) AND ($zone IS NULL OR h.zone = $zone)
+        GROUP BY h.site_id, h.category
+      ), then_ AS (
+        SELECT h.site_id, h.category, sum(h.positions_occupied) AS positions_then
+        FROM pallet_position_history h, latest
+        WHERE h.week_start = CAST(latest.wk - CAST($weeks_back AS INT) * INTERVAL 7 DAY AS DATE)
+          AND ($site_id IS NULL OR h.site_id = $site_id) AND ($zone IS NULL OR h.zone = $zone)
+        GROUP BY h.site_id, h.category
+      )
+      SELECT n.site_id, n.category, n.positions_now,
+             round(100.0 * n.positions_now / sum(n.positions_now) OVER (PARTITION BY n.site_id), 1) AS share_pct,
+             coalesce(t.positions_then, 0) AS positions_weeks_ago, n.positions_now - coalesce(t.positions_then, 0) AS change_positions,
+             round((n.positions_now - coalesce(t.positions_then, 0)) * 1.0 / CAST($weeks_back AS INT), 1) AS growth_per_week,
+             round(100.0 * (n.positions_now - coalesce(t.positions_then, 0)) / NULLIF(t.positions_then, 0), 1) AS change_pct
+      FROM now_ n LEFT JOIN then_ t ON t.site_id = n.site_id AND t.category = n.category
+      ORDER BY n.site_id, change_positions DESC
+    limit: 60
+    example: {site_id: DC1}
+
+  - name: get_pick_affinity_pairs
+    desc: SKU pairs picked together in the same orders, most frequent first, with each SKU's current bin. Use to decide which SKUs to slot side by side.
+    kind: sql
+    args:
+      site_id: {required: true}
+      sku: {desc: "Only pairs that include this SKU"}
+      min_co_picks: {type: int, default: 5, desc: "Minimum orders containing both SKUs"}
+      date_from: {type: date, default: "-90d", desc: "Orders from this date"}
+    sql: |
+      WITH ol AS (
+        SELECT DISTINCT order_id, sku FROM order_lines
+        WHERE site_id = $site_id AND status IN ('shipped', 'picking')
+          AND CAST(coalesce(picked_at, released_at) AS DATE) >= CAST($date_from AS DATE)
+      ), n AS (SELECT count(DISTINCT order_id) AS orders FROM ol),
+      pairs AS (
+        SELECT a.sku AS sku_1, b.sku AS sku_2, count(*) AS co_picks
+        FROM ol a JOIN ol b ON a.order_id = b.order_id AND a.sku < b.sku
+        GROUP BY a.sku, b.sku HAVING count(*) >= $min_co_picks
+      )
+      SELECT pr.sku_1, p1.name AS name_1, (SELECT min(li.location_id) FROM location_inventory li WHERE li.sku = pr.sku_1 AND li.site_id = $site_id AND li.status = 'on-hand') AS location_1,
+             pr.sku_2, p2.name AS name_2, (SELECT min(li.location_id) FROM location_inventory li WHERE li.sku = pr.sku_2 AND li.site_id = $site_id AND li.status = 'on-hand') AS location_2,
+             p1.style_id = p2.style_id AS same_style, pr.co_picks, round(100.0 * pr.co_picks / n.orders, 2) AS pct_of_orders
+      FROM pairs pr CROSS JOIN n
+      JOIN master.products p1 ON p1.sku = pr.sku_1 JOIN master.products p2 ON p2.sku = pr.sku_2
+      WHERE ($sku IS NULL OR pr.sku_1 = $sku OR pr.sku_2 = $sku)
+      ORDER BY pr.co_picks DESC
+    limit: 30
+    example: {site_id: DC1}
+
+  - name: get_pick_and_pack_record_for_order
+    desc: Pick record for an order. Shows each SKU picked with quantity, bin, picker, pick time and any pick note such as a short pick.
+    kind: sql
+    args:
+      reference_id: {required: true, desc: "Order reference id from stock movements, e.g. ORD-2026-0114215"}
+    sql: |
+      SELECT m.reference_id, m.site_id, m.sku, p.name AS product_name, ABS(m.qty) AS qty_picked, m.location_id, l.zone,
+             m.moved_at AS pick_time, m.moved_by AS picker_id, m.status AS pick_status, m.notes AS pick_notes,
+             COUNT(*) OVER (PARTITION BY m.reference_id) AS lines_in_order,
+             SUM(ABS(m.qty)) OVER (PARTITION BY m.reference_id) AS units_in_order
+      FROM stock_movements m
+      JOIN master.products p ON m.sku = p.sku
+      LEFT JOIN master.locations l ON m.location_id = l.location_id
+      WHERE m.movement_type = 'pick' AND m.reference_id = $reference_id
+      ORDER BY m.moved_at, m.sku
+    limit: 50
+    example: {reference_id: ORD-2026-0114215}
+
+  - name: get_reexport_volumes_by_destination
+    desc: Re-export volumes by destination country, from UK DCs shipped on to Ireland, EU and other non-UK sites, with units, value at cost and non-UK-origin share.
+    kind: sql
+    args:
+      date_from: {type: date, default: -90d, desc: "Shipped from this date"}
+      date_to: {type: date, desc: "Shipped up to (default today)"}
+      destination: {desc: "Country code or name (IE, Ireland, NL, DE, US) or group EU"}
+      group_by: {desc: "country (default), site or sku", default: country}
+    sql: |
+      WITH c(code, country_name, grp) AS (VALUES ('IE','Ireland','Ireland'), ('NL','Netherlands','EU'), ('DE','Germany','EU'), ('US','United States','Rest of world'), ('HK','Hong Kong','Rest of world')),
+      rx AS (
+        SELECT st.transfer_id, st.from_site_id, st.to_site_id, st.sku, st.qty_shipped, d.country AS code, c.country_name, c.grp,
+               p.country_of_origin, p.unit_cost_gbp, p.name AS product_name
+        FROM stock_transfers st
+        JOIN master.sites f ON f.site_id = st.from_site_id AND f.country = 'GB'
+        JOIN master.sites d ON d.site_id = st.to_site_id AND d.country <> 'GB'
+        JOIN c ON c.code = d.country
+        JOIN master.products p ON p.sku = st.sku
+        WHERE st.status IN ('shipped', 'received')
+          AND CAST(st.shipped_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(st.shipped_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+          AND ($destination IS NULL OR upper($destination) IN (upper(c.code), upper(c.country_name), upper(c.grp)))
+      )
+      SELECT grp AS destination_group, country_name AS destination_country,
+             CASE WHEN $group_by = 'site' THEN to_site_id WHEN $group_by = 'sku' THEN sku || ' ' || product_name ELSE country_name END AS breakdown,
+             count(DISTINCT transfer_id) AS transfers, sum(qty_shipped) AS volume_units,
+             round(sum(qty_shipped * unit_cost_gbp), 2) AS value_gbp,
+             sum(qty_shipped) FILTER (WHERE country_of_origin <> 'GB') AS units_non_uk_origin,
+             round(100.0 * sum(qty_shipped * unit_cost_gbp) FILTER (WHERE country_of_origin <> 'GB') / sum(qty_shipped * unit_cost_gbp), 1) AS non_uk_origin_value_pct
+      FROM rx
+      GROUP BY ALL
+      ORDER BY value_gbp DESC
+    limit: 50
+    example: {}
+
+  - name: get_rollback_requirements
+    desc: "Requirements for rolling a DC back to the previous system: WMS data created since a date (receipts, transfers, movements, counts, order lines, balances), how each is reversed, hours, owner."
+    kind: sql
+    args:
+      site_id: {required: true, desc: "DC to assess"}
+      from_date: {type: date, default: -7d, desc: "Count data created from this date (go-live date)"}
+    sql: |
+      WITH live AS (
+        SELECT 'Goods Receipts' AS data_type, count(*) AS record_count, min(received_at) AS earliest_date, max(received_at) AS latest_date,
+               coalesce(sum(qty_received), 0) AS total_units
+        FROM goods_receipts WHERE site_id = $site_id AND CAST(received_at AS DATE) >= CAST($from_date AS DATE)
+        UNION ALL
+        SELECT 'Stock Transfers', count(*), min(created_at), max(created_at), coalesce(sum(qty_requested), 0)
+        FROM stock_transfers WHERE (from_site_id = $site_id OR to_site_id = $site_id) AND CAST(created_at AS DATE) >= CAST($from_date AS DATE)
+        UNION ALL
+        SELECT 'Stock Movements', count(*), min(moved_at), max(moved_at), coalesce(sum(abs(qty)), 0)
+        FROM stock_movements WHERE site_id = $site_id AND CAST(moved_at AS DATE) >= CAST($from_date AS DATE)
+        UNION ALL
+        SELECT 'Cycle Count Tasks', count(*), min(created_at), max(created_at), 0
+        FROM cycle_count_tasks WHERE site_id = $site_id AND CAST(created_at AS DATE) >= CAST($from_date AS DATE)
+        UNION ALL
+        SELECT 'Open Order Lines', count(*), min(status_at), max(status_at), coalesce(sum(qty), 0)
+        FROM order_lines WHERE site_id = $site_id AND status IN ('allocated', 'picking', 'allocation_failed')
+        UNION ALL
+        SELECT 'Stock Balances', count(*), min(updated_at), max(updated_at), coalesce(sum(qty), 0)
+        FROM location_inventory WHERE site_id = $site_id
+      )
+      SELECT $site_id AS site_id, r.sequence, l.data_type, l.record_count, l.earliest_date, l.latest_date, l.total_units,
+             r.reversible, r.rollback_method, r.depends_on, r.est_hours, r.owner_role, r.point_of_no_return
+      FROM live l LEFT JOIN rollback_requirements r ON r.data_type = l.data_type
+      ORDER BY r.sequence
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_site_capacity_by_process
+    desc: "Rated capacity by site and process (receiving, picking, packing, despatch) per hour, day and week, with peak capacity and average and last-peak usage. Shows thinnest headroom."
+    kind: sql
+    args:
+      site_id: {desc: "DC site; leave blank for all DCs"}
+      process: {type: enum, values: [receiving, picking, packing, despatch], desc: "Only this process"}
+    sql: |
+      SELECT site_id, process, rated_units_per_hour AS hourly_capacity_units,
+             CAST(round(rated_units_per_hour * shift_hours_per_day) AS BIGINT) AS daily_capacity_units,
+             CAST(round(rated_units_per_hour * shift_hours_per_day * operating_days_per_week) AS BIGINT) AS weekly_capacity_units,
+             CAST(round(rated_units_per_hour * (shift_hours_per_day + peak_extra_hours_per_day) * operating_days_per_week) AS BIGINT) AS peak_weekly_capacity_units,
+             avg_utilisation_pct, peak_utilisation_pct,
+             round(100 - peak_utilisation_pct, 1) AS headroom_at_last_peak_pct,
+             limiting_factor,
+             'weekly_capacity = rated_units_per_hour * shift_hours * days; headroom = 100 - peak utilisation' AS formula
+      FROM process_capacity
+      WHERE ($site_id IS NULL OR site_id = $site_id) AND ($process IS NULL OR process = $process)
+      ORDER BY peak_utilisation_pct DESC, site_id
+    limit: 25
+    example: {site_id: DC1}
+
+  - name: get_stock_accuracy_trend_by_zone
+    desc: Stock accuracy by zone for each of the last quarters (13-week blocks) from cycle count results, with the change on the prior quarter. Shows which zones are getting worse.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC; omit for every DC"}
+      quarters: {type: int, default: 4, desc: "How many 13-week quarters to include, most recent first"}
+    sql: |
+      WITH base AS (
+        SELECT l.zone, cr.accuracy_issue, cr.variance_pct,
+               CAST(floor(datediff('day', CAST(cr.counted_at AS DATE), CAST($as_of AS DATE)) / 91.0) AS INT) AS blk
+        FROM cycle_count_results cr JOIN master.locations l ON l.location_id = cr.location_id
+        WHERE $site_id IS NULL OR l.site_id = $site_id
+      ), agg AS (
+        SELECT zone, blk AS quarters_ago, count(*) AS count_lines, count(*) FILTER (WHERE accuracy_issue) AS issue_lines,
+               round(100 - 100.0 * count(*) FILTER (WHERE accuracy_issue) / count(*), 1) AS accuracy_pct,
+               round(avg(abs(variance_pct)), 2) AS avg_abs_variance_pct
+        FROM base WHERE blk >= 0 AND blk < CAST($quarters AS INT) GROUP BY zone, blk
+      ), w AS (
+        SELECT *, round(accuracy_pct - lag(accuracy_pct) OVER (PARTITION BY zone ORDER BY quarters_ago DESC), 1) AS change_vs_prior_quarter_pts,
+               rank() OVER (PARTITION BY quarters_ago ORDER BY accuracy_pct) AS rank_worst_first
+        FROM agg
+      )
+      SELECT zone, quarters_ago, CAST($as_of AS DATE) - (quarters_ago + 1) * 91 + 1 AS period_start, CAST($as_of AS DATE) - quarters_ago * 91 AS period_end,
+             count_lines, issue_lines, accuracy_pct, avg_abs_variance_pct, change_vs_prior_quarter_pts, rank_worst_first,
+             CASE WHEN change_vs_prior_quarter_pts <= -2.0 THEN 'deteriorating' WHEN change_vs_prior_quarter_pts >= 2.0 THEN 'improving'
+                  WHEN change_vs_prior_quarter_pts IS NULL THEN NULL ELSE 'stable' END AS trend
+      FROM w ORDER BY zone, quarters_ago DESC
+    limit: 60
+    example: {site_id: DC1}
+
+  - name: get_stock_location_for_split_orders
+    desc: "Orders picked from more than one bin, by week (multi-bin share) or by zone mix. Shows whether stock spread splits orders and whether the share is rising, flat or falling."
+    kind: sql
+    args:
+      date_from: {type: date, default: "-30d", desc: "Orders picked from this date"}
+      site_id: {desc: "Filter by DC"}
+      sku: {desc: "Only orders that include this SKU"}
+      group_by: {type: enum, values: [order, week, zones], default: order, desc: "order = one row per multi-bin order; week = weekly trend; zones = count by zone combination"}
+    sql: |
+      WITH o AS (
+        SELECT m.reference_id AS order_id, any_value(m.site_id) AS site_id, CAST(min(m.moved_at) AS DATE) AS pick_date,
+               count(DISTINCT m.sku) AS skus, count(DISTINCT m.location_id) AS bins, count(DISTINCT l.zone) AS zone_count,
+               string_agg(DISTINCT m.location_id, '; ') AS locations, string_agg(DISTINCT l.zone, '; ') AS zones, sum(abs(m.qty)) AS units
+        FROM stock_movements m LEFT JOIN master.locations l ON l.location_id = m.location_id
+        WHERE m.movement_type = 'pick' AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+          AND ($site_id IS NULL OR m.site_id = $site_id)
+          AND ($sku IS NULL OR m.reference_id IN (SELECT reference_id FROM stock_movements WHERE movement_type = 'pick' AND sku = $sku))
+        GROUP BY m.reference_id
+      ), u AS (
+        SELECT 'order' AS grouped_by, CAST(pick_date AS VARCHAR) AS period_start, order_id, site_id, 1 AS orders_picked, 1 AS multi_bin_orders,
+               CAST(NULL AS DOUBLE) AS multi_bin_pct, skus AS skus_in_order, bins AS bins_used, zones, locations, units
+        FROM o WHERE bins > 1
+        UNION ALL
+        SELECT 'week', period_start, CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), orders_picked, multi_bin_orders, multi_bin_pct,
+               CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), units
+        FROM (
+          SELECT CAST(CAST(date_trunc('week', pick_date) AS DATE) AS VARCHAR) AS period_start, count(*) AS orders_picked,
+                 count(*) FILTER (WHERE bins > 1) AS multi_bin_orders, round(100.0 * count(*) FILTER (WHERE bins > 1) / count(*), 1) AS multi_bin_pct,
+                 sum(units) AS units
+          FROM o GROUP BY 1
+        )
+        UNION ALL
+        SELECT 'zones', CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS BIGINT), count(*), CAST(NULL AS DOUBLE),
+               CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), zones, CAST(NULL AS VARCHAR), sum(units)
+        FROM o WHERE bins > 1 GROUP BY zones
+      )
+      SELECT * EXCLUDE (prev),
+             CASE WHEN grouped_by = 'week' AND prev IS NOT NULL
+                  THEN CASE WHEN multi_bin_pct - prev > 3 THEN 'rising' WHEN prev - multi_bin_pct > 3 THEN 'falling' ELSE 'flat' END END AS trend_vs_earlier_weeks
+      FROM (SELECT *, avg(multi_bin_pct) OVER (PARTITION BY grouped_by ORDER BY period_start ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev
+            FROM u WHERE grouped_by = coalesce($group_by, 'order'))
+      ORDER BY CASE WHEN grouped_by = 'week' THEN period_start END, units DESC
+    limit: 50
+    example: {site_id: DC2}
+
+  - name: get_stock_movements_for_location
+    desc: Movement history (receipts, putaways, picks, adjustments) for a bin or a whole bay prefix such as DC1-C-14 over a date range, newest first, with notes.
+    kind: sql
+    args:
+      location_id: {op: like, required: true, desc: "Bin id or bay prefix, e.g. DC1-C-14-02 or DC1-C-14"}
+      sku: {desc: "Filter by SKU"}
+      movement_type: {type: enum, values: [receipt, putaway, pick, transfer, adjustment, return], desc: "Filter by movement type"}
+      date_from: {type: date, default: "-90d", desc: "From date"}
+      date_to: {type: date, desc: "To date (default today)"}
+    sql: |
+      SELECT m.movement_id, m.location_id, m.sku, p.name AS product_name, m.movement_type, m.qty, m.reference_id, m.moved_at, m.moved_by,
+             m.status, m.notes
+      FROM stock_movements m LEFT JOIN master.products p ON p.sku = m.sku
+      WHERE starts_with(upper(m.location_id), upper($location_id)) AND ($sku IS NULL OR m.sku = $sku)
+        AND ($movement_type IS NULL OR m.movement_type = $movement_type)
+        AND CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(m.moved_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ORDER BY m.moved_at DESC
+    limit: 200
+    example: {location_id: DC1-C-14}
+
+  - name: get_stock_movements_for_reexport_goods
+    desc: Stock movement trail for goods re-exported from UK DCs to non-UK sites, by transfer, with bin, zone, quantity and date. Use for audit trail evidence.
+    kind: sql
+    args:
+      date_from: {type: date, default: -90d, desc: "Transfers shipped from this date"}
+      destination: {desc: "Destination country code, e.g. IE, NL, DE"}
+      sku: {}
+    sql: |
+      SELECT st.transfer_id, st.from_site_id, st.to_site_id, d.country AS destination_country, st.sku, p.name AS product_name,
+             p.country_of_origin, m.movement_id, m.movement_type, m.qty, m.location_id, l.zone, m.moved_at, st.status
+      FROM stock_transfers st
+      JOIN master.sites f ON f.site_id = st.from_site_id AND f.country = 'GB'
+      JOIN master.sites d ON d.site_id = st.to_site_id AND d.country <> 'GB'
+      JOIN master.products p ON p.sku = st.sku
+      LEFT JOIN stock_movements m ON m.reference_id = st.transfer_id
+      LEFT JOIN master.locations l ON l.location_id = m.location_id
+      WHERE st.status IN ('shipped', 'received') AND CAST(st.shipped_at AS DATE) >= CAST($date_from AS DATE)
+        AND ($destination IS NULL OR upper(d.country) = upper($destination)) AND ($sku IS NULL OR st.sku = $sku)
+      ORDER BY st.shipped_at DESC, st.transfer_id
+    limit: 100
+    example: {}
+
+  - name: get_storage_capacity_by_zone
+    desc: Pallet position capacity and occupancy by zone for a DC, with the last four weeks' growth and weeks until full. The ALL row is the whole building.
+    kind: sql
+    args:
+      site_id: {required: true}
+    sql: |
+      WITH cap AS (
+        SELECT zone, count(*) FILTER (WHERE status = 'active') AS capacity_positions,
+               count(*) FILTER (WHERE status <> 'active') AS unavailable_positions
+        FROM master.locations WHERE site_id = $site_id AND location_type IN ('reserve', 'bulk_floor') GROUP BY zone
+      ), h AS (
+        SELECT zone, week_start, sum(positions_occupied) AS occ FROM pallet_position_history WHERE site_id = $site_id GROUP BY zone, week_start
+      ), wk AS (SELECT max(week_start) AS latest FROM h), z AS (
+        SELECT c.zone, c.capacity_positions, c.unavailable_positions, coalesce(n.occ, 0) AS occupied, coalesce(p.occ, 0) AS occupied_4w_ago
+        FROM cap c CROSS JOIN wk
+        LEFT JOIN h n ON n.zone = c.zone AND n.week_start = wk.latest
+        LEFT JOIN h p ON p.zone = c.zone AND p.week_start = CAST(wk.latest - INTERVAL 28 DAY AS DATE)
+      ), u AS (
+        SELECT * FROM z
+        UNION ALL
+        SELECT 'ALL', sum(capacity_positions), sum(unavailable_positions), sum(occupied), sum(occupied_4w_ago) FROM z
+      )
+      SELECT $site_id AS site_id, zone, capacity_positions, unavailable_positions, occupied AS occupied_positions,
+             capacity_positions - occupied AS available_positions, round(100.0 * occupied / capacity_positions, 1) AS occupancy_pct,
+             occupied_4w_ago AS occupied_positions_4w_ago, round((occupied - occupied_4w_ago) / 4.0, 1) AS growth_per_week,
+             CASE WHEN occupied > occupied_4w_ago THEN round((capacity_positions - occupied) / ((occupied - occupied_4w_ago) / 4.0), 1) END AS weeks_to_full,
+             'available = capacity - occupied; weeks_to_full = available / growth_per_week' AS formula
+      FROM u ORDER BY CASE WHEN zone = 'ALL' THEN 0 ELSE 1 END, occupancy_pct DESC
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_units_shipped_by_period
+    desc: Units, orders and lines shipped from a DC by day, week or month, or as one total with period=all. Use to compare volume between periods.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-30d", desc: "Orders shipped from this date"}
+      date_to: {type: date, desc: "Orders shipped up to this date (default today)"}
+      period: {type: enum, values: [day, week, month, all], default: week, desc: "Grouping; all = a single row for the whole range"}
+    sql: |
+      WITH o AS (
+        SELECT ol.order_id, min(ol.shipped_at) AS shipped_at, sum(ol.qty) AS units, count(*) AS lines
+        FROM order_lines ol WHERE ol.site_id = $site_id AND ol.status = 'shipped'
+        GROUP BY ol.order_id
+        HAVING CAST(min(ol.shipped_at) AS DATE) >= CAST($date_from AS DATE)
+           AND CAST(min(ol.shipped_at) AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      )
+      SELECT CASE coalesce($period, 'week') WHEN 'day' THEN CAST(CAST(shipped_at AS DATE) AS VARCHAR)
+                  WHEN 'month' THEN CAST(CAST(date_trunc('month', shipped_at) AS DATE) AS VARCHAR)
+                  WHEN 'all' THEN 'all' ELSE CAST(CAST(date_trunc('week', shipped_at) AS DATE) AS VARCHAR) END AS period_start,
+             count(*) AS orders_shipped, sum(lines) AS lines_shipped, sum(units) AS units_shipped,
+             round(1.0 * sum(units) / count(*), 2) AS units_per_order,
+             'units_shipped = sum of units on shipped order lines' AS formula
+      FROM o GROUP BY 1 ORDER BY 1
+    limit: 40
+    example: {site_id: DC1, date_from: "-56d"}
+
+  - name: get_warehouse_handling_damage_reports
+    desc: Warehouse handling damage reports (receiving, putaway, picking, packing, loading) with units and cost, as rows or grouped by stage, week, SKU or DC.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      sku: {}
+      category: {desc: "Product category, e.g. Small Appliances"}
+      date_from: {type: date, default: -90d, desc: "From date"}
+      group_by: {desc: "report (default), stage, week, sku or site", default: report}
+    sql: |
+      WITH h AS (
+        SELECT r.*, p.name AS product_name, p.category, p.unit_cost_gbp
+        FROM handling_damage_reports r JOIN master.products p ON p.sku = r.sku
+        WHERE ($site_id IS NULL OR r.site_id = $site_id) AND ($sku IS NULL OR r.sku = $sku)
+          AND ($category IS NULL OR lower(p.category) = lower($category))
+          AND CAST(r.reported_at AS DATE) >= CAST($date_from AS DATE)
+      )
+      SELECT CASE $group_by WHEN 'stage' THEN process_stage WHEN 'week' THEN CAST(CAST(date_trunc('week', reported_at) AS DATE) AS VARCHAR)
+                            WHEN 'sku' THEN sku || ' ' || product_name WHEN 'site' THEN site_id ELSE report_id END AS grouping,
+             count(*) AS reports, sum(damage_qty) AS damage_qty, round(sum(damage_qty * unit_cost_gbp), 2) AS damage_value_gbp,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(site_id) END AS site_id,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(sku) END AS sku,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(process_stage) END AS process_stage,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(cause) END AS cause,
+             CASE WHEN $group_by IN ('stage', 'week', 'sku', 'site') THEN NULL ELSE any_value(reported_at) END AS reported_at,
+             'damage_value_gbp = damage_qty * sku_unit_cost' AS formula
+      FROM h
+      GROUP BY 1
+      ORDER BY damage_qty DESC, 1
+    limit: 50
+    example: {site_id: DC1, category: Small Appliances}
+
+  - name: get_wave_configuration
+    desc: Wave and release configuration and cut-off parameters by DC and channel. Shows wave times, order cut-off, waves per day, picking method and wave size.
+    kind: select
+    from: wave_configurations
+    filters:
+      site_id: {}
+      channel: {desc: "ecommerce, store_replenishment or click_collect"}
+    order: site_id, channel
+    limit: 20
+    example: {site_id: DC2}
+
+  - name: get_wms_inbound_field_schema
+    desc: "WMS inbound ASN and receipt data model: each field's type, whether required, optional or not held, the WMS table and column storing it, and any gap."
+    kind: select
+    from: inbound_field_schema
+    filters:
+      entity: {desc: "ASN Header, ASN Line, Receipt, Pack Specification or ASN Pallet"}
+      requirement: {desc: "Required, Optional or Not held"}
+      wms_supported: {desc: "true for fields the WMS stores, false for gaps"}
+    columns: [entity, field_name, field_type, requirement, description, wms_table, wms_column, wms_supported, gap_note]
+    order: sort_order
+    limit: 60
+    example: {}
+
+  - name: get_wms_labour_and_handling_cost_by_order
+    desc: "Pick, pack and handling cost drivers and cost per order from the WMS rate card. Give an order id, or a DC and start date for a list."
+    kind: sql
+    args:
+      reference_id: {desc: "Order reference id, e.g. ORD-2026-0114215; leave blank to list orders"}
+      site_id: {desc: "Only orders picked at this DC (when listing)"}
+      date_from: {type: date, default: "-30d", desc: "Orders picked from this date (when listing)"}
+    sql: |
+      WITH rt AS (
+        SELECT max(rate_gbp) FILTER (WHERE driver = 'pick_per_line') AS pick_line, max(rate_gbp) FILTER (WHERE driver = 'pick_per_unit') AS pick_unit,
+               max(rate_gbp) FILTER (WHERE driver = 'pick_per_extra_bin') AS extra_bin, max(rate_gbp) FILTER (WHERE driver = 'pack_per_order') AS pack_order,
+               max(rate_gbp) FILTER (WHERE driver = 'pack_per_unit') AS pack_unit
+        FROM handling_rate_card
+      ), o AS (
+        SELECT m.reference_id AS order_id, any_value(m.site_id) AS site_id, CAST(min(m.moved_at) AS DATE) AS pick_date,
+               count(DISTINCT m.sku) AS lines_in_order, sum(abs(m.qty)) AS units_in_order, count(DISTINCT m.location_id) AS bins_visited,
+               count(DISTINCT l.zone) AS zones_visited
+        FROM stock_movements m LEFT JOIN master.locations l ON l.location_id = m.location_id
+        WHERE m.movement_type = 'pick' AND ($reference_id IS NULL OR m.reference_id = $reference_id)
+          AND ($site_id IS NULL OR m.site_id = $site_id)
+          AND ($reference_id IS NOT NULL OR CAST(m.moved_at AS DATE) >= CAST($date_from AS DATE))
+        GROUP BY m.reference_id
+      )
+      SELECT o.order_id, o.site_id, o.pick_date, o.lines_in_order, o.units_in_order, o.bins_visited, o.zones_visited,
+             round(o.lines_in_order * rt.pick_line + o.units_in_order * rt.pick_unit, 2) AS pick_labour_gbp,
+             round(rt.pack_order + o.units_in_order * rt.pack_unit, 2) AS pack_labour_gbp,
+             round((o.bins_visited - 1) * rt.extra_bin, 2) AS handling_cost_gbp,
+             round(o.lines_in_order * rt.pick_line + o.units_in_order * rt.pick_unit + rt.pack_order + o.units_in_order * rt.pack_unit
+                   + (o.bins_visited - 1) * rt.extra_bin, 2) AS total_cost_gbp,
+             round((o.lines_in_order * rt.pick_line + o.units_in_order * rt.pick_unit + rt.pack_order + o.units_in_order * rt.pack_unit
+                   + (o.bins_visited - 1) * rt.extra_bin) / o.units_in_order, 2) AS cost_per_unit_gbp,
+             'cost = lines*pick_per_line + units*(pick_per_unit + pack_per_unit) + pack_per_order + (bins-1)*pick_per_extra_bin' AS formula
+      FROM o CROSS JOIN rt
+      ORDER BY o.pick_date DESC, o.order_id
+    limit: 25
+    example: {reference_id: ORD-2026-0114215}
+
+  - name: get_wms_stock_by_sku
+    desc: WMS stock by DC and inventory status with value and available-to-promise. Pass a SKU, or status held to rank all quarantined, damaged and expired stock by value.
+    kind: sql
+    args:
+      sku: {desc: "Product SKU; leave out to rank stock across all SKUs"}
+      site_id: {desc: "Filter by DC"}
+      status: {type: str, desc: "on-hand, quarantine, damaged, expired, or held for everything that is not on-hand"}
+    sql: |
+      WITH s AS (
+        SELECT li.sku, li.site_id, li.status, count(DISTINCT li.location_id) AS locations, sum(li.qty) AS qty,
+               count(DISTINCT NULLIF(li.lot_number, '')) AS lots, round(sum(li.qty * p.unit_cost_gbp), 2) AS value_gbp, any_value(p.name) AS product_name
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE ($sku IS NULL OR li.sku = $sku) AND ($site_id IS NULL OR li.site_id = $site_id)
+          AND ($status IS NULL OR li.status = $status OR ($status = 'held' AND li.status <> 'on-hand'))
+        GROUP BY li.sku, li.site_id, li.status
+      )
+      SELECT s.sku, s.product_name, s.site_id, s.status, s.locations, s.qty, s.lots, s.value_gbp,
+             ds.on_hand AS site_total_on_hand, ds.allocated AS allocated_to_orders,
+             (SELECT coalesce(sum(x.qty), 0) FROM location_inventory x WHERE x.sku = s.sku AND x.site_id = s.site_id AND x.status = 'on-hand') - ds.allocated AS available_to_promise,
+             round(sum(s.value_gbp) OVER (), 2) AS total_value_in_selection
+      FROM s LEFT JOIN master.dc_stock ds ON ds.sku = s.sku AND ds.site_id = s.site_id
+      ORDER BY s.value_gbp DESC
+    limit: 50
+    example: {sku: SKU-100007}
+
+  - name: get_wms_stock_valuation
+    desc: "WMS stock quantity and value at standard cost, per SKU or inventory status. Separates available on-hand from quarantine, damaged or expired stock. Explains value differences to the ledger."
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      status: {desc: "Only stock in this WMS status, e.g. quarantine"}
+      group_by: {type: enum, values: [sku, status], default: sku, desc: "sku = one row per SKU; status = one row per inventory status"}
+      order_by: {type: enum, values: [total_value, held_value], default: total_value, desc: "Rank SKUs by total value or by value held in non-available statuses"}
+    sql: |
+      WITH b AS (
+        SELECT li.sku, li.location_id, li.status, li.qty, li.qty * p.unit_cost_gbp AS val, p.name AS product_name, p.unit_cost_gbp
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku
+        WHERE ($site_id IS NULL OR li.site_id = $site_id) AND ($status IS NULL OR li.status = $status)
+      ), u AS (
+        SELECT 'sku' AS grouped_by, CAST(NULL AS VARCHAR) AS status, sku, any_value(product_name) AS product_name,
+               count(DISTINCT location_id) AS locations, sum(qty) AS total_units,
+               round(coalesce(sum(val) FILTER (WHERE status = 'on-hand'), 0), 2) AS available_value_gbp,
+               round(coalesce(sum(val) FILTER (WHERE status <> 'on-hand'), 0), 2) AS held_value_gbp,
+               round(sum(val), 2) AS valuation_gbp, round(any_value(unit_cost_gbp), 2) AS unit_cost_gbp
+        FROM b GROUP BY sku
+        UNION ALL
+        SELECT 'status', status, CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), count(DISTINCT location_id), sum(qty),
+               round(coalesce(sum(val) FILTER (WHERE status = 'on-hand'), 0), 2),
+               round(coalesce(sum(val) FILTER (WHERE status <> 'on-hand'), 0), 2), round(sum(val), 2), CAST(NULL AS DOUBLE)
+        FROM b GROUP BY status
+      )
+      SELECT *, 'valuation_gbp = total_units * unit_cost; held = quarantine + damaged + expired' AS formula
+      FROM u WHERE grouped_by = coalesce($group_by, 'sku')
+      ORDER BY CASE WHEN $order_by = 'held_value' THEN held_value_gbp ELSE valuation_gbp END DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_wms_version_and_patches
+    desc: Installed WMS version and the patch history, including patches available but not yet applied. Search the patch contents with contains, for example duplicate.
+    kind: select
+    from: wms_patches
+    filters:
+      status: {}
+      patch_type: {}
+      contains: {col: details, op: like, desc: "Words in the patch details or summary, e.g. duplicate task"}
+    columns: [patch_id, version, patch_type, status, released_at, applied_at, summary, details, fixes_known_issue]
+    order: released_at DESC
+    limit: 30
+    example: {}
+
+  - name: list_allocation_failure_reasons
+    desc: Why order lines failed allocation, with the SKUs, supplier and category affected. group_by=sku shows what the failing SKUs share; group_by=reason counts orders per failure code.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      group_by: {type: enum, values: [sku, reason], default: sku, desc: "sku = one row per failing SKU; reason = one row per failure code"}
+      date_from: {type: date, default: "-7d", desc: "Failures from this date"}
+    sql: |
+      WITH f AS (
+        SELECT ol.order_id, ol.site_id, ol.sku, ol.qty, ol.failure_code, ol.failure_detail, ol.status_at, p.name AS product_name, p.supplier_id,
+               p.category, p.hazmat
+        FROM order_lines ol JOIN master.products p ON p.sku = ol.sku
+        WHERE ol.status = 'allocation_failed' AND CAST(ol.status_at AS DATE) >= CAST($date_from AS DATE)
+          AND ($site_id IS NULL OR ol.site_id = $site_id)
+      )
+      SELECT * FROM (
+        SELECT 'sku' AS grouped_by, failure_code, sku, any_value(product_name) AS product_name, any_value(supplier_id) AS supplier_id,
+               any_value(category) AS category, any_value(hazmat) AS hazmat, count(DISTINCT order_id) AS orders_affected, sum(qty) AS units,
+               min(failure_detail) AS example_detail, max(status_at) AS last_failed_at
+        FROM f GROUP BY failure_code, sku
+        UNION ALL
+        SELECT 'reason', failure_code, NULL, NULL, string_agg(DISTINCT supplier_id, '; '), string_agg(DISTINCT category, '; '), NULL,
+               count(DISTINCT order_id), sum(qty), min(failure_detail), max(status_at)
+        FROM f GROUP BY failure_code
+      ) x
+      WHERE x.grouped_by = coalesce($group_by, 'sku')
+      ORDER BY orders_affected DESC
+    limit: 60
+    example: {}
+
+  - name: list_cycle_count_corrections
+    desc: Cycle count corrections over a period with value, cause code, zone, shift, weekday and reversal time. Use min_value_gbp to focus on big ones and exclude_reversed_48h to drop quick reversals.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Corrections from or after"}
+      date_to: {type: date, desc: "Corrections up to (default today)"}
+      min_value_gbp: {type: float, desc: "Only corrections with absolute value at least this many GBP"}
+      cause_code: {type: str, desc: "Filter by cause code, e.g. other"}
+      exclude_reversed_48h: {type: bool, default: false, desc: "True to drop corrections reversed within 48 hours"}
+    sql: |
+      SELECT cr.result_id, cr.task_id, cr.location_id, l.zone, l.aisle, cr.sku, cr.system_qty, cr.counted_qty, cr.variance,
+             round(abs(cr.variance) * p.unit_cost_gbp, 2) AS value_gbp, cr.cause_code, cr.counted_at,
+             CASE WHEN hour(cr.counted_at) BETWEEN 6 AND 13 THEN 'early' WHEN hour(cr.counted_at) BETWEEN 14 AND 21 THEN 'late' ELSE 'night' END AS shift,
+             dayname(cr.counted_at) AS weekday, cr.counted_by, cr.reversed_within_48h, cr.reversed_at,
+             round(datediff('minute', cr.counted_at, cr.reversed_at) / 60.0, 1) AS hours_to_reversal
+      FROM cycle_count_results cr
+      JOIN master.locations l ON l.location_id = cr.location_id
+      JOIN master.products p ON p.sku = cr.sku
+      WHERE l.site_id = $site_id AND cr.variance <> 0
+        AND CAST(cr.counted_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(cr.counted_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+        AND ($min_value_gbp IS NULL OR abs(cr.variance) * p.unit_cost_gbp >= $min_value_gbp)
+        AND ($cause_code IS NULL OR cr.cause_code = $cause_code)
+        AND (NOT coalesce($exclude_reversed_48h, false) OR NOT cr.reversed_within_48h)
+      ORDER BY value_gbp DESC
+    limit: 100
+    example: {site_id: DC1, min_value_gbp: 500}
+
+  - name: list_cycle_count_results_for_location
+    desc: Past cycle count results and variances for a bin, or every bin in a bay when given a prefix such as DC1-C-14, newest first, with variance value and counter.
+    kind: sql
+    args:
+      location_id: {op: like, required: true, desc: "Bin id or bay prefix, e.g. DC1-C-14-02 or DC1-C-14"}
+      sku: {desc: "Filter by SKU"}
+      date_from: {type: date, default: "-90d", desc: "Results from or after"}
+    sql: |
+      SELECT cr.result_id, cr.task_id, cr.location_id, cr.sku, p.name AS product_name, cr.system_qty, cr.counted_qty, cr.variance, cr.variance_pct,
+             round(cr.variance * p.unit_cost_gbp, 2) AS variance_value_gbp, cr.counted_at, cr.counted_by, cr.accuracy_issue, cr.lot_number,
+             cr.condition
+      FROM cycle_count_results cr JOIN master.products p ON p.sku = cr.sku
+      WHERE starts_with(upper(cr.location_id), upper($location_id)) AND ($sku IS NULL OR cr.sku = $sku)
+        AND CAST(cr.counted_at AS DATE) >= CAST($date_from AS DATE)
+      ORDER BY cr.counted_at DESC, cr.location_id
+    limit: 100
+    example: {location_id: DC1-C-14}
+
+  - name: list_goods_receipts
+    desc: Goods receipts with received quantities, dock, user and carrier. Filter by site, supplier, carrier or SKU. Returns recent inbound, newest first.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC receiving"}
+      supplier_id: {desc: "Filter by supplier"}
+      carrier_id: {desc: "Filter by carrier"}
+      sku: {desc: "Filter by SKU"}
+      date_from: {type: date, default: "-30d", desc: "Receipts from or after"}
+      date_to: {type: date, desc: "Receipts up to (default today)"}
+    sql: |
+      SELECT gr.receipt_id, gr.po_id, pur.supplier_id, gr.sku, p.name AS product_name, gr.qty_ordered, gr.qty_received, gr.qty_accepted,
+             gr.damage_qty, gr.short_qty, gr.dock, gr.received_by, gr.carrier_id, c.name AS carrier_name, gr.received_at, gr.site_id, gr.notes
+      FROM goods_receipts gr
+      JOIN master.purchase_orders pur ON pur.po_id = gr.po_id
+      LEFT JOIN master.products p ON p.sku = gr.sku
+      LEFT JOIN master.carriers c ON c.carrier_id = gr.carrier_id
+      WHERE ($site_id IS NULL OR gr.site_id = $site_id) AND ($supplier_id IS NULL OR pur.supplier_id = $supplier_id)
+        AND ($carrier_id IS NULL OR gr.carrier_id = $carrier_id) AND ($sku IS NULL OR gr.sku = $sku)
+        AND CAST(gr.received_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(gr.received_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ORDER BY gr.received_at DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: list_locations_by_last_count_date
+    desc: Bins with date of last cycle count, stock value and accuracy history, highest value first. Use days_since_count to find bins not counted recently.
+    kind: sql
+    args:
+      site_id: {required: true}
+      days_since_count: {type: int, desc: "Only bins not counted in the last N days (includes never counted)"}
+      zone: {type: str, desc: "Warehouse zone filter, e.g. pick, reserve, mezzanine"}
+      aisle: {type: str, desc: "Aisle letter filter, e.g. D"}
+      min_value_gbp: {type: float, desc: "Only bins holding at least this stock value in GBP"}
+    sql: |
+      WITH val AS (
+        SELECT li.location_id, sum(li.qty * p.unit_cost_gbp) AS value_gbp
+        FROM location_inventory li JOIN master.products p ON p.sku = li.sku WHERE li.site_id = $site_id GROUP BY li.location_id
+      ), hist AS (
+        SELECT cr.location_id, max(CAST(cr.counted_at AS DATE)) AS last_count_date, count(DISTINCT cr.task_id) AS count_history,
+               round(100.0 * count(*) FILTER (WHERE cr.accuracy_issue) / count(*), 1) AS accuracy_issue_pct
+        FROM cycle_count_results cr GROUP BY cr.location_id
+      )
+      SELECT l.location_id, l.zone, l.aisle, round(v.value_gbp) AS value_gbp, h.last_count_date,
+             datediff('day', h.last_count_date, CAST($as_of AS DATE)) AS days_since_count, h.count_history, h.accuracy_issue_pct
+      FROM master.locations l JOIN val v ON v.location_id = l.location_id LEFT JOIN hist h ON h.location_id = l.location_id
+      WHERE l.site_id = $site_id AND ($zone IS NULL OR l.zone = $zone) AND ($aisle IS NULL OR l.aisle = upper($aisle))
+        AND ($min_value_gbp IS NULL OR v.value_gbp >= $min_value_gbp)
+        AND ($days_since_count IS NULL OR h.last_count_date IS NULL OR datediff('day', h.last_count_date, CAST($as_of AS DATE)) >= $days_since_count)
+      ORDER BY v.value_gbp DESC
+    limit: 100
+    example: {site_id: DC1, days_since_count: 30}
+
+  - name: list_orders_by_status
+    desc: Orders in a given status (allocation_failed, allocated, picking, shipped) with lines, units, SKUs and failure codes, newest first. Use for orders stuck in allocation.
+    kind: sql
+    args:
+      status: {type: enum, values: [allocation_failed, allocated, picking, shipped], default: picking, desc: "Order status"}
+      site_id: {desc: "Filter by DC"}
+      date_from: {type: date, default: "-7d", desc: "Orders whose status changed from this date"}
+    sql: |
+      WITH o AS (
+        SELECT ol.order_id, ol.site_id,
+               CASE WHEN bool_or(ol.status = 'allocation_failed') THEN 'allocation_failed' WHEN bool_or(ol.status = 'picking') THEN 'picking'
+                    WHEN bool_and(ol.status = 'shipped') THEN 'shipped' ELSE 'allocated' END AS order_status,
+               count(*) AS lines, sum(ol.qty) AS units, string_agg(DISTINCT ol.sku, '; ') AS skus,
+               string_agg(DISTINCT ol.failure_code, '; ') FILTER (WHERE ol.failure_code <> '') AS failure_codes, max(ol.status_at) AS status_at
+        FROM order_lines ol WHERE $site_id IS NULL OR ol.site_id = $site_id
+        GROUP BY ol.order_id, ol.site_id
+      )
+      SELECT o.order_id, o.site_id, mo.channel, o.order_status AS status, o.lines, o.units, o.skus, o.failure_codes, o.status_at
+      FROM o JOIN master.orders mo ON mo.order_id = o.order_id
+      WHERE o.order_status = coalesce($status, 'picking') AND CAST(o.status_at AS DATE) >= CAST($date_from AS DATE)
+      ORDER BY o.status_at DESC, o.order_id
+    limit: 200
+    example: {status: allocation_failed}
+
+  - name: list_recent_configuration_changes
+    desc: Configuration, release and parameter changes with dates, who made them and old and new values. Filter by site, type or words. Use to find what changed before a problem started.
+    kind: sql
+    args:
+      site_id: {desc: "DC to include (network-wide ALL changes are always included)"}
+      change_type: {type: str, desc: "Change type, e.g. wave_template, pack_specification, cycle_count"}
+      contains: {type: str, desc: "Words to look for in the description"}
+      date_from: {type: date, default: "-90d", desc: "Changes from or after"}
+      date_to: {type: date, desc: "Changes up to (default today)"}
+    sql: |
+      SELECT change_id, scope, change_type, parameter, old_value, new_value, description, changed_at, changed_by, status
+      FROM configuration_changes
+      WHERE ($site_id IS NULL OR scope = $site_id OR scope = 'ALL') AND ($change_type IS NULL OR change_type = $change_type)
+        AND ($contains IS NULL OR description ILIKE '%' || $contains || '%')
+        AND CAST(changed_at AS DATE) >= CAST($date_from AS DATE)
+        AND CAST(changed_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+      ORDER BY changed_at DESC
+    limit: 30
+    example: {}
+
+  - name: list_replenishment_task_duplicates
+    desc: Duplicate replenishment tasks (same SKU and bin created seconds apart) with the receipts that triggered them. Shows when and how often the duplicate bug fired.
+    kind: sql
+    args:
+      site_id: {desc: "Filter by DC"}
+      window_seconds: {type: int, default: 5, desc: "Tasks created within this many seconds count as duplicates"}
+      date_from: {type: date, default: "-30d", desc: "From date"}
+    sql: |
+      SELECT a.site_id, a.sku, p.name AS product_name, a.to_location_id, a.task_id AS first_task_id, b.task_id AS duplicate_task_id,
+             a.created_at AS first_created_at, b.created_at AS duplicate_created_at,
+             datediff('second', a.created_at, b.created_at) AS seconds_apart, a.qty, a.trigger_receipt_id AS first_receipt_id,
+             b.trigger_receipt_id AS duplicate_receipt_id, ra.po_id AS first_po_id, rb.po_id AS duplicate_po_id,
+             datediff('second', ra.received_at, rb.received_at) AS receipts_seconds_apart
+      FROM replenishment_tasks a
+      JOIN replenishment_tasks b ON b.site_id = a.site_id AND b.sku = a.sku AND b.to_location_id = a.to_location_id AND b.created_at > a.created_at
+           AND datediff('second', a.created_at, b.created_at) <= CAST($window_seconds AS INT)
+      LEFT JOIN goods_receipts ra ON ra.receipt_id = a.trigger_receipt_id
+      LEFT JOIN goods_receipts rb ON rb.receipt_id = b.trigger_receipt_id
+      LEFT JOIN master.products p ON p.sku = a.sku
+      WHERE CAST(a.created_at AS DATE) >= CAST($date_from AS DATE) AND ($site_id IS NULL OR a.site_id = $site_id)
+      ORDER BY a.created_at DESC
+    limit: 50
+    example: {site_id: DC1, date_from: "-90d"}
+
+  - name: list_short_picks_by_stage
+    desc: Short picks, late waves and loading exceptions by process stage, counted per week or per destination store, with units short and average delay. Shows where fulfilment breaks.
+    kind: sql
+    args:
+      site_id: {required: true}
+      date_from: {type: date, default: "-42d", desc: "From date"}
+      date_to: {type: date, desc: "To date (default today)"}
+      exception_type: {type: enum, values: [short_pick, late_wave, loading_exception], desc: "Only this exception type"}
+      to_site_id: {type: str, desc: "Only exceptions for this destination store, e.g. ST159"}
+      group_by: {type: enum, values: [week, store], default: week, desc: "week = per week and stage; store = per destination store and stage"}
+    sql: |
+      WITH b AS (
+        SELECT * FROM pick_exceptions
+        WHERE site_id = $site_id AND CAST(occurred_at AS DATE) >= CAST($date_from AS DATE)
+          AND CAST(occurred_at AS DATE) <= COALESCE(CAST($date_to AS DATE), CAST($as_of AS DATE))
+          AND ($exception_type IS NULL OR exception_type = $exception_type) AND ($to_site_id IS NULL OR to_site_id = $to_site_id)
+      )
+      SELECT * FROM (
+        SELECT 'week' AS grouped_by, CAST(date_trunc('week', occurred_at) AS DATE) AS week_start, CAST(NULL AS VARCHAR) AS to_site_id, process_stage,
+               exception_type, count(*) AS exceptions, sum(expected_qty - actual_qty) AS units_short,
+               round(avg(delay_minutes) FILTER (WHERE delay_minutes > 0), 0) AS avg_delay_min, mode(cause) AS most_common_cause
+        FROM b GROUP BY 2, 4, 5
+        UNION ALL
+        SELECT 'store', CAST(NULL AS DATE), to_site_id, process_stage, exception_type, count(*), sum(expected_qty - actual_qty),
+               round(avg(delay_minutes) FILTER (WHERE delay_minutes > 0), 0), mode(cause)
+        FROM b GROUP BY 3, 4, 5
+      ) x
+      WHERE x.grouped_by = coalesce($group_by, 'week')
+      ORDER BY week_start NULLS LAST, exceptions DESC
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: reassign_cycle_count_task
+    desc: Reassign a count task to a different operative. Returns the old and new assignee.
+    kind: update
+    table: cycle_count_tasks
+    set: {assigned_to: "{assigned_to}", updated_at: "$as_of"}
+    args:
+      assigned_to: {required: true, desc: "Employee id to reassign the task to"}
+    example: {task_id: CCT-900105, assigned_to: "EMP-00136"}
+
+  - name: release_cycle_count_tasks
+    desc: Release one planned count task to the operative's handheld. Returns the task with its new status.
+    kind: update
+    table: cycle_count_tasks
+    set: {status: released, released_at: "$as_of"}
+    example: {task_id: CCT-900101}
+
+  - name: retry_order_allocation
+    desc: Queue a re-run of allocation for one order stuck in allocation failed. Returns the retry record; the outcome shows once allocation has run.
+    kind: insert
+    table: allocation_retries
+    id_prefix: RETRY-
+    defaults: {previous_status: allocation_failed, new_status: retry_queued, result: queued, created_by: "EMP-00112", retried_at: "$as_of"}
+    args:
+      order_id: {required: true, desc: "Order id stuck in allocation failed"}
+      notes: {desc: "Notes on why the retry is safe, e.g. pack spec corrected"}
+      created_by: {desc: "Employee id requesting the retry"}
+    example: {order_id: "ORD-2026-0100001", notes: "Pack spec corrected"}
+
+  - name: search_locations
+    desc: Find DC bin locations by DC, zone, aisle or status. Returns location ids to use with other tools.
+    kind: select
+    from: master.locations
+    filters:
+      site_id: {}
+      zone: {}
+      aisle: {op: like}
+    columns: [location_id, site_id, zone, aisle, bay, level]
+    order: site_id, zone, aisle
+    limit: 100
+    example: {site_id: DC1, aisle: "C"}

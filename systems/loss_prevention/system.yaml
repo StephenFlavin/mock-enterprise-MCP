@@ -1,0 +1,385 @@
+id: loss_prevention
+name: Loss Prevention & Incident System
+instructions: >
+  Shrink, theft, and incident tracking across stores. Tracks stock loss, incident logs,
+  control programs and their effectiveness, and high-risk product protection.
+  Case ids look like LPC-000123. Use it for shrink analysis, incident correlation,
+  control effectiveness and intervention planning.
+
+tables:
+  shrink_records:
+    key: [site_id, recorded_date]
+    cols:
+      site_id: {type: str, desc: "Store id, e.g. ST001"}
+      recorded_date: {type: date, desc: "Date of shrink record"}
+      shrink_gbp: {type: float, desc: "Total shrink value in GBP"}
+      adjustment_gbp: {type: float, desc: "Stock adjustment value in GBP"}
+      pos_exception_gbp: {type: float, desc: "POS exception value in GBP"}
+      theft_estimated_gbp: {type: float, desc: "Estimated theft value in GBP"}
+      damage_estimated_gbp: {type: float, desc: "Estimated damage value in GBP"}
+      error_estimated_gbp: {type: float, desc: "Estimated process error value in GBP"}
+
+  incidents:
+    key: incident_id
+    cols:
+      incident_id: {type: str, desc: "Incident, e.g. INC-000123"}
+      site_id: {type: str, desc: Store}
+      recorded_date: {type: date, desc: "Date of incident"}
+      incident_time: {type: str, desc: "Time of day the incident happened, e.g. 20:10"}
+      incident_type: {type: enum, values: [theft_external, theft_internal, damage, system_error, pos_void, audit_adjust], desc: "Type of incident"}
+      sku: {type: str, desc: "Product affected if any"}
+      units_involved: {type: int, desc: "Quantity involved"}
+      value_gbp: {type: float, desc: "Value in GBP"}
+      description: {type: str, desc: "Incident details"}
+      reported_by: {type: str, desc: "Employee who reported it"}
+      root_cause: {type: str, desc: "Identified root cause if any"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  control_programs:
+    key: control_id
+    cols:
+      control_id: {type: str, desc: "Control program, e.g. CTL-000123"}
+      site_id: {type: str, desc: Store}
+      control_type: {type: enum, values: [tagging, layout, staffing, security_staff, pos_rules, self_checkout_monitoring, cctv, training], desc: "Type of control"}
+      start_date: {type: date, desc: "When control started"}
+      annual_cost_gbp: {type: float, desc: "Annual running cost of the control in GBP"}
+      shrink_reduction_gbp: {type: float, desc: "Measured annual shrink reduction in GBP"}
+      status: {type: enum, values: [active, paused, completed], desc: "Status"}
+
+  high_risk_products:
+    key: hrp_id
+    cols:
+      hrp_id: {type: str, desc: "High-risk product entry, e.g. HRP-000123"}
+      site_id: {type: str, desc: "Store id; blank means the whole estate"}
+      sku: {type: str, desc: Product}
+      added_date: {type: date, desc: "When added to high-risk list"}
+      risk_level: {type: enum, values: [low, medium, high], desc: "Risk level"}
+      protection_type: {type: str, desc: "Type of protection: tagging, locked_case, staff_supervised"}
+      loss_driver: {type: enum, values: [theft, damage, error, unknown], desc: "Primary loss driver"}
+      notes: {type: str, desc: "Additional notes"}
+      status: {type: enum, values: [active, removed], desc: "Status"}
+      reason: {type: str, desc: "Reason for removal if status is removed"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  loss_prevention_cases:
+    key: case_id
+    cols:
+      case_id: {type: str, desc: "Loss prevention case, e.g. LPC-000123"}
+      site_id: {type: str, desc: "Store the case is about"}
+      opened_date: {type: date, desc: "When case was opened"}
+      case_type: {type: enum, values: [internal_theft, external_theft, supplier_fraud, process_error, system_fault, organized_retail_crime], desc: "Type of case"}
+      status: {type: enum, values: [open, investigating, resolved, closed, archived], desc: "Case status"}
+      description: {type: str, desc: "Case summary"}
+      assigned_to: {type: str, desc: "Employee id of the investigator, e.g. EMP-00102"}
+      estimated_loss_gbp: {type: float, desc: "Estimated loss value"}
+      key_incidents: {type: str, desc: "Comma-separated incident ids"}
+      findings: {type: text, desc: "Investigation findings"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  protection_options:
+    key: protection_type
+    cols:
+      protection_type: {type: str, desc: "tagging, locked_case or staff_supervised"}
+      description: {type: str, desc: "What the protection involves"}
+      setup_cost_per_store_gbp: {type: float, desc: "One-off cost per store for one product line"}
+      annual_running_cost_per_store_gbp: {type: float, desc: "Yearly running cost per store for one product line"}
+      effectiveness_pct: {type: float, desc: "Share of theft loss the protection prevents"}
+
+tools:
+  - name: get_store_shrink_by_period
+    desc: Shrink in GBP by period with adjustment, POS exception, theft, damage and error split. One store, a region, or all stores; use period_weeks for weekly, 4-weekly or quarterly blocks.
+    kind: sql
+    args:
+      site_id: {}
+      region: {type: str, desc: "Trading region, e.g. UK North. Leave empty for all stores"}
+      date_from: {type: date, default: "-180d", desc: "Period start"}
+      date_to: {type: date, default: "today", desc: "Period end"}
+      period_weeks: {type: int, default: 1, desc: "Weeks per period block, counted back from today (1 = weekly, 4, 13 = quarter)"}
+      by_store: {type: bool, default: false, desc: "One row per store per period instead of totals across stores"}
+    sql: |
+      WITH r AS (
+        SELECT s.*, CAST(s.recorded_date AS DATE) AS d,
+               CAST(floor(date_diff('day', CAST(s.recorded_date AS DATE), CAST($as_of AS DATE)) / (7.0 * $period_weeks)) AS INTEGER) AS blk
+        FROM shrink_records s JOIN master.sites m USING (site_id)
+        WHERE ($site_id IS NULL OR s.site_id = $site_id)
+          AND ($region IS NULL OR m.region = $region)
+          AND s.recorded_date >= CAST($date_from AS DATE)
+          AND s.recorded_date <= CAST($date_to AS DATE)
+      )
+      SELECT CASE WHEN $site_id IS NOT NULL OR $by_store THEN site_id ELSE 'ALL' END AS site_id,
+             min(d) AS period_start, max(d) AS period_end,
+             count(DISTINCT d) AS weeks, count(DISTINCT site_id) AS stores,
+             round(sum(shrink_gbp), 2) AS shrink_gbp,
+             round(sum(adjustment_gbp), 2) AS adjustment_gbp,
+             round(sum(pos_exception_gbp), 2) AS pos_exception_gbp,
+             round(sum(theft_estimated_gbp), 2) AS theft_estimated_gbp,
+             round(sum(damage_estimated_gbp), 2) AS damage_estimated_gbp,
+             round(sum(error_estimated_gbp), 2) AS error_estimated_gbp,
+             round(100.0 * sum(theft_estimated_gbp) / NULLIF(sum(shrink_gbp), 0), 1) AS theft_pct_of_shrink
+      FROM r
+      GROUP BY CASE WHEN $site_id IS NOT NULL OR $by_store THEN site_id ELSE 'ALL' END, blk
+      ORDER BY period_start DESC, site_id
+    limit: 400
+    example: {site_id: ST150, date_from: "-90d"}
+
+  - name: list_incidents_for_region
+    desc: Incidents (theft, voids, damage, system errors, audit adjustments) across a region's stores with date, time, SKU and value, highest value first. Use to spot stores and time windows with patterns.
+    kind: sql
+    args:
+      region: {type: str, required: true, desc: "Trading region, e.g. UK North"}
+      incident_type: {type: str, desc: "One of theft_external, theft_internal, damage, system_error, pos_void, audit_adjust. Default all"}
+      site_id: {}
+      date_from: {type: date, default: "-180d", desc: "Period start"}
+      min_value_gbp: {type: float, default: 0, desc: "Only incidents worth at least this much"}
+    sql: |
+      SELECT i.incident_id, i.site_id, s.name AS site_name, i.recorded_date, i.incident_time,
+             i.incident_type, i.sku, i.units_involved, i.value_gbp, i.description, i.root_cause, i.reported_by
+      FROM incidents i
+      JOIN master.sites s ON s.site_id = i.site_id
+      WHERE s.region = $region
+        AND i.recorded_date >= CAST($date_from AS DATE)
+        AND ($incident_type IS NULL OR i.incident_type = $incident_type)
+        AND ($site_id IS NULL OR i.site_id = $site_id)
+        AND i.value_gbp >= $min_value_gbp
+      ORDER BY i.value_gbp DESC, i.recorded_date DESC
+    limit: 60
+    example: {region: "UK North"}
+
+  - name: get_incident_counts_by_location
+    desc: Incident counts and total value per store ranked by frequency, with a split by type. Use to find theft hotspots across the estate or one region.
+    kind: sql
+    args:
+      region: {type: str, desc: "Trading region, e.g. UK North. Leave empty for all regions"}
+      incident_type: {type: str, desc: "One of theft_external, theft_internal, damage, system_error, pos_void, audit_adjust. Default all"}
+      date_from: {type: date, default: "-180d", desc: "Period start"}
+      date_to: {type: date, default: "today", desc: "Period end"}
+    sql: |
+      SELECT i.site_id, s.name AS site_name, s.region,
+             count(*) AS incident_count,
+             round(sum(i.value_gbp), 2) AS total_value_gbp,
+             count(*) FILTER (WHERE i.incident_type = 'theft_external') AS theft_external_count,
+             count(*) FILTER (WHERE i.incident_type = 'theft_internal') AS theft_internal_count,
+             count(*) FILTER (WHERE i.incident_type = 'damage') AS damage_count,
+             count(*) FILTER (WHERE i.incident_type = 'system_error') AS system_error_count,
+             count(*) FILTER (WHERE i.incident_type = 'pos_void') AS pos_void_count,
+             count(*) FILTER (WHERE i.incident_type = 'audit_adjust') AS audit_adjust_count
+      FROM incidents i
+      JOIN master.sites s ON s.site_id = i.site_id
+      WHERE i.recorded_date >= CAST($date_from AS DATE)
+        AND i.recorded_date <= CAST($date_to AS DATE)
+        AND ($region IS NULL OR s.region = $region)
+        AND ($incident_type IS NULL OR i.incident_type = $incident_type)
+      GROUP BY i.site_id, s.name, s.region
+      ORDER BY incident_count DESC, total_value_gbp DESC
+    limit: 15
+    example: {}
+
+  - name: get_incident_records_for_product
+    desc: Every incident for one SKU across stores, with type (theft, damage, error), store, units, value and root cause. Use to see whether a product is lost to theft or damage.
+    kind: sql
+    args:
+      sku: {required: true}
+      incident_type: {type: str, desc: "One of theft_external, theft_internal, damage, system_error, pos_void, audit_adjust. Default all"}
+      date_from: {type: date, default: "-365d", desc: "Period start"}
+    sql: |
+      SELECT i.incident_id, i.site_id, s.name AS site_name, i.sku, i.recorded_date, i.incident_type,
+             i.units_involved, i.value_gbp, i.description, i.root_cause
+      FROM incidents i JOIN master.sites s ON s.site_id = i.site_id
+      WHERE i.sku = $sku
+        AND i.recorded_date >= CAST($date_from AS DATE)
+        AND ($incident_type IS NULL OR i.incident_type = $incident_type)
+      ORDER BY i.recorded_date DESC, i.value_gbp DESC
+    limit: 100
+    example: {sku: "SKU-105341"}
+
+  - name: compare_control_effectiveness
+    desc: Compares shrink controls (tagging, layout, staffing, security staff, POS rules and others) by type, with cost per pound of shrink saved, ranked best first. Filter by region, store or status.
+    kind: sql
+    args:
+      control_type: {type: str, desc: "One of tagging, layout, staffing, security_staff, pos_rules, self_checkout_monitoring, cctv, training. Default all"}
+      site_id: {}
+      region: {type: str, desc: "Trading region, e.g. UK North. Leave empty for all stores"}
+      status: {type: str, default: active, desc: "Programme status: active, paused or completed"}
+    sql: |
+      SELECT c.control_type,
+             count(*) AS programmes, count(DISTINCT c.site_id) AS stores,
+             round(avg(c.annual_cost_gbp), 0) AS avg_annual_cost_gbp,
+             round(avg(c.shrink_reduction_gbp), 0) AS avg_annual_shrink_reduction_gbp,
+             round(sum(c.annual_cost_gbp) / NULLIF(sum(c.shrink_reduction_gbp), 0), 2) AS cost_per_pound_saved,
+             round(sum(c.shrink_reduction_gbp) / NULLIF(sum(c.annual_cost_gbp), 0), 2) AS pounds_saved_per_pound_spent,
+             round(sum(c.shrink_reduction_gbp) - sum(c.annual_cost_gbp), 0) AS net_benefit_gbp,
+             'cost_per_pound_saved = annual cost / annual shrink reduction' AS formula
+      FROM control_programs c JOIN master.sites m ON m.site_id = c.site_id
+      WHERE ($control_type IS NULL OR c.control_type = $control_type)
+        AND ($site_id IS NULL OR c.site_id = $site_id)
+        AND ($region IS NULL OR m.region = $region)
+        AND c.status = $status
+      GROUP BY c.control_type
+      ORDER BY cost_per_pound_saved ASC
+    limit: 20
+    example: {}
+
+  - name: calculate_control_payback
+    desc: Payback in months of a shrink control from annual cost and annual shrink reduction. Give a control id or a control type to average; with neither, returns every type.
+    kind: py
+    fn: calc_control_payback
+    args:
+      control_id: {type: str, desc: "One programme, e.g. CTL-000123"}
+      control_type: {type: str, desc: "One of tagging, layout, staffing, security_staff, pos_rules, self_checkout_monitoring, cctv, training. Default all types"}
+      site_id: {}
+    example: {control_type: tagging}
+
+  - name: calculate_intervention_cost_effectiveness
+    desc: Ranks interventions (tagging, staffing, pos_rules, self_checkout_monitoring, cctv, training...) for one store by cost per pound saved, scaling typical estate results to the store's annual shrink.
+    kind: sql
+    args:
+      site_id: {required: true}
+      intervention_type: {type: str, desc: "One intervention such as pos_rules, tagging, staffing, self_checkout_monitoring, cctv, training, layout, security_staff. Default compare all"}
+      current_shrink_gbp: {type: float, desc: "Annual shrink to use instead of the store's last 52 weeks"}
+    sql: |
+      WITH est AS (
+        SELECT site_id, sum(shrink_gbp) AS annual_shrink
+        FROM shrink_records
+        WHERE recorded_date >= CAST($as_of AS DATE) - INTERVAL 364 DAY
+        GROUP BY site_id
+      ),
+      mine AS (
+        SELECT coalesce($current_shrink_gbp, (SELECT annual_shrink FROM est WHERE site_id = $site_id)) AS annual_shrink
+      ),
+      prog AS (
+        SELECT c.control_type, count(*) AS programmes,
+               avg(c.annual_cost_gbp) AS avg_cost,
+               sum(c.shrink_reduction_gbp) / sum(e.annual_shrink) AS reduction_rate
+        FROM control_programs c JOIN est e USING (site_id)
+        WHERE c.status = 'active'
+        GROUP BY c.control_type
+      )
+      SELECT $site_id AS site_id, p.control_type AS intervention_type,
+             round(m.annual_shrink, 0) AS annual_shrink_gbp,
+             round(100.0 * p.reduction_rate, 1) AS typical_reduction_pct,
+             round(m.annual_shrink * p.reduction_rate, 0) AS projected_shrink_reduction_gbp,
+             round(p.avg_cost, 0) AS annual_cost_gbp,
+             round(m.annual_shrink * p.reduction_rate - p.avg_cost, 0) AS net_benefit_gbp,
+             round(p.avg_cost / NULLIF(m.annual_shrink * p.reduction_rate, 0), 2) AS cost_per_pound_saved,
+             round(12.0 * p.avg_cost / NULLIF(m.annual_shrink * p.reduction_rate, 0), 1) AS payback_months,
+             p.programmes AS evidence_programmes,
+             'projected reduction = store annual shrink x typical reduction rate of that control across the estate' AS formula
+      FROM prog p, mine m
+      WHERE $intervention_type IS NULL
+         OR p.control_type = CASE $intervention_type WHEN 'self_checkout_monitor' THEN 'self_checkout_monitoring'
+                                                      WHEN 'system_rules' THEN 'pos_rules'
+                                                      WHEN 'security' THEN 'security_staff'
+                                                      ELSE $intervention_type END
+      ORDER BY cost_per_pound_saved ASC
+    limit: 10
+    example: {site_id: ST165}
+
+  - name: calculate_protection_options_cost
+    desc: "Compares tagging, locked cases and staff supervision for one SKU: cost across stores that lost it, theft loss prevented and cost per pound prevented. Damage is not prevented."
+    kind: sql
+    args:
+      sku: {required: true}
+      date_from: {type: date, default: "-365d", desc: "Loss history start"}
+    sql: |
+      WITH inc AS (
+        SELECT site_id,
+               sum(value_gbp) FILTER (WHERE incident_type IN ('theft_external', 'theft_internal')) AS theft_gbp,
+               sum(value_gbp) FILTER (WHERE incident_type = 'damage') AS damage_gbp
+        FROM incidents
+        WHERE sku = $sku AND recorded_date >= CAST($date_from AS DATE)
+        GROUP BY site_id
+      ),
+      tot AS (
+        SELECT count(*) AS stores_with_losses, coalesce(sum(theft_gbp), 0) AS theft_gbp, coalesce(sum(damage_gbp), 0) AS damage_gbp
+        FROM inc
+      )
+      SELECT $sku AS sku, (SELECT name FROM master.products WHERE sku = $sku) AS product,
+             o.protection_type, o.description,
+             t.stores_with_losses, round(t.theft_gbp, 2) AS theft_loss_gbp, round(t.damage_gbp, 2) AS damage_loss_gbp,
+             round(o.effectiveness_pct, 0) AS effectiveness_pct,
+             round(t.stores_with_losses * (o.setup_cost_per_store_gbp + o.annual_running_cost_per_store_gbp), 2) AS first_year_cost_gbp,
+             round(t.theft_gbp * o.effectiveness_pct / 100.0, 2) AS theft_loss_prevented_gbp,
+             round(t.stores_with_losses * (o.setup_cost_per_store_gbp + o.annual_running_cost_per_store_gbp)
+                   / NULLIF(t.theft_gbp * o.effectiveness_pct / 100.0, 0), 2) AS cost_per_pound_prevented,
+             CASE WHEN t.theft_gbp = 0 THEN 'No theft losses recorded: loss is damage or error, protection would not help' ELSE '' END AS note,
+             'cost per pound prevented = stores x (setup + annual running cost) / (theft loss x effectiveness)' AS formula
+      FROM protection_options o, tot t
+      ORDER BY cost_per_pound_prevented ASC NULLS LAST
+    limit: 5
+    example: {sku: "SKU-105341"}
+
+  - name: draft_loss_prevention_case_summary
+    desc: Draft a case summary for an area manager from a loss prevention case, with its key incidents, totals and recent store shrink.
+    kind: draft
+    args: [case_id]
+    sql:
+      case: SELECT * FROM loss_prevention_cases WHERE case_id = $case_id
+      incidents: |
+        SELECT i.incident_id, i.recorded_date, i.incident_time, i.incident_type, i.site_id, i.sku, i.value_gbp, i.description
+        FROM incidents i JOIN loss_prevention_cases c
+          ON list_contains(string_split(replace(c.key_incidents, ' ', ''), ','), i.incident_id)
+        WHERE c.case_id = $case_id
+        ORDER BY i.recorded_date, i.incident_time
+      shrink: |
+        SELECT round(sum(s.shrink_gbp) FILTER (WHERE s.recorded_date > CAST($as_of AS DATE) - INTERVAL 28 DAY), 0) AS last4,
+               round(sum(s.shrink_gbp) FILTER (WHERE s.recorded_date <= CAST($as_of AS DATE) - INTERVAL 28 DAY
+                                                 AND s.recorded_date > CAST($as_of AS DATE) - INTERVAL 56 DAY), 0) AS prior4
+        FROM shrink_records s JOIN loss_prevention_cases c ON c.site_id = s.site_id
+        WHERE c.case_id = $case_id
+    template: |
+      LOSS PREVENTION CASE SUMMARY
+      Case: {{ case[0].case_id }} ({{ case[0].status }}), {{ case[0].case_type }}
+      Store: {{ case[0].site_id }}   Opened: {{ case[0].opened_date }}   Investigator: {{ case[0].assigned_to }}
+
+      SUMMARY
+      {{ case[0].description }}
+
+      ESTIMATED LOSS: {{ case[0].estimated_loss_gbp | money }}
+      STORE SHRINK: {{ shrink[0].last4 | money }} in the last 4 weeks against {{ shrink[0].prior4 | money }} in the 4 weeks before.
+
+      KEY INCIDENTS ({{ incidents | length }})
+      {% for inc in incidents %}- {{ inc.incident_id }}, {{ inc.recorded_date }} {{ inc.incident_time }}, {{ inc.site_id }}, {{ inc.incident_type }}, {{ inc.sku }}, {{ inc.value_gbp | money }}: {{ inc.description }}
+      {% endfor %}
+
+      FINDINGS
+      {{ case[0].findings or "Investigation pending" }}
+    example: {case_id: "LPC-900001"}
+
+  - name: create_loss_prevention_case
+    desc: Open a loss prevention investigation case for a store, with type, description, estimated loss, investigator and the key incident ids. Returns the new case.
+    kind: insert
+    table: loss_prevention_cases
+    id_prefix: LPC-
+    defaults: {status: open, opened_date: "$as_of"}
+    args:
+      site_id: {required: true}
+      case_type: {required: true, desc: "One of internal_theft, external_theft, supplier_fraud, process_error, system_fault, organized_retail_crime"}
+      description: {required: true}
+      estimated_loss_gbp: {type: float, desc: "Estimated loss value in GBP"}
+      assigned_to: {type: str, desc: "Investigator employee id, e.g. EMP-00102"}
+      key_incidents: {type: str, desc: "Comma-separated incident ids supporting the case"}
+      findings: {type: text, desc: "Evidence and findings so far"}
+    example: {site_id: ST150, case_type: internal_theft, description: "Shrink tripled over four weeks with evening stockroom removals matching staff card access", estimated_loss_gbp: 4800, assigned_to: "EMP-00102"}
+
+  - name: update_high_risk_product_list
+    desc: Add a product to the high-risk protection list with its protection type and loss driver. Leave the store empty for the whole estate. Returns the new entry id.
+    kind: insert
+    table: high_risk_products
+    id_prefix: HRP-
+    defaults: {risk_level: high, status: active, added_date: "$as_of"}
+    args:
+      sku: {required: true}
+      site_id: {}
+      protection_type: {default: tagging, desc: "tagging, locked_case or staff_supervised"}
+      loss_driver: {required: true, desc: "Main loss driver: theft, damage, error or unknown"}
+      notes: {type: str, desc: "Why the product is on the list"}
+    example: {sku: "SKU-105341", protection_type: tagging, loss_driver: theft, notes: "Top five highest-loss product, theft driven"}
+
+  - name: remove_product_from_high_risk_list
+    desc: Remove an entry from the high-risk protection list, with the reason, for example when the loss is damage not theft. Returns the old and new status.
+    kind: update
+    table: high_risk_products
+    set: {status: removed}
+    args:
+      reason: {required: true, desc: "Reason for removal"}
+    example: {hrp_id: "HRP-900005", reason: "Loss is water damage, not theft"}

@@ -1,0 +1,260 @@
+id: customer_service
+name: Customer Service Platform
+instructions: >
+  Customer service contact data, damage claims and complaints for customers. Track where-is-my-order (WISMO)
+  inquiries by reason and trend, damage claims by product, and defect complaints. IDs: contact_id (CSC-…),
+  claim_id (CLM-…), complaint_id (CMP-…).
+
+tables:
+  customer_service_contacts:
+    key: contact_id
+    cols:
+      contact_id: {type: str, desc: "Customer service contact, e.g. CSC-000123"}
+      contact_date: {type: timestamp, desc: "When the contact arrived"}
+      order_id: {type: str, desc: "Related customer order, if any (ORD-…)"}
+      sku: {type: str, desc: "Product the contact is about, if any (damage, complaint and return contacts)"}
+      reason: {type: enum, values: [wismo, damage, complaint, return, other], desc: "Contact type"}
+      issue: {type: str, desc: "Issue category, e.g. 'Missed scan' or 'Delayed delivery'"}
+      data_error_type: {type: enum, values: [dimensions, materials, compatibility], desc: "Product data error on the listing that caused the contact, if any"}
+      contact_type: {type: enum, values: [email, chat, phone], desc: "Contact channel"}
+      status: {type: enum, values: [open, resolved, escalated], desc: "Contact status"}
+      response_time_hours: {type: float, desc: "Hours until first response"}
+      resolved_at: {type: timestamp, desc: "When resolved (if status=resolved)"}
+      cost_gbp: {type: float, desc: "Cost of the contact in GBP: handling plus any refund or return cost"}
+  damage_claims:
+    key: claim_id
+    cols:
+      claim_id: {type: str, desc: "Damage claim, e.g. CLM-000123"}
+      order_id: {type: str, desc: "Related customer order (ORD-…)"}
+      contact_id: {type: str, desc: "Related contact that raised the claim (CSC-…)"}
+      sku: {type: str, desc: "Product that was damaged"}
+      item_name: {type: str, desc: "Item description"}
+      damage_type: {type: str, desc: "Type of damage, e.g. Broken glass, Dented packaging"}
+      claim_amount_gbp: {type: float, desc: "Claim amount in GBP"}
+      claim_date: {type: timestamp, desc: "When claim was lodged"}
+      status: {type: enum, values: [new, investigating, approved, rejected, paid], desc: "Claim status"}
+  complaints:
+    key: complaint_id
+    cols:
+      complaint_id: {type: str, desc: "Customer complaint, e.g. CMP-000123"}
+      complaint_date: {type: timestamp, desc: "When complaint was made"}
+      order_id: {type: str, desc: "Related customer order, if any (ORD-…)"}
+      contact_id: {type: str, desc: "Related contact (CSC-…)"}
+      sku: {type: str, desc: "Product complained about, if any"}
+      defect_type: {type: str, desc: "Type of defect, e.g. 'Zip strength', 'Colour mismatch'"}
+      description: {type: str, desc: "Details of the complaint"}
+      severity: {type: enum, values: [low, medium, high, critical], desc: "Complaint severity"}
+      safety_related: {type: bool, desc: "True if the customer reports injury or a safety risk"}
+      status: {type: enum, values: [new, investigating, resolved, escalated], desc: "Complaint status"}
+  notification_rules:
+    key: rule_id
+    cols:
+      rule_id: {type: str, desc: "Notification rule, e.g. NTF-000001"}
+      rule_name: {type: str, desc: "Rule name, e.g. 'Missed scan delay alert'"}
+      rule_type: {type: enum, values: [missed_scan_alert, delivery_promise_alert, tracking_gap_alert], desc: "Type of proactive alert this rule sends"}
+      trigger_condition: {type: str, desc: "When the alert is sent to the customer"}
+      target_issue: {type: str, desc: "WISMO contact issue the rule is meant to prevent, e.g. 'Missed scan'"}
+      status: {type: enum, values: [active, inactive, paused], desc: "Rule status"}
+      prevention_rate_pct: {type: float, desc: "Share of contacts about the target issue the alert is expected to prevent, %"}
+      estimated_contacts_prevented: {type: int, desc: "Estimated contacts prevented per 28 days when active"}
+      last_modified: {type: timestamp, desc: "Last change to the rule"}
+
+tools:
+  - name: get_wismo_contact_trend
+    desc: "Where-is-my-order (WISMO) contacts per 7-day period, newest first, with change on the prior week and on the prior 4 weeks. Use to size a rise."
+    kind: sql
+    args:
+      weeks_back: {type: int, desc: "Number of weekly periods to return", default: 8}
+    sql: |
+      WITH d AS (SELECT CAST(contact_date AS DATE) AS dt FROM customer_service_contacts WHERE reason = 'wismo'),
+      m AS (SELECT max(dt) AS last_day FROM d),
+      b AS (SELECT CAST(CAST(m.last_day - d.dt AS INTEGER) // 7 AS INTEGER) AS idx, count(*) AS n FROM d, m GROUP BY idx),
+      w AS (
+        SELECT idx, n,
+          LEAD(n) OVER (ORDER BY idx) AS prev_week,
+          SUM(n) OVER (ORDER BY idx ROWS BETWEEN CURRENT ROW AND 3 FOLLOWING) AS roll4,
+          COUNT(*) OVER (ORDER BY idx ROWS BETWEEN CURRENT ROW AND 3 FOLLOWING) AS roll4_n
+        FROM b
+      ),
+      x AS (SELECT *, LEAD(roll4, 4) OVER (ORDER BY idx) AS prior_roll4, LEAD(roll4_n, 4) OVER (ORDER BY idx) AS prior_roll4_n FROM w)
+      SELECT
+        m.last_day - CAST(7 * idx + 6 AS INTEGER) AS week_start,
+        m.last_day - CAST(7 * idx AS INTEGER) AS week_end,
+        n AS contacts,
+        ROUND(100.0 * (n - prev_week) / NULLIF(prev_week, 0), 1) AS pct_change_vs_prior_week,
+        CASE WHEN roll4_n = 4 THEN roll4 END AS last_4_weeks_contacts,
+        CASE WHEN roll4_n = 4 AND prior_roll4_n = 4 THEN ROUND(100.0 * (roll4 - prior_roll4) / NULLIF(prior_roll4, 0), 1) END AS pct_change_vs_prior_4_weeks
+      FROM x, m
+      WHERE idx < $weeks_back
+      ORDER BY idx
+    limit: 20
+    example: {weeks_back: 8}
+
+  - name: get_wismo_contacts_by_reason
+    desc: "WISMO contacts by issue (missed scan, delayed delivery, tracking gap...) for a period versus the equal period before, with change. Use to find what drives a rise."
+    kind: sql
+    args:
+      date_from: {type: date, desc: "Start of the period, which runs to today; compared with the same length before it", default: "-28d"}
+    sql: |
+      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span),
+      cur AS (
+        SELECT c.issue, count(*) AS n, count(DISTINCT c.order_id) AS orders
+        FROM customer_service_contacts c, p
+        WHERE c.reason = 'wismo' AND CAST(c.contact_date AS DATE) >= p.d0
+        GROUP BY c.issue
+      ),
+      prev AS (
+        SELECT c.issue, count(*) AS n
+        FROM customer_service_contacts c, p
+        WHERE c.reason = 'wismo' AND CAST(c.contact_date AS DATE) >= p.d0 - CAST(p.span AS INTEGER) AND CAST(c.contact_date AS DATE) < p.d0
+        GROUP BY c.issue
+      )
+      SELECT
+        COALESCE(cur.issue, prev.issue) AS issue,
+        COALESCE(cur.n, 0) AS contacts,
+        COALESCE(prev.n, 0) AS prior_period_contacts,
+        COALESCE(cur.n, 0) - COALESCE(prev.n, 0) AS change,
+        ROUND(100.0 * (COALESCE(cur.n, 0) - COALESCE(prev.n, 0)) / NULLIF(prev.n, 0), 1) AS pct_change,
+        COALESCE(cur.orders, 0) AS affected_orders,
+        ROUND(100.0 * COALESCE(cur.n, 0) / SUM(COALESCE(cur.n, 0)) OVER (), 1) AS pct_of_total
+      FROM cur FULL JOIN prev ON cur.issue = prev.issue
+      ORDER BY contacts DESC
+    limit: 20
+    example: {date_from: "-28d"}
+
+  - name: get_damage_claims_by_item
+    desc: "Damage claims per SKU for a period versus the equal period before, with change, value and main damage type, worst first, plus a total row. Use for breakage."
+    kind: sql
+    args:
+      date_from: {type: date, desc: "Start of the period, which runs to today; compared with the same length before it", default: "-30d"}
+      damage_type: {type: str, desc: "Damage type words, e.g. 'glass' for breakage or 'dented'"}
+      sku: {}
+    sql: |
+      WITH p AS (SELECT CAST($date_from AS DATE) AS d0, CAST(CAST($as_of AS DATE) - CAST($date_from AS DATE) AS INTEGER) AS span),
+      cur AS (
+        SELECT d.sku, count(*) AS n, round(sum(d.claim_amount_gbp), 2) AS total, round(avg(d.claim_amount_gbp), 2) AS avg_claim, mode(d.damage_type) AS main_type
+        FROM damage_claims d, p
+        WHERE CAST(d.claim_date AS DATE) >= p.d0
+          AND ($damage_type IS NULL OR d.damage_type ILIKE '%' || $damage_type || '%') AND ($sku IS NULL OR d.sku = $sku)
+        GROUP BY d.sku
+      ),
+      prev AS (
+        SELECT d.sku, count(*) AS n
+        FROM damage_claims d, p
+        WHERE CAST(d.claim_date AS DATE) >= p.d0 - CAST(p.span AS INTEGER) AND CAST(d.claim_date AS DATE) < p.d0
+          AND ($damage_type IS NULL OR d.damage_type ILIKE '%' || $damage_type || '%') AND ($sku IS NULL OR d.sku = $sku)
+        GROUP BY d.sku
+      ),
+      items AS (
+        SELECT COALESCE(cur.sku, prev.sku) AS sku, COALESCE(cur.n, 0) AS claims, COALESCE(prev.n, 0) AS prior_period_claims,
+               COALESCE(cur.total, 0) AS total_claimed_gbp, cur.avg_claim AS avg_claim_gbp, cur.main_type AS main_damage_type
+        FROM cur FULL JOIN prev ON cur.sku = prev.sku
+      )
+      SELECT sku, product_name, category, claims, prior_period_claims, change, pct_change, total_claimed_gbp, avg_claim_gbp, main_damage_type FROM (
+        SELECT i.sku, m.name AS product_name, m.category, i.claims, i.prior_period_claims, i.claims - i.prior_period_claims AS change,
+               ROUND(100.0 * (i.claims - i.prior_period_claims) / NULLIF(i.prior_period_claims, 0), 1) AS pct_change,
+               i.total_claimed_gbp, i.avg_claim_gbp, i.main_damage_type, 0 AS ord
+        FROM items i LEFT JOIN master.products m ON m.sku = i.sku
+        UNION ALL
+        SELECT 'ALL ITEMS', NULL, NULL, sum(claims), sum(prior_period_claims), sum(claims) - sum(prior_period_claims),
+               ROUND(100.0 * (sum(claims) - sum(prior_period_claims)) / NULLIF(sum(prior_period_claims), 0), 1),
+               sum(total_claimed_gbp), ROUND(sum(total_claimed_gbp) / NULLIF(sum(claims), 0), 2), NULL, 1
+        FROM items
+      ) ORDER BY ord, claims DESC, sku
+    limit: 30
+    example: {date_from: "-30d", damage_type: "glass"}
+
+  - name: search_complaints_by_defect_type
+    desc: "Customer complaints for a defect type (zip strength, colour, fit...) by product or style, with severity and safety flag. Use to see complaint patterns."
+    kind: sql
+    args:
+      defect_type: {type: str, desc: "Defect type words to search for, e.g. 'zip strength'"}
+      sku: {}
+      style_id: {type: str, desc: "Style id, e.g. STY-T-4410; matches every SKU of the style"}
+      date_from: {type: date, desc: "Complaints on or after", default: "-90d"}
+      safety_related: {type: bool, desc: "True to return only complaints reporting injury or a safety risk"}
+    sql: |
+      SELECT
+        c.complaint_id,
+        c.complaint_date,
+        c.sku,
+        p.name AS product_name,
+        p.style_id,
+        c.defect_type,
+        c.description,
+        c.severity,
+        c.safety_related,
+        c.status,
+        COUNT(*) OVER () AS total_complaints,
+        COUNT(*) FILTER (WHERE c.safety_related) OVER () AS total_safety_related,
+        COUNT(*) OVER (PARTITION BY c.sku) AS complaints_for_sku
+      FROM complaints c
+      LEFT JOIN master.products p ON c.sku = p.sku
+      WHERE CAST(c.complaint_date AS DATE) >= CAST($date_from AS DATE)
+        AND ($defect_type IS NULL OR c.defect_type ILIKE '%' || $defect_type || '%')
+        AND ($sku IS NULL OR c.sku = $sku)
+        AND ($style_id IS NULL OR p.style_id = $style_id)
+        AND ($safety_related IS NULL OR c.safety_related = $safety_related)
+      ORDER BY c.complaint_date DESC
+    limit: 50
+    example: {defect_type: "zip strength", sku: "SKU-100651"}
+
+  - name: search_customer_service_contacts_by_issue
+    desc: "Customer service contacts by issue words, reason or product category, as rows or grouped with counts and cost. Use to find data errors behind returns and complaints."
+    kind: py
+    fn: search_contacts
+    args:
+      issue_keyword: {type: str, desc: "Words in the issue text, e.g. 'dimensions', 'compatibility', 'material' or 'tracking'"}
+      reason: {type: enum, values: [wismo, damage, complaint, return, other], desc: "Contact reason; leave empty for all reasons"}
+      category: {type: str, desc: "Product category, e.g. Cookware"}
+      date_from: {type: date, desc: "Contacts on or after", default: "-90d"}
+      group_by: {type: enum, values: [none, error_type, category, issue, sku], desc: "none lists contacts; otherwise counts and cost per group (error_type counts only product data errors)", default: none}
+    limit: 50
+    example: {issue_keyword: "compatibility", group_by: category}
+
+  - name: calculate_notification_impact_estimate
+    desc: "Estimate WISMO contacts a proactive notification rule would prevent: contacts for its target issue times its prevention rate. Returns rule ids and status; leave rule_type empty to compare all."
+    kind: sql
+    args:
+      rule_type: {type: enum, values: [missed_scan_alert, delivery_promise_alert, tracking_gap_alert], desc: "Notification rule type to evaluate"}
+      date_from: {type: date, desc: "Start of the period the estimate is based on, running to today", default: "-28d"}
+    sql: |
+      WITH w AS (
+        SELECT c.issue, count(*) AS n, count(DISTINCT c.order_id) AS orders
+        FROM customer_service_contacts c
+        WHERE c.reason = 'wismo' AND CAST(c.contact_date AS DATE) >= CAST($date_from AS DATE)
+        GROUP BY c.issue
+      ),
+      tot AS (SELECT COALESCE(sum(n), 0) AS total FROM w)
+      SELECT
+        r.rule_id,
+        r.rule_name,
+        r.rule_type,
+        r.status AS current_status,
+        r.trigger_condition,
+        r.target_issue,
+        COALESCE(w.n, 0) AS wismo_contacts_for_issue,
+        COALESCE(w.orders, 0) AS orders_affected,
+        tot.total AS total_wismo_contacts,
+        r.prevention_rate_pct,
+        CAST(ROUND(COALESCE(w.n, 0) * r.prevention_rate_pct / 100.0) AS INT) AS estimated_contacts_prevented,
+        ROUND(100.0 * ROUND(COALESCE(w.n, 0) * r.prevention_rate_pct / 100.0) / NULLIF(tot.total, 0), 1) AS pct_of_total_wismo,
+        'estimated_contacts_prevented = wismo_contacts_for_issue * prevention_rate_pct / 100' AS formula
+      FROM notification_rules r
+      LEFT JOIN w ON w.issue = r.target_issue
+      CROSS JOIN tot
+      WHERE ($rule_type IS NULL OR r.rule_type = $rule_type)
+      ORDER BY estimated_contacts_prevented DESC
+    limit: 5
+    example: {rule_type: "missed_scan_alert", date_from: "-28d"}
+
+  - name: update_notification_rule
+    desc: "Turn a proactive customer notification rule on or off, or change its trigger condition. Needs the rule_id (NTF-…). Returns old and new values."
+    kind: update
+    table: notification_rules
+    set: {status: "{status}", last_modified: "$as_of"}
+    args:
+      status: {type: enum, values: [active, inactive, paused], required: true, desc: "New status for the rule"}
+      trigger_condition: {type: str, desc: "New trigger condition, if it changes"}
+      estimated_contacts_prevented: {type: int, desc: "Update the stored estimate if known"}
+    example: {rule_id: "NTF-000001", status: active, estimated_contacts_prevented: 34}

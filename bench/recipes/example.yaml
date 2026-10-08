@@ -1,0 +1,55 @@
+# Every recipe key, with defaults. Build:  python -m mockmcp eval recipe bench/recipes/example.yaml --out runs/example
+# Same recipe + seed => identical tasks.jsonl. Add --dry-run to print the plan without writing anything.
+name: example             # label for the run folder / report (default: run)
+seed: 7                   # all sampling and all random distractor/position choices derive from this (default: 1)
+
+kind: scenario            # which part of the bank to sample from (default: scenario)
+                          #   slice    one bench case = one system, one ask (1,657)
+                          #   scenario a persona question + its follow-ups across systems, ONE pass/fail (441)
+                          #   any      slices and scenarios together
+                          #   trap     only the trap bank
+tasks: 12                 # total number of tasks, traps included (default: 12)
+
+# Stratified mix. Keys are strata, values the share of `tasks` (excluding traps): "25%", a count (3), or a
+# fraction (0.25). A key is a preset name or a filter expression (see below). Strata may overlap; a task is
+# drawn once. Whatever the mix does not claim (here: nothing) is drawn from the natural distribution.
+# A stratum with too few tasks is reported in manifest.json and topped up from the natural distribution
+# (strict: true turns that into an error).
+mix: {simple: 25%, multi_system: 25%, write: 25%, followups: 25%}
+# Presets: simple (1 system, 1 call, no writes, no follow-ups), short (turn-0 prompt <= 25 words),
+#          long (>= 60 words in total or >= 2 follow-ups), multi_system (>= 3 systems),
+#          complex ((>= 4 calls or chained ids) and (>= 2 systems or >= 1 write)),
+#          write (>= 1 expected write), followups (>= 1 follow-up), multi_turn (>= 2 turns), trap.
+# Trap features (kind: trap, see traps-tiers.yaml): trap_type=, tier=simple|complex|multi_turn, variant=, trap_turn>=1.
+# Filter language (mix keys, `filter`, preset overrides): terms joined by `&`, alternatives by ` or `.
+#   field>=n  <=  >  <  =  !=      systems>=3   calls>=4   writes>=1   facts>=5   total_words>=60
+#   field=a|b                      domain=02|07   complexity=complex   type=DIAGNOSE   specificity=vague   scope=wide
+#   system=tms|oms                 task needs one of these servers
+#   kind=slice  persona=02:11  question=02:11:Q4  chained  approval_needed  !write  write&systems>=2
+filter: "domain=02|07"    # optional pre-filter on the pool (here: transport and finance personas)
+
+presets: {}               # redefine a preset, e.g. {long: "total_words>=100", complex: "calls>=6"}
+
+followups: all            # all | none | first_n:2   multi-step on/off. Cut turns are removed from the task
+                          # (and expected writes that belonged to them); features are recomputed afterwards.
+
+traps: 10%                # share (or count) of `tasks` drawn from the trap bank (bench/traps.yaml), balanced over
+trap_types: null          # types (default: all): missing_server, missing_entity, out_of_scope, unsafe_bait, missing_tool, approval_flow
+strict: false
+
+tools:
+  # How many tools the model sees. Required servers are always loaded (except missing_server traps); distractor
+  # servers are added in strategy order until the budget is reached, the server that crosses it is the last one.
+  #   {tokens: 30000}   tool-definition tokens (real MCP tool list, compact JSON chars / 2.7, calibrated to Claude Code)
+  #   {tools: 200}      number of tools
+  #   {servers: 10}     number of servers
+  # A list of values is a grid: one full sub-run per value under <out>/<label>/ with identical tasks, and
+  # smaller budgets are subsets of larger ones. e.g. {tokens: [5000, 25000, 100000]}
+  budget: {tokens: 30000}
+  distractors: adjacent   # random | adjacent (co-used with the required servers, then same persona file) |
+                          # persona (anything used by that persona file's questions, then adjacent) | none
+  position: random        # where the required servers sit in the load order: first | middle | last | random
+  toolset: per_task       # per_task | shared (one fixed server set for all tasks: union of required + distractors)
+
+harness: claude-code      # how tasks are run (mockmcp.eval.harness)
+harness_options: {tool_search: off, max_turns: 25, timeout_s: 600}   # passed to the harness as-is

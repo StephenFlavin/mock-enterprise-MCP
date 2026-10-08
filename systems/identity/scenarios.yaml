@@ -1,0 +1,70 @@
+# One entry per question row that uses this system's tools (see: python -m mockmcp brief identity).
+- question: "09:85:Q1"
+  story: >
+    Eight open alerts this week. Real risk: ALT-900003 (data exfiltration from the DC1 conveyor, which has an exposed,
+    exploited OpenSSH flaw), ALT-900001 (privilege escalation on the DC1 sorter matching unpatched CVE-2024-9012) and
+    ALT-900002 (supplier bank detail access). Likely false positives: ALT-900004 (EICAR test, critical severity),
+    ALT-900005, ALT-900006 (failed_login_spike, 82% false positive historically), ALT-900007 (scanner port sweep).
+    VUL-900001 and VUL-900006 (CVE-2024-1234, 9.8) are exposed and exploited in the wild.
+  checks:
+    - tool: list_open_security_alerts
+      args: {}
+      expect: ["ALT-900003", "ALT-900001", "ALT-900004", "AST-DC1-CNV"]
+    - tool: list_vulnerability_scan_findings
+      args: {is_exploited_in_wild: true}
+      expect: ["VUL-900001", "VUL-900006", "CVE-2024-1234", "9.8"]
+    - tool: get_alert_false_positive_history
+      args: {}
+      expect: ["failed_login_spike", "82", "unusual_port_activity", "data_exfiltration"]
+    - tool: update_security_alert_status
+      args: {alert_id: ALT-900006, status: false_positive, disposition_reason: User forgot password after leave}
+      expect: ["open → false_positive"]
+
+- question: "09:85:Q2"
+  story: >
+    Supplier portal user SUPP-00001 (SUP-0001) normally logs in on weekday mornings from Shanghai (198.51.100.21).
+    On the Sunday before as-of it failed twice then logged in at 03:12 from Mumbai (192.0.2.89), opened the EDI portal
+    (SES-900001) and then the vendor portal (SES-900002), viewing bank_details. Alert ALT-900002 flags it. The account
+    has no MFA. No incident exists yet; the checks open one and lock the account.
+  checks:
+    - tool: search_auth_logs
+      args: {user_id: SUPP-00001}
+      expect: ["192.0.2.89", "Mumbai", "Invalid password", "Shanghai", "03:12"]
+    - tool: get_user_session_history
+      args: {user_id: SUPP-00001}
+      expect: ["SES-900002", "bank_details", "Mumbai"]
+    - tool: create_security_incident
+      args: {alert_ids: ALT-900002, incident_type: data_exfil, severity: critical, description: Supplier account accessed bank details from unusual location, user_involved: SUPP-00001, systems_affected: "edi_portal;vendor_portal"}
+      expect: ["INC-", "open", "SUPP-00001"]
+    - tool: block_user_account
+      args: {user_id: SUPP-00001, lock_reason: Suspected compromise}
+      expect: ["locked", "SUPP-00001"]
+
+- question: "09:85:Q3"
+  story: >
+    Connections match integration's CON-9000xx rows: the three critical, privileged ones are CON-900003 Bishop Apparel A.S. (SUP-0003, admin on
+    the API gateway, no MFA), CON-900006 Holt Apparel Group (SUP-0049, admin on sftp_gateway and supplier_portal, no IP allow-list) and
+    CON-900007 Baxter Trading Group (SUP-0044, read_write on inventory, orders and bank details, bank screen events not logged to SIEM).
+    CON-900001 Brown Textiles (SUP-0001) is the high-risk vendor-portal connection involved in the 09:85:Q2 incident.
+  checks:
+    - tool: get_connection_access_privileges
+      args: {privilege_level: admin}
+      expect: ["CON-900003", "api_gateway", "CON-900006", "sftp_gateway"]
+    - tool: list_controls_in_place_for_connection
+      args: {is_enabled: false}
+      expect: ["CON-900003", "mfa", "CON-900006", "ip_allowlist", "CON-900007", "logging"]
+    - tool: list_controls_in_place_for_connection
+      args: {connection_id: CON-900003}
+      expect: ["No MFA", "logging", "ip_allowlist"]
+
+- question: "09:85:Q5"
+  story: >
+    Warehouse systems with unpatched CVEs: DC1 conveyor network (AST-DC1-CNV, 2 exposed, worst 9.8), WMS (SYS-WMS, 2 exposed,
+    8.7), Message Queue (SYS-MQ, 9.8 exposed), Order API, then non-exposed WMS Database and the DC1 sorter. Names match itsm.
+  checks:
+    - tool: get_unpatched_exposure_by_system
+      args: {}
+      expect: ["AST-DC1-CNV", "SYS-WMS", "SYS-MQ", "9.8"]
+    - tool: get_unpatched_exposure_by_system
+      args: {site_id: DC2}
+      expect: ["AST-DC2-SHT", "CVE-2024-1234"]

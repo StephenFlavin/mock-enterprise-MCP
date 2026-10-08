@@ -1,0 +1,397 @@
+id: integration
+name: Integration Platform / API Gateway
+instructions: >
+  Monitors and manages system integrations including EDI, APIs, file transfers and feeds.
+  Error codes look like ERR-000123. Use it for interface error logs, EDI mapping, third-party
+  connections, feed latency, stock reconciliation and integration pattern costs.
+
+tables:
+  interface_errors:
+    key: error_id
+    cols:
+      error_id: {type: str, desc: "Interface error, e.g. ERR-000123"}
+      interface_name: {type: str, desc: "Interface name, e.g. ERP_to_WMS"}
+      error_code: {type: str, desc: "Error code from the integration"}
+      error_message: {type: text, desc: "Error description"}
+      occurred_at: {type: timestamp, desc: "When the error occurred"}
+      source_system: {type: str, desc: "Originating system, e.g. ERP, WMS"}
+      dest_system: {type: str, desc: "Destination system, e.g. WMS, OMS"}
+      message_count: {type: int, desc: "Number of messages affected"}
+      queue_depth: {type: int, desc: "Number of messages in retry queue"}
+      status: {type: enum, values: [active, resolved, acknowledged], desc: "Error status"}
+      resolved_at: {type: timestamp, desc: "When error was resolved"}
+      updated_at: {type: timestamp, desc: "Last update"}
+      category: {type: str, desc: "Failure category, e.g. status_mapping, timing_cutoff, config_mapping, mapping, latency, connectivity"}
+
+  edi_messages:
+    key: message_id
+    cols:
+      message_id: {type: str, desc: "EDI message id, e.g. EDI-000123"}
+      message_type: {type: str, desc: "EDI type, e.g. ASN, PO_ACK"}
+      supplier_id: {type: str, desc: "Supplier or party sending/receiving EDI"}
+      sent_at: {type: timestamp, desc: "When sent/received"}
+      status: {type: enum, values: [sent, received, processed, failed, retrying], desc: "Message status"}
+      error_category: {type: str, desc: "Failure category if failed: mapping, format, partner_side, connectivity"}
+      error_details: {type: text, desc: "Reason if failed"}
+      map_id: {type: str, desc: "EDI map applied to the message, e.g. MAP-900003"}
+      line_count: {type: int, desc: "Number of lines/items"}
+      processing_time_seconds: {type: float, desc: "Time to process"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  edi_maps:
+    key: map_id
+    cols:
+      map_id: {type: str, desc: "EDI map, e.g. MAP-000123"}
+      message_type: {type: str, desc: "EDI message type, e.g. ASN, PO_ACK"}
+      source_system: {type: str, desc: "Source system"}
+      dest_system: {type: str, desc: "Destination system"}
+      version: {type: str, desc: "Map version, e.g. 1.0, 2.1"}
+      active: {type: bool, desc: "Is this map currently active"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last update"}
+      change_log: {type: text, desc: "Recent changes"}
+      segments_mapped: {type: text, desc: "EDI segments and fields the map handles, and those not mapped"}
+
+  config_changes:
+    key: change_id
+    cols:
+      change_id: {type: str, desc: "Change record, e.g. CFG-000123"}
+      change_type: {type: enum, values: [mapping, certificate, endpoint, schedule, other], desc: "Type of change"}
+      interface_name: {type: str, desc: "Affected interface"}
+      changed_by: {type: str, desc: "Employee id who made the change"}
+      changed_at: {type: timestamp, desc: "When the change was made"}
+      description: {type: text, desc: "What changed"}
+      previous_value: {type: text, desc: "Previous configuration"}
+      new_value: {type: text, desc: "New configuration"}
+      status: {type: enum, values: [deployed, testing, pending, rolled_back], desc: "Deployment status"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  third_party_connections:
+    key: connection_id
+    cols:
+      connection_id: {type: str, desc: "Connection record, e.g. CON-000123"}
+      partner_name: {type: str, desc: "Partner, supplier, or carrier name"}
+      external_id: {type: str, desc: "External party id (supplier, partner, or carrier id)"}
+      connection_type: {type: enum, values: [supplier, partner, carrier, 3pl, api_consumer], desc: "Type of connection"}
+      protocol: {type: enum, values: [edi, api, sftp, http, webhook, other], desc: "Protocol used"}
+      endpoint_url: {type: str, desc: "Connection endpoint or URL"}
+      owner_id: {type: str, desc: "Employee owning the connection"}
+      authenticated: {type: bool, desc: "Uses authentication"}
+      systems_accessed: {type: str, desc: "Our systems the connection can reach, e.g. ERP inbound folder"}
+      privileged_access: {type: bool, desc: "Has direct system access"}
+      active: {type: bool, desc: "Connection is active"}
+      established_at: {type: date, desc: "When established"}
+      security_risk_rating: {type: enum, values: [low, medium, high, critical], desc: "Security risk"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  integration_patterns:
+    key: pattern_id
+    cols:
+      pattern_id: {type: str, desc: "Pattern id, e.g. PAT-000123"}
+      pattern_name: {type: str, desc: "Pattern name, e.g. EDI, REST API, file transfer"}
+      pattern_type: {type: enum, values: [edi, api, file_transfer, webhook, other], desc: "Integration pattern"}
+      active_connections: {type: int, desc: "Number of active integrations using this pattern"}
+      description: {type: text, desc: "Pattern description"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  pattern_run_costs:
+    key: cost_id
+    cols:
+      cost_id: {type: str, desc: "Cost record, e.g. COS-000123"}
+      pattern_id: {type: str, desc: "Pattern being costed"}
+      pattern_name: {type: str, desc: "Pattern name"}
+      months_ago: {type: int, desc: "0 = latest month, 1 = the month before"}
+      setup_cost_gbp: {type: float, desc: "One-off cost to set up one new connection with this pattern"}
+      run_cost_gbp: {type: float, desc: "Monthly run cost for all connections on the pattern"}
+      support_cost_gbp: {type: float, desc: "Monthly support cost for all connections on the pattern"}
+      total_cost_gbp: {type: float, desc: "Monthly run plus support cost for all connections"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  feed_runs:
+    key: run_id
+    cols:
+      run_id: {type: str, desc: "Feed run, e.g. RUN-000123"}
+      feed_name: {type: str, desc: "Feed name, e.g. stock_feed"}
+      source_system: {type: str, desc: "Source system"}
+      dest_system: {type: str, desc: "Destination system"}
+      scheduled_time: {type: timestamp, desc: "Scheduled run time"}
+      started_at: {type: timestamp, desc: "Actual start time"}
+      completed_at: {type: timestamp, desc: "Completion time"}
+      status: {type: enum, values: [scheduled, running, completed, failed], desc: "Run status"}
+      records_processed: {type: int, desc: "Records in this run"}
+      duration_seconds: {type: float, desc: "Processing time in seconds, from start to completion"}
+      batch_wait_seconds: {type: float, desc: "Time changes waited in the batch window before this run picked them up"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  stock_reconciliation:
+    key: recon_id
+    cols:
+      recon_id: {type: str, desc: "Reconciliation record, e.g. REC-000123"}
+      sku: {type: str, desc: "SKU being reconciled"}
+      site_id: {type: str, desc: "DC"}
+      erp_balance: {type: int, desc: "Balance in ERP"}
+      wms_balance: {type: int, desc: "Balance in WMS"}
+      difference: {type: int, desc: "WMS - ERP"}
+      difference_pct: {type: float, desc: "Difference as %"}
+      value_gbp: {type: float, desc: "Absolute value of the difference at standard cost"}
+      cause: {type: str, desc: "Reason: quarantine, damaged, expired, in_transit_timing or count_variance"}
+      cause_type: {type: str, desc: "status_mapping (held in WMS, counted in ERP), timing (posting in one system only) or real (count variance)"}
+      note: {type: text, desc: "Explanation of the difference"}
+      created_at: {type: timestamp, desc: "When created"}
+      status: {type: enum, values: [new, investigating, resolved, manual_adj], desc: "Status"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  stock_feed_schedule:
+    key: schedule_id
+    cols:
+      schedule_id: {type: str, desc: "Schedule record, e.g. SCH-000123"}
+      feed_name: {type: str, desc: "Feed name"}
+      run_frequency: {type: str, desc: "Frequency, e.g. every 5 minutes, every 15 minutes, hourly"}
+      run_time_utc: {type: str, desc: "Run time in UTC"}
+      batch_size: {type: int, desc: "Batch size in records"}
+      enabled: {type: bool, desc: "Schedule is enabled"}
+      created_at: {type: timestamp, desc: "When created"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+  asn_feed_metrics:
+    key: metric_id
+    cols:
+      metric_id: {type: str, desc: "Metric record, e.g. MET-000123"}
+      measured_at: {type: timestamp, desc: "When measured"}
+      asn_messages_received: {type: int, desc: "Number of ASN messages"}
+      asn_lines_received: {type: int, desc: "Number of ASN lines"}
+      lines_with_pallet_data: {type: int, desc: "Lines with pallet-level data (free-text only)"}
+      message_completeness_pct: {type: float, desc: "Share of ASN lines carrying a PO_ID, percent"}
+      avg_arrival_delay_hours: {type: float, desc: "Average hours between supplier dispatch of the ASN and arrival in WMS"}
+      feed_status: {type: str, desc: "Feed status"}
+      changes: {type: text, desc: "Recent changes to feed"}
+      updated_at: {type: timestamp, desc: "Last update"}
+
+tools:
+  - name: list_interface_errors
+    desc: Interface failures and queue backlogs between systems (ERP_to_WMS, WMS_to_ERP, WMS_to_OMS, WMS_to_Website, ASN_Inbound), newest first, with category and affected message count. Filter by interface, status or category.
+    kind: sql
+    args:
+      interface_name: {type: str, desc: "Interface name or part of it, e.g. ERP_to_WMS or WMS_to_ERP"}
+      status: {type: enum, values: [active, resolved, acknowledged], desc: "Only errors in this status"}
+      category: {type: str, desc: "Failure category, e.g. status_mapping, timing_cutoff, config_mapping, mapping, latency, allocation_backlog"}
+      date_from: {type: date, default: "-270d", desc: "Errors on or after this date"}
+    sql: |
+      SELECT error_id, interface_name, category, error_code, error_message, occurred_at,
+             source_system, dest_system, message_count, queue_depth, status, resolved_at
+      FROM interface_errors
+      WHERE ($interface_name IS NULL OR replace(lower(interface_name), '_', ' ') LIKE '%' || replace(lower($interface_name), '_', ' ') || '%')
+        AND ($status IS NULL OR status = $status)
+        AND ($category IS NULL OR category = lower($category))
+        AND occurred_at >= CAST($date_from AS DATE)
+      ORDER BY occurred_at DESC
+    limit: 50
+    example: {interface_name: ERP_to_WMS}
+
+  - name: get_edi_error_log_summary
+    desc: Failed EDI messages grouped by cause, map and message type with count, share of failures, partners affected and top partners. Use to find a common cause.
+    kind: sql
+    args:
+      message_type: {desc: "EDI message type, e.g. ASN, PO_ACK, INVOICE"}
+      supplier_id: {desc: "Only failures from this partner"}
+      date_from: {type: date, default: "-7d", desc: "Failures on or after this date"}
+    sql: |
+      WITH f AS (
+        SELECT message_type, supplier_id, line_count, sent_at,
+               coalesce(error_category, 'unknown') AS error_category,
+               coalesce(error_details, 'unknown') AS cause,
+               coalesce(map_id, 'none') AS map_id
+        FROM edi_messages
+        WHERE status = 'failed'
+          AND ($message_type IS NULL OR message_type = upper($message_type))
+          AND ($supplier_id IS NULL OR supplier_id = $supplier_id)
+          AND sent_at >= CAST($date_from AS DATE)
+      ), g AS (
+        SELECT message_type, error_category, cause, map_id, count(*) AS failure_count,
+               sum(line_count) AS lines_affected, count(DISTINCT supplier_id) AS partners_affected,
+               min(sent_at) AS first_failure, max(sent_at) AS last_failure
+        FROM f GROUP BY ALL
+      ), p AS (
+        SELECT * FROM (
+          SELECT message_type, error_category, cause, map_id, supplier_id, c,
+                 row_number() OVER (PARTITION BY message_type, error_category, cause, map_id ORDER BY c DESC, supplier_id) AS rn
+          FROM (SELECT message_type, error_category, cause, map_id, supplier_id, count(*) AS c FROM f GROUP BY ALL)
+        ) WHERE rn <= 5
+      ), tp AS (
+        SELECT message_type, error_category, cause, map_id,
+               string_agg(supplier_id || ' (' || c || ')', ', ' ORDER BY c DESC, supplier_id) AS top_partners
+        FROM p GROUP BY ALL
+      )
+      SELECT g.message_type, g.error_category, g.cause, g.map_id, g.failure_count,
+             round(100.0 * g.failure_count / sum(g.failure_count) OVER (), 1) AS pct_of_failures,
+             g.lines_affected, g.partners_affected, tp.top_partners, g.first_failure, g.last_failure
+      FROM g JOIN tp USING (message_type, error_category, cause, map_id)
+      ORDER BY g.failure_count DESC
+    limit: 20
+    example: {message_type: PO_ACK}
+
+  - name: get_edi_map_for_message_type
+    desc: EDI map versions for a message type (ASN, PO_ACK, INVOICE), current first, with change log and segments mapped or not mapped. Use to see what a map carries.
+    kind: sql
+    args:
+      message_type: {required: true, desc: "EDI message type, e.g. ASN, PO_ACK, INVOICE"}
+    sql: |
+      SELECT map_id, message_type, source_system, dest_system, version,
+             CASE WHEN active THEN 'current' ELSE 'superseded' END AS map_status,
+             created_at, updated_at, change_log, segments_mapped
+      FROM edi_maps
+      WHERE message_type = upper($message_type)
+      ORDER BY active DESC, updated_at DESC, version DESC
+    limit: 5
+    example: {message_type: ASN}
+
+  - name: list_recent_mapping_and_config_changes
+    desc: Recent changes to maps, certificates, endpoints and schedules with who made them, when, old and new value and deployment status. Use to find what changed before a failure.
+    kind: sql
+    args:
+      interface_name: {type: str, desc: "Interface name or part of it, e.g. PO_ACK_Inbound, ERP_to_WMS, WMS_to_Website"}
+      change_type: {type: enum, values: [mapping, certificate, endpoint, schedule, other], desc: "Only this type of change"}
+      days: {type: int, default: 45, desc: "Changes in the last N days"}
+    sql: |
+      SELECT change_id, change_type, interface_name, changed_by, changed_at,
+             description, previous_value, new_value, status
+      FROM config_changes
+      WHERE ($interface_name IS NULL OR replace(lower(interface_name), '_', ' ') LIKE '%' || replace(lower($interface_name), '_', ' ') || '%')
+        AND ($change_type IS NULL OR change_type = $change_type)
+        AND changed_at >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      ORDER BY changed_at DESC
+    limit: 50
+    example: {}
+
+  - name: list_third_party_connections
+    desc: Supplier, partner and carrier connections with protocol, owner, systems accessed, privileged access flag and security risk rating, highest risk first. Use to assess integration risk.
+    kind: sql
+    args:
+      connection_type: {type: enum, values: [supplier, partner, carrier, 3pl, api_consumer], desc: "Type of connection"}
+      protocol: {type: enum, values: [edi, api, sftp, http, webhook, other], desc: "Protocol used"}
+      security_risk_rating: {type: enum, values: [low, medium, high, critical], desc: "Only connections with this risk rating"}
+      privileged_access: {type: bool, desc: "true = only connections with direct or privileged system access"}
+    sql: |
+      SELECT connection_id, partner_name, external_id, connection_type, protocol, endpoint_url,
+             owner_id, systems_accessed, authenticated, privileged_access, active,
+             established_at, security_risk_rating
+      FROM third_party_connections
+      WHERE ($connection_type IS NULL OR connection_type = $connection_type)
+        AND ($protocol IS NULL OR protocol = $protocol)
+        AND ($security_risk_rating IS NULL OR security_risk_rating = $security_risk_rating)
+        AND ($privileged_access IS NULL OR privileged_access = CAST($privileged_access AS BOOLEAN))
+      ORDER BY CASE security_risk_rating WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+               privileged_access DESC, active DESC, connection_id
+    limit: 100
+    example: {security_risk_rating: critical}
+
+  - name: get_integration_run_cost_by_pattern
+    desc: Cost per integration pattern (EDI, REST_API, FILE_TRANSFER, WEBHOOK) for a month - one-off setup per new connection, monthly run and support cost in total and per connection, cheapest first.
+    kind: sql
+    args:
+      pattern_type: {type: enum, values: [edi, api, file_transfer, webhook, other], desc: "Only this integration pattern"}
+      months_ago: {type: int, default: 0, desc: "0 = latest month, 1 = the month before, up to 3"}
+    sql: |
+      SELECT prc.pattern_name, ip.pattern_type, ip.active_connections,
+             strftime(CAST($as_of AS DATE) - INTERVAL (CAST($months_ago AS INT)) MONTH, '%B %Y') AS month,
+             prc.setup_cost_gbp AS setup_cost_per_new_connection_gbp,
+             prc.run_cost_gbp AS run_cost_all_connections_gbp,
+             prc.support_cost_gbp AS support_cost_all_connections_gbp,
+             ROUND(prc.total_cost_gbp, 2) AS total_monthly_cost_gbp,
+             ROUND(prc.run_cost_gbp / ip.active_connections, 2) AS run_cost_per_connection_gbp,
+             ROUND(prc.support_cost_gbp / ip.active_connections, 2) AS support_cost_per_connection_gbp,
+             ROUND(prc.total_cost_gbp / ip.active_connections, 2) AS monthly_cost_per_connection_gbp
+      FROM pattern_run_costs prc
+      JOIN integration_patterns ip ON ip.pattern_id = prc.pattern_id
+      WHERE ($pattern_type IS NULL OR ip.pattern_type = $pattern_type)
+        AND prc.months_ago = CAST($months_ago AS INT)
+      ORDER BY monthly_cost_per_connection_gbp
+    limit: 20
+    example: {}
+
+  - name: get_stock_feed_latency
+    desc: Daily end-to-end latency of the WMS to website stock feed, split into batch wait and processing minutes, with failures and the current schedule id, frequency and batch size.
+    kind: sql
+    args:
+      days: {type: int, default: 28, desc: "Last N days"}
+    sql: |
+      WITH r AS (
+        SELECT CAST(scheduled_time AS DATE) AS day, batch_wait_seconds, duration_seconds, status, records_processed
+        FROM feed_runs
+        WHERE feed_name = 'stock_feed'
+          AND scheduled_time >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      )
+      SELECT r.day, count(*) AS runs, count(*) FILTER (WHERE r.status = 'failed') AS failed_runs,
+             ROUND(avg(r.batch_wait_seconds) / 60.0, 1) AS avg_batch_wait_minutes,
+             ROUND(avg(r.duration_seconds) / 60.0, 1) AS avg_processing_minutes,
+             ROUND(avg(r.batch_wait_seconds + r.duration_seconds) / 60.0, 1) AS avg_end_to_end_latency_minutes,
+             ROUND(max(r.batch_wait_seconds + r.duration_seconds) / 60.0, 1) AS max_end_to_end_latency_minutes,
+             ROUND(avg(r.records_processed), 0) AS avg_records_per_run,
+             any_value(s.schedule_id) AS schedule_id, any_value(s.run_frequency) AS current_run_frequency,
+             any_value(s.batch_size) AS current_batch_size
+      FROM r CROSS JOIN (SELECT * FROM stock_feed_schedule WHERE feed_name = 'stock_feed' LIMIT 1) s
+      GROUP BY r.day
+      ORDER BY r.day DESC
+    limit: 60
+    example: {}
+
+  - name: get_asn_feed_change_log
+    desc: Daily volume and completeness of the inbound ASN feed with arrival delay, status and a log of feed changes. Use to check whether ASN data changed in a period.
+    kind: sql
+    args:
+      days: {type: int, default: 60, desc: "Last N days"}
+    sql: |
+      SELECT CAST(measured_at AS DATE) AS day, asn_messages_received, asn_lines_received,
+             lines_with_pallet_data, message_completeness_pct AS po_id_completeness_pct,
+             avg_arrival_delay_hours, feed_status, changes
+      FROM asn_feed_metrics
+      WHERE measured_at >= CAST($as_of AS DATE) - INTERVAL (CAST($days AS INT)) DAY
+      ORDER BY measured_at DESC
+    limit: 100
+    example: {}
+
+  - name: compare_erp_and_wms_stock
+    desc: Reconcile ERP and WMS balances by SKU and DC, largest value first, with the cause of each difference. Use view by_cause for totals per type (status mapping, timing, real).
+    kind: sql
+    args:
+      sku: {desc: "Only this SKU"}
+      site_id: {desc: "Filter to DC, e.g. DC1"}
+      cause_type: {type: enum, values: [status_mapping, timing, real], desc: "Only this type of difference"}
+      min_difference: {type: int, default: 1, desc: "Only show differences of at least this many units"}
+      view: {type: enum, values: [items, by_cause], default: items, desc: "items = one row per SKU and DC; by_cause = totals per cause with share of the gap"}
+    sql: |
+      WITH s AS (
+        SELECT sr.recon_id, sr.sku, p.name AS product_name, sr.site_id, sr.erp_balance, sr.wms_balance,
+               sr.difference, sr.value_gbp, sr.cause_type, sr.cause, sr.note, sr.status
+        FROM stock_reconciliation sr JOIN master.products p ON p.sku = sr.sku
+        WHERE ($sku IS NULL OR sr.sku = $sku)
+          AND ($site_id IS NULL OR sr.site_id = $site_id)
+          AND ($cause_type IS NULL OR sr.cause_type = $cause_type)
+          AND ABS(sr.difference) >= $min_difference
+      ), tot AS (SELECT sum(value_gbp) AS v FROM s)
+      SELECT 'by_cause' AS row_type, CAST(NULL AS VARCHAR) AS recon_id, CAST(NULL AS VARCHAR) AS sku, CAST(NULL AS VARCHAR) AS product_name,
+             CAST(NULL AS VARCHAR) AS site_id, CAST(NULL AS BIGINT) AS erp_balance, CAST(NULL AS BIGINT) AS wms_balance,
+             -sum(abs(s.difference)) AS difference, s.cause_type, s.cause,
+             ROUND(sum(s.value_gbp), 2) AS value_gbp, count(*) AS items,
+             ROUND(100.0 * sum(s.value_gbp) / (SELECT v FROM tot), 1) AS pct_of_total_gap,
+             ROUND((SELECT v FROM tot), 2) AS total_gap_value_gbp, CAST(NULL AS VARCHAR) AS note,
+             CAST(NULL AS VARCHAR) AS status
+      FROM s WHERE $view = 'by_cause' GROUP BY s.cause_type, s.cause
+      UNION ALL
+      SELECT 'item', s.recon_id, s.sku, s.product_name, s.site_id, s.erp_balance, s.wms_balance, s.difference,
+             s.cause_type, s.cause, s.value_gbp, 1, ROUND(100.0 * s.value_gbp / (SELECT v FROM tot), 1),
+             ROUND((SELECT v FROM tot), 2), s.note, s.status
+      FROM s WHERE $view <> 'by_cause'
+      ORDER BY value_gbp DESC, recon_id
+    limit: 50
+    example: {sku: SKU-100007, site_id: DC1}
+
+  - name: update_stock_feed_schedule
+    desc: Change the run frequency or batch size of the stock feed schedule (get the schedule id from get_stock_feed_latency). Returns the old and new settings.
+    kind: update
+    table: stock_feed_schedule
+    set: {updated_at: "$as_of"}
+    args:
+      run_frequency: {desc: "New frequency, e.g. every 5 minutes, every 15 minutes, hourly"}
+      batch_size: {type: int, desc: "New batch size in records per run"}
+    example: {schedule_id: SCH-000001, run_frequency: "every 5 minutes"}

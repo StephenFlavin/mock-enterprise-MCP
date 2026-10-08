@@ -1,0 +1,579 @@
+id: carrier_portal
+name: Carrier Portal
+instructions: >
+  Carrier service, rates, performance, capacity, claims and notices. Lanes are DC1-ST150 (road to a store),
+  DC2-GB (parcel) or Asia-Europe (ocean). Carrier ids are CAR-001; claim ids CLM-900001; alert ids ALR-900001.
+  Regions are UK North, UK South, UK Midlands, Scotland. Periods: last_12m, last_quarter.
+
+tables:
+  carrier_rate_cards:
+    key: rate_card_id
+    cols:
+      rate_card_id: {type: str, desc: "Rate card id, e.g. RC-000123"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-001"}
+      lane: {type: str, desc: "Lane, e.g. DC1-ST150 (road), Asia-Europe (ocean)"}
+      service_type: {type: str, desc: "Service level, e.g. standard, next_day"}
+      rate_gbp: {type: float, desc: "Rate in GBP per rate_unit"}
+      rate_unit: {type: str, desc: "What the rate is charged per, e.g. per pallet, per 40ft container"}
+      min_volume: {type: int, desc: "Minimum volume (pallets per week) for this rate"}
+      effective_from: {type: date, desc: Rate effective from}
+      effective_to: {type: date, desc: Rate effective to}
+      status: {type: enum, values: [active, expired, superseded], desc: Status}
+      contract_terms: {type: text, desc: "Terms attached to the rate: surcharges, cut-offs, validity"}
+
+  pallet_network_rates:
+    key: pallet_rate_id
+    cols:
+      pallet_rate_id: {type: str, desc: "Pallet rate id, e.g. PNR-900001"}
+      network_name: {type: str, desc: "Pallet network name, e.g. Pallet Exchange"}
+      lane: {type: str, desc: "Lane, e.g. DC1-ST150"}
+      service_type: {type: str, desc: "Service level, e.g. standard"}
+      rate_gbp: {type: float, desc: Rate in GBP per pallet}
+      on_time_pct: {type: float, desc: "Published on-time performance % over the year"}
+      peak_on_time_pct: {type: float, desc: "Published on-time performance % in peak weeks (November and December)"}
+      effective_from: {type: date, desc: Rate effective from}
+      contract_terms: {type: text, desc: "Contract terms: term, notice, minimums, surcharges"}
+
+  carrier_performance:
+    key: perf_id
+    cols:
+      perf_id: {type: str, desc: "Performance record id, e.g. CP-900001"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-001"}
+      lane: {type: str, desc: "Lane, e.g. DC1-ST150, DC2-GB, Asia-Europe"}
+      period: {type: str, desc: "Period, last_12m or last_quarter"}
+      bookings: {type: int, desc: "Bookings or loads placed with the carrier in the period"}
+      rolled_bookings: {type: int, desc: "Bookings the carrier rolled to a later sailing or day"}
+      reliability_pct: {type: float, desc: "Schedule reliability %"}
+      on_time_pct: {type: float, desc: "On-time delivery %"}
+      roll_rate_pct: {type: float, desc: "Booking roll rate % (rolled_bookings / bookings)"}
+      damage_rate_pct: {type: float, desc: "Shipments with damage claims, % of all shipments"}
+      volume_share_pct: {type: float, desc: "Our share of bookings on the lane for this period %"}
+      avg_eta_days: {type: float, desc: "Actual average transit time (days)"}
+      quoted_eta_days: {type: float, desc: "Transit time the carrier quotes (days)"}
+      transit_stddev_days: {type: float, desc: "Standard deviation of actual transit time (days), the variability of arrivals"}
+
+  carrier_damage_rates:
+    key: damage_rate_id
+    cols:
+      damage_rate_id: {type: str, desc: "Damage rate id, e.g. DR-900001"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-001"}
+      lane: {type: str, desc: "Lane, e.g. DC1-ST214"}
+      product_group: {type: enum, values: [glass, other], desc: "glass = glass and breakable items, other = everything else"}
+      period: {type: str, desc: "Period, e.g. last_12m"}
+      shipments: {type: int, desc: Shipments carried}
+      damaged_shipments: {type: int, desc: Shipments with a damage claim}
+      damage_rate_pct: {type: float, desc: "Damaged shipments as % of shipments"}
+
+  carrier_capacity_daily:
+    key: capacity_id
+    cols:
+      capacity_id: {type: str, desc: "Capacity record id, e.g. CAP-000123"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-011"}
+      lane: {type: str, desc: "Lane, e.g. DC2-GB"}
+      capacity_date: {type: date, desc: Date}
+      capacity_units: {type: int, desc: "Contracted capacity that day (parcels or pallets)"}
+      available_units: {type: int, desc: "Capacity not yet allocated to our volume that day"}
+
+  damage_claims:
+    key: claim_id
+    cols:
+      claim_id: {type: str, desc: "Claim id, e.g. CLM-900001"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-002"}
+      lane: {type: str, desc: "Lane where the damage happened, e.g. DC1-ST214"}
+      site_id: {type: str, desc: "Dispatching DC, e.g. DC1"}
+      order_ref: {type: str, desc: "Customer order id (e.g. ORD-900071), if the claim relates to one"}
+      sku: {type: str, desc: "Product SKU"}
+      package_type: {type: str, desc: "Packaging type, e.g. carton, polybag, hanging"}
+      claim_date: {type: date, desc: Date the damage was claimed}
+      amount_gbp: {type: float, desc: Claim amount in GBP}
+      status: {type: enum, values: [draft, submitted, accepted, rejected, settled, withdrawn], desc: "draft = raised but not yet sent to the carrier"}
+      submitted_date: {type: date, desc: "Date sent to the carrier"}
+      claim_notes: {type: text, desc: Claim description}
+
+  service_alerts:
+    key: alert_id
+    cols:
+      alert_id: {type: str, desc: "Alert id, e.g. ALR-900001"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-002"}
+      alert_type: {type: enum, values: [blank_sailing, surcharge, rate_increase, service_disruption, delay_notice], desc: Alert type}
+      lane: {type: str, desc: "Lane affected, e.g. DC1-ST215 or Asia-Europe; blank for a general notice"}
+      port_code: {type: str, desc: "Port affected for sailings, e.g. NLRTM"}
+      effective_from: {type: date, desc: Effective from}
+      effective_to: {type: date, desc: "Effective to, blank if open-ended"}
+      description: {type: text, desc: Alert details}
+      amount_or_pct: {type: float, desc: "Surcharge or increase size, see amount_unit"}
+      amount_unit: {type: enum, values: [none, pct, gbp_per_container, gbp_per_pallet], desc: "Unit of amount_or_pct"}
+      published_date: {type: date, desc: Notice published date}
+
+  courier_capacity_peak:
+    key: courier_capacity_id
+    cols:
+      courier_capacity_id: {type: str, desc: "Courier capacity record, e.g. CCP-900001"}
+      carrier_id: {type: str, desc: "Courier, e.g. CAR-011"}
+      region: {type: str, desc: "Region, e.g. UK North, Scotland"}
+      peak_capacity_units: {type: int, desc: "Parcels per week committed in peak weeks"}
+      commitment_from: {type: date, desc: Commitment effective from}
+      commitment_to: {type: date, desc: Commitment effective to}
+
+  courier_cut_offs:
+    key: cut_off_id
+    cols:
+      cut_off_id: {type: str, desc: "Cut-off record, e.g. CCO-900001"}
+      carrier_id: {type: str, desc: "Courier, e.g. CAR-011"}
+      region: {type: str, desc: "Region, e.g. UK North, Scotland"}
+      collection_time: {type: str, desc: "Collection time, e.g. 17:30"}
+      cut_off_time: {type: str, desc: "Order cut-off for next-day delivery in normal weeks, e.g. 16:00"}
+      peak_cut_off_time: {type: str, desc: "Order cut-off in peak weeks, e.g. 15:00"}
+      effective_from: {type: date, desc: Effective from}
+
+  order_delivery_records:
+    key: delivery_id
+    cols:
+      delivery_id: {type: str, desc: "Delivery record id, e.g. DLV-000123"}
+      order_ref: {type: str, desc: "Customer order id, e.g. ORD-2026-0123456 or a wholesale order ORD-900070"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-011"}
+      eta: {type: date, desc: Estimated arrival}
+      ata: {type: date, desc: Actual arrival}
+      status: {type: enum, values: [in_transit, delayed, arrived, short_shipped, damaged, returned, lost], desc: Delivery status}
+      lane: {type: str, desc: "Lane the order travelled, e.g. DC1-UK South"}
+      units_shipped: {type: int, desc: Units handed to the carrier}
+      units_delivered: {type: int, desc: "Units the carrier delivered (0 if lost)"}
+      delivery_notes: {type: text, desc: Delivery notes}
+
+  capacity_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Request id, e.g. REQ-000123"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-001"}
+      lane: {type: str, desc: "Lane, e.g. DC1-ST215 or DC2-GB"}
+      weeks_needed: {type: str, desc: "Weeks needed, e.g. weeks 48 and 51-52"}
+      units_requested: {type: int, desc: "Extra capacity requested: pallets per week on road lanes, parcels per day on parcel lanes"}
+      request_date: {type: date, desc: Request sent date}
+      status: {type: enum, values: [requested, confirmed, rejected, cancelled], desc: Status}
+
+  invoice_disputes:
+    key: dispute_id
+    cols:
+      dispute_id: {type: str, desc: "Dispute id, e.g. DIS-000123"}
+      carrier_id: {type: str, desc: "Carrier, e.g. CAR-001"}
+      period_from: {type: date, desc: Start of the invoices disputed}
+      period_to: {type: date, desc: End of the invoices disputed}
+      dispute_reason: {type: str, desc: "Reason for dispute"}
+      disputed_amount_gbp: {type: float, desc: Disputed amount in GBP}
+      status: {type: enum, values: [submitted, under_review, acknowledged, resolved, rejected], desc: Status}
+      submission_date: {type: date, desc: Dispute submitted date}
+
+tools:
+  # Rate cards
+  - name: get_carrier_rate_card
+    desc: Carrier rate card by lane and service level, with rate, unit, minimum volume, validity and contract terms. Filter by carrier or lanes.
+    kind: select
+    from: carrier_rate_cards
+    filters:
+      carrier_id: {}
+      lane: {}
+      lanes: {col: lane, type: list, desc: "Several lanes, e.g. DC1-ST150,DC1-ST151"}
+      service_type: {}
+      status: {default: active}
+    columns: [rate_card_id, carrier_id, lane, service_type, rate_gbp, rate_unit, min_volume, effective_from, effective_to, status, contract_terms]
+    order: lane, carrier_id, service_type
+    limit: 60
+    example: {carrier_id: CAR-001, lane: DC1-ST150}
+
+  - name: get_pallet_network_rate_card
+    desc: Pallet network rates per pallet by lane with published on-time performance, in peak weeks too, and contract terms.
+    kind: select
+    from: pallet_network_rates
+    filters:
+      network_name: {op: like}
+      lane: {}
+      lanes: {col: lane, type: list, desc: "Several lanes, e.g. DC1-ST150,DC1-ST151"}
+      service_type: {}
+    columns: [pallet_rate_id, network_name, lane, service_type, rate_gbp, on_time_pct, peak_on_time_pct, effective_from, contract_terms]
+    order: network_name, lane
+    limit: 30
+    example: {network_name: "Pallet Exchange", lanes: "DC1-ST150,DC1-ST151"}
+
+  # Performance metrics
+  - name: get_carrier_schedule_reliability
+    desc: Carrier schedule reliability and on-time % by lane for a period (default last 12 months), best first. Use to assess booking predictability.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-Europe, blank for all"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+    sql: |
+      SELECT p.carrier_id, c.name AS carrier_name, p.lane, p.period, p.reliability_pct, p.on_time_pct, p.bookings
+      FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
+      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%')
+        AND p.period = $period
+      ORDER BY p.lane, p.reliability_pct DESC
+    limit: 40
+    example: {carrier_id: CAR-006}
+
+  - name: get_roll_rate_by_carrier_and_lane
+    desc: Booking roll rates by carrier and lane for a period (default last 12 months), worst first, with an ALL row giving the overall rate per lane.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-Europe, blank for all"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+    sql: |
+      WITH f AS (
+        SELECT * FROM carrier_performance p
+        WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+          AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period)
+      SELECT carrier_id, carrier_name, lane, period, bookings, rolled_bookings, roll_rate_pct FROM (
+        SELECT f.carrier_id, c.name AS carrier_name, f.lane, f.period, f.bookings, f.rolled_bookings, f.roll_rate_pct, 0 AS o
+        FROM f LEFT JOIN master.carriers c ON c.carrier_id = f.carrier_id
+        UNION ALL
+        SELECT 'ALL', 'All carriers shown', lane, period, sum(bookings), sum(rolled_bookings),
+               round(100.0 * sum(rolled_bookings) / sum(bookings), 1), 1 AS o
+        FROM f GROUP BY lane, period)
+      ORDER BY lane, o, roll_rate_pct DESC
+    limit: 40
+    example: {lane: Asia-Europe, period: last_quarter}
+
+  - name: get_carrier_share_of_volume
+    desc: Our share of bookings with each carrier by lane for a period (default last 12 months), largest first. Use to assess consolidation or rebalancing.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-Europe, blank for all"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+    sql: |
+      SELECT p.carrier_id, c.name AS carrier_name, p.lane, p.period, p.volume_share_pct, p.bookings, p.on_time_pct
+      FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
+      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period
+      ORDER BY p.lane, p.volume_share_pct DESC
+    limit: 40
+    example: {lane: Asia-Europe}
+
+  - name: get_carrier_eta_vs_actual_by_lane
+    desc: Carrier-quoted transit time versus actual average transit by carrier and lane, with days of slippage, transit variability (std dev) and on-time %.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-UK, blank for all"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+    sql: |
+      SELECT p.carrier_id, c.name AS carrier_name, p.lane, p.period, p.quoted_eta_days, p.avg_eta_days AS actual_eta_days,
+             round(p.avg_eta_days - p.quoted_eta_days, 1) AS slippage_days, p.transit_stddev_days, p.on_time_pct
+      FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
+      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period
+      ORDER BY p.lane, slippage_days DESC
+    limit: 40
+    example: {lane: Asia-UK}
+
+  - name: get_carrier_damage_rates
+    desc: Damage rate (% of shipments with a claim) by carrier and lane, for glass items or other goods, worst first. High rate points to carrier handling.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. DC1-ST214, blank for all"}
+      product_group: {type: enum, values: [glass, other], desc: "glass items or other goods; blank for both"}
+      period: {type: str, default: "last_12m", desc: "last_12m"}
+    sql: |
+      SELECT r.carrier_id, c.name AS carrier_name, r.lane, r.product_group, r.period, r.shipments, r.damaged_shipments, r.damage_rate_pct
+      FROM carrier_damage_rates r LEFT JOIN master.carriers c ON c.carrier_id = r.carrier_id
+      WHERE ($carrier_id IS NULL OR r.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR r.lane ILIKE '%' || $lane || '%')
+        AND ($product_group IS NULL OR r.product_group = $product_group) AND r.period = $period
+      ORDER BY r.damage_rate_pct DESC, r.carrier_id, r.lane
+    limit: 40
+    example: {product_group: glass}
+
+  - name: compare_carrier_performance
+    desc: Compare carriers on one lane side by side - reliability, roll rate, on-time, damage, share and standard rate. Use to decide renewal or rebalancing.
+    kind: sql
+    args:
+      lane: {required: true, type: str, desc: "Lane or part of it, e.g. Asia-Europe or DC1-ST150"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+      carrier_ids: {type: list, desc: "Only these carriers, e.g. CAR-010,CAR-006,CAR-007; blank for all"}
+    sql: |
+      SELECT p.carrier_id, c.name AS carrier_name, p.lane, p.period, p.reliability_pct, p.roll_rate_pct, p.on_time_pct, p.damage_rate_pct,
+             p.volume_share_pct, r.rate_gbp AS standard_rate_gbp, r.rate_unit
+      FROM carrier_performance p
+      LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
+      LEFT JOIN carrier_rate_cards r ON r.carrier_id = p.carrier_id AND r.lane = p.lane AND r.service_type = 'standard' AND r.status = 'active'
+      WHERE p.lane ILIKE '%' || $lane || '%' AND p.period = $period
+        AND ($carrier_ids IS NULL OR list_contains($carrier_ids, p.carrier_id))
+      ORDER BY p.lane, p.reliability_pct DESC, p.roll_rate_pct
+    limit: 40
+    example: {lane: Asia-Europe}
+
+  - name: get_carrier_performance
+    desc: Overall carrier scorecard across lanes - bookings, reliability, on-time, roll and damage rates (booking-weighted) - for renewal and sourcing decisions.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      mode: {type: enum, values: [road, parcel, ocean, forwarder, air, rail], desc: "Carrier mode, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, blank for all lanes"}
+      period: {type: str, default: "last_12m", desc: "last_12m or last_quarter"}
+    sql: |
+      SELECT p.carrier_id, c.name AS carrier_name, c.mode, count(*) AS lanes, sum(p.bookings) AS bookings,
+             round(sum(p.reliability_pct * p.bookings) / sum(p.bookings), 1) AS reliability_pct,
+             round(sum(p.on_time_pct * p.bookings) / sum(p.bookings), 1) AS on_time_pct,
+             round(100.0 * sum(p.rolled_bookings) / sum(p.bookings), 1) AS roll_rate_pct,
+             round(sum(p.damage_rate_pct * p.bookings) / sum(p.bookings), 2) AS damage_rate_pct
+      FROM carrier_performance p LEFT JOIN master.carriers c ON c.carrier_id = p.carrier_id
+      WHERE ($carrier_id IS NULL OR p.carrier_id = $carrier_id) AND ($mode IS NULL OR c.mode = $mode)
+        AND ($lane IS NULL OR p.lane ILIKE '%' || $lane || '%') AND p.period = $period
+      GROUP BY p.carrier_id, c.name, c.mode
+      ORDER BY reliability_pct DESC
+    limit: 20
+    example: {carrier_id: CAR-001}
+
+  # Capacity
+  - name: get_carrier_capacity_by_day
+    desc: Daily contracted and still-available capacity by carrier and lane from a start date, with headroom %. Use for peak planning and extra capacity requests.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane, e.g. DC2-GB, blank for all"}
+      date_from: {type: date, default: "+0d", desc: "First day to show"}
+      date_to: {type: date, desc: "Last day to show, blank for all later days"}
+    sql: |
+      SELECT d.capacity_date, d.carrier_id, c.name AS carrier_name, d.lane, d.capacity_units, d.available_units,
+             round(100.0 * d.available_units / nullif(d.capacity_units, 0), 1) AS headroom_pct
+      FROM carrier_capacity_daily d LEFT JOIN master.carriers c ON c.carrier_id = d.carrier_id
+      WHERE ($carrier_id IS NULL OR d.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR d.lane = $lane)
+        AND d.capacity_date >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR d.capacity_date <= CAST($date_to AS DATE))
+      ORDER BY d.capacity_date, d.carrier_id
+    limit: 200
+    example: {lane: DC2-GB}
+
+  - name: get_courier_capacity_commitments
+    desc: Courier parcel capacity committed per week for peak, by region and courier, with the regional total. Use to find regions short of capacity.
+    kind: sql
+    args:
+      region: {type: str, desc: "Region, e.g. UK North, Scotland; blank for all"}
+      carrier_id: {desc: "Courier id, blank for all"}
+    sql: |
+      SELECT k.region, k.carrier_id, c.name AS courier_name, k.peak_capacity_units AS peak_parcels_per_week,
+             sum(k.peak_capacity_units) OVER (PARTITION BY k.region) AS region_total_parcels_per_week,
+             k.commitment_from, k.commitment_to
+      FROM courier_capacity_peak k LEFT JOIN master.carriers c ON c.carrier_id = k.carrier_id
+      WHERE ($region IS NULL OR lower(k.region) = lower($region)) AND ($carrier_id IS NULL OR k.carrier_id = $carrier_id)
+      ORDER BY k.region, k.carrier_id
+    limit: 30
+    example: {region: "UK North"}
+
+  - name: get_courier_cut_off_times
+    desc: Courier collection times and order cut-offs by region, normal and peak weeks. Use to set delivery promises and cut-off dates.
+    kind: sql
+    args:
+      region: {type: str, desc: "Region, e.g. UK North, Scotland; blank for all"}
+      carrier_id: {desc: "Courier id, blank for all"}
+    sql: |
+      SELECT k.region, k.carrier_id, c.name AS courier_name, k.collection_time, k.cut_off_time, k.peak_cut_off_time, k.effective_from
+      FROM courier_cut_offs k LEFT JOIN master.carriers c ON c.carrier_id = k.carrier_id
+      WHERE ($region IS NULL OR lower(k.region) = lower($region)) AND ($carrier_id IS NULL OR k.carrier_id = $carrier_id)
+      ORDER BY k.region, k.carrier_id
+    limit: 30
+    example: {region: "UK North"}
+
+  # Damage claims and alerts
+  - name: list_damage_claims_by_carrier
+    desc: Damage claims against a carrier in a date range, newest first, with product, packaging, dispatching DC, lane and status. Use to spot problem carriers.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. DC1-ST214, blank for all"}
+      sku: {}
+      status: {type: enum, values: [draft, submitted, accepted, rejected, settled, withdrawn], desc: "Claim status, blank for all"}
+      date_from: {type: date, default: "-90d", desc: "Claims dated on or after this day"}
+      date_to: {type: date, desc: "Claims dated on or before this day, blank for no limit"}
+    sql: |
+      SELECT k.claim_id, k.carrier_id, k.lane, k.site_id, k.sku, pr.name AS product, k.package_type, k.claim_date, k.amount_gbp, k.status, k.claim_notes
+      FROM damage_claims k LEFT JOIN master.products pr ON pr.sku = k.sku
+      WHERE ($carrier_id IS NULL OR k.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR k.lane ILIKE '%' || $lane || '%')
+        AND ($sku IS NULL OR k.sku = $sku)
+        AND ($status IS NULL OR k.status = $status)
+        AND k.claim_date >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR k.claim_date <= CAST($date_to AS DATE))
+      ORDER BY k.claim_date DESC, k.claim_id
+    limit: 60
+    example: {carrier_id: CAR-002}
+
+  - name: get_damage_claims_by_dimension
+    desc: A carrier's damage claims broken down by dispatching DC, product, packaging and lane, top five of each by value. Use to find root causes.
+    kind: sql
+    args:
+      carrier_id: {required: true}
+      date_from: {type: date, default: "-90d", desc: "Claims dated on or after this day"}
+      date_to: {type: date, desc: "Claims dated on or before this day, blank for no limit"}
+    sql: |
+      WITH c AS (
+        SELECT * FROM damage_claims k
+        WHERE k.carrier_id = $carrier_id AND k.claim_date >= CAST($date_from AS DATE)
+          AND ($date_to IS NULL OR k.claim_date <= CAST($date_to AS DATE))),
+      t AS (SELECT count(*) AS n FROM c),
+      u AS (
+        SELECT 1 AS o, 'depot' AS dimension, c.site_id AS value, s.name AS label, count(*) AS claims, sum(c.amount_gbp) AS amount_gbp
+          FROM c LEFT JOIN master.sites s ON s.site_id = c.site_id GROUP BY c.site_id, s.name
+        UNION ALL
+        SELECT 2, 'product', c.sku, pr.name, count(*), sum(c.amount_gbp)
+          FROM c LEFT JOIN master.products pr ON pr.sku = c.sku GROUP BY c.sku, pr.name
+        UNION ALL
+        SELECT 3, 'packaging', c.package_type, c.package_type, count(*), sum(c.amount_gbp) FROM c GROUP BY c.package_type
+        UNION ALL
+        SELECT 4, 'lane', c.lane, c.lane, count(*), sum(c.amount_gbp) FROM c GROUP BY c.lane)
+      SELECT dimension, value, label, claims, round(amount_gbp, 2) AS amount_gbp,
+             round(100.0 * claims / (SELECT n FROM t), 1) AS share_of_claims_pct, (SELECT n FROM t) AS total_claims
+      FROM u QUALIFY row_number() OVER (PARTITION BY dimension ORDER BY amount_gbp DESC, claims DESC) <= 5
+      ORDER BY o, amount_gbp DESC
+    limit: 20
+    example: {carrier_id: CAR-002}
+
+  - name: search_carrier_service_alerts
+    desc: Carrier service disruption and delay notices in force in a date window (default this week) by lane. Use to spot lane disruptions; other alert types on request.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      alert_type: {}
+      lane: {type: str, desc: "Lane or part of it, e.g. DC1-ST215, blank for all"}
+      active_from: {type: date, default: "+0d", desc: "Show notices in force from this day"}
+      active_to: {type: date, default: "+7d", desc: "Show notices in force up to this day"}
+    sql: |
+      SELECT a.alert_id, a.carrier_id, c.name AS carrier_name, a.alert_type, a.lane, a.effective_from, a.effective_to, a.description, a.published_date
+      FROM service_alerts a LEFT JOIN master.carriers c ON c.carrier_id = a.carrier_id
+      WHERE ($carrier_id IS NULL OR a.carrier_id = $carrier_id)
+        AND (a.alert_type = $alert_type OR ($alert_type IS NULL AND a.alert_type IN ('service_disruption', 'delay_notice')))
+        AND ($lane IS NULL OR a.lane ILIKE '%' || $lane || '%')
+        AND a.effective_from <= CAST($active_to AS DATE)
+        AND coalesce(a.effective_to, DATE '2999-12-31') >= CAST($active_from AS DATE)
+      ORDER BY a.effective_from DESC, a.alert_id
+    limit: 30
+    example: {carrier_id: CAR-002}
+
+  - name: search_carrier_blank_sailing_notices
+    desc: Blank sailing announcements taking effect in a window (default next 60 days) by carrier, lane and port. Use to find sailings to move or cancel.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-Europe, blank for all"}
+      port_code: {desc: "Port affected, e.g. NLRTM, blank for all"}
+      date_from: {type: date, default: "+0d", desc: "Sailings blanked on or after this day"}
+      date_to: {type: date, default: "+60d", desc: "Sailings blanked on or before this day"}
+    sql: |
+      SELECT a.alert_id, a.carrier_id, c.name AS carrier_name, a.lane, a.port_code, a.effective_from AS blank_sailing_date, a.description, a.published_date
+      FROM service_alerts a LEFT JOIN master.carriers c ON c.carrier_id = a.carrier_id
+      WHERE a.alert_type = 'blank_sailing'
+        AND ($carrier_id IS NULL OR a.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR a.lane ILIKE '%' || $lane || '%')
+        AND ($port_code IS NULL OR a.port_code = $port_code)
+        AND a.effective_from >= CAST($date_from AS DATE) AND a.effective_from <= CAST($date_to AS DATE)
+      ORDER BY a.effective_from, a.alert_id
+    limit: 30
+    example: {lane: Asia-Europe}
+
+  - name: search_carrier_surcharge_announcements
+    desc: Surcharges in force or starting in a window (default next 60 days) by carrier and lane, with size, unit and dates. Use to cost route economics.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      lane: {type: str, desc: "Lane or part of it, e.g. Asia-Europe, blank for all"}
+      date_from: {type: date, default: "+0d", desc: "Surcharges still in force on or after this day"}
+      date_to: {type: date, default: "+60d", desc: "Surcharges starting on or before this day"}
+    sql: |
+      SELECT a.alert_id, a.carrier_id, c.name AS carrier_name, a.lane, a.description, a.amount_or_pct, a.amount_unit, a.effective_from, a.effective_to, a.published_date
+      FROM service_alerts a LEFT JOIN master.carriers c ON c.carrier_id = a.carrier_id
+      WHERE a.alert_type = 'surcharge'
+        AND ($carrier_id IS NULL OR a.carrier_id = $carrier_id)
+        AND ($lane IS NULL OR a.lane ILIKE '%' || $lane || '%')
+        AND a.effective_from <= CAST($date_to AS DATE)
+        AND coalesce(a.effective_to, DATE '2999-12-31') >= CAST($date_from AS DATE)
+      ORDER BY a.effective_from, a.alert_id
+    limit: 30
+    example: {lane: Asia-Europe}
+
+  - name: search_carrier_rate_increase_announcements
+    desc: Carrier rate increase notices taking effect in a window (default from today onwards), with percentage and effective date. Use to forecast cost inflation.
+    kind: sql
+    args:
+      carrier_id: {desc: "Carrier id, blank for all"}
+      date_from: {type: date, default: "+0d", desc: "Increases effective on or after this day"}
+      date_to: {type: date, desc: "Increases effective on or before this day, blank for no limit"}
+    sql: |
+      SELECT a.alert_id, a.carrier_id, c.name AS carrier_name, a.lane, a.description, a.amount_or_pct AS increase_pct, a.effective_from, a.published_date
+      FROM service_alerts a LEFT JOIN master.carriers c ON c.carrier_id = a.carrier_id
+      WHERE a.alert_type = 'rate_increase'
+        AND ($carrier_id IS NULL OR a.carrier_id = $carrier_id)
+        AND a.effective_from >= CAST($date_from AS DATE)
+        AND ($date_to IS NULL OR a.effective_from <= CAST($date_to AS DATE))
+      ORDER BY a.amount_or_pct DESC, a.alert_id
+    limit: 30
+    example: {}
+
+  # Delivery and order tracking
+  - name: get_carrier_delivery_record_for_order
+    desc: Carrier delivery record for an order (ETA, actual arrival, status). Use to investigate shortages.
+    kind: select
+    from: order_delivery_records
+    filters:
+      order_id: {col: order_ref, required: true, type: str, desc: "Customer order id, e.g. ORD-2026-0100001 or ORD-900070"}
+      carrier_id: {}
+    columns: [delivery_id, order_ref, carrier_id, lane, eta, ata, status, units_shipped, units_delivered, delivery_notes]
+    limit: 5
+    example: {order_id: "ORD-2026-0100001"}
+
+  # Capacity requests
+  - name: send_capacity_request_to_carrier
+    desc: Send a capacity request to a carrier for a lane and weeks, with the extra units wanted. Returns the stored request.
+    kind: insert
+    table: capacity_requests
+    id_prefix: REQ-
+    defaults: {status: requested, request_date: "$as_of"}
+    args:
+      carrier_id: {required: true}
+      lane: {required: true}
+      weeks_needed: {required: true}
+      units_requested: {required: true}
+    example: {carrier_id: CAR-001, lane: DC1-ST215, weeks_needed: "weeks 48 and 51-52", units_requested: 200}
+
+  # Claims
+  - name: create_carrier_claim
+    desc: File a damage or short shipment claim against a carrier for an order. Returns the new claim.
+    kind: insert
+    table: damage_claims
+    id_prefix: CLM-
+    defaults: {status: submitted, claim_date: "$as_of", submitted_date: "$as_of"}
+    args:
+      carrier_id: {required: true}
+      order_ref: {}
+      lane: {required: true}
+      sku: {required: true}
+      package_type: {required: true}
+      amount_gbp: {required: true}
+      claim_notes: {required: true}
+      site_id: {}
+    example: {carrier_id: CAR-002, lane: DC1-ST214, sku: K-1700, package_type: carton, amount_gbp: 250.00, claim_notes: "Goods damaged in transit"}
+
+  - name: submit_carrier_damage_claim
+    desc: Send a drafted damage claim to the carrier for recovery. Returns the old and new status.
+    kind: update
+    table: damage_claims
+    set: {status: submitted, submitted_date: "$as_of"}
+    args: {}
+    example: {claim_id: "CLM-900020"}
+
+  - name: submit_carrier_invoice_dispute
+    desc: Submit a dispute of invoice charges (surcharges, accessorials, weights, service level) to a carrier for a period. Returns the stored dispute.
+    kind: insert
+    table: invoice_disputes
+    id_prefix: DIS-
+    defaults: {status: submitted, submission_date: "$as_of"}
+    args:
+      carrier_id: {required: true}
+      period_from: {required: true, desc: "Start of the invoices disputed, e.g. -365d or 2026-01"}
+      period_to: {default: "+0d", desc: "End of the invoices disputed"}
+      dispute_reason: {required: true}
+      disputed_amount_gbp: {required: true}
+    example: {carrier_id: CAR-002, period_from: "-365d", dispute_reason: "Fuel surcharge billed above contracted rate", disputed_amount_gbp: 750.00}

@@ -1,0 +1,548 @@
+id: ar
+name: Accounts Receivable System
+instructions: >
+  Customer invoices, payments, credit management and bad-debt provisioning for wholesale and B2B.
+  Invoice ids look like INV-2026-000123. Wholesale accounts are master partners (customer_id holds the partner id, e.g. PTN-025 Hartley & Reed Ltd; PTN-001 is the key account Freeman-Sharp). Use for credit decisions,
+  cash forecasting, dispute resolution and collection prioritization.
+
+tables:
+  invoices:
+    key: invoice_id
+    cols:
+      invoice_id: {type: str, desc: "Invoice, e.g. INV-2026-000123"}
+      customer_id: {type: str, desc: Customer}
+      sales_order_ref: {type: str, desc: "OMS sales order the invoice bills, e.g. ORD-900040; blank if none"}
+      invoice_date: {type: date, desc: Invoice date}
+      due_date: {type: date, desc: Payment due date}
+      amount_gbp: {type: float, desc: Total invoice amount in GBP}
+      paid_amount_gbp: {type: float, desc: Amount paid to date in GBP}
+      status: {type: enum, values: [open, part_paid, paid, overdue, written_off], desc: Invoice status}
+      dispute_status: {type: enum, values: [none, disputed, on_hold, resolved], desc: Dispute status}
+      dispute_reason: {type: str, desc: "If disputed, why"}
+      created_at: {type: timestamp, desc: When invoice was created}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  invoice_lines:
+    key: [invoice_id, line_no]
+    cols:
+      invoice_id: {type: str, desc: Invoice}
+      line_no: {type: int, desc: Line number}
+      sku: {type: str, desc: Product SKU}
+      description: {type: str, desc: Line item description}
+      qty: {type: int, desc: Quantity}
+      unit_price_gbp: {type: float, desc: Unit price in GBP}
+      line_total_gbp: {type: float, desc: Line total (qty × unit_price)}
+
+  payments:
+    key: payment_id
+    cols:
+      payment_id: {type: str, desc: "Payment, e.g. PAY-2026-000123"}
+      customer_id: {type: str, desc: Customer}
+      invoice_id: {type: str, desc: "Related invoice, if specified"}
+      amount_gbp: {type: float, desc: Payment amount in GBP}
+      payment_date: {type: date, desc: Date received}
+      received_date: {type: date, desc: Date recorded in system}
+      payment_method: {type: enum, values: [bank_transfer, cheque, credit_card, direct_debit, cash], desc: Payment method}
+      reference: {type: str, desc: "Payment reference, e.g. BACS ref or cheque no"}
+      notes: {type: str, desc: Payment notes}
+
+  customer_accounts:
+    key: customer_id
+    cols:
+      customer_id: {type: str, desc: Customer}
+      credit_limit_gbp: {type: float, desc: Current credit limit in GBP}
+      credit_held: {type: bool, desc: Credit hold status}
+      credit_hold_reason: {type: str, desc: "If held, reason for hold"}
+      current_balance_gbp: {type: float, desc: Current outstanding balance in GBP}
+      payment_terms_days: {type: int, desc: Standard payment terms in days}
+      credit_score: {type: int, desc: Internal credit score 0-100}
+      account_status: {type: enum, values: [active, inactive, suspended], desc: Account status}
+      risk_rating: {type: enum, values: [low, medium, high, critical], desc: Credit risk rating}
+      average_dpo_days: {type: float, desc: Historical average days to pay}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  credit_insurance:
+    key: policy_id
+    cols:
+      policy_id: {type: str, desc: "Policy, e.g. INS-00001"}
+      customer_id: {type: str, desc: Customer insured}
+      insurer: {type: str, desc: Insurance company name}
+      cover_limit_gbp: {type: float, desc: Cover limit in GBP}
+      cover_percentage_pct: {type: float, desc: Percentage of invoice covered}
+      policy_start: {type: date, desc: Policy start date}
+      policy_end: {type: date, desc: Policy end date}
+      status: {type: enum, values: [active, expired, lapsed, cancelled], desc: Policy status}
+      updated_at: {type: timestamp, desc: Last updated}
+
+  bad_debt_provisions:
+    key: provision_id
+    cols:
+      provision_id: {type: str, desc: "Provision, e.g. BDP-2026-00001"}
+      as_of_date: {type: date, desc: Date the provision is calculated for}
+      methodology: {type: str, desc: "Provision methodology, e.g. 'ECL by aging bucket'"}
+      amount_gbp: {type: float, desc: Total bad debt provision in GBP}
+      by_0_30_days_gbp: {type: float, desc: Provision for 0-30 days overdue}
+      by_31_60_days_gbp: {type: float, desc: Provision for 31-60 days overdue}
+      by_61_90_days_gbp: {type: float, desc: Provision for 61-90 days overdue}
+      by_over_90_days_gbp: {type: float, desc: Provision for 90+ days overdue}
+      created_at: {type: timestamp, desc: When calculated}
+
+  payment_reminders:
+    key: reminder_id
+    cols:
+      reminder_id: {type: str, desc: "Reminder/dunning, e.g. DUN-2026-00001"}
+      customer_id: {type: str, desc: Customer}
+      invoice_id: {type: str, desc: Invoice reminder relates to}
+      reminder_type: {type: enum, values: [first_notice, second_notice, final_notice, escalation], desc: Reminder type}
+      message: {type: text, desc: Message text sent or to be sent}
+      sent_date: {type: date, desc: When sent (null if draft)}
+      status: {type: enum, values: [draft, sent, bounced, acknowledged], desc: Status}
+      created_at: {type: timestamp, desc: When created}
+
+  collection_history:
+    key: [customer_id, recorded_on]
+    cols:
+      customer_id: {type: str, desc: Customer}
+      recorded_on: {type: date, desc: Date recorded}
+      invoices_in_period: {type: int, desc: Number of invoices in period}
+      amount_invoiced_gbp: {type: float, desc: Total invoiced in period}
+      amount_paid_gbp: {type: float, desc: Amount paid in period}
+      days_to_pay_avg: {type: float, desc: Average days to pay}
+      on_time_pct: {type: float, desc: Percentage of invoices paid on time}
+      notes: {type: str, desc: Collection notes}
+
+tools:
+  - name: get_customer_account_summary
+    desc: Customer balance, credit limit, ageing and payment terms. Use to review account health quickly. Overdue is split by days past due.
+    kind: sql
+    args:
+      customer_id: {required: true}
+    sql: |
+      WITH b AS (
+        SELECT customer_id, amount_gbp - paid_amount_gbp AS bal, CAST($as_of AS DATE) - due_date AS dpd
+        FROM invoices
+        WHERE status IN ('open', 'overdue', 'part_paid') AND amount_gbp - paid_amount_gbp > 0
+      )
+      SELECT c.customer_id, c.account_status, c.credit_limit_gbp, c.current_balance_gbp,
+             c.credit_limit_gbp - c.current_balance_gbp AS headroom_gbp,
+             c.payment_terms_days, c.credit_held, c.credit_hold_reason, c.credit_score,
+             c.risk_rating, c.average_dpo_days,
+             count(b.bal) AS open_invoices,
+             COALESCE(sum(CASE WHEN b.dpd <= 0 THEN b.bal END), 0) AS not_yet_due_gbp,
+             COALESCE(sum(CASE WHEN b.dpd > 0 AND b.dpd <= 30 THEN b.bal END), 0) AS overdue_1_30_gbp,
+             COALESCE(sum(CASE WHEN b.dpd > 30 AND b.dpd <= 60 THEN b.bal END), 0) AS overdue_31_60_gbp,
+             COALESCE(sum(CASE WHEN b.dpd > 60 AND b.dpd <= 90 THEN b.bal END), 0) AS overdue_61_90_gbp,
+             COALESCE(sum(CASE WHEN b.dpd > 90 THEN b.bal END), 0) AS overdue_90_plus_gbp,
+             COALESCE(sum(CASE WHEN b.dpd > 0 THEN b.bal END), 0) AS total_overdue_gbp,
+             COALESCE(max(CASE WHEN b.dpd > 0 THEN b.dpd END), 0) AS max_days_overdue
+      FROM customer_accounts c
+      LEFT JOIN b ON b.customer_id = c.customer_id
+      WHERE c.customer_id = $customer_id
+      GROUP BY c.customer_id, c.account_status, c.credit_limit_gbp, c.current_balance_gbp,
+               c.payment_terms_days, c.credit_held, c.credit_hold_reason, c.credit_score,
+               c.risk_rating, c.average_dpo_days
+    limit: 1
+    example: {customer_id: PTN-025}
+
+  - name: get_customer_exposure_summary
+    desc: Total exposure including unbilled orders, current invoiced amount and credit headroom. Omit customer_id for all customers, largest exposure first.
+    kind: sql
+    args:
+      customer_id: {desc: "Customer (optional; omit for every customer)"}
+    sql: |
+      WITH inv AS (
+        SELECT customer_id, sum(amount_gbp - paid_amount_gbp) AS invoiced,
+               sum(CASE WHEN due_date < CAST($as_of AS DATE) THEN amount_gbp - paid_amount_gbp ELSE 0 END) AS overdue
+        FROM invoices WHERE status IN ('open', 'overdue', 'part_paid') GROUP BY customer_id
+      ), ord AS (
+        SELECT customer_id, sum(value_gbp) AS unbilled FROM master.orders
+        WHERE status IN ('placed', 'picking', 'shipped') GROUP BY customer_id
+      )
+      SELECT c.customer_id, c.risk_rating, c.credit_limit_gbp,
+             COALESCE(inv.invoiced, 0) AS invoiced_gbp,
+             COALESCE(inv.overdue, 0) AS overdue_gbp,
+             COALESCE(ord.unbilled, 0) AS unbilled_orders_gbp,
+             COALESCE(inv.invoiced, 0) + COALESCE(ord.unbilled, 0) AS total_exposure_gbp,
+             c.credit_limit_gbp - COALESCE(inv.invoiced, 0) - COALESCE(ord.unbilled, 0) AS available_credit_gbp,
+             round(100.0 * (COALESCE(inv.invoiced, 0) + COALESCE(ord.unbilled, 0)) / c.credit_limit_gbp, 1) AS limit_utilisation_pct
+      FROM customer_accounts c
+      LEFT JOIN inv ON inv.customer_id = c.customer_id
+      LEFT JOIN ord ON ord.customer_id = c.customer_id
+      WHERE $customer_id IS NULL OR c.customer_id = $customer_id
+      ORDER BY total_exposure_gbp DESC
+    limit: 50
+    example: {customer_id: PTN-025}
+
+  - name: get_customer_payment_history
+    desc: Payment behaviour and days-to-pay trend (one row per 4-week period, newest first). Use to assess reliability.
+    kind: sql
+    args:
+      customer_id: {required: true}
+      months: {type: int, default: 12, desc: "Look back this many months"}
+    sql: |
+      SELECT
+        ch.customer_id,
+        ch.recorded_on,
+        ch.invoices_in_period,
+        ch.amount_invoiced_gbp,
+        ch.amount_paid_gbp,
+        ch.days_to_pay_avg,
+        c.payment_terms_days,
+        round(ch.days_to_pay_avg - c.payment_terms_days, 1) AS days_beyond_terms,
+        ch.on_time_pct,
+        ROUND(ch.amount_paid_gbp / NULLIF(ch.amount_invoiced_gbp, 0) * 100, 1) AS payment_ratio_pct
+      FROM collection_history ch
+      JOIN customer_accounts c ON c.customer_id = ch.customer_id
+      WHERE ch.customer_id = $customer_id
+        AND ch.recorded_on >= CAST($as_of AS DATE) - CAST($months AS INTEGER) * 30
+      ORDER BY ch.recorded_on DESC
+    limit: 52
+    example: {customer_id: PTN-025}
+
+  - name: get_historical_collection_patterns
+    desc: Historic collection timing over 24 months. One row per customer (all, or one with customer_id), slowest payers first; group_by period gives 4-week periods. Use for cash forecasting.
+    kind: sql
+    args:
+      customer_id: {desc: "Customer (optional; omit for every customer)"}
+      group_by: {type: enum, values: [customer, period], default: customer, desc: "customer = summary per customer, period = each 4-week period"}
+    sql: |
+      SELECT ch.customer_id, CAST(NULL AS DATE) AS recorded_on, c.payment_terms_days,
+             sum(ch.invoices_in_period) AS invoices_paid,
+             round(sum(ch.days_to_pay_avg * ch.invoices_in_period) / sum(ch.invoices_in_period), 1) AS days_to_pay_avg,
+             round(sum(ch.days_to_pay_avg * ch.invoices_in_period) / sum(ch.invoices_in_period) - c.payment_terms_days, 1) AS days_beyond_terms,
+             round(sum(ch.on_time_pct * ch.invoices_in_period) / sum(ch.invoices_in_period), 1) AS on_time_pct,
+             round(sum(CASE WHEN ch.recorded_on >= CAST($as_of AS DATE) - 90 THEN ch.on_time_pct * ch.invoices_in_period END)
+                   / NULLIF(sum(CASE WHEN ch.recorded_on >= CAST($as_of AS DATE) - 90 THEN ch.invoices_in_period END), 0), 1) AS on_time_pct_last_90d,
+             sum(ch.amount_paid_gbp) AS amount_paid_gbp
+      FROM collection_history ch
+      JOIN customer_accounts c ON c.customer_id = ch.customer_id
+      WHERE $group_by = 'customer'
+        AND ($customer_id IS NULL OR ch.customer_id = $customer_id)
+        AND ch.recorded_on >= CAST($as_of AS DATE) - 730
+      GROUP BY ch.customer_id, c.payment_terms_days
+      UNION ALL
+      SELECT ch.customer_id, ch.recorded_on, c.payment_terms_days, ch.invoices_in_period, ch.days_to_pay_avg,
+             round(ch.days_to_pay_avg - c.payment_terms_days, 1), ch.on_time_pct, NULL, ch.amount_paid_gbp
+      FROM collection_history ch
+      JOIN customer_accounts c ON c.customer_id = ch.customer_id
+      WHERE $group_by = 'period'
+        AND ($customer_id IS NULL OR ch.customer_id = $customer_id)
+        AND ch.recorded_on >= CAST($as_of AS DATE) - 730
+      ORDER BY days_beyond_terms DESC, recorded_on DESC
+    limit: 100
+    example: {customer_id: PTN-025}
+
+  - name: get_open_receivables_ledger
+    desc: Open receivables by customer and due date. Shows balance due, days overdue (negative = not yet due), payment terms and dispute status.
+    kind: sql
+    args:
+      customer_id: {desc: "Filter by customer (optional)"}
+      min_amount_gbp: {type: float, default: 0, desc: "Only balances >= this threshold"}
+      order_by: {type: enum, values: [due_date, amount, customer], default: due_date, desc: "Sort by"}
+    sql: |
+      SELECT i.invoice_id, i.customer_id,
+             i.invoice_date, i.due_date, i.amount_gbp, i.paid_amount_gbp,
+             i.amount_gbp - i.paid_amount_gbp AS balance_due_gbp,
+             CAST($as_of AS DATE) - i.due_date AS days_overdue,
+             i.status, i.dispute_status, c.payment_terms_days, c.risk_rating
+      FROM invoices i
+      JOIN customer_accounts c ON c.customer_id = i.customer_id
+      WHERE i.status IN ('open', 'overdue', 'part_paid')
+        AND i.amount_gbp - i.paid_amount_gbp >= $min_amount_gbp
+        AND ($customer_id IS NULL OR i.customer_id = $customer_id)
+      ORDER BY CASE WHEN $order_by = 'amount' THEN i.amount_gbp - i.paid_amount_gbp END DESC,
+               CASE WHEN $order_by = 'customer' THEN i.customer_id END,
+               i.due_date ASC
+    limit: 300
+    example: {}
+
+  - name: list_overdue_invoices
+    desc: Overdue invoices by customer with ageing buckets. Shows how far behind each invoice is, most overdue first.
+    kind: sql
+    args:
+      customer_id: {desc: "Filter by customer (optional)"}
+      min_days_overdue: {type: int, default: 1, desc: "Minimum days overdue"}
+    sql: |
+      SELECT i.invoice_id, i.customer_id,
+             i.invoice_date, i.due_date, i.amount_gbp, i.paid_amount_gbp,
+             i.amount_gbp - i.paid_amount_gbp AS balance_due_gbp,
+             CAST($as_of AS DATE) - i.due_date AS days_overdue,
+             CASE WHEN CAST($as_of AS DATE) - i.due_date <= 30 THEN '0-30'
+                  WHEN CAST($as_of AS DATE) - i.due_date <= 60 THEN '31-60'
+                  WHEN CAST($as_of AS DATE) - i.due_date <= 90 THEN '61-90'
+                  ELSE '90+' END AS ageing_bucket,
+             i.status, i.dispute_status
+      FROM invoices i
+      WHERE i.status IN ('open', 'overdue', 'part_paid')
+        AND (i.amount_gbp - i.paid_amount_gbp > 0)
+        AND CAST($as_of AS DATE) - i.due_date >= $min_days_overdue
+        AND ($customer_id IS NULL OR i.customer_id = $customer_id)
+      ORDER BY CAST($as_of AS DATE) - i.due_date DESC, i.amount_gbp DESC
+    limit: 200
+    example: {}
+
+  - name: get_overdue_trend_by_customer
+    desc: Overdue balance by customer now, half-way and at the start of the look-back period, with the change and a trend label. Largest overdue first. Use to identify worsening patterns.
+    kind: sql
+    args:
+      customer_id: {desc: "Filter by customer (optional)"}
+      days: {type: int, default: 60, desc: "Look back this many days"}
+    sql: |
+      WITH pts(k, dt) AS (
+        VALUES (0, CAST($as_of AS DATE)),
+               (1, CAST($as_of AS DATE) - CAST($days AS INTEGER) // 2),
+               (2, CAST($as_of AS DATE) - CAST($days AS INTEGER))
+      ), bal AS (
+        SELECT pts.k, i.customer_id, i.invoice_id, i.due_date, pts.dt,
+               i.amount_gbp - COALESCE(sum(p.amount_gbp), 0) AS bal
+        FROM pts
+        CROSS JOIN invoices i
+        LEFT JOIN payments p ON p.invoice_id = i.invoice_id AND p.payment_date <= pts.dt
+        WHERE i.invoice_date <= pts.dt AND i.due_date < pts.dt
+          AND ($customer_id IS NULL OR i.customer_id = $customer_id)
+        GROUP BY pts.k, i.customer_id, i.invoice_id, i.due_date, pts.dt, i.amount_gbp
+      ), agg AS (
+        SELECT customer_id,
+               sum(CASE WHEN k = 0 THEN bal ELSE 0 END) AS overdue_gbp,
+               sum(CASE WHEN k = 1 THEN bal ELSE 0 END) AS overdue_mid_gbp,
+               sum(CASE WHEN k = 2 THEN bal ELSE 0 END) AS overdue_start_gbp,
+               max(CASE WHEN k = 0 AND bal > 0 THEN CAST($as_of AS DATE) - due_date END) AS oldest_days_overdue
+        FROM bal GROUP BY customer_id
+      )
+      SELECT customer_id, overdue_gbp, overdue_mid_gbp, overdue_start_gbp,
+             overdue_gbp - overdue_start_gbp AS change_gbp,
+             COALESCE(oldest_days_overdue, 0) AS oldest_days_overdue,
+             CASE WHEN overdue_gbp > overdue_mid_gbp AND overdue_mid_gbp >= overdue_start_gbp THEN 'worsening'
+                  WHEN overdue_gbp > overdue_start_gbp * 1.1 AND overdue_gbp > 0 THEN 'worsening'
+                  WHEN overdue_gbp < overdue_start_gbp * 0.9 THEN 'improving'
+                  ELSE 'stable' END AS trend
+      FROM agg
+      WHERE overdue_gbp > 0 OR overdue_start_gbp > 0
+      ORDER BY overdue_gbp DESC
+    limit: 100
+    example: {}
+
+  - name: get_sales_order_and_invoice
+    desc: Order, invoice and price lines for an invoice, with payment terms, balance and dispute status. Use to resolve billing disputes.
+    kind: sql
+    args:
+      invoice_id: {required: true}
+    sql: |
+      SELECT i.invoice_id, i.sales_order_ref AS order_id, i.customer_id,
+             i.invoice_date, i.due_date, i.amount_gbp, i.paid_amount_gbp, i.status,
+             i.dispute_status, i.dispute_reason,
+             il.line_no, il.sku, il.description, il.qty, il.unit_price_gbp, il.line_total_gbp
+      FROM invoices i
+      LEFT JOIN invoice_lines il ON il.invoice_id = i.invoice_id
+      WHERE i.invoice_id = $invoice_id
+      ORDER BY il.line_no
+    limit: 50
+    example: {invoice_id: INV-2026-900040}
+
+  - name: get_bad_debt_provision
+    desc: Bad-debt provision booked at a date (default latest) with methodology and breakdown by ageing bucket.
+    kind: sql
+    args:
+      provision_date: {type: date, desc: "Latest provision booked on or before this date (default latest)"}
+    sql: |
+      SELECT provision_id, as_of_date, methodology, amount_gbp,
+             by_0_30_days_gbp, by_31_60_days_gbp, by_61_90_days_gbp, by_over_90_days_gbp,
+             created_at
+      FROM bad_debt_provisions
+      WHERE $provision_date IS NULL OR as_of_date <= CAST($provision_date AS DATE)
+      ORDER BY as_of_date DESC
+    limit: 1
+    example: {}
+
+  - name: get_credit_insurance_cover
+    desc: Credit insurance policy cover for a customer. Shows limit, percentage covered, insured amount and expiry.
+    kind: sql
+    args:
+      customer_id: {required: true}
+    sql: |
+      SELECT policy_id, customer_id, insurer, cover_limit_gbp, cover_percentage_pct,
+             round(cover_limit_gbp * cover_percentage_pct / 100.0, 0) AS insured_amount_gbp,
+             policy_start, policy_end, status,
+             policy_end - CAST($as_of AS DATE) AS days_to_expiry,
+             CAST($as_of AS DATE) BETWEEN policy_start AND policy_end AS is_current
+      FROM credit_insurance
+      WHERE customer_id = $customer_id
+      ORDER BY policy_end DESC
+    limit: 10
+    example: {customer_id: PTN-025}
+
+  - name: calculate_credit_limit_recommendation
+    desc: Recommended credit limit from score, risk rating and exposure. Returns current limit, recommendation and justification.
+    kind: sql
+    args:
+      customer_id: {required: true}
+    sql: |
+      WITH b AS (
+        SELECT customer_id, sum(amount_gbp - paid_amount_gbp) AS exposure,
+               sum(CASE WHEN due_date < CAST($as_of AS DATE) THEN amount_gbp - paid_amount_gbp ELSE 0 END) AS overdue
+        FROM invoices WHERE status IN ('open', 'overdue', 'part_paid') GROUP BY customer_id
+      )
+      SELECT c.customer_id,
+             c.credit_score, c.risk_rating, c.average_dpo_days, c.payment_terms_days,
+             c.credit_limit_gbp AS current_limit_gbp,
+             COALESCE(b.exposure, 0) AS current_exposure_gbp,
+             COALESCE(b.overdue, 0) AS overdue_gbp,
+             round(CASE WHEN c.credit_score >= 80 AND c.risk_rating = 'low' THEN c.credit_limit_gbp * 1.2
+                        WHEN c.credit_score >= 70 AND c.risk_rating IN ('low', 'medium') THEN c.credit_limit_gbp * 1.0
+                        WHEN c.credit_score >= 60 AND c.risk_rating = 'medium' THEN c.credit_limit_gbp * 0.8
+                        WHEN c.credit_score >= 50 OR c.risk_rating = 'high' THEN c.credit_limit_gbp * 0.6
+                        ELSE c.credit_limit_gbp * 0.4 END, 0) AS recommended_limit_gbp,
+             CASE WHEN c.credit_score >= 80 AND c.risk_rating = 'low' THEN 'Maintain; room to increase'
+                  WHEN c.credit_score >= 70 THEN 'Maintain current limit'
+                  WHEN c.credit_score >= 60 THEN 'Consider reduction to manage risk'
+                  ELSE 'High risk; recommend significant reduction' END
+             || ' (score ' || c.credit_score || ', ' || c.risk_rating || ' risk, pays in '
+             || round(c.average_dpo_days, 0) || ' days on ' || c.payment_terms_days || '-day terms)' AS justification,
+             'limit = current limit x risk factor from score and rating' AS formula
+      FROM customer_accounts c
+      LEFT JOIN b ON b.customer_id = c.customer_id
+      WHERE c.customer_id = $customer_id
+    limit: 1
+    example: {customer_id: PTN-025}
+
+  - name: calculate_collections_forecast
+    desc: Expected weekly cash collections with lower and upper range. Open undisputed invoices are timed at due date plus usual lateness and weighted by collection probability. Disputed invoices are excluded.
+    kind: sql
+    args:
+      weeks_ahead: {type: int, default: 8, desc: "Forecast this many weeks ahead"}
+      customer_id: {desc: "Filter by customer (optional)"}
+    sql: |
+      WITH inv AS (
+        SELECT i.due_date, i.amount_gbp - i.paid_amount_gbp AS bal,
+               CASE c.risk_rating WHEN 'low' THEN 0.98 WHEN 'medium' THEN 0.93 WHEN 'high' THEN 0.80 ELSE 0.55 END
+                 * CASE WHEN CAST($as_of AS DATE) - i.due_date > 90 THEN 0.5
+                        WHEN CAST($as_of AS DATE) - i.due_date > 60 THEN 0.7
+                        WHEN CAST($as_of AS DATE) - i.due_date > 30 THEN 0.85 ELSE 1.0 END AS prob,
+               i.due_date + CAST(round(GREATEST(c.average_dpo_days - c.payment_terms_days, 0)) AS INTEGER) AS exp_date
+        FROM invoices i
+        JOIN customer_accounts c ON c.customer_id = i.customer_id
+        WHERE i.status IN ('open', 'overdue', 'part_paid')
+          AND i.amount_gbp - i.paid_amount_gbp > 0
+          AND COALESCE(i.dispute_status, 'none') NOT IN ('disputed', 'on_hold')
+          AND ($customer_id IS NULL OR i.customer_id = $customer_id)
+      ), w AS (
+        SELECT bal, prob,
+               GREATEST(1, CAST(ceil((base_date - CAST($as_of AS DATE)) / 7.0) AS INTEGER)) AS exp_week,
+               GREATEST(1, CAST(ceil((base_date + 14 - CAST($as_of AS DATE)) / 7.0) AS INTEGER)) AS late_week,
+               GREATEST(1, CAST(ceil((base_date - 7 - CAST($as_of AS DATE)) / 7.0) AS INTEGER)) AS early_week
+        FROM (
+          SELECT bal, prob,
+                 CASE WHEN exp_date > CAST($as_of AS DATE) THEN exp_date
+                      ELSE CAST($as_of AS DATE) + CAST((CAST($as_of AS DATE) - due_date) // 2 + 7 AS INTEGER) END AS base_date
+          FROM inv
+        )
+      ), wk AS (
+        SELECT k.week_num,
+               round(COALESCE(sum(CASE WHEN w.late_week = k.week_num THEN w.bal * w.prob * 0.9 END), 0), 0) AS lower_range_gbp,
+               round(COALESCE(sum(CASE WHEN w.exp_week = k.week_num THEN w.bal * w.prob END), 0), 0) AS expected_collection_gbp,
+               round(COALESCE(sum(CASE WHEN w.early_week = k.week_num THEN w.bal * w.prob END), 0), 0) AS upper_range_gbp
+        FROM generate_series(1, CAST($weeks_ahead AS INTEGER)) AS k(week_num)
+        LEFT JOIN w ON true
+        GROUP BY k.week_num
+      )
+      SELECT week_num, CAST($as_of AS DATE) + CAST((week_num - 1) * 7 AS INTEGER) AS week_start,
+             lower_range_gbp, expected_collection_gbp, upper_range_gbp,
+             sum(lower_range_gbp) OVER (ORDER BY week_num) AS cumulative_lower_gbp,
+             sum(expected_collection_gbp) OVER (ORDER BY week_num) AS cumulative_expected_gbp,
+             sum(upper_range_gbp) OVER (ORDER BY week_num) AS cumulative_upper_gbp,
+             'expected = open balance x collection probability, timed at due date + usual lateness' AS formula
+      FROM wk
+      ORDER BY week_num
+    limit: 26
+    example: {}
+
+  - name: calculate_expected_credit_loss
+    desc: Expected credit loss on open receivables, by ageing bucket with a total (default) or per customer, largest first. Loss rates 2%, 5%, 15%, 35% by days past due.
+    kind: sql
+    args:
+      customer_id: {desc: "Filter by customer (optional)"}
+      group_by: {type: enum, values: [bucket, customer], default: bucket, desc: "bucket = by ageing bucket, customer = per customer"}
+    sql: |
+      WITH k AS (
+        SELECT i.customer_id, c.risk_rating, i.amount_gbp - i.paid_amount_gbp AS bal,
+               CASE WHEN CAST($as_of AS DATE) - i.due_date <= 30 THEN '0-30 days'
+                    WHEN CAST($as_of AS DATE) - i.due_date <= 60 THEN '31-60 days'
+                    WHEN CAST($as_of AS DATE) - i.due_date <= 90 THEN '61-90 days'
+                    ELSE '90+ days' END AS ageing_bucket,
+               CASE WHEN CAST($as_of AS DATE) - i.due_date <= 30 THEN 0.02
+                    WHEN CAST($as_of AS DATE) - i.due_date <= 60 THEN 0.05
+                    WHEN CAST($as_of AS DATE) - i.due_date <= 90 THEN 0.15
+                    ELSE 0.35 END AS pct
+        FROM invoices i
+        JOIN customer_accounts c ON c.customer_id = i.customer_id
+        WHERE i.status IN ('open', 'overdue', 'part_paid')
+          AND i.amount_gbp - i.paid_amount_gbp > 0
+          AND ($customer_id IS NULL OR i.customer_id = $customer_id)
+      ), by_bucket AS (
+        SELECT bk.ageing_bucket, bk.ord, bk.pct, COALESCE(sum(k.bal), 0) AS exposure,
+               COALESCE(round(sum(k.bal * k.pct), 2), 0) AS ecl
+        FROM (VALUES ('0-30 days', 1, 0.02), ('31-60 days', 2, 0.05), ('61-90 days', 3, 0.15), ('90+ days', 4, 0.35)) bk(ageing_bucket, ord, pct)
+        LEFT JOIN k ON k.ageing_bucket = bk.ageing_bucket
+        GROUP BY bk.ageing_bucket, bk.ord, bk.pct
+      )
+      SELECT COALESCE($customer_id, 'portfolio') AS customer_id, ageing_bucket, exposure AS total_exposure_gbp,
+             pct AS ecl_pct, ecl AS ecl_amount_gbp, '' AS risk_rating,
+             'ECL = exposure x loss rate for the ageing bucket' AS formula, ord AS sort_key
+      FROM by_bucket
+      WHERE $group_by = 'bucket'
+      UNION ALL
+      SELECT COALESCE($customer_id, 'portfolio'), 'total', sum(exposure), round(sum(ecl) / NULLIF(sum(exposure), 0), 4), sum(ecl), '',
+             'ECL = exposure x loss rate for the ageing bucket', 5
+      FROM by_bucket
+      WHERE $group_by = 'bucket'
+      UNION ALL
+      SELECT customer_id, 'all', sum(bal), round(sum(bal * pct) / sum(bal), 4), round(sum(bal * pct), 2), max(risk_rating),
+             'ECL = exposure x loss rate for the ageing bucket', 0
+      FROM k
+      WHERE $group_by = 'customer'
+      GROUP BY customer_id
+      ORDER BY sort_key, ecl_amount_gbp DESC
+    limit: 60
+    example: {}
+
+  - name: send_payment_reminder
+    desc: Sends a dunning or chaser notice for overdue invoices to customer. Creates draft/sent reminder record.
+    kind: insert
+    table: payment_reminders
+    id_prefix: DUN-2026-
+    defaults: {status: sent, sent_date: $as_of}
+    args:
+      customer_id: {required: true}
+      invoice_id: {desc: "Related invoice (optional)"}
+      reminder_type: {required: true, desc: "first_notice, second_notice, final_notice, escalation"}
+      message: {required: true, type: text, desc: "Reminder message text"}
+    example: {customer_id: PTN-032, invoice_id: INV-2026-900103, reminder_type: first_notice, message: "We note that this invoice remains outstanding. Please remit payment within 5 days."}
+
+  - name: update_customer_credit_hold
+    desc: Places or lifts a credit hold on a customer. Returns before/after hold status.
+    kind: update
+    table: customer_accounts
+    set: {}
+    args:
+      credit_held: {required: true, type: bool, desc: "true=place hold, false=lift hold"}
+      credit_hold_reason: {type: str, desc: "Reason for the hold"}
+    example: {customer_id: PTN-032, credit_held: true, credit_hold_reason: "75 days overdue"}
+
+  - name: update_customer_credit_limit
+    desc: Changes a customer's credit limit. Returns old and new limits with effective date.
+    kind: update
+    table: customer_accounts
+    set: {}
+    args:
+      credit_limit_gbp: {required: true, type: float, desc: "New credit limit in GBP"}
+    example: {customer_id: PTN-025, credit_limit_gbp: 150000}
+
+  - name: update_invoice_dispute_status
+    desc: Marks an invoice as disputed or on dispute hold. Returns old and new status.
+    kind: update
+    table: invoices
+    set: {}
+    args:
+      dispute_status: {required: true, type: enum, values: [none, disputed, on_hold, resolved], desc: "New dispute status"}
+      dispute_reason: {type: str, desc: "Reason for dispute"}
+    example: {invoice_id: INV-2026-900040, dispute_status: on_hold, dispute_reason: "Delivery shortfall: 360 units short"}

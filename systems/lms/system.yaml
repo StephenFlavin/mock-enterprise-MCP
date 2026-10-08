@@ -1,0 +1,596 @@
+id: lms
+name: Labour Management System (LMS)
+instructions: >
+  Operatives, shift patterns, productivity and labour costs at our three main DCs (DC1-DC3).
+  Labour records include permanent staff, agency workers and overtime patterns. Tracks productivity,
+  quality metrics and staffing requirements. Use it for labour resource planning, cost analysis,
+  shift scheduling and workforce productivity. Request ids look like ALR-000123.
+
+tables:
+  shift_rosters:
+    key: [site_id, roster_date, shift_type]
+    cols:
+      site_id: {type: str, desc: "DC site, e.g. DC1"}
+      roster_date: {type: date, desc: "Date of the shift"}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift: early (06:00-14:00), late (14:00-22:00), night (22:00-06:00)"}
+      scheduled_count: {type: int, desc: "Operatives scheduled for shift"}
+      permanent_count: {type: int, desc: "Permanent staff scheduled"}
+      agency_count: {type: int, desc: "Agency staff scheduled"}
+      attended_count: {type: int, desc: "Operatives who attended"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_hours:
+    key: [site_id, week_start, shift_type, labour_type]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      week_start: {type: date, desc: "Monday of the week"}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift: early (06:00-14:00), late (14:00-22:00), night (22:00-06:00)"}
+      labour_type: {type: enum, values: [permanent, overtime, agency], desc: "Labour category"}
+      total_hours: {type: float, desc: "Total labour hours in week"}
+      productive_hours: {type: float, desc: "Productive (non-break) hours"}
+      cost_gbp: {type: float, desc: "Total labour cost for the week"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  labour_productivity:
+    key: [site_id, week_start, shift_type, process_type, labour_type]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      week_start: {type: date, desc: "Monday of the week"}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift: early (06:00-14:00), late (14:00-22:00), night (22:00-06:00)"}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping], desc: "Warehouse process (shipping = loading and despatch)"}
+      labour_type: {type: enum, values: [permanent, overtime, agency], desc: "Labour category"}
+      units_handled: {type: int, desc: "Units processed"}
+      labour_hours: {type: float, desc: "Labour hours spent"}
+      units_per_hour: {type: float, desc: "Productivity: units per hour"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  quality_metrics:
+    key: [site_id, week_start, labour_type]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      week_start: {type: date, desc: "Monday of the week"}
+      labour_type: {type: enum, values: [permanent, overtime, agency], desc: "Labour category"}
+      picks_processed: {type: int, desc: "Total picks processed"}
+      picks_with_error: {type: int, desc: "Picks containing errors"}
+      error_rate_pct: {type: float, desc: "Error rate as percentage"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  pick_operations:
+    key: [site_id, week_start, pick_method, zone]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      week_start: {type: date, desc: "Monday of the week"}
+      pick_method: {type: enum, values: [wave, batch, discrete], desc: "Pick method"}
+      zone: {type: str, desc: "Picking zone, e.g. pick-a, pick-b"}
+      picks_completed: {type: int, desc: "Number of picks"}
+      items_picked: {type: int, desc: "Total items picked"}
+      labour_hours: {type: float, desc: "Labour hours spent picking"}
+      picks_per_hour: {type: float, desc: "Pick rate: picks per hour"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  agency_labour_requests:
+    key: request_id
+    cols:
+      request_id: {type: str, desc: "Agency labour request, e.g. ALR-000123"}
+      site_id: {type: str, desc: "DC site"}
+      shift_type: {type: enum, values: [early, late, night], desc: "Required shift"}
+      date_from: {type: date, desc: "Start date for requirement"}
+      date_to: {type: date, desc: "End date for requirement"}
+      quantity_required: {type: int, desc: "Number of operatives needed"}
+      labour_type: {type: str, desc: "Type of role needed"}
+      status: {type: enum, values: [draft, submitted, confirmed, filled, cancelled], desc: "Request status"}
+      supplier_id: {type: str, desc: "Agency supplier, if confirmed"}
+      cost_per_hour_gbp: {type: float, desc: "Negotiated rate per hour"}
+      created_at: {type: timestamp, desc: "Request date"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  new_starters:
+    key: starter_id
+    cols:
+      starter_id: {type: str, desc: "Starter record, e.g. NST-000123"}
+      site_id: {type: str, desc: "DC site"}
+      start_date: {type: date, desc: "Employment start date"}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift the starter was assigned to"}
+      labour_type: {type: enum, values: [permanent, agency], desc: "Labour category"}
+      role: {type: str, desc: "Job role, e.g. operative, team_lead"}
+      training_complete: {type: bool, desc: "Has initial training been completed"}
+      training_date: {type: date, desc: "When training was completed"}
+      employee_id: {type: str, desc: "Employee id after onboarded, if applicable"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  productivity_standards:
+    key: [site_id, process_type, role]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping, returns], desc: "Warehouse process (returns = returns inspection, grading and restock at the returns DC)"}
+      role: {type: str, desc: "Job role"}
+      standard_units_per_hour: {type: float, desc: "Standard productivity target"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  shift_patterns:
+    key: [site_id, pattern_name]
+    cols:
+      site_id: {type: str, desc: "DC site"}
+      pattern_name: {type: str, desc: "Pattern name, e.g. two-shift, three-shift"}
+      early_shift_hours: {type: float, desc: "Hours per week on early shift"}
+      late_shift_hours: {type: float, desc: "Hours per week on late shift"}
+      night_shift_hours: {type: float, desc: "Hours per week on night shift"}
+      overtime_hours_avg: {type: float, desc: "Average overtime hours per week"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+  handling_rates:
+    key: [site_id, operation_type]
+    cols:
+      site_id: {type: str, desc: "DC or cross-dock site"}
+      operation_type: {type: enum, values: [dc_receiving, dc_putaway, dc_picking, dc_packing, dc_shipping, cross_dock], desc: "Operation type"}
+      cost_per_unit_gbp: {type: float, desc: "Variable cost per unit handled in a normal week"}
+      peak_cost_per_unit_gbp: {type: float, desc: "Variable cost per unit handled in a peak week (overtime and agency premium)"}
+      fixed_cost_per_week_gbp: {type: float, desc: "Fixed weekly cost for the operation (leases, equipment, supervision)"}
+      units_per_labour_hour: {type: float, desc: "Units processed per labour hour"}
+      assumptions: {type: text, desc: "Cost assumptions behind the rates"}
+      updated_at: {type: timestamp, desc: "Last updated"}
+
+tools:
+  - name: get_shift_roster_by_date
+    desc: Roster by shift for a site, with permanent and agency numbers scheduled and attended. Daily rows, or weekly daily-averages for trends.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      roster_date: {type: date, desc: "One specific date; overrides date_from and date_to"}
+      date_from: {type: date, default: "-28d", desc: "Roster date on or after"}
+      date_to: {type: date, default: "+0d", desc: "Roster date on or before"}
+      granularity: {type: enum, values: [day, week], default: day, desc: "day = one row per date; week = average per working day for each week"}
+    sql: |
+      SELECT CASE WHEN $granularity = 'week' THEN CAST(date_trunc('week', roster_date) AS DATE) ELSE roster_date END AS period_start,
+             site_id, shift_type,
+             round(avg(scheduled_count), 1) AS scheduled_count,
+             round(avg(permanent_count), 1) AS permanent_count,
+             round(avg(agency_count), 1) AS agency_count,
+             round(avg(attended_count), 1) AS attended_count,
+             round(100.0 * sum(agency_count) / sum(scheduled_count), 1) AS agency_pct,
+             round(100.0 * sum(attended_count) / sum(scheduled_count), 1) AS attendance_pct
+      FROM shift_rosters
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND (($roster_date IS NOT NULL AND roster_date = CAST($roster_date AS DATE))
+             OR ($roster_date IS NULL AND roster_date >= CAST($date_from AS DATE) AND roster_date <= CAST($date_to AS DATE)))
+      GROUP BY ALL
+      ORDER BY period_start DESC, site_id, shift_type
+    limit: 200
+    example: {site_id: DC1, granularity: week}
+
+  - name: get_labour_hours_by_type
+    desc: Hours and cost split by permanent, overtime and agency labour, per week or per four-week block counted back from the latest week. Use to analyse labour mix and cost.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      date_from: {type: date, default: "-34d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+      granularity: {type: enum, values: [week, four_week], default: week, desc: "week = one row per week; four_week = totals per block of four weeks counted back from the latest week"}
+    sql: |
+      SELECT min(week_start) AS period_start, count(DISTINCT week_start) AS weeks, site_id, labour_type,
+             round(sum(total_hours), 0) AS total_hours, round(sum(productive_hours), 0) AS productive_hours,
+             round(sum(cost_gbp), 0) AS cost_gbp,
+             round(sum(cost_gbp) / sum(productive_hours), 2) AS cost_per_productive_hour_gbp
+      FROM labour_hours
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY CASE WHEN $granularity = 'four_week'
+                    THEN CAST(floor(date_diff('day', week_start, (SELECT max(week_start) FROM labour_hours)) / 28.0) AS INT)
+                    ELSE date_diff('day', week_start, (SELECT max(week_start) FROM labour_hours)) END,
+               site_id, labour_type
+      ORDER BY period_start DESC, site_id, labour_type
+    limit: 100
+    example: {site_id: DC1, date_from: "-62d", granularity: four_week}
+
+  - name: get_labour_productivity_by_shift
+    desc: Units per hour by week, shift and process (shipping = loading), optionally for one labour type. Use to find which shift or task is slipping.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping], desc: "Process (default all)"}
+      labour_type: {type: enum, values: [permanent, overtime, agency], desc: "Labour category (default all combined)"}
+      date_from: {type: date, default: "-34d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+    sql: |
+      SELECT week_start, site_id, shift_type, process_type,
+             COALESCE($labour_type, 'all') AS labour_type,
+             sum(units_handled) AS units_handled, round(sum(labour_hours), 1) AS labour_hours,
+             round(sum(units_handled) / sum(labour_hours), 1) AS units_per_hour
+      FROM labour_productivity
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND ($process_type IS NULL OR process_type = $process_type)
+        AND ($labour_type IS NULL OR labour_type = $labour_type)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY week_start, site_id, shift_type, process_type
+      ORDER BY week_start DESC, site_id, shift_type, process_type
+    limit: 200
+    example: {site_id: DC1, process_type: shipping}
+
+  - name: get_dc_labour_productivity
+    desc: Units per labour hour by site and process against the operative standard, with agency and overtime share of hours. Use to compare DCs.
+    kind: sql
+    args:
+      site_id: {}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping], desc: "Process (default all)"}
+      labour_type: {type: enum, values: [permanent, overtime, agency], desc: "Labour category (default all combined)"}
+      date_from: {type: date, default: "-90d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+    sql: |
+      WITH base AS (
+        SELECT p.site_id, p.process_type, p.labour_type, p.units_handled AS u, p.labour_hours AS h,
+               p.labour_hours * s.standard_units_per_hour AS sh
+        FROM labour_productivity p
+        JOIN productivity_standards s
+          ON s.site_id = p.site_id AND s.process_type = p.process_type AND s.role = 'operative'
+        WHERE ($site_id IS NULL OR p.site_id = $site_id)
+          AND ($process_type IS NULL OR p.process_type = $process_type)
+          AND ($labour_type IS NULL OR p.labour_type = $labour_type)
+          AND p.week_start >= CAST($date_from AS DATE)
+          AND p.week_start <= CAST($date_to AS DATE)
+      ),
+      per_proc AS (
+        SELECT site_id, process_type, sum(u) AS u, sum(h) AS h, sum(sh) AS sh,
+               sum(h) FILTER (WHERE labour_type = 'agency') AS ah,
+               sum(h) FILTER (WHERE labour_type = 'overtime') AS oh
+        FROM base GROUP BY site_id, process_type
+      )
+      SELECT * FROM (
+        SELECT site_id, process_type, round(u / h, 1) AS units_per_hour, round(h, 0) AS total_labour_hours,
+               round(sh / h, 0) AS standard_units_per_hour, round(100.0 * u / sh, 1) AS pct_of_standard,
+               round(100.0 * COALESCE(ah, 0) / h, 1) AS agency_hours_pct,
+               round(100.0 * COALESCE(oh, 0) / h, 1) AS overtime_hours_pct
+        FROM per_proc
+        UNION ALL
+        SELECT site_id, 'all', NULL, round(sum(h), 0), NULL, round(100.0 * sum(u) / sum(sh), 1),
+               round(100.0 * COALESCE(sum(ah), 0) / sum(h), 1), round(100.0 * COALESCE(sum(oh), 0) / sum(h), 1)
+        FROM per_proc GROUP BY site_id
+      ) t
+      ORDER BY site_id, (process_type = 'all'), process_type
+    limit: 60
+    example: {site_id: DC1}
+
+  - name: get_exposure_hours_by_site
+    desc: Hours worked by site, optionally split by shift and task, with overtime and agency hours. Use as the denominator for safety rates.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping], desc: "Task (default all)"}
+      date_from: {type: date, default: "-370d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+      breakdown: {type: enum, values: [site, site_shift, site_task, site_shift_task], default: site_shift_task, desc: "Detail level of the rows"}
+    sql: |
+      SELECT site_id,
+             CASE WHEN $breakdown IN ('site_shift', 'site_shift_task') THEN shift_type ELSE 'all' END AS shift_type,
+             CASE WHEN $breakdown IN ('site_task', 'site_shift_task') THEN process_type ELSE 'all' END AS process_type,
+             round(sum(labour_hours), 0) AS exposure_hours,
+             round(COALESCE(sum(labour_hours) FILTER (WHERE labour_type = 'overtime'), 0), 0) AS overtime_hours,
+             round(COALESCE(sum(labour_hours) FILTER (WHERE labour_type = 'agency'), 0), 0) AS agency_hours,
+             count(DISTINCT week_start) AS weeks
+      FROM labour_productivity
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND ($process_type IS NULL OR process_type = $process_type)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY ALL
+      ORDER BY site_id, exposure_hours DESC
+    limit: 60
+    example: {site_id: DC1, breakdown: site_shift}
+
+  - name: get_overtime_hours_by_shift
+    desc: Overtime hours, cost, hourly rate and share of shift hours by week and shift. Use for peak planning and overtime versus new-shift comparisons.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      date_from: {type: date, default: "-62d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+    sql: |
+      SELECT week_start, site_id, shift_type,
+             round(sum(total_hours) FILTER (WHERE labour_type = 'overtime'), 0) AS overtime_hours,
+             round(sum(cost_gbp) FILTER (WHERE labour_type = 'overtime'), 0) AS overtime_cost_gbp,
+             round(sum(cost_gbp) FILTER (WHERE labour_type = 'overtime')
+                   / sum(total_hours) FILTER (WHERE labour_type = 'overtime'), 2) AS overtime_rate_gbp_per_hour,
+             round(100.0 * sum(total_hours) FILTER (WHERE labour_type = 'overtime') / sum(total_hours), 1) AS overtime_pct_of_shift_hours
+      FROM labour_hours
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY week_start, site_id, shift_type
+      ORDER BY week_start DESC, site_id, shift_type
+    limit: 100
+    example: {site_id: DC1}
+
+  - name: get_pick_rates_by_method
+    desc: Pick rates (picks per hour) by method (wave, batch, discrete) and zone over a period. Use to evaluate batching versus wave picking.
+    kind: sql
+    args:
+      site_id: {}
+      pick_method: {type: enum, values: [wave, batch, discrete], desc: "Pick method (default all)"}
+      zone: {type: str, desc: "Picking zone, e.g. pick-a (default all)"}
+      date_from: {type: date, default: "-34d", desc: "Week on or after"}
+      date_to: {type: date, default: "+0d", desc: "Week on or before"}
+      breakdown: {type: enum, values: [method, method_zone], default: method_zone, desc: "method = one row per site and method; method_zone adds the zone"}
+    sql: |
+      SELECT site_id, pick_method,
+             CASE WHEN $breakdown = 'method_zone' THEN zone ELSE 'all' END AS zone,
+             sum(picks_completed) AS picks_completed, sum(items_picked) AS items_picked,
+             round(sum(labour_hours), 0) AS labour_hours,
+             round(sum(picks_completed) / sum(labour_hours), 1) AS picks_per_hour,
+             round(1.0 * sum(items_picked) / sum(picks_completed), 2) AS items_per_pick,
+             count(DISTINCT week_start) AS weeks
+      FROM pick_operations
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($pick_method IS NULL OR pick_method = $pick_method)
+        AND ($zone IS NULL OR zone = $zone)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY ALL
+      ORDER BY site_id, zone, pick_method
+    limit: 60
+    example: {site_id: DC2}
+
+  - name: list_new_starters_by_period
+    desc: New operatives by start week, shift and labour type, with how many have completed training. Use to track intake and onboarding.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      labour_type: {type: enum, values: [permanent, agency], desc: "Labour category (default all)"}
+      date_from: {type: date, default: "-90d", desc: "Start date on or after"}
+      date_to: {type: date, default: "+0d", desc: "Start date on or before"}
+    sql: |
+      SELECT CAST(date_trunc('week', start_date) AS DATE) AS week_start, site_id, shift_type, labour_type,
+             count(*) AS starters,
+             count(*) FILTER (WHERE training_complete) AS training_complete,
+             count(*) FILTER (WHERE NOT training_complete) AS training_outstanding,
+             min(start_date) AS first_start_date, max(start_date) AS last_start_date
+      FROM new_starters
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND ($labour_type IS NULL OR labour_type = $labour_type)
+        AND start_date >= CAST($date_from AS DATE)
+        AND start_date <= CAST($date_to AS DATE)
+      GROUP BY ALL
+      ORDER BY week_start DESC, site_id, shift_type, labour_type
+    limit: 150
+    example: {site_id: DC1}
+
+  - name: list_agency_workers_by_site
+    desc: Agency headcount in place by site and agency on a date, from confirmed or filled requests, with a total per site. Use for planning.
+    kind: sql
+    args:
+      site_id: {}
+      shift_type: {type: enum, values: [early, late, night], desc: "Shift type (default all)"}
+      active_on: {type: date, default: "+0d", desc: "Date the agency workers must be in place"}
+    sql: |
+      SELECT site_id, COALESCE(supplier_id, 'all agencies') AS supplier_id,
+             count(*) AS requests, sum(quantity_required) AS headcount,
+             string_agg(DISTINCT shift_type, ', ') AS shifts,
+             round(sum(quantity_required * cost_per_hour_gbp) / sum(quantity_required), 2) AS avg_cost_per_hour_gbp,
+             min(date_from) AS earliest_start, max(date_to) AS latest_end
+      FROM agency_labour_requests
+      WHERE status IN ('confirmed', 'filled')
+        AND ($site_id IS NULL OR site_id = $site_id)
+        AND ($shift_type IS NULL OR shift_type = $shift_type)
+        AND date_from <= CAST($active_on AS DATE)
+        AND date_to >= CAST($active_on AS DATE)
+      GROUP BY GROUPING SETS ((site_id, supplier_id), (site_id))
+      ORDER BY site_id, headcount DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_labour_productivity_standards
+    desc: Productivity standard in units per hour by site, process and role, including returns processing. Use as baselines and for staffing sums.
+    kind: select
+    from: productivity_standards
+    filters:
+      site_id: {}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping, returns]}
+      role: {}
+    columns: [site_id, process_type, role, standard_units_per_hour]
+    order: site_id, process_type, role
+    limit: 60
+    example: {site_id: DC3, process_type: returns}
+
+  - name: get_dc_handling_rates
+    desc: Handling cost per unit at a DC by operation, normal and peak, with fixed weekly cost and an all-in rate at a weekly volume. Includes the total.
+    kind: sql
+    args:
+      site_id: {}
+      operation_type: {type: enum, values: [dc_receiving, dc_putaway, dc_picking, dc_packing, dc_shipping], desc: "Operation (default all, plus a total row)"}
+      weekly_units: {type: int, default: 100000, desc: "Units per week used to spread the fixed cost"}
+      peak_uplift_pct: {type: float, default: 40, desc: "Peak-week volume uplift on weekly_units, percent"}
+    sql: |
+      WITH h AS (
+        SELECT site_id, operation_type, cost_per_unit_gbp AS c, peak_cost_per_unit_gbp AS pc,
+               fixed_cost_per_week_gbp AS fx, units_per_labour_hour AS uph, assumptions
+        FROM handling_rates
+        WHERE operation_type <> 'cross_dock'
+          AND ($site_id IS NULL OR site_id = $site_id)
+          AND ($operation_type IS NULL OR operation_type = $operation_type)
+      )
+      SELECT * FROM (
+        SELECT site_id, operation_type, c AS cost_per_unit_gbp, pc AS peak_cost_per_unit_gbp,
+               fx AS fixed_cost_per_week_gbp, uph AS units_per_labour_hour,
+               round(c + fx / CAST($weekly_units AS DOUBLE), 3) AS all_in_cost_per_unit_gbp,
+               round(pc + fx / (CAST($weekly_units AS DOUBLE) * (1 + CAST($peak_uplift_pct AS DOUBLE) / 100.0)), 3) AS all_in_peak_cost_per_unit_gbp,
+               NULL AS assumptions
+        FROM h
+        UNION ALL
+        SELECT site_id, 'all_operations', round(sum(c), 2), round(sum(pc), 2), sum(fx), NULL,
+               round(sum(c) + sum(fx) / CAST($weekly_units AS DOUBLE), 3),
+               round(sum(pc) + sum(fx) / (CAST($weekly_units AS DOUBLE) * (1 + CAST($peak_uplift_pct AS DOUBLE) / 100.0)), 3),
+               min(assumptions)
+        FROM h GROUP BY site_id
+      ) t
+      ORDER BY site_id, (operation_type = 'all_operations'), operation_type
+    limit: 30
+    example: {site_id: DC1}
+
+  - name: get_cross_dock_handling_rates
+    desc: Handling cost per unit at a cross-dock, normal and peak, with fixed weekly cost and an all-in rate at a weekly volume. Use for network cost comparisons.
+    kind: sql
+    args:
+      site_id: {}
+      weekly_units: {type: int, default: 100000, desc: "Units per week used to spread the fixed cost"}
+      peak_uplift_pct: {type: float, default: 40, desc: "Peak-week volume uplift on weekly_units, percent"}
+    sql: |
+      SELECT site_id, operation_type, cost_per_unit_gbp, peak_cost_per_unit_gbp, fixed_cost_per_week_gbp,
+             units_per_labour_hour,
+             round(cost_per_unit_gbp + fixed_cost_per_week_gbp / CAST($weekly_units AS DOUBLE), 3) AS all_in_cost_per_unit_gbp,
+             round(peak_cost_per_unit_gbp + fixed_cost_per_week_gbp
+                   / (CAST($weekly_units AS DOUBLE) * (1 + CAST($peak_uplift_pct AS DOUBLE) / 100.0)), 3) AS all_in_peak_cost_per_unit_gbp,
+             assumptions
+      FROM handling_rates
+      WHERE operation_type = 'cross_dock'
+        AND ($site_id IS NULL OR site_id = $site_id)
+      ORDER BY site_id
+    limit: 20
+    example: {}
+
+  - name: create_agency_labour_request
+    desc: Create a draft request to the agency for operatives by site, shift and date range. Returns the new request.
+    kind: insert
+    table: agency_labour_requests
+    id_prefix: ALR-
+    defaults: {status: draft}
+    args:
+      site_id: {required: true}
+      shift_type: {required: true, type: enum, values: [early, late, night], desc: "Required shift"}
+      date_from: {required: true, type: date, desc: "Start date for requirement"}
+      date_to: {required: true, type: date, desc: "End date for requirement"}
+      quantity_required: {required: true, type: int, desc: "Number of operatives needed"}
+      labour_type: {required: true, desc: "Type of role needed, e.g. operative"}
+    example: {site_id: DC1, shift_type: late, date_from: "+14d", date_to: "+21d", quantity_required: 15, labour_type: operative}
+
+  - name: calculate_returns_staffing_requirement
+    desc: Operatives and agency staff needed to process a weekly volume of returns at the returns DC, from the productivity standard. Returns the inputs and formula.
+    kind: sql
+    args:
+      site_id: {default: DC3}
+      weekly_units: {type: int, required: true, desc: "Returns units to process per week"}
+      permanent_operatives: {type: int, default: 0, desc: "Permanent returns operatives already available"}
+      shift_hours: {type: float, default: 7.5, desc: "Productive hours per operative per day"}
+      days_per_week: {type: int, default: 5, desc: "Working days per operative per week"}
+      allowance_pct: {type: float, default: 15, desc: "Absence and holiday allowance, percent"}
+    sql: |
+      SELECT site_id, process_type, role, standard_units_per_hour, weekly_units, labour_hours_needed,
+             operatives_required, permanent_operatives,
+             greatest(0, CAST(ceil(operatives_required) AS INT) - permanent_operatives) AS agency_operatives_required,
+             'operatives = weekly_units / standard_rate / (shift_hours * days_per_week * (1 - allowance_pct/100)); agency = operatives rounded up - permanent' AS formula
+      FROM (
+        SELECT ps.site_id, ps.process_type, ps.role, ps.standard_units_per_hour,
+               CAST($weekly_units AS INT) AS weekly_units,
+               round(CAST($weekly_units AS DOUBLE) / ps.standard_units_per_hour, 0) AS labour_hours_needed,
+               round(CAST($weekly_units AS DOUBLE) / ps.standard_units_per_hour
+                     / (CAST($shift_hours AS DOUBLE) * CAST($days_per_week AS DOUBLE)
+                        * (1 - CAST($allowance_pct AS DOUBLE) / 100.0)), 1) AS operatives_required,
+               CAST($permanent_operatives AS INT) AS permanent_operatives
+        FROM productivity_standards ps
+        WHERE ps.process_type = 'returns' AND ps.role = 'operative' AND ps.site_id = $site_id
+      ) t
+    limit: 5
+    example: {weekly_units: 100000}
+
+  - name: get_quality_error_rate_by_labour_type
+    desc: Error rate by labour type. Use to compare permanent, agency and overtime quality.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {type: date, default: "-90d", desc: "Analysis from"}
+      date_to: {type: date, default: "+0d", desc: "Analysis to"}
+    sql: |
+      SELECT site_id, labour_type,
+             sum(picks_with_error) AS total_errors,
+             sum(picks_processed) AS total_picks,
+             round(100.0 * sum(picks_with_error) / sum(picks_processed), 2) AS error_rate_pct
+      FROM quality_metrics
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY site_id, labour_type
+      ORDER BY site_id
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_shift_pattern_and_overtime
+    desc: Shift patterns and overtime hours by site. Use for shift design and cost planning.
+    kind: sql
+    args:
+      site_id: {}
+    sql: |
+      SELECT sp.site_id, sp.pattern_name, sp.early_shift_hours, sp.late_shift_hours,
+             sp.night_shift_hours, sp.overtime_hours_avg,
+             round(sp.early_shift_hours + sp.late_shift_hours + sp.night_shift_hours, 0) AS total_weekly_hours,
+             round(sum(CASE WHEN lh.shift_type = 'early' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS early_overtime_hours_per_week,
+             round(sum(CASE WHEN lh.shift_type = 'late' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS late_overtime_hours_per_week,
+             round(sum(CASE WHEN lh.shift_type = 'night' AND lh.labour_type = 'overtime' THEN lh.total_hours ELSE 0 END)
+                   / count(DISTINCT lh.week_start), 1) AS night_overtime_hours_per_week
+      FROM shift_patterns sp
+      LEFT JOIN labour_hours lh
+        ON lh.site_id = sp.site_id AND lh.week_start >= CAST($as_of AS DATE) - INTERVAL 56 DAY
+      WHERE ($site_id IS NULL OR sp.site_id = $site_id)
+      GROUP BY sp.site_id, sp.pattern_name, sp.early_shift_hours, sp.late_shift_hours,
+               sp.night_shift_hours, sp.overtime_hours_avg
+      ORDER BY site_id
+    limit: 20
+    example: {site_id: DC1}
+
+  - name: get_productivity_rates_by_site_and_role
+    desc: Standard and actual productivity rates by site and role. Use for capacity planning.
+    kind: sql
+    args:
+      site_id: {}
+      process_type: {type: enum, values: [receiving, putaway, picking, packing, shipping, returns], desc: "Process (default all)"}
+      role: {type: enum, values: [operative, team_lead], desc: "Role (default all). Actual rates are measured for operatives only."}
+    sql: |
+      SELECT ps.site_id, ps.process_type, ps.role, ps.standard_units_per_hour,
+             CASE WHEN ps.role = 'operative' THEN round(sum(lp.units_handled) / sum(lp.labour_hours), 1) END AS actual_units_per_hour,
+             CASE WHEN ps.role = 'operative' THEN round(100.0 * sum(lp.units_handled) / sum(lp.labour_hours)
+                  / ps.standard_units_per_hour, 1) END AS pct_of_standard
+      FROM productivity_standards ps
+      LEFT JOIN labour_productivity lp
+        ON lp.site_id = ps.site_id AND lp.process_type = ps.process_type
+        AND lp.week_start >= CAST($as_of AS DATE) - INTERVAL 56 DAY
+      WHERE ($site_id IS NULL OR ps.site_id = $site_id)
+        AND ($process_type IS NULL OR ps.process_type = $process_type)
+        AND ($role IS NULL OR ps.role = $role)
+      GROUP BY ps.site_id, ps.process_type, ps.role, ps.standard_units_per_hour
+      ORDER BY site_id, process_type, role DESC
+    limit: 50
+    example: {site_id: DC1}
+
+  - name: get_cost_per_productive_hour_by_labour_type
+    desc: Cost per productive hour for permanent, agency and overtime labour. Use to evaluate hiring options.
+    kind: sql
+    args:
+      site_id: {}
+      date_from: {col: week_start, op: ">=", type: date, default: "-56d"}
+      date_to: {col: week_start, op: "<=", type: date, default: "+0d"}
+    sql: |
+      SELECT site_id, labour_type,
+             round(sum(cost_gbp) / sum(productive_hours), 2) AS cost_per_productive_hour_gbp,
+             sum(productive_hours) AS total_productive_hours,
+             round(sum(cost_gbp), 2) AS total_cost_gbp
+      FROM labour_hours
+      WHERE ($site_id IS NULL OR site_id = $site_id)
+        AND week_start >= CAST($date_from AS DATE)
+        AND week_start <= CAST($date_to AS DATE)
+      GROUP BY site_id, labour_type
+      ORDER BY site_id, cost_per_productive_hour_gbp DESC
+    limit: 20
+    example: {site_id: DC1}
+
