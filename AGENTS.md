@@ -16,6 +16,7 @@ The servers exist to make the benchmark realistic and *fair*.
 | a system (`systems/<id>/`) | `python -m mockmcp gen <id>` then `python -m mockmcp check <id>` | `ok   <id>` |
 | master data, `world.yaml`, the engine | `python -m mockmcp check` (all systems) | no failures |
 | `bench/cases/` | `python -m mockmcp check` + `python -m pytest -q tests/test_eval_recipe.py` | pass |
+| `bench/cases/` or system data | `python -m mockmcp eval arithmetic` then `python -m mockmcp eval traps` (both store results the features read) | `eval arithmetic --check` and `eval traps --check` exit 0 |
 | the trap bank or `trap_seeds.py` | `python -m mockmcp eval traps` then `python -m mockmcp eval traps --check` | exit 0, no problems |
 | `mockmcp/eval/` | `python -m pytest -q tests/test_eval_*.py` | pass |
 | anything, before you finish | `python -m pytest -q` (~8 min) | pass |
@@ -63,6 +64,7 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `systems/_master/` | shared master data + its generator | edit `gen.py` / `seed/`, regenerate, full `check` |
 | `catalog/` | tool catalogue from the persona docs | `python -m mockmcp catalog` |
 | `bench/cases/` | ground truth per system | `bench/AUTHORING.md` |
+| `bench/arithmetic.yaml` | case facts an answer gets by arithmetic (feature `arithmetic`) | `python -m mockmcp eval arithmetic` (generated) |
 | `bench/traps.yaml` | trap bank (generated + `authored: true` entries) | `mockmcp/eval/trap_seeds.py` / `traps.py`, then `eval traps` |
 | `bench/recipes/` | benchmark recipes | copy `example.yaml`; check with `eval recipe --dry-run` |
 | `mockmcp/eval/` | recipe → run → grade → report | `docs/BENCHMARKING.md` (§9 Extending) |

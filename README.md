@@ -80,6 +80,7 @@ Full guide, including how to evaluate a model: [docs/BENCHMARKING.md](docs/BENCH
 | `python -m mockmcp brief <id>` | A system's tools and every persona question that uses them |
 | `python -m mockmcp bench <id>` | Run a model against one system's ground-truth cases |
 | `python -m mockmcp eval traps --check` | Validate the trap bank |
+| `python -m mockmcp eval arithmetic` | Regenerate `bench/arithmetic.yaml` (facts got by arithmetic; `--check` to verify) |
 | `python -m pytest -q` | Tests (~8 min) |
 
 Guides:

@@ -9,11 +9,13 @@ Filter language: terms joined by `&` (and), alternatives by ` or `; a term is `f
 >= <= > < = != (a value may list alternatives: `domain=02|07`), a bare feature or preset name (`write`, `chained`),
 or `!name`. Examples: `systems>=3`, `kind=slice&domain=02`, `complexity=complex or calls>=6`, and for traps
 `trap&multi_turn`, `trap_type=missing_tool`, `tier=complex`, `variant=hidden`, `trap_turn>=1`, `difficulty=hard`.
+A list feature (`system_ids`, `arithmetic_ops`) matches `=` when it holds any of the alternatives: `arithmetic_ops=sum|mean`.
 """
 import operator
 import re
 
 from .. import bench
+from . import arithmetic as A
 
 OPS = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt, "=": operator.eq, "!=": operator.ne}
 _TERM = re.compile(r"^\s*([A-Za-z_]\w*)\s*(>=|<=|!=|>|<|=)\s*(.+?)\s*$")
@@ -41,6 +43,7 @@ def features(task: dict) -> dict:
     sl = task["reference"]["slices"]
     tags, turns = task.get("question_tags") or {}, task["turns"]
     systems = task["servers"]["required"] or sorted({s["system"] for s in sl})
+    ops = A.of_task(task)
     return {
         "kind": task["kind"], "systems": len(systems), "system_ids": list(systems),
         "calls": sum(len(s["ref"]) for s in sl), "writes": len(task["writes"]["expected"]), "chained": _chained(task),
@@ -56,6 +59,8 @@ def features(task: dict) -> dict:
         "variant": (task.get("trap") or {}).get("variant", "") or "", "hidden_tools": len((task.get("trap") or {}).get("hidden_tools") or []),
         # trap bank v3: standard | hard ("" = not a trap)
         "difficulty": ((task.get("trap") or {}).get("difficulty") or "standard") if task.get("trap") else "",
+        # required facts the answer gets by arithmetic (bench/arithmetic.yaml: computed, or totals of listed rows), and how
+        "arithmetic": len(ops), "arithmetic_ops": sorted(set(ops)),
     }
 
 
@@ -69,6 +74,7 @@ PRESETS = {
     "followups": lambda f: f["followups"] >= 1,
     "trap": lambda f: f["kind"] == "trap",
     "multi_turn": lambda f: f["turns"] >= 2,          # any kind: a conversation of two or more turns
+    "arithmetic": lambda f: f.get("arithmetic", 0) >= 1,   # some required fact is got by arithmetic
 }
 
 
@@ -94,6 +100,9 @@ def _term(term: str, presets: dict):
             if field not in f:
                 raise KeyError(f"unknown feature '{field}' in filter term '{term}' (known: {sorted(f)})")
             have = f[field]
+            if isinstance(have, list):
+                hit = any(a.strip().lower() in [str(x).lower() for x in have] for a in alts)
+                return hit if op == "=" else not hit if op == "!=" else False
             key = have.lower() if isinstance(have, str) else have
             if op == "!=":
                 return not any(key == _val(a, have) for a in alts)
