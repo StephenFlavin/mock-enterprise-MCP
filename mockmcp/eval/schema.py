@@ -160,6 +160,7 @@ class Checks(TypedDict):
     facts_missing: list
     ids_not_in_results: list[str]      # ids in answers that appear in no tool result or prompt
     numbers_not_in_results: list[str]
+    values_skipped: dict               # {value: why} not flagged: "template id" (e.g. EMP-000xx), "date year"
     writes: list[dict]                 # every write call: {tool, args, turn, expected: bool, requested_turn: int|None}
     harness_error: str | None
 

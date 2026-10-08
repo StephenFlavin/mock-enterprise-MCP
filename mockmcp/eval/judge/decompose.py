@@ -445,16 +445,16 @@ def plan(payload: dict, profile: dict) -> dict:
         parts = {"model_answer": [{"turn": i, "text": s} for i, s in g["sents"]]}
         if g["labels"]:
             parts["label"] = g["labels"][0] if one else g["labels"]
-        if g["w2"]:
+        own = {s for _, s in g["sents"]}
+        others = [{"turn": t, "text": s} for t in sorted({i for i, _ in g["sents"]}) for s in _sentences(answers[t])
+                  if s not in own and bench.NUM_RX.search(s)][:40]
+        if others:
+            parts["other_figures_in_answer"] = others
+        where = ["the other figures in the answer (`other_figures_in_answer`)"] if others else []
+        if g["w2"] and g["rows"]:
             parts["rows"] = g["rows"][:12]
-            where = "`rows` (tool-result lines the assistant received that mention its label or neighbours)"
-        else:
-            own = {s for _, s in g["sents"]}
-            others = [{"turn": t, "text": s} for t in sorted({i for i, _ in g["sents"]}) for s in _sentences(answers[t])
-                      if s not in own and bench.NUM_RX.search(s)][:40]
-            if others:
-                parts["other_figures_in_answer"] = others
-            where = "the other figures in the answer (`other_figures_in_answer`)"
+            where.insert(0, "`rows` (tool-result lines the assistant received that mention its label or neighbours)")
+        where = ", ".join(where) or "the tool results"
         if res:
             parts["reference_output"] = res
         q = (f"`model_answer` states {subj}" + (" (described in `label`)" if g["labels"] else "") + f". Compare it with {where} "
@@ -624,11 +624,13 @@ def _merge(items: list[dict], mode: str) -> dict:
     needles = [n for it in items for n in it["needles"]]
     for it in items:
         for k, v in it["parts"].items():
-            if isinstance(v, list):
-                have = st.setdefault(k, [])
-                for x in v:
+            if isinstance(v, list) or isinstance(st.get(k), list) or (k in st and st[k] != v):
+                # a part that differs between merged questions (e.g. one grounding `label` each) becomes a list of all of them
+                have = st[k] if isinstance(st.get(k), list) else ([st[k]] if k in st else [])
+                for x in v if isinstance(v, list) else [v]:
                     if x not in have:
                         have.append(x)
+                st[k] = have
             else:
                 st.setdefault(k, v)
     cap = {"full": None, "snip": SNIP_TOKENS, "tight": TIGHT_TOKENS}[mode]

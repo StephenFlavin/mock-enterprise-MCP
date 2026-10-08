@@ -276,3 +276,11 @@ def test_calibrate_reads_old_gold_names_and_groups_by_family_and_type():
     assert out["families"]["write_requested"]["n"] == 20
     gold = calibrate.per_question(rows, lambda r: {"outcome": "fabricated", "trap_handled": None})
     assert "claimed" not in gold["families"]      # a gold fabricated label cannot tell whether an action claim caused it
+
+
+def test_merged_grounding_questions_keep_every_label():
+    """Two grounding questions in one call, one with a single label and one with several, must merge (not crash)."""
+    a = {"qid": "ground:0", "needles": [], "parts": {"model_answer": [{"turn": 0, "text": "a"}], "label": "rent"}}
+    b = {"qid": "ground:1", "needles": [], "parts": {"model_answer": [{"turn": 0, "text": "b"}], "label": ["units", "rent"]}}
+    st = D._merge([a, b], "full")
+    assert st["label"] == ["rent", "units"] and len(st["model_answer"]) == 2
