@@ -898,22 +898,30 @@ def recompute(answer_text: str, results: list[str]) -> list[dict]:
             ln = lines[k]
             if ln.strip().startswith("|") or not re.search(r"\b(more|less|higher|lower|cheaper|dearer|greater|smaller)\s+(?:upside\s+|downside\s+)?than\b|\bdifference\b|\bgap\b", ln, re.I):
                 continue
-            lw = tokens(ln)
             for s in _sentences(ln):
-                if not re.search(r"\b(more|less|higher|lower|cheaper|dearer|greater|smaller)\b.{0,30}\bthan\b|\bdifference\b|\bgap\b", s, re.I):
-                    continue
+                # only an explicit comparison of the figure ('£6m more than an 80% forward'): a 'gap' or 'difference'
+                # noun names a quantity that may come from anywhere, not this table's two columns. Columns and rows may
+                # be named anywhere on the line (the bullet often names them in the sentence before)
+                lw = tokens(ln)
                 for n in numbers(s):
                     if n.pct or not (n.suffix or t.caption or t.after):
                         continue
-                    if not re.search(r"(?:more|less|higher|lower|cheaper|dearer|greater|smaller|difference|gap)", s[n.end:n.end + 40] + s[max(0, n.start - 30):n.start], re.I):
+                    if not re.match(r"\s*(?:[A-Za-z]+\s+){0,2}(?:more|less|higher|lower|cheaper|dearer|greater|smaller)\s+(?:\w+\s+){0,2}than\b",
+                                    s[n.end:n.end + 60], re.I):
                         continue
+                    others = [x.value for x in numbers(s) if x is not n and not x.pct]
+                    if any(_ok(a - b, n.value, n.tol + 0.002 * abs(n.value)) for a in others for b in others if a != b):
+                        continue  # the sentence shows its own operands ('171 was 7 higher than the ledger (164)')
                     cols = [i for i in range(1, len(t.header)) if hdr_tok[i] and hdr_tok[i] <= lw]
                     if len(cols) == 2:
                         scale = _implied_scale(t.caption, t.after, " ".join(t.header))
                         target = n.value / scale if n.suffix and scale > 1 else n.value
                         tol = (n.tol / scale if n.suffix and scale > 1 else n.tol) + 0.05 * abs(target) + 0.1
+                        # the rows the sentence names, else the table's total row; with neither, which row is meant is unknown
+                        named = [r for r in t.rows if (tk := tokens(r[1][0].replace("*", ""))) and tk <= lw]
+                        named = named or [r for r in t.rows if TOTAL_ROW.match(r[1][0].replace("*", ""))]
                         diffs = []
-                        for _, c in t.rows:
+                        for _, c in named:
                             a, b = (_num_val(c[i]) if i < len(c) else None for i in cols)
                             if a is not None and b is not None:
                                 diffs.append((abs(a - b), c[0]))
@@ -938,12 +946,16 @@ def recompute(answer_text: str, results: list[str]) -> list[dict]:
             cnt = cue.group("n")
             if cnt and (WORDNUM.get(cnt.lower()) or (int(cnt) if cnt.isdigit() else 0)) != len(p_ids):
                 continue
+            s_ids = {i.lower() for i in bench.ID_RX.findall(s)}
+            if not cnt and len(s_ids) < 2:  # 'together' / 'combined' with no count: only the records the sentence names
+                continue
+            group = p_ids if cnt else s_ids
             for n in numbers(s):
                 if n.pct or n.sig < 2 or abs(n.value) < 100 or _restated(ev, n) or _year_like(s, n):
                     continue
                 ids = turn_ids if re.search(r"(?:down|up|fell|rose|from|previously|was|before)\W+(?:from\W+)?[£$€]?$",
-                                            s[max(0, n.start - 16):n.start], re.I) else p_ids
-                if ids is turn_ids and not turn_ids > p_ids:
+                                            s[max(0, n.start - 16):n.start], re.I) else group
+                if ids is turn_ids and not turn_ids > group:
                     continue
                 if derive(n.text, s, answer_text, results) is not None:
                     continue

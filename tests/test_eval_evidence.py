@@ -275,3 +275,26 @@ def test_trap_unreachable_in_answer():
     assert p["trap"]["unreachable_in_answer"] == [{"fact": "935000", "returned_by_loaded_tool": False},
                                                   {"fact": "Atlas", "returned_by_loaded_tool": True}]
     assert any(v["kind"] == "unreachable" and v["value"] == "935000" for v in p["grounding"]["values"])
+
+
+TABLE = ("| | 80% forward | 80% option (floor) |\n|---|---|---|\n| Gain | 3.1 | 3.1 |\n| **Net gain to P&L** | 2.9 | 12.2 |\n\n"
+         "Figures in £m.\n\n")
+
+
+def test_recompute_flags_a_wrong_comparison_over_two_named_columns():
+    a = TABLE + "- The floor option keeps the upside. It is worth about £6m more than an 80% forward."
+    assert [e["value"] for e in D.recompute(a, [])] == ["6m"]
+
+
+def test_recompute_ignores_gap_nouns_self_evident_differences_and_unnamed_groups():
+    """False flags seen in real runs: a 'gap' that is not a comparison of two columns, a difference whose operands the
+    sentence gives, and 'together' with no records named in the sentence."""
+    gap = TABLE + "The peak-week gap of 6 FTE on the 80% forward and floor option plans means agency cover."
+    own = TABLE + "- The floor option figure of 171 was 7 higher than the 80% forward (164)."
+    res = ["store_id,total_value_gbp\nST001,10000\nST002,9000\nST003,9000\n"]
+    grp = "ST001 and ST002 lost the most; ST003 less.\n\nTogether that is roughly £26k."
+    assert D.recompute(gap, []) == [] and D.recompute(own, []) == [] and D.recompute(grp, res) == []
+
+
+def test_fact_matching_treats_dashes_as_hyphens():
+    assert checks.fact_found("50-80%", "hedge 50–80% of exposure") and checks.fact_found("UK-Vietnam FTA", "the UK—Vietnam FTA")
