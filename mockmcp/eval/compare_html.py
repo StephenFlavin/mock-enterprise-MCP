@@ -255,14 +255,14 @@ def embed_json(obj) -> str:
 def _tags_fn():
     try:
         from . import tags as T
-        return T.tags_of, dict(getattr(T, "LABELS", {}) or {})
-    except Exception:   # built in parallel / optional: fall back to the task's strata
-        return None, {}
+        return T.tags_of
+    except Exception:   # optional: fall back to the task's strata
+        return None
 
 
 def task_tags(t: dict) -> list[str]:
     """A REPORT task's tags (tags.tags_of when that module is there, else its strata), as unique strings in order."""
-    fn, _ = _tags_fn()
+    fn = _tags_fn()
     try:
         tags = fn(t) if fn else t.get("strata")
     except Exception:
@@ -391,8 +391,8 @@ def render_html(cmp: dict, charts: dict[str, str], charts_a: dict[str, str], cha
     data = drawer_data(rows, reports, labels, {**change_label, "a_only": f"only {la} passes", "b_only": f"only {lb} passes"})
     for r in rows:
         r["tags"] = data["tasks"][str(r["key"])]["tags"]
-    _, tag_labels = _tags_fn()
-    tags = [(t, str(tag_labels.get(t) or RH.label(t))) for t in sorted({t for r in rows for t in r["tags"]})]
+    tags = [(t, RH.tag_label(t)) for t in sorted({t for r in rows for t in r["tags"]})]   # tags.label: "trap: missing tool"
+    data["tag_labels"] = dict(tags)
     every = [*charts.values(), *charts_a.values(), *charts_b.values()]
     env = jinja2.Environment(autoescape=True, trim_blocks=True, lstrip_blocks=True, undefined=jinja2.ChainableUndefined)
     env.filters["label"] = RH.label

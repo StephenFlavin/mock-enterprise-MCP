@@ -72,9 +72,10 @@ def tags_of(t: dict) -> list[str]:
 
 
 def tag_label(tag: str) -> str:
+    """A tag's human label (tags.label: `trap:missing_tool` → "trap: missing tool"), or the plain label without that module."""
     m = _tags_module()
     try:
-        return str(m.label(tag)) if hasattr(m, "label") else str((getattr(m, "LABELS", None) or {}).get(tag) or label(tag))
+        return str(m.label(tag)) if m else label(tag)
     except Exception:
         return label(tag)
 

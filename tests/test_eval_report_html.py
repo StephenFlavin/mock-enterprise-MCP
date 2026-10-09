@@ -1,6 +1,7 @@
 """report_html: the self-contained HTML page over a hand-made REPORT and stub chart SVGs. No model calls, no browser."""
 import json
 import re
+from pathlib import Path
 
 from mockmcp.eval import report_html as RH
 from mockmcp.eval.schema import SEVERITY_BANDS
@@ -273,7 +274,7 @@ def test_tags_filter_and_chips(monkeypatch):
     _, data = page_data(html)
     assert 'id="f-tag"' in html and '<option value="multi_system">' in html   # no tags module: strata stand in
     assert data["tasks"]["t1"]["tags"] == ["multi_system"] and data["tasks"]["t0"]["tags"] == []
-    fake = type("M", (), {"tags_of": staticmethod(lambda t: ["arith", t["kind"]]), "LABELS": {"arith": "Arithmetic"}})
+    fake = type("M", (), {"tags_of": staticmethod(lambda t: ["arith", t["kind"]]), "label": staticmethod(lambda g: {"arith": "Arithmetic"}.get(g, g))})
     monkeypatch.setattr(RH, "_tags_module", lambda: fake)
     html = RH.render_html(r, {})
     _, data = page_data(html)
@@ -285,3 +286,25 @@ def test_tags_filter_and_chips(monkeypatch):
     monkeypatch.setattr(RH, "_tags_module", lambda: None)
     assert 'id="f-tag"' not in RH.render_html(bare, {})
     assert RH.CAPTIONS["tags"][0] == "By tag"
+
+
+def _md_block(text: str) -> str:
+    a, b = text.index("// ---- md renderer"), text.index("// ---- end md renderer ----")
+    return text[a:b]
+
+
+def test_markdown_renderer_shared_and_data_unchanged():
+    """The drawer renders answers' markdown client-side from the raw text and highlights: the data stays raw (offsets
+    into the model's own text), both pages carry the same renderer, and nothing is parsed as markup."""
+    r = fixture_report()
+    sc = r["tasks"][0]["scenario"] = {"source": "payload", "turns": [{"turn": 0, "user": "q",
+        "assistant": "## Head\n\n- **£154.1m** total\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+        "highlights": [{"start": 13, "end": 20, "kind": "fact", "note": "x"}]}], "facts": [], "flags": [], "counts": {"fact": 1}}
+    html = RH.render_html(r, {})
+    _, data = page_data(html)
+    assert data["tasks"]["t0"]["scenario"]["turns"] == sc["turns"]   # raw text and offsets pass through untouched
+    js = _md_block(html)
+    assert "MD.render(text, hls, hlTitle)" in html and "MD.plain(text, hls, hlTitle)" in html and "raw-t" in html
+    assert "innerHTML" not in html and "insertAdjacentHTML" not in html and "createTextNode" in js
+    cmp_tpl = (Path(RH.__file__).parent / "compare_template.html").read_text()
+    assert _md_block(cmp_tpl) == _md_block(RH.TEMPLATE.read_text())   # one renderer, kept in step on both pages

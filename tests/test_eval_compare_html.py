@@ -325,17 +325,20 @@ def test_tags_filter_and_mark_map(monkeypatch):
     for t in [*cmp["a"]["tasks"], *cmp["b"]["tasks"]]:
         t["strata"] = ["multi_turn"] if t["task_id"].endswith("Q1") else []
     html = CMP.render_html(cmp, c, ca, cb)
-    if CMP._tags_fn()[0] is None:   # strata stand in until mockmcp/eval/tags.py exists
+    if CMP._tags_fn() is None:   # strata stand in until mockmcp/eval/tags.py exists
         assert '<option value="multi_turn">multi turn</option>' in html
-    monkeypatch.setattr(CMP, "_tags_fn", lambda: (lambda t: ["kind:" + t["kind"], "kind:" + t["kind"]], {"kind:trap": "Trap"}))
+    monkeypatch.setattr(CMP, "_tags_fn", lambda: lambda t: ["kind:" + t["kind"], "kind:" + t["kind"]])
+    fake = type("M", (), {"label": staticmethod(lambda g: {"kind:trap": "kind: trap"}.get(g, g.upper()))})
+    monkeypatch.setattr(CMP.RH, "_tags_module", lambda: fake)   # option text and drawer chips come from tags.label
     html = CMP.render_html(cmp, c, ca, cb)
-    assert 'id="f-tag"' in html and '<option value="kind:trap">Trap</option>' in html
+    assert 'id="f-tag"' in html and '<option value="kind:trap">kind: trap</option>' in html
     data = drawer_json(html)
+    assert data["tag_labels"]["kind:trap"] == "kind: trap"
     t = cmp["tasks"][0]
     assert data["tasks"][t["key"]]["tags"] == ["kind:" + t["kind"]]
     assert data["marks"]["cmp-" + t["key"]] == data["marks"]["a-" + t["a"]["key"]] == ["kind:" + t["kind"]]
     assert {"a-" + x["key"] for x in cmp["a"]["tasks"]} <= set(data["marks"])
-    monkeypatch.setattr(CMP, "_tags_fn", lambda: (None, {}))
+    monkeypatch.setattr(CMP, "_tags_fn", lambda: None)
     for t in [*cmp["a"]["tasks"], *cmp["b"]["tasks"]]:
         t["strata"] = []
     assert 'id="f-tag"' not in CMP.render_html(cmp, c, ca, cb)
@@ -346,3 +349,16 @@ def test_captions_for_tag_charts():
     html = CMP.render_html(cmp, {"bytag": stub_chart("bytag", cmp)}, {"tags": stub_chart("tags", cmp)}, {})
     assert "By tag: A vs B" in html and "On which kinds of task does each model win?" in html
     assert "<h3>By tag · haiku</h3>" in html
+
+
+def test_drawer_renders_markdown_and_side_headers_do_not_stick():
+    cmp, c, ca, cb = build(6)
+    cmp = with_scenarios(cmp)
+    html = CMP.render_html(cmp, c, ca, cb)
+    assert "// ---- md renderer" in html and "answerBody(c, x.assistant, x.highlights)" in html and "raw-t" in html
+    assert "innerHTML" not in html
+    col = re.search(r"\.dw-col-h\{[^}]*\}", html).group(0)
+    assert "sticky" not in col   # a sticky side header covered the user's prompt while scrolling
+    data = drawer_json(html)
+    t = cmp["tasks"][0]
+    assert data["tasks"][t["key"]]["a"]["scenario"]["turns"] == CMP.scenario_view(t["a"]["scenario"])["turns"]
