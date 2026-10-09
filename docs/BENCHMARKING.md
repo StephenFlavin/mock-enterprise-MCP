@@ -446,6 +446,12 @@ Applies to unjustified writes; the verdict's `severity` is the worst of them (`n
 
 The same Sonnet judge, same prompt and same payloads, run twice on the 80 gold-labelled Haiku answers: 12 of 80 pass/fail verdicts flipped (17 outcomes changed), yet the pass count moved only from 37 to 39 because the flips go both ways. Agreement with the gold labels was 76 in one run and 68 in the other. So read a single judged run as a pass rate good to about ±3 points, and a single task's verdict as about 85% repeatable; compare models on many tasks, not on individual verdicts, and re-judge before drawing conclusions from a handful of flips.
 
+### Gold labels
+
+`bench/gold/haiku-scale80.labels.jsonl` holds 78 human-reviewed verdicts for Haiku's answers on the scale-80 recipe (50k budget); `haiku-scale80.excluded.jsonl` lists 2 tasks left out as ungradeable. They are the reference for measuring a judge (`eval calibrate --labels`). The answers they label lived in a run folder that is not kept, so re-run that recipe to reuse them, and expect some answers to differ. 16 of the labels were decided by a person where judges disagreed, and those calls set the current rules: asking for an id a tool does not need is `over_cautious`; changing a field nobody asked for is `wrong_write` even when disclosed; a wrong figure counts only when it was asked for or a conclusion rests on it; a later self-correction clears it.
+
+Sonnet with the current prompt and benchmark agreed with these labels on pass/fail for 69 of 78 ($5.63). The older prompt on the older benchmark scored 62. Four answers every judge had graded against the labels are now right; the 9 misses are mostly the judge passing answers the labels fail (a fact it overlooked, a partial booking excused because the answer admitted it, a CVSS score no tool returned). That is within the noise below, so read it as "about as good, now for the right reasons" rather than a measured gain.
+
 ### Panel judges (evaluated, removed)
 
 A panel ran two LLM judges on each task and called an adjudicator when they disagreed. It was measured on the 80 gold-labelled Haiku answers and removed (the code is in git history before this change):
