@@ -302,6 +302,10 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
     L = [f"# Eval report: {root.name}", ""]
     if prov:
         L += [f"> {prov}/{n} verdicts are PROVISIONAL (rules over deterministic checks, no judge). Re-run `eval grade` with a judge.", ""]
+    warned = [r for r in rs if ((r.get("verdict") or {}).get("judge") or {}).get("warning")]
+    if warned:
+        w = warned[0]["verdict"]["judge"]["warning"]
+        L += [f"> **WARNING: {len(warned)}/{n} verdicts come from a decision-model judge.** {w}", ""]
     L += ["## Headline", ""]
     L += table(["metric", "value"], [
         ["model / harness", f"{models} / {', '.join(sorted({r['harness'] for r in rs}))}"], ["judge", judges],
@@ -362,7 +366,7 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
                "trap_pass_rate": (sum(r["passed"] for r in traps) / len(traps)) if traps else None,
                "trap_handled": sum(handled(r) is True for r in traps), "trap_handled_known": sum(handled(r) is not None for r in traps), "categories": dict(cats),
                "outcomes": dict(Counter(r["outcome"] for r in rs)), "cost_usd": round(cost, 4), "judge_cost_usd": round(jcost, 4),
-               "tokens": tok, "metrics": met, "definitions": definitions(), "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "traps": trap_data, "scaling": scale_data,
+               "tokens": tok, "metrics": met, "definitions": definitions(), "provisional": prov, "model": models, "judge": judges, "judge_breakdown": judge_breakdown(rs), "judge_warning": warned[0]["verdict"]["judge"]["warning"] if warned else None, "traps": trap_data, "scaling": scale_data,
                "system_prompt": sorted({r.get("system_prompt", "persona") for r in rs})}
     return "\n".join(L) + "\n", summary
 

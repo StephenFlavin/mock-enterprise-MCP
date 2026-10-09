@@ -443,3 +443,16 @@ def test_concurrency_override_from_env(monkeypatch):
     assert J.get("cygnet").max_workers == 24
     monkeypatch.delenv("SYSTEMONE_CONCURRENCY")
     assert J.get("cygnet").max_workers == S.PROFILES["cygnet"]["concurrency"]
+
+
+def test_decision_judges_warn_loudly_that_they_are_unreliable(fake, capsys):
+    """Evaluated and not recommended: every decision-model judge prints the warning (once per process), stores it in each
+    verdict, and the report puts it above the headline."""
+    S._WARNED.clear()
+    t = task(facts=("Bearing failure",))
+    p = payload(t, [call("list_unplanned_stoppages", {}, "asset_id,cause\nA-1,Bearing failure\n")], ans("Bearing failure."))
+    j = jev(fake())
+    jev(fake())
+    err = capsys.readouterr().err
+    assert err.count("UNRELIABLE") == 1 and "issue #5" in err
+    assert j.judge(p)["judge"]["warning"] == S.UNRELIABLE

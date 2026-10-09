@@ -40,7 +40,7 @@ class CascadeJudge(Judge):
             return v
         lv = self._call(self.llm, payload, ctx)
         lj = lv.get("judge") or {}
-        lv["judge"] = {**lj, "cascade": self.name, "escalated": reason,
+        lv["judge"] = {**lj, "cascade": self.name, "escalated": reason, **({"warning": dj["warning"]} if dj.get("warning") else {}),
                        "cost_usd": round((lj.get("cost_usd") or 0) + (dj.get("cost_usd") or 0), 6),
                        "decision": {k: dj.get(k) for k in ("backend", "model", "model_reported", "precision", "cost_usd", "latency_ms",
                                                            "n_questions", "n_calls", "decisions", "uncertain", "unfittable", "error")}

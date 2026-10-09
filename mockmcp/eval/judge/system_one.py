@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import random
+import sys
 import threading
 import time
 import urllib.error
@@ -196,6 +197,24 @@ def resolve_profile(name: str, base_url: str | None = None) -> tuple[str, dict]:
     return name, dict(PROFILES[name])
 
 
+UNRELIABLE = (
+    "Decision-model judges are UNRELIABLE and not recommended for grading. Evaluated in 2026-10 (GitHub issue #5): Cygnet "
+    "(bf16) matched Sonnet's pass rate per budget within a few points but agreed per task only 82-86% of the time, and where "
+    "the two disagreed a review found Sonnet right 43 times out of 52. Typical misses: complete writes read as incomplete, "
+    "facts given in other words, figures from the tools taken as outside ones. Use the claude-code judge for results; treat "
+    "these verdicts as a rough screen only.")
+_WARNED = set()
+
+
+def warn_unreliable(name: str) -> None:
+    """Print the reliability warning to stderr, loudly, once per judge name per process."""
+    if name in _WARNED:
+        return
+    _WARNED.add(name)
+    bar = "!" * 100
+    print(f"\n{bar}\nWARNING ({name}): {UNRELIABLE}\n{bar}\n", file=sys.stderr, flush=True)
+
+
 class SystemOneJudge(Judge):
     """One class, four registered names (the backend profiles). Options: model, base_url, api_key, precision, thresholds
     ({component: [lo, hi]} or [lo, hi]; env SYSTEMONE_THRESHOLDS as JSON), timeout, retries, max_parallel, backoff."""
@@ -207,6 +226,7 @@ class SystemOneJudge(Judge):
                  max_parallel: int | None = None, backoff: float = 1.0, **_):
         url = base_url or os.environ.get("SYSTEMONE_BASE_URL")
         self.backend, p = resolve_profile(self.profile_name, url)
+        warn_unreliable(self.backend)
         p["base_url"] = url or p["base_url"]
         p["model"] = model or os.environ.get("SYSTEMONE_MODEL") or p["model"]
         if self.backend == "cygnet":
@@ -253,7 +273,7 @@ class SystemOneJudge(Judge):
                 run(extra)
         except SystemOneError as e:
             err = e
-        meta = {"backend": self.backend, "model": self.model, "base_url": self.profile["base_url"],
+        meta = {"warning": UNRELIABLE, "backend": self.backend, "model": self.model, "base_url": self.profile["base_url"],
                 "model_reported": sorted({c["model"] for c in calls if c.get("model")}),
                 "precision": self.profile.get("precision"),
                 "cost_usd": round(sum(c["usage"]["cost"] for c in calls if not c["cached"]), 6),
