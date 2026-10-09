@@ -1,6 +1,7 @@
 """compare_html: the self-contained comparison page over a hand-built COMPARE, stub comparison charts and each side's real
 single-report charts. No model calls, no browser."""
 import copy
+import json
 import re
 from collections import Counter
 
@@ -156,7 +157,10 @@ def test_escaping():
     html = CMP.render_html(cmp, {}, {}, {})
     assert "Said &lt;b&gt;42&lt;/b&gt; &amp; then &lt;/script&gt;" in html and "&lt;b&gt;haiku&lt;/b&gt;" in html
     assert "<b>42</b>" not in html and "alert(1)</script>" not in html and "<img src=x" not in html and "<b>haiku" not in html
-    assert len(re.findall(r"<script\b", html)) == 2
+    assert len(re.findall(r"<script\b", html)) == 3 and html.count('<script type="application/json" id="mm-data">') == 1
+    data = drawer_json(html)   # the drawer's JSON cannot end its script element, and reads back unchanged
+    assert data["tasks"][cmp["tasks"][0]["key"]]["a"]["notes"]["rationale"] == cmp["tasks"][0]["a"]["notes"]["rationale"]
+    assert data["labels"] == ["<b>haiku</b>", 'son"net&']
 
 
 def test_offline_no_urls():
@@ -231,3 +235,114 @@ def test_kpis_and_theme():
     html = CMP.render_html(cmp, {}, {}, {})
     page_css = html[html.index("<style>"):html.index("</head>")].split("</style>", 1)[1]
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", page_css)
+
+
+# ---- the comparison drawer ------------------------------------------------------------------------------------------
+
+def drawer_json(html):
+    m = re.search(r'<script type="application/json" id="mm-data">(.*?)</script>', html, re.S)
+    assert m and "<" not in m.group(1)
+    return json.loads(m.group(1))
+
+
+ANSWER = "Cover is £154.1m – 60% 🙂 hedged; the floor is worth £6m more. Cost 0.17m, see 1,172,592."
+
+
+def u16(s, i):
+    return len(s[:i].encode("utf-16-le")) // 2
+
+
+def scenario(tag, found=True):
+    """A `scenario` block per the report_data contract, offsets in UTF-16 code units (the emoji counts two)."""
+    span = lambda sub, kind, note: {"start": u16(ANSWER, ANSWER.index(sub)), "end": u16(ANSWER, ANSWER.index(sub) + len(sub)),
+                                    "kind": kind, "note": note}
+    hls = [span("£154.1m", "fact", "net exposure"), span("£6m more", "fabricated", "recomputed: 9.3m"),
+           span("0.17m", "unverified" if found else "derived", "")]
+    return {"source": "payload",
+            "turns": [{"turn": 0, "user": f"Should we hedge? ({tag})", "assistant": ANSWER, "highlights": hls},
+                      {"turn": 1, "user": "And the cost?", "assistant": f"{tag} says 0.17m.", "highlights": []}],
+            "facts": [{"fact": "154.1m", "label": "net USD exposure", "status": "found", "turns": [0], "forms": ["154.1m"]},
+                      {"fact": "0.17m", "label": "hedge cost", "status": "found" if found else "not_matched", "turns": [0, 1],
+                       "forms": ["0.17m"]}],
+            "flags": [{"kind": "fabricated", "text": "claims a policy waiver </script>", "turn": 0, "located": False}],
+            "counts": {"fact": 1, "not_matched": 0 if found else 1, "fabricated": 1, "unverified": 1, "derived": 0}}
+
+
+def with_scenarios(cmp):
+    for i, t in enumerate(cmp["tasks"]):
+        t["a"]["scenario"], t["b"]["scenario"] = scenario("A", found=i % 2 == 0), scenario("B")
+    return cmp
+
+
+def test_drawer_markup_and_data_for_every_row():
+    cmp = with_scenarios(build(8)[0])
+    html = CMP.render_html(cmp, {}, {}, {})
+    assert 'role="dialog" aria-modal="true" aria-labelledby="dw-title"' in html and 'id="drawer"' in html
+    for i in ("dw-prev", "dw-next", "dw-close", "dw-row", "dw-tab-a", "dw-tab-b", "dw-body", "dw-scrim"):
+        assert f'id="{i}"' in html
+    assert html.count('class="open" data-open="') == len(cmp["tasks"])
+    data = drawer_json(html)
+    assert set(data["tasks"]) == {t["key"] for t in cmp["tasks"]}
+    t = data["tasks"][cmp["tasks"][0]["key"]]
+    assert t["task_id"] == cmp["tasks"][0]["task_id"] and t["change_label"] and set(t) >= {"a", "b", "tags", "trap", "shift"}
+    sc = t["a"]["scenario"]
+    assert [x["turn"] for x in sc["turns"]] == [0, 1] and sc["counts"]["fabricated"] == 1
+    for h in sc["turns"][0]["highlights"]:   # offsets index the text as JS does (UTF-16), so slicing by them hits the span
+        u = ANSWER.encode("utf-16-le")
+        assert u[2 * h["start"]:2 * h["end"]].decode("utf-16-le") in ("£154.1m", "£6m more", "0.17m")
+    assert t["a"]["scenario"]["facts"][1]["status"] == "found" and data["tasks"][cmp["tasks"][1]["key"]]["a"]["scenario"]["facts"][1]["status"] == "not_matched"
+    assert "innerHTML" not in html and "insertAdjacentHTML" not in html   # the drawer builds nodes, never markup
+
+
+def test_scenario_view_sorts_clamps_and_drops_overlaps():
+    sc = {"turns": [{"turn": 2, "user": "q", "assistant": "ab🙂cdef", "highlights": [
+        {"start": 4, "end": 99, "kind": "fact"}, {"start": 0, "end": 2, "kind": "fabricated", "note": "x"},
+        {"start": 1, "end": 3, "kind": "unverified"}, {"start": 3, "end": 4, "kind": "bogus"}, "junk"]}],
+          "facts": [{"fact": 7, "status": "found"}], "flags": [{"kind": "external", "text": "t", "located": 1}]}
+    v = CMP.scenario_view(sc)
+    hl = v["turns"][0]["highlights"]
+    assert [(h["start"], h["end"], h["kind"]) for h in hl] == [(0, 2, "fabricated"), (2, 3, "unverified"), (4, 8, "fact")]
+    assert v["counts"] == {"fact": 1, "fabricated": 1, "unverified": 1, "derived": 0}
+    assert v["facts"][0]["fact"] == "7" and v["flags"][0]["located"] is True and v["turns"][0]["turn"] == 2
+    assert CMP.scenario_view(None) is None and CMP.scenario_view("x") is None
+    assert CMP.scenario_view({})["turns"] == []
+
+
+def test_drawer_without_scenario_and_fallback_to_report():
+    cmp, *_ = build(8)
+    html = CMP.render_html(cmp, {}, {}, {})
+    data = drawer_json(html)
+    assert all(t["a"]["scenario"] is None and t["b"]["scenario"] is None for t in data["tasks"].values())
+    # a COMPARE whose task sides lack `scenario` still shows the one on the side's REPORT task
+    first = cmp["tasks"][0]
+    next(t for t in cmp["b"]["tasks"] if t["key"] == first["b"]["key"])["scenario"] = scenario("B")
+    data = drawer_json(CMP.render_html(cmp, {}, {}, {}))
+    assert data["tasks"][first["key"]]["b"]["scenario"]["turns"][1]["assistant"] == "B says 0.17m."
+
+
+def test_tags_filter_and_mark_map(monkeypatch):
+    cmp, c, ca, cb = build(8)
+    for t in [*cmp["a"]["tasks"], *cmp["b"]["tasks"]]:
+        t["strata"] = ["multi_turn"] if t["task_id"].endswith("Q1") else []
+    html = CMP.render_html(cmp, c, ca, cb)
+    if CMP._tags_fn()[0] is None:   # strata stand in until mockmcp/eval/tags.py exists
+        assert '<option value="multi_turn">multi turn</option>' in html
+    monkeypatch.setattr(CMP, "_tags_fn", lambda: (lambda t: ["kind:" + t["kind"], "kind:" + t["kind"]], {"kind:trap": "Trap"}))
+    html = CMP.render_html(cmp, c, ca, cb)
+    assert 'id="f-tag"' in html and '<option value="kind:trap">Trap</option>' in html
+    data = drawer_json(html)
+    t = cmp["tasks"][0]
+    assert data["tasks"][t["key"]]["tags"] == ["kind:" + t["kind"]]
+    assert data["marks"]["cmp-" + t["key"]] == data["marks"]["a-" + t["a"]["key"]] == ["kind:" + t["kind"]]
+    assert {"a-" + x["key"] for x in cmp["a"]["tasks"]} <= set(data["marks"])
+    monkeypatch.setattr(CMP, "_tags_fn", lambda: (None, {}))
+    for t in [*cmp["a"]["tasks"], *cmp["b"]["tasks"]]:
+        t["strata"] = []
+    assert 'id="f-tag"' not in CMP.render_html(cmp, c, ca, cb)
+
+
+def test_captions_for_tag_charts():
+    cmp, *_ = build(8)
+    html = CMP.render_html(cmp, {"bytag": stub_chart("bytag", cmp)}, {"tags": stub_chart("tags", cmp)}, {})
+    assert "By tag: A vs B" in html and "On which kinds of task does each model win?" in html
+    assert "<h3>By tag · haiku</h3>" in html

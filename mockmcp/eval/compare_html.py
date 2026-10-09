@@ -5,7 +5,11 @@ Two modes share one toolbar (view, effort metric, kind and run filters): Overvie
 Split screen (A's single-report charts in a left pane, B's in a right pane, chart k of A level with chart k of B). Below
 both sits the comparison task table: one `<details id="cmp-<key>">` per common task, with both judges' notes side by
 side. Every chart is namespaced (`namespace_svg`) so ids and task keys stay unique when the three sets share a page; a
-mark in either pane opens the comparison row of its task. Works without JS (overview, then the panes, rows expand)."""
+mark in either pane, or a row's Open button, opens the comparison drawer: the task once, a shared facts table, then each
+turn's prompt above both answers with highlighted found facts / fabricated / unverified spans (from each side's
+`scenario` block) and each side's "why" box. The drawer's data sits in one `application/json` script (`embed_json`)
+and is rendered with DOM calls only. Works without JS (overview, then the panes, rows expand; no drawer)."""
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -16,16 +20,19 @@ from markupsafe import Markup
 from . import report_html as RH
 
 TEMPLATE = Path(__file__).parent / "compare_template.html"
-COMPARE_ORDER = ("scoreboard", "headtohead", "shift", "outcomes", "paired", "spend", "diffs")
+COMPARE_ORDER = ("scoreboard", "headtohead", "bytag", "shift", "outcomes", "paired", "spend", "diffs")
 CAPTIONS = {   # comparison chart -> (title, the question it answers)
     "scoreboard": ("Pass rate, side against side", "Who passes more, and is the difference more than chance?"),
     "headtohead": ("Head to head", "On the same tasks, who wins?"),
+    "bytag": ("By tag: A vs B", "On which kinds of task does each model win?"),
     "shift": ("Where outcomes move", "Where do one side's failures go under the other, and the other way round?"),
     "outcomes": ("Outcome mix, side by side", "How do the two outcome mixes differ?"),
     "paired": ("Effort on the same task", "Which side burns more effort on the same task, and on which tasks?"),
     "spend": ("What it costs", "What does each side spend, and what does a pass cost?"),
     "diffs": ("Tasks that flip", "Which tasks change outcome between the two? Select a cell to open its row."),
 }
+SPLIT_CAPTIONS = {"tags": ("By tag", "Which kinds of task pass, and which fail?")}   # single-report charts report_html lacks
+HL_KINDS = ("fact", "fabricated", "unverified", "derived")
 PREFIX = {"cmp": "cmp-", "a": "a-", "b": "b-"}   # namespace of the comparison charts and of each side's charts
 # Side colours: svg.PALETTE's --mm-side-a / --mm-side-b when it has them, these otherwise (slate and indigo, >= 3:1 on bg).
 SIDE_FALLBACK = {"light": {"side-a": "#5a6b82", "side-b": "#5b54d6"}, "dark": {"side-a": "#94a3b8", "side-b": "#8f8cf5"}}
@@ -236,6 +243,105 @@ def task_row(t: dict, i: int, run_index: dict, reports: dict) -> dict:
             "question_id": info.get("question_id"), "domain": info.get("domain"), "strata": info.get("strata") or []}
 
 
+# ---- drawer data ---------------------------------------------------------------------------------------------------
+
+def embed_json(obj) -> str:
+    """JSON safe inside a `<script type="application/json">`: `<`, `>` and `&` as `\\u` escapes, so no text in the data
+    (a `</script>`, a `<!--`) can end the element; JSON.parse reads it back unchanged."""
+    s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
+    return s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _tags_fn():
+    try:
+        from . import tags as T
+        return T.tags_of, dict(getattr(T, "LABELS", {}) or {})
+    except Exception:   # built in parallel / optional: fall back to the task's strata
+        return None, {}
+
+
+def task_tags(t: dict) -> list[str]:
+    """A REPORT task's tags (tags.tags_of when that module is there, else its strata), as unique strings in order."""
+    fn, _ = _tags_fn()
+    try:
+        tags = fn(t) if fn else t.get("strata")
+    except Exception:
+        tags = t.get("strata")
+    return list(dict.fromkeys(str(x) for x in tags or [] if x not in (None, "")))
+
+
+def _int(v, default=0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def scenario_view(sc) -> dict | None:
+    """A side's `scenario` block (report_data contract) trimmed to what the drawer draws, with sorted, clamped,
+    non-overlapping highlights (offsets in UTF-16 code units, as JS indexes strings); None when there is none."""
+    if not isinstance(sc, dict):
+        return None
+    turns = []
+    for i, tn in enumerate(sc.get("turns") or []):
+        if not isinstance(tn, dict):
+            continue
+        text = str(tn.get("assistant") or "")
+        n, end, hls = len(text.encode("utf-16-le")) // 2, 0, []
+        for h in sorted((h for h in tn.get("highlights") or [] if isinstance(h, dict)), key=lambda h: _int(h.get("start"))):
+            a, b = max(_int(h.get("start")), end), min(_int(h.get("end")), n)
+            if b > a and h.get("kind") in HL_KINDS:
+                hls.append({"start": a, "end": b, "kind": h["kind"], "note": str(h.get("note") or "")})
+                end = b
+        turns.append({"turn": _int(tn.get("turn"), i), "user": str(tn.get("user") or ""), "assistant": text, "highlights": hls})
+    facts = [{"fact": str(f.get("fact") or ""), "label": str(f.get("label") or ""), "status": f.get("status") or "not_matched",
+              "turns": [_int(x) for x in f.get("turns") or []]} for f in sc.get("facts") or [] if isinstance(f, dict)]
+    flags = [{"kind": str(f.get("kind") or ""), "text": str(f.get("text") or ""), "turn": f.get("turn"), "located": bool(f.get("located"))}
+             for f in sc.get("flags") or [] if isinstance(f, dict)]
+    counts = {k: sum(h["kind"] == k for tn in turns for h in tn["highlights"]) for k in HL_KINDS}
+    return {"source": sc.get("source") or "", "turns": turns, "facts": facts, "flags": flags, "counts": counts}
+
+
+def _side_drawer(v: dict, side: dict, full: dict) -> dict:
+    """One side of a drawer entry from its task_view `v`, the COMPARE side and the side's full REPORT task."""
+    n = v.get("n") or {}
+    judge = v.get("judge") or {}
+    return {"outcome": v.get("outcome"), "band": v.get("band"), "passed": bool(v.get("passed")), "near_miss": bool(v.get("near_miss")),
+            "trap_handled": v.get("trap_handled"), "categories": [str(c) for c in v.get("categories") or []],
+            "effort": {"class": (v.get("eff") or {}).get("class") or "", "calls": v.get("n_calls", 0), "tokens": v.get("tokens"),
+                       "secs": v.get("secs"), "cost": RH.fmt_usd((v.get("eff") or {}).get("cost_usd") or 0), "turns": v.get("turns")},
+            "notes": {"rationale": str(n.get("rationale") or ""), "trap_notes": str(n.get("trap_notes") or ""),
+                      "offending": str(n.get("offending") or ""), "unsupported_claims": [str(c) for c in n.get("unsupported_claims") or []],
+                      "per_turn": [{"turn": p.get("turn"), "outcome": p.get("outcome"), "notes": str(p.get("notes") or "")}
+                                   for p in n.get("per_turn") or [] if isinstance(p, dict)]},
+            "judge": " ".join(str(x) for x in (judge.get("backend"), judge.get("model")) if x),
+            "files": [[k, h] for k, h in v.get("files") or []],
+            "scenario": scenario_view(side.get("scenario") if side.get("scenario") is not None else full.get("scenario"))}
+
+
+def drawer_data(rows: list[dict], reports: dict, labels: list[str], change_label: dict) -> dict:
+    """Everything the comparison drawer shows, keyed by comparison task key, plus the tags of every mark key
+    ("cmp-<key>", "a-<A key>", "b-<B key>") for the tag filter."""
+    tasks, marks = {}, {}
+    for s in ("a", "b"):
+        for k, t in reports[s].items():
+            marks[PREFIX[s] + str(k)] = task_tags(t)
+    for r in rows:
+        full = {s: reports[s].get((r.get(s) or {}).get("key")) or {} for s in ("a", "b")}
+        tags = list(dict.fromkeys(task_tags({**full["b"], **full["a"]}) or [str(x) for x in r.get("strata") or []]))
+        trap = r.get("trap") or {}
+        trap_s = " · ".join(str(x) for x in (trap.get("type"), trap.get("variant"), trap.get("tier"), trap.get("difficulty")) if x) \
+            + (f" · turn {trap['trap_turn']}" if trap.get("trap_turn") is not None else "") if trap else ""
+        marks[PREFIX["cmp"] + str(r["key"])] = tags
+        tasks[str(r["key"])] = {
+            "task_id": r.get("task_id"), "run": r.get("run"), "budget": r.get("budget") or "", "kind": r.get("kind") or "",
+            "trap": trap_s, "question_id": r.get("question_id") or "", "domain": r.get("domain") or "", "tags": tags,
+            "change": r.get("change"), "change_label": change_label.get(r.get("change")) or r.get("change") or "",
+            "shift": r.get("shift") or "", "differs": bool(r.get("differs")),
+            "a": _side_drawer(r["A"], r.get("a") or {}, full["a"]), "b": _side_drawer(r["B"], r.get("b") or {}, full["b"])}
+    return {"labels": labels, "tasks": tasks, "marks": marks}
+
+
 def _tone_change(c: str) -> str:
     return {"a_only": "c-side-a", "b_only": "c-side-b", "both_fail": "c-fail"}.get(c, "c-none")
 
@@ -265,8 +371,9 @@ def render_html(cmp: dict, charts: dict[str, str], charts_a: dict[str, str], cha
         return {"id": f"{s}-chart-{c}", "file": f"charts-{s}/{c}.svg",
                 "svg": Markup(RH.inline_svg(_rerun(namespace_svg(src[c], PREFIX[s]), side_runs[s])))}
     split_names = [c for c in _names({**charts_a, **{k: v for k, v in charts_b.items() if v}}, single_order)]
-    split = [{"name": c, "title": RH.CAPTIONS.get(c, (RH.label(c).capitalize(), ""))[0],
-              "question": RH.CAPTIONS.get(c, ("", ""))[1], "a": pane("a", charts_a, c), "b": pane("b", charts_b, c)}
+    caps = {**SPLIT_CAPTIONS, **RH.CAPTIONS}
+    split = [{"name": c, "title": caps.get(c, (RH.label(c).capitalize(), ""))[0],
+              "question": caps.get(c, ("", ""))[1], "a": pane("a", charts_a, c), "b": pane("b", charts_b, c)}
              for c in split_names]
 
     rows = sorted((task_row(t, i, run_index, reports) for i, t in enumerate(tasks)),
@@ -280,6 +387,12 @@ def render_html(cmp: dict, charts: dict[str, str], charts_a: dict[str, str], cha
     models = [(x.get("summary") or {}).get("model") or "" for x in (ra, rb)]
     sources = [str(s) for s in (cmp.get("sources") or [])][:2]
     sources += [""] * (2 - len(sources))
+    change_label = {"both_pass": "both pass", "both_fail": "both fail", "a_only": f"only {sa}", "b_only": f"only {sb}"}
+    data = drawer_data(rows, reports, labels, {**change_label, "a_only": f"only {la} passes", "b_only": f"only {lb} passes"})
+    for r in rows:
+        r["tags"] = data["tasks"][str(r["key"])]["tags"]
+    _, tag_labels = _tags_fn()
+    tags = [(t, str(tag_labels.get(t) or RH.label(t))) for t in sorted({t for r in rows for t in r["tags"]})]
     every = [*charts.values(), *charts_a.values(), *charts_b.values()]
     env = jinja2.Environment(autoescape=True, trim_blocks=True, lstrip_blocks=True, undefined=jinja2.ChainableUndefined)
     env.filters["label"] = RH.label
@@ -291,7 +404,7 @@ def render_html(cmp: dict, charts: dict[str, str], charts_a: dict[str, str], cha
         unpaired_b=unpaired.get("only_b_runs") or [], only_a=only[0], only_b=only[1], provisional=prov, warnings=warnings,
         kpis=kpis(tasks, labels), cards=cards, split=split, rows=rows, n_differ=sum(r["differs"] for r in rows),
         kinds=sorted({t.get("kind") for t in tasks if t.get("kind")}), views=RH.VIEWS, metrics=RH.METRICS,
-        has_metric=any("data-metric" in c for c in every if c), change_label={"both_pass": "both pass", "both_fail": "both fail",
-                                                                              "a_only": f"only {sa}", "b_only": f"only {sb}"},
+        has_metric=any("data-metric" in c for c in every if c), change_label=change_label, tags=tags,
+        data=Markup(embed_json(data)), hl_kinds=HL_KINDS,
         glossary=RH.glossary(ra.get("definitions") or rb.get("definitions") or {}) + [("Comparison terms", TERMS)],
         style=Markup(vars_css() + RH._theme_css()))
