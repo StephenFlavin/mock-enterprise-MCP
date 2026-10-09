@@ -177,3 +177,20 @@ def test_shape_and_json_round_trip():
     assert c["all"]["common"] == sum(r["common"] for r in c["runs"]) == len(c["tasks"])
     assert json.loads(json.dumps(c)) == c
     assert C.build(c["a"], c["b"], ["A", "B"]) == c   # deterministic, and the embedded REPORTs are enough
+
+
+def test_scenario_carried_into_both_sides(tmp_path):
+    ra, rb = tmp_path / "x", tmp_path / "y"
+    for root, text in ((ra, "It costs 172,592."), (rb, "No idea.")):
+        (root / "t1").mkdir(parents=True)
+        (root / "t1" / "answers.json").write_text(json.dumps({"turns": [{"text": text}]}))
+    a, b = [row("t1", "x", d=str(ra / "t1"))], [row("t1", "y", "honest_fail", d=str(rb / "t1"))]
+    for r in a + b:
+        r["task"]["reference"] = {"facts": [172592]}
+    A, B = rep(a, ra), rep(b, rb)
+    c = C.build(A, B, ["A", "B"], out=tmp_path / "cmp", sources=[ra, rb])
+    t = c["tasks"][0]
+    assert t["a"]["scenario"] == A["tasks"][0]["scenario"] and t["b"]["scenario"] == B["tasks"][0]["scenario"]
+    assert [f["status"] for f in t["a"]["scenario"]["facts"]] == ["found"]
+    assert [f["status"] for f in t["b"]["scenario"]["facts"]] == ["not_matched"]
+    assert t["a"]["scenario"]["turns"][0]["highlights"][0]["kind"] == "fact" and t["b"]["scenario"]["turns"][0]["highlights"] == []

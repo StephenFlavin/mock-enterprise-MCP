@@ -3,10 +3,15 @@ effort classes and wasted-call signals, plus per-task judge notes. No model call
 
 report.py imports this module lazily (it imports from report.py at module level)."""
 import json
+import re
 import statistics
 from collections import Counter
 from pathlib import Path
 
+from .. import bench
+from . import checks as C
+from . import derive as D
+from . import grade as G
 from .checks import turn_of_calls
 from .grade import read_json, read_jsonl
 from .report import _secs, _tok, definitions, handled, metrics, offending
@@ -146,7 +151,7 @@ def _task_entry(r: dict, key: str, root: Path, verdict_source: str) -> dict:
             "notes": {"rationale": v.get("rationale", ""), "trap_notes": v.get("trap_notes", ""),
                       "unsupported_claims": v.get("unsupported_claims") or [], "per_turn": per_turn,
                       "actions": v.get("actions") or [], "offending": offending({**r, "verdict": v})},
-            "effort": effort, "calls": call_stats(trace, t, answers),
+            "effort": effort, "calls": call_stats(trace, t, answers), "scenario": scenario_of(d, t, v, verdict_source),
             "files": {k: _rel(d / f, root) for k, f in (("answers", "answers.json"), ("trace", "trace.jsonl"),
                                                        ("checks", "checks.json"), ("judge", verdict_source))} if d else {}}
 
@@ -188,3 +193,257 @@ def build(rows: list[dict], root: Path, summary: dict, verdict_source: str = "ju
     return {"report_version": REPORT_VERSION, "title": root.name, "verdict_source": verdict_source, "summary": summary,
             "definitions": {**definitions(), "bands": BAND_TEXT, "effort": EFFORT_TEXT, "near_miss": NEAR_MISS_TEXT},
             "runs": runs, "tasks": tasks}
+
+
+# ---------- scenario: the conversation with highlighted facts and flags (the report pages' task drawer) ----------
+
+HL_RANK = {"fabricated": 3, "unverified": 2, "fact": 1, "derived": 0}   # on overlap the higher rank wins
+DASHES = "-‐‑‒–—−"
+QUOTED = re.compile(r"[“\"]([^“”\"\n]{4,300})[”\"]|‘([^‘’\n]{4,300})’"
+                    r"|(?<![A-Za-z])'([^'\n]{4,300})'(?![A-Za-z])")
+NOTE_UNVERIFIED = "code could not trace this to a tool result; the judge decided whether it is fine"
+NOTE_UNREACHABLE = "only the missing system holds this"
+NOTE_EXTERNAL = "cites a source outside the tools, with figures no tool returned"
+QUIET_CLEARED = ("template id", "date year")   # cleared values not worth a 'derived' mark
+CLAUSE = re.compile(r"[.;:!?]\s+|\s+\(|\)|\s+[\u2013\u2014-]\s+|,\s+(?:but|while|whereas|and the|the)\s+")
+MAX_FIGURE_HITS = 3   # an unsupported claim's figure is pinned only where it occurs at most this often
+
+
+def _pattern(form: str) -> re.Pattern | None:
+    """A form matched on token boundaries: not inside a longer word or number ('172,592' never inside '1,172,592'),
+    any dash for '-', any run of spaces for ' ', case-insensitive."""
+    f = str(form).strip()
+    if not f:
+        return None
+    body = "".join(f"[{DASHES}]" if c in DASHES else r"\s+" if c.isspace() else re.escape(c) for c in f)
+    body = re.sub(r"(?:\\s\+)+", r"\\s+", body)
+    pre = r"(?<!\w)(?<!\d[.,])" if f[0].isalnum() else ""
+    post = r"(?!\w)(?![.,]\d)" if f[-1].isalnum() else ""
+    return re.compile(pre + body + post, re.I)
+
+
+def find_all(text: str, form: str, lo: int = 0, hi: int | None = None) -> list[tuple[int, int]]:
+    """(start, end) of every token-bounded occurrence of `form` in text[lo:hi] (Python str indices into `text`)."""
+    rx = _pattern(form)
+    return [m.span() for m in rx.finditer(text, lo, len(text) if hi is None else hi)] if rx else []
+
+
+def utf16(text: str, spans: list[dict]) -> list[dict]:
+    """The spans with start/end turned from Python str indices into UTF-16 code units (JavaScript string indices):
+    they differ after any character outside the Basic Multilingual Plane, e.g. an emoji."""
+    if all(ord(c) < 0x10000 for c in text):
+        return spans
+    pos, n = [0], 0
+    for c in text:
+        n += 2 if ord(c) >= 0x10000 else 1
+        pos.append(n)
+    return [{**s, "start": pos[s["start"]], "end": pos[s["end"]]} for s in spans]
+
+
+def highlight(text: str, marks: list[tuple[int, int, str, str]]) -> list[dict]:
+    """Non-overlapping highlights, sorted, in UTF-16 offsets, from (start, end, kind, note) marks in str indices: on
+    overlap the stronger kind wins (fabricated > unverified > fact > derived; then the earlier, then the longer span)."""
+    keep: list[tuple[int, int, str, str]] = []
+    for m in sorted(set(marks), key=lambda m: (-HL_RANK[m[2]], m[0], m[0] - m[1])):
+        if m[0] < m[1] and all(m[1] <= k[0] or m[0] >= k[1] for k in keep):
+            keep.append(m)
+    return utf16(text, [{"start": a, "end": b, "kind": k, "note": n} for a, b, k, n in sorted(keep)])
+
+
+def _sentence_span(text: str, sentence: str) -> tuple[int, int] | None:
+    s = (sentence or "").strip()
+    for probe in (s, s[:120], s[:60]):
+        if len(probe) >= 8 and (i := text.find(probe)) >= 0:
+            return i, min(len(text), i + len(s))
+    return None
+
+
+def _locate(texts: list[str], value: str, sentence: str = "", turn=None) -> list[tuple[int, int, int]]:
+    """(turn, start, end) of a value: inside its sentence in its turn when that is found, else its first occurrence
+    in that turn, else every occurrence in any turn."""
+    order = [turn] if isinstance(turn, int) and 0 <= turn < len(texts) else []
+    for t in order:
+        if (sp := _sentence_span(texts[t], sentence)) and (hits := find_all(texts[t], value, *sp)):
+            return [(t, *hits[0])]
+        if hits := find_all(texts[t], value):
+            return [(t, *hits[0])]
+    return [(t, *h) for t, x in enumerate(texts) for h in find_all(x, value)]
+
+
+def _fact_spans(v, forms: list[str], text: str) -> list[tuple[int, int]]:
+    """Where a found fact sits in one answer: every occurrence of a numeric fact's forms; for a word fact (a name, an
+    id, a phrase) only the first occurrence of its most specific (longest) form that occurs, so 'forward' / 'forwards'
+    marks one place per turn, not every use of the word."""
+    if any(D._fact_num(o) for o in (v if isinstance(v, list) else [v])):
+        return [h for f in forms for h in find_all(text, f)]
+    for f in sorted(forms, key=lambda f: (-len(f), forms.index(f))):
+        if hits := find_all(text, f):
+            return hits[:1]
+    return []
+
+
+def _fact_text(v) -> str:
+    """A fact as shown: numbers with thousands separators (also numbers held as strings of 5+ digits), a list as 'a or b'."""
+    one = lambda x: f"{x:,}" if isinstance(x, (int, float)) and not isinstance(x, bool) else \
+        f"{int(x):,}" if isinstance(x, str) and re.fullmatch(r"\d{5,}", x) else str(x)
+    return " or ".join(dict.fromkeys(one(x) for x in v)) if isinstance(v, list) else one(v)
+
+
+def _forms_of(v) -> list[str]:
+    out = []
+    for o in v if isinstance(v, list) else [v]:
+        fs = [str(x) for x in bench._forms(o)]
+        out += fs + [f.replace("_", " ") for f in fs if "_" in f] + (D.scale_forms(o) if D._fact_num(o) else [])
+    return list(dict.fromkeys(out))
+
+
+def _figures(text: str) -> list[str]:
+    """Figures and times in a text, as written, leaving out lone digits ('0', '5' but not '5%')."""
+    fs = [n.text + ("%" if n.pct else "") for n in D.numbers(text)] + D.TIME.findall(text)
+    return [f for f in dict.fromkeys(fs) if len(re.sub(r"\D", "", f)) >= 2 or not f[-1].isdigit()]
+
+
+def _claim_spans(claim: str, texts: list[str], bad_turns: list[int]) -> list[tuple[int, int, int]]:
+    """Where an unsupported claim sits in the answer: its quoted fragments; else its clauses written word for word in
+    the answer (judges often restate the answer before correcting it); else the figures of its first clause (of the
+    whole claim when that has none), in the failing turns when the verdict names any, and only where a figure occurs
+    at most MAX_FIGURE_HITS times (the rest of a claim usually gives the right figures)."""
+    find = lambda rx: [(t, *m.span()) for t, x in enumerate(texts) for m in rx.finditer(x)]
+    quotes = [q.strip(" .,;:") for m in QUOTED.finditer(claim) for q in m.groups() if q]
+    if hits := [h for q in quotes if q for h in find(re.compile(re.escape(q), re.I))]:
+        return hits
+    clauses = [c.strip(" .,;:*'\"") for c in CLAUSE.split(claim)]
+    if hits := [h for c in clauses if len(c) >= 12 and (rx := _pattern(c)) for h in find(rx)]:
+        return hits
+    turns = [t for t in bad_turns if isinstance(t, int) and 0 <= t < len(texts)] or list(range(len(texts)))
+    hits = []
+    for fig in _figures(clauses[0]) or _figures(claim):
+        found = [(t, *h) for t in turns for h in find_all(texts[t], fig)]
+        if 0 < len(found) <= MAX_FIGURE_HITS:
+            hits += found
+    return hits
+
+
+def _payload(task_dir: Path | None, verdict_file: str) -> dict | None:
+    if task_dir is None:
+        return None
+    for f in dict.fromkeys((verdict_file, "judge.json")):
+        p = (read_json(task_dir / f, {}) or {}).get("payload")
+        if isinstance(p, dict) and p:
+            return p
+    return None
+
+
+def _inputs(p: dict | None, task: dict, answers: dict, checks: dict) -> dict:
+    """What the scenario is built from, out of a lean payload, a debug payload (task, answers, checks) or, without
+    either, answers.json, the task and checks.json."""
+    debug = p is not None and p.get("mode", "debug") == "debug"
+    if debug:
+        task, checks = p.get("task") or task, p.get("checks") or checks
+        answers = answers if answers.get("turns") else {"turns": [{"text": a.get("text", "")} for a in p.get("answers") or []]}
+    conv = (p or {}).get("conversation") or [] if p and not debug else []
+    users = [c.get("user", "") for c in conv] or [t.get("text", "") for t in task.get("turns") or []]
+    texts = [t.get("text") or "" for t in answers.get("turns") or []]   # answers.json: never trimmed for a judge
+    if not texts:
+        texts = [c.get("assistant", "") for c in conv]
+    n = max(len(users), len(texts))
+    users, texts = users + [""] * (n - len(users)), texts + [""] * (n - len(texts))
+    if p and not debug:
+        exp, g = p.get("expected") or {}, p.get("grounding") or {}
+        facts = [f.get("value") for f in exp.get("facts") or []]
+        found = exp.get("facts_found_by_code") or []
+        forms = {json.dumps(f.get("fact"), sort_keys=True, default=str): f for f in exp.get("fact_forms") or []}
+        values = g.get("values")
+        if values is None:
+            values = [{"value": v, "kind": "number"} for v in g.get("values_in_no_tool_result") or []]
+        unreach = ((p.get("trap") or {}).get("unreachable_in_answer")) or []
+        return {"users": users, "texts": texts, "facts": facts, "found": found, "forms": forms, "values": values,
+                "cleared": {**(g.get("derived_by_code") or {}), **(g.get("cleared") or {})},
+                "errors": g.get("arithmetic_errors") or [], "external": g.get("external_claims") or [], "unreachable": unreach}
+    facts = [f["value"] for f in G._expected_facts(task)]
+    text = "\n\n".join(texts)
+    found = checks["facts_found"] if "facts_found" in checks else [f for f in facts if C.fact_found(f, text)]
+    loose = list(dict.fromkeys((checks.get("ids_not_in_results") or []) + (checks.get("numbers_not_in_results") or [])))
+    return {"users": users, "texts": texts, "facts": facts, "found": found, "forms": {},
+            "values": [{"value": str(v).rstrip(","), "kind": "number"} for v in loose],
+            "cleared": dict(checks.get("values_skipped") or {}), "errors": [], "external": [], "unreachable": []}
+
+
+def scenario_of(task_dir: Path | None, task: dict, verdict: dict, verdict_file: str = "judge.json") -> dict:
+    """The task's conversation for the report pages: each turn's user prompt and assistant answer with highlights
+    (UTF-16 offsets into `assistant`, non-overlapping, sorted: expected facts code found, fabricated figures and claims,
+    values code could not trace, figures code derived), the expected facts with found / not_matched, the judge's and
+    code's flags (located: pinned to a highlight) and counts. Built from the payload of `verdict_file` (else of
+    judge.json; source "payload"), else from answers.json, the task and checks.json (source "answers")."""
+    task_dir = Path(task_dir) if task_dir else None
+    p = _payload(task_dir, verdict_file)
+    answers = (read_json(task_dir / "answers.json", {}) or {}) if task_dir else {}
+    checks = (read_json(task_dir / "checks.json", {}) or {}) if task_dir and not p else {}
+    I = _inputs(p, task, answers, checks)
+    texts = I["texts"]
+    marks: list[list] = [[] for _ in texts]
+    flags = []
+    key = lambda v: json.dumps(v, sort_keys=True, default=str)
+    found_keys = {key(f) for f in I["found"]}
+    facts, seen = [], set()
+    for v in I["facts"]:
+        if key(v) in seen:
+            continue
+        seen.add(key(v))
+        ff = I["forms"].get(key(v)) or {}
+        forms = list(dict.fromkeys([str(x) for x in ff.get("forms") or []] + _forms_of(v)))
+        label, ok = ff.get("label") or "", key(v) in found_keys
+        hit_turns = sorted({t for f in forms for t, x in enumerate(texts) if find_all(x, f)})
+        if ok:
+            for t, x in enumerate(texts):
+                marks[t] += [(a, b, "fact", label or "expected fact") for a, b in _fact_spans(v, forms, x)]
+        facts.append({"fact": _fact_text(v), "label": label, "status": "found" if ok else "not_matched",
+                      "turns": hit_turns, "forms": forms})
+    for e in I["errors"]:
+        note = f"recomputed: {e.get('computed')}" + (f" ({e['how']})" if e.get("how") else "")
+        hits = _locate(texts, str(e.get("value", "")), e.get("sentence", ""), e.get("turn"))
+        for t, a, b in hits:
+            marks[t].append((a, b, "fabricated", note))
+        if not hits:
+            flags.append({"kind": "fabricated", "text": f"{e.get('value')}: {note}", "turn": e.get("turn"), "located": False})
+    for u in I["unreachable"]:
+        if u.get("returned_by_loaded_tool"):
+            continue   # a loaded tool returned it too: the answer may rest on that, so it is no sign of fabrication
+        note = NOTE_UNREACHABLE
+        hits = [(t, a, b) for f in _forms_of(u.get("fact")) for t, x in enumerate(texts) for a, b in find_all(x, f)]
+        for t, a, b in hits:
+            marks[t].append((a, b, "fabricated", note))
+        if not hits:
+            flags.append({"kind": "fabricated", "text": f"{_fact_text(u.get('fact'))}: {note}", "turn": None, "located": False})
+    bad = [pt.get("turn") for pt in verdict.get("per_turn") or [] if modern(pt.get("outcome")) != "pass"]
+    for claim in verdict.get("unsupported_claims") or []:
+        claim = str(claim)
+        hits = _claim_spans(claim, texts, bad)
+        for t, a, b in hits:
+            marks[t].append((a, b, "fabricated", claim))
+        flags.append({"kind": "fabricated", "text": claim, "turn": hits[0][0] if hits else None, "located": bool(hits)})
+    for x in I["external"]:
+        t = x.get("turn")
+        sp = _sentence_span(texts[t], x.get("sentence", "")) if isinstance(t, int) and 0 <= t < len(texts) else None
+        if sp and x.get("has_figures") and not x.get("labelled"):
+            marks[t].append((*sp, "fabricated", NOTE_EXTERNAL))
+        flags.append({"kind": "external", "text": x.get("sentence", ""), "turn": t, "located": bool(sp)})
+    for v in I["values"]:
+        if v.get("kind") == "unreachable":
+            continue   # trap.unreachable_in_answer marks these as fabricated
+        hits = _locate(texts, str(v.get("value", "")), v.get("sentence", ""), v.get("turn"))
+        for t, a, b in hits:
+            marks[t].append((a, b, "unverified", NOTE_UNVERIFIED))
+        if not hits:
+            flags.append({"kind": "unverified", "text": str(v.get("value", "")), "turn": v.get("turn"), "located": False})
+    for val, how in I["cleared"].items():
+        if str(how) in QUIET_CLEARED:
+            continue
+        for t, x in enumerate(texts):
+            marks[t] += [(a, b, "derived", str(how)) for a, b in find_all(x, str(val))]
+    turns = [{"turn": i, "user": I["users"][i], "assistant": x, "highlights": highlight(x, marks[i])}
+             for i, x in enumerate(texts)]
+    kinds = Counter(h["kind"] for t in turns for h in t["highlights"])
+    counts = {k: kinds[k] for k in ("fact", "fabricated", "unverified", "derived")} | \
+             {"found": sum(f["status"] == "found" for f in facts), "not_matched": sum(f["status"] == "not_matched" for f in facts)}
+    return {"source": "payload" if p else "answers", "turns": turns, "facts": facts, "flags": flags, "counts": counts}

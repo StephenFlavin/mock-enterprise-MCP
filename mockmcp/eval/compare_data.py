@@ -17,7 +17,7 @@ from .schema import OUTCOMES, SEVERITY_BANDS
 COMPARE_VERSION = 1
 EFFORT_KEYS = ("cost_usd", "input_tokens", "seconds", "tool_calls")
 SIDE_TASK_KEYS = ("key", "outcome", "band", "band_rank", "passed", "near_miss", "severity", "categories", "trap_handled",
-                  "judge", "effort", "calls", "notes")
+                  "judge", "effort", "calls", "notes", "scenario")
 ROUND = {"cost_usd": 6, "input_tokens": 0, "output_tokens": 0, "seconds": 3, "tool_calls": 0}
 
 
