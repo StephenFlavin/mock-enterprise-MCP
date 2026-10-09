@@ -448,7 +448,7 @@ Applies to unjustified writes; the verdict's `severity` is the worst of them (`n
 
 ### Judge noise
 
-The same Sonnet judge, same prompt and same payloads, run twice on the 80 gold-labelled Haiku answers: 12 of 80 pass/fail verdicts flipped (17 outcomes changed), yet the pass count moved only from 37 to 39 because the flips go both ways. Agreement with the gold labels was 76 in one run and 68 in the other. So read a single judged run as a pass rate good to about ±3 points, and a single task's verdict as about 85% repeatable; compare models on many tasks, not on individual verdicts, and re-judge before drawing conclusions from a handful of flips.
+The same Sonnet judge, same prompt and same payloads, run twice on the 80 gold-labelled Haiku answers: 12 of 80 pass/fail verdicts flipped (17 outcomes changed), yet the pass count moved only from 37 to 39 because the flips go both ways. Agreement with the draft gold labels was 76 in one run and 68 in the other (62 and 65 against the human-reviewed labels). So read a single judged run as a pass rate good to about ±3 points, and a single task's verdict as about 85% repeatable; compare models on many tasks, not on individual verdicts, and re-judge before drawing conclusions from a handful of flips.
 
 ### Gold labels
 
@@ -472,7 +472,7 @@ The judge rules added from that review (in `RUBRIC`, so every prompt quotes them
 > **Evaluated and not recommended (2026-10, GitHub issue #5).** The code stays and works, but every decision-model judge prints a warning when it is built, stores it in each verdict (`verdict.judge.warning`), and `eval report` repeats it above the headline. Use the claude-code judge for any result you report.
 >
 > What was measured, with Cygnet (Gemma-4-12B, bf16, one A100 40 GB) on the lean payload:
-> - **Gold labels (80 Haiku answers):** Cygnet agreed with the labels on pass/fail for 74 of 80 after tuning (fact rows shown, snippets, benefit of the doubt on figures); Sonnet 76 of 80.
+> - **Gold labels (80 Haiku answers):** against the draft labels Cygnet agreed on pass/fail for 74 of 80 after tuning (fact rows shown, snippets, benefit of the doubt on figures) and Sonnet for 76. Re-scored against the human-reviewed labels (78 tasks, `bench/gold/`): Cygnet 62 (original profile) and 63 (tuned), the cascade 62, Sonnet with the old prompt 62 and 65 in two runs, Sonnet with the current prompt and fixed benchmark 69. The draft labels flattered every judge; the gap between Cygnet and the current LLM judge is 6 tasks.
 > - **Scale-160 Haiku run, 4 tool budgets, 640 verdicts judged by both:** the pass rate per budget was within 1–6 points of Sonnet's, but per task they agreed only 128–138 times out of 160 (82–86%).
 > - **Who is right when they disagree:** of the 52 answers Cygnet failed and Sonnet passed, a review against the tool results found Sonnet right in 43, Cygnet in 4 and neither in 5. Cygnet's misses were mostly comprehension: complete writes read as incomplete (11), facts given in other words (10), figures from the tools taken as outside ones (8). A further 10 came from benchmark facts the question does not need, which also affect the LLM judge and are being fixed in the cases.
 > - **Figures:** whether a figure was worked out from other figures needs arithmetic the decision model is not asked to do; its rejections there were wrong 10 times out of 13, so Cygnet gives figures the benefit of the doubt, and made-up claims in words are never checked.
