@@ -2,7 +2,9 @@
 
 The page inlines every chart, adds KPI tiles, a sticky toolbar (view, effort metric, kind and run filters), a sortable
 per-task table of `<details>` rows with the judge's notes, and the glossary. It needs no network and works without JS
-(default view, rows expand natively); the small script only switches attributes, filters, sorts and jumps to rows."""
+(default view, rows expand natively); the script switches attributes, filters and sorts, and opens the task drawer: the
+scenario, the answer with highlighted facts and flagged claims, the facts checklist and why the task passed or failed,
+built client-side (textContent only) from per-task JSON embedded in `<script type="application/json" id="mm-data">`."""
 import json
 import re
 from collections import Counter
@@ -29,7 +31,9 @@ CAPTIONS = {   # chart name -> (title, the question it answers)
     "scaling": ("Scaling with tool budget", "Does loading more tools break the model, and into what?"),
     "flow": ("Where tasks go as the budget grows", "Where do the tasks that pass at a small budget go at a bigger one?"),
     "matrix": ("Tasks that change across budgets", "Which tasks break under load, flip or recover? Select a cell to open its task."),
+    "tags": ("By tag", "Which kinds of task does the model handle well, and which break it?"),
 }
+HL_KINDS = ("fact", "fabricated", "unverified", "derived")   # highlight kinds of a REPORT task's `scenario`, strongest last but one
 # Copy of the shared palette (svg.PALETTE is the source of truth; this is used only when it cannot be imported).
 FALLBACK_PALETTE = {
     "light": {"--mm-bg": "#ffffff", "--mm-surface": "#f6f7f9", "--mm-fg": "#1d2025", "--mm-muted": "#5b6472",
@@ -47,6 +51,32 @@ FALLBACK_PALETTE = {
 }
 ACTION_TONE = {"external_or_irreversible": "c-unsafe_external", "reversible": "c-unsafe_reversible", "benign": "c-unsafe_benign"}
 FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+
+
+def _tags_module():
+    try:
+        from . import tags
+        return tags
+    except Exception:   # tags are built in parallel / optional: fall back to the task's strata
+        return None
+
+
+def tags_of(t: dict) -> list[str]:
+    """A task's tags (tags.tags_of when available, else its strata), as distinct strings in their own order."""
+    m = _tags_module()
+    try:
+        out = m.tags_of(t) if m else t.get("strata")
+    except Exception:
+        out = t.get("strata")
+    return list(dict.fromkeys(str(x) for x in out or [] if x))
+
+
+def tag_label(tag: str) -> str:
+    m = _tags_module()
+    try:
+        return str(m.label(tag)) if hasattr(m, "label") else str((getattr(m, "LABELS", None) or {}).get(tag) or label(tag))
+    except Exception:
+        return label(tag)
 
 
 def _palette() -> dict:
@@ -184,7 +214,47 @@ def task_view(t: dict, i: int, run_index: dict) -> dict:
             "actions": [{**a, "args_text": _args(a.get("args")) if a.get("args") else "", "tone": ACTION_TONE.get(a.get("severity"), "c-none")}
                         for a in notes.get("actions") or []],
             "files": [(k, _file_href(v)) for k, v in (t.get("files") or {}).items() if v],
-            "servers": ", ".join(f"{k} {v}" for k, v in (calls.get("servers") or {}).items())}
+            "servers": ", ".join(f"{k} {v}" for k, v in (calls.get("servers") or {}).items()), "tags": tags_of(t)}
+
+
+def _scenario(s) -> dict | None:
+    """A task's `scenario` block (report_data) trimmed to the fields the drawer reads; None when absent or malformed.
+    Highlight offsets are UTF-16 code units into the turn's `assistant` text, as JS string indices are."""
+    if not isinstance(s, dict) or not isinstance(s.get("turns"), list):
+        return None
+    hl = lambda h: {"start": int(h.get("start") or 0), "end": int(h.get("end") or 0), "kind": h.get("kind"), "note": str(h.get("note") or "")}
+    turns = [{"turn": t.get("turn", i), "user": str(t.get("user") or ""), "assistant": str(t.get("assistant") or ""),
+              "highlights": [hl(h) for h in t.get("highlights") or [] if isinstance(h, dict) and h.get("kind") in HL_KINDS]}
+             for i, t in enumerate(s["turns"]) if isinstance(t, dict)]
+    facts = [{"fact": str(f.get("fact") or ""), "label": str(f.get("label") or ""), "status": f.get("status") or "not_matched",
+              "turns": [x for x in f.get("turns") or [] if isinstance(x, int)]} for f in s.get("facts") or [] if isinstance(f, dict)]
+    flags = [{"kind": f.get("kind") or "unverified", "text": str(f.get("text") or ""), "turn": f.get("turn"),
+              "located": bool(f.get("located"))} for f in s.get("flags") or [] if isinstance(f, dict)]
+    counts = {k: v for k, v in (s.get("counts") or {}).items() if isinstance(v, int)}
+    return {"source": s.get("source") or "payload", "turns": turns, "facts": facts, "flags": flags, "counts": counts}
+
+
+def drawer_task(v: dict) -> dict:
+    """What the drawer shows for one table row (task_view): header, judge's notes, actions, files, tags and scenario."""
+    n = v["n"]
+    return {"id": v.get("task_id"), "run": v.get("run"), "budget": v.get("budget"), "kind": v.get("kind"), "trap": v.get("trap"),
+            "outcome": v.get("outcome"), "band": v["band"], "passed": bool(v.get("passed")), "near_miss": bool(v.get("near_miss")),
+            "trap_handled": v.get("trap_handled"), "effort": v["eff"].get("class"), "calls": v["n_calls"], "tokens": v["tokens"],
+            "secs": v["secs"], "cost": fmt_usd(v["eff"].get("cost_usd")) if v["eff"].get("cost_usd") is not None else None,
+            "turns": v["turns"], "categories": v.get("categories") or [], "tags": v["tags"],
+            "notes": {"rationale": n.get("rationale") or "", "trap_notes": n.get("trap_notes") or "", "offending": n.get("offending") or "",
+                      "unsupported_claims": [str(c) for c in n.get("unsupported_claims") or []],
+                      "per_turn": [{"turn": p.get("turn"), "outcome": p.get("outcome"), "notes": p.get("notes") or ""}
+                                   for p in n.get("per_turn") or [] if isinstance(p, dict)]},
+            "actions": [{k: a.get(k) for k in ("tool", "turn", "requested", "justified", "severity", "why", "args_text")}
+                        for a in v["actions"]],
+            "files": [[k, h] for k, h in v["files"]], "scenario": _scenario(v.get("scenario"))}
+
+
+def json_script(obj) -> Markup:
+    """JSON safe inside a <script> element: every '<' escaped, so no data can close the element or open a comment."""
+    s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
+    return Markup(s.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
 def run_rows(report: dict) -> list[dict]:
@@ -226,6 +296,9 @@ def render_html(report: dict, charts: dict[str, str]) -> str:
     prov = summary.get("provisional") or sum(bool((t.get("judge") or {}).get("provisional")) for t in tasks)
     warning = summary.get("judge_warning") or next(((t.get("judge") or {}).get("warning") for t in tasks
                                                     if (t.get("judge") or {}).get("warning")), None)
+    tags = sorted({g for v in rows for g in v["tags"]})
+    data = {"tasks": {str(v["key"]): drawer_task(v) for v in rows}, "tags": {g: tag_label(g) for g in tags},
+            "kinds": list(HL_KINDS)}
     env = jinja2.Environment(autoescape=True, trim_blocks=True, lstrip_blocks=True, undefined=jinja2.ChainableUndefined)
     env.filters["label"] = label
     env.filters["yesno"] = lambda v: {True: "yes", False: "no"}.get(v, "?" if v is None else str(v))
@@ -237,4 +310,4 @@ def render_html(report: dict, charts: dict[str, str]) -> str:
         kinds=sorted({t.get("kind") for t in tasks if t.get("kind")}), views=VIEWS, metrics=METRICS,
         has_metric=any("data-metric" in c for c in charts.values() if c), has_marks=any(c["has_marks"] for c in cards),
         charts_dir=charts_dir(report.get("verdict_source")), glossary=glossary(report.get("definitions") or {}),
-        style=Markup(vars_css() + _theme_css()))
+        tags=[(g, tag_label(g)) for g in tags], data=json_script(data), style=Markup(vars_css() + _theme_css()))

@@ -1,4 +1,5 @@
 """report_html: the self-contained HTML page over a hand-made REPORT and stub chart SVGs. No model calls, no browser."""
+import json
 import re
 
 from mockmcp.eval import report_html as RH
@@ -110,7 +111,7 @@ def test_rationale_escaped():
     html = RH.render_html(r, {})
     assert "Said &lt;b&gt;42&lt;/b&gt; &amp; then &lt;/script&gt;" in html
     assert "<b>42</b>" not in html and "alert(1)</script>" not in html and "<img src=x" not in html
-    assert len(re.findall(r"<script\b", html)) == 2   # the theme bootstrap and the page script, nothing injected
+    assert len(re.findall(r"<script\b", html)) == 3   # theme bootstrap, drawer data and page script, nothing injected
 
 
 def test_row_per_task_key():
@@ -185,3 +186,102 @@ def test_banners_and_minimal_report():
 def test_charts_dir_and_formatting():
     assert RH.charts_dir("judge.json") == "charts" and RH.charts_dir("judge.claude-code.json") == "charts.claude-code"
     assert (RH.fmt_tokens(231000), RH.fmt_tokens(1_250_000), RH.fmt_secs(51.2), RH.fmt_usd(0.04123)) == ("231.0k", "1.2M", "51 s", "$0.0412")
+
+
+ANSWER = "Hedge cost £0.17m 🙂 – loss 3.1m, and it is worth about £6m more than a forward.\n| a | 1,172,592 |\n|---|---|"
+
+
+def u16(s, i):
+    """UTF-16 offset of Python index i (what report_data writes and JS slices by)."""
+    return len(s[:i].encode("utf-16-le")) // 2
+
+
+def scenario(text=ANSWER):
+    i, j = text.index("0.17m"), text.index("£6m more")
+    return {"source": "payload",
+            "turns": [{"turn": 0, "user": "Should we raise the hedge ratio?", "assistant": text,
+                       "highlights": [{"start": u16(text, i), "end": u16(text, i + 5), "kind": "fact", "note": "hedging cost"},
+                                      {"start": u16(text, j), "end": u16(text, j + 8), "kind": "fabricated", "note": "own table says 9.3m"},
+                                      {"start": 1, "end": 2, "kind": "bogus", "note": "dropped"}]},
+                      {"turn": 1, "user": "And if sterling rises?", "assistant": "Then it costs 12.3m.", "highlights": []}],
+            "facts": [{"fact": "172,592", "label": "hedging_cost_gbp", "status": "found", "turns": [0], "forms": ["0.17m"]},
+                      {"fact": "12,328,000", "label": "forgone gain", "status": "not_matched", "turns": [], "forms": []}],
+            "flags": [{"kind": "fabricated", "text": "a claim nowhere in the text", "turn": 1, "located": False}],
+            "counts": {"fact": 1, "not_matched": 1, "fabricated": 1, "unverified": 0, "derived": 0}}
+
+
+def page_data(html):
+    m = re.search(r'<script type="application/json" id="mm-data">(.*?)</script>', html, re.S)
+    assert m, "drawer data script missing"
+    return m.group(1), json.loads(m.group(1))
+
+
+def test_drawer_data_every_task():
+    r = fixture_report()
+    r["tasks"][2]["scenario"] = scenario()
+    html = RH.render_html(r, stub_charts(r))
+    _, data = page_data(html)
+    assert set(data["tasks"]) == {t["key"] for t in r["tasks"]}
+    t = data["tasks"]["t2"]
+    assert t["id"] == r["tasks"][2]["task_id"] and t["outcome"] == r["tasks"][2]["outcome"] and t["passed"] is r["tasks"][2]["passed"]
+    assert t["notes"]["rationale"] == r["tasks"][2]["notes"]["rationale"] and len(t["notes"]["per_turn"]) == 2
+    sc = t["scenario"]
+    assert [h["kind"] for h in sc["turns"][0]["highlights"]] == ["fact", "fabricated"]   # unknown kinds dropped
+    assert sc["facts"][1]["status"] == "not_matched" and sc["flags"][0]["located"] is False and sc["counts"]["fabricated"] == 1
+    # offsets are UTF-16: after the emoji (2 units) Python indices and JS indices differ by one
+    text, hl = sc["turns"][0]["assistant"], sc["turns"][0]["highlights"][1]
+    js_units = text.encode("utf-16-le")
+    assert js_units[2 * hl["start"]:2 * hl["end"]].decode("utf-16-le") == "£6m more"
+    assert data["tasks"]["t0"]["scenario"] is None   # an older report.json without scenarios still renders
+    assert data["kinds"] == list(RH.HL_KINDS)
+
+
+def test_drawer_data_cannot_break_out():
+    r = fixture_report()
+    r["tasks"][0]["notes"]["rationale"] = "x </script><script>alert(1)</script> <!-- y"
+    sc = scenario("Says </script><img src=x onerror=alert(2)> and \u2028 0.17m and £6m more")
+    r["tasks"][0]["scenario"] = sc
+    html = RH.render_html(r, {})
+    raw, data = page_data(html)
+    assert "<" not in raw and "\u2028" not in raw
+    assert data["tasks"]["t0"]["notes"]["rationale"].startswith("x </script><script>alert(1)")
+    assert data["tasks"]["t0"]["scenario"]["turns"][0]["assistant"].startswith("Says </script><img")
+    assert "<img src=x" not in html and "alert(2)" not in html.replace(raw, "")
+    assert "innerHTML" not in html and "insertAdjacentHTML" not in html   # the drawer builds nodes with textContent only
+
+
+def test_drawer_markup_and_controls():
+    r = fixture_report()
+    html = RH.render_html(r, stub_charts(r))
+    assert 'role="dialog"' in html and 'aria-modal="true"' in html and 'aria-labelledby="dr-title"' in html
+    for i in ("drawer", "dr-scrim", "dr-prev", "dr-next", "dr-close", "dr-pos", "dr-body", "dr-title"):
+        assert f'id="{i}"' in html
+    assert html.count('class="open js-only" data-open="') == len(r["tasks"])
+    for t in r["tasks"]:
+        assert f'data-open="{t["key"]}"' in html
+    for s in ("Escape", "ArrowLeft", "ArrowRight", "#task-", "hashchange", "aria-pressed", "mm-sel", "Why it failed", "Why it passed",
+              "not matched by code", "Show in table"):
+        assert s in html
+    for k in RH.HL_KINDS:
+        assert f".hl-{k}" in html
+
+
+def test_tags_filter_and_chips(monkeypatch):
+    monkeypatch.setattr(RH, "_tags_module", lambda: None)
+    r = fixture_report()
+    html = RH.render_html(r, {})
+    _, data = page_data(html)
+    assert 'id="f-tag"' in html and '<option value="multi_system">' in html   # no tags module: strata stand in
+    assert data["tasks"]["t1"]["tags"] == ["multi_system"] and data["tasks"]["t0"]["tags"] == []
+    fake = type("M", (), {"tags_of": staticmethod(lambda t: ["arith", t["kind"]]), "LABELS": {"arith": "Arithmetic"}})
+    monkeypatch.setattr(RH, "_tags_module", lambda: fake)
+    html = RH.render_html(r, {})
+    _, data = page_data(html)
+    assert '<option value="arith">Arithmetic</option>' in html and data["tags"]["arith"] == "Arithmetic"
+    assert data["tasks"]["t2"]["tags"] == ["arith", "trap"]
+    bare = fixture_report(runs=("solo",), n=2)
+    for t in bare["tasks"]:
+        t["strata"] = []
+    monkeypatch.setattr(RH, "_tags_module", lambda: None)
+    assert 'id="f-tag"' not in RH.render_html(bare, {})
+    assert RH.CAPTIONS["tags"][0] == "By tag"
