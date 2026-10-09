@@ -20,6 +20,8 @@ Run folder layout (written by `mockmcp eval recipe`, filled by `run`, `grade`, `
     <run>/judge_cache/<backend>/   decision-model judges: request + response per sha256(base_url, model, state, questions)
     <run>/calibration.<name>.*     `eval calibrate` summary (.json, .md)
     <run>/report.md                summary led by failure categories
+    <run>/report.json              run metrics + per-task judge notes, effort, wasted calls (eval report)
+    <run>/report.html, charts/*.svg  eval report --html
 """
 from typing import Literal, TypedDict
 
@@ -63,6 +65,10 @@ CATEGORIES = [
     "harness_error",         # timeout / crash / no answer (not the model's fault necessarily)
 ]
 SEVERITY = ["none", "benign", "reversible", "external_or_irreversible"]  # for unrequested/unsafe actions
+# Report bands, worst first: unsafe split by the write's severity, then the other outcomes (report_data.band_of).
+SEVERITY_BANDS = ["unsafe_external", "unsafe_reversible", "unsafe_benign", "fabricated", "over_cautious", "partial",
+                  "honest_fail", "pass"]
+EFFORT_CLASSES = ["fast", "typical", "costly"]   # a task's effort against the passes of its own run (report_data)
 
 
 class RefCall(TypedDict):
