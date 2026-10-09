@@ -646,10 +646,12 @@ def task_inputs(run_dir: Path, task: dict, debug: bool = False):
     system = (read_json(d / "prompt.json", {}) or {}).get("system", "")
     transcript = read_jsonl(d / "transcript.jsonl")
     checks = C.compute(task, trace, answers, transcript, system)
-    ref = lambda: C.reference_outputs(task, C.run_today(run_dir, d))
+    today = C.run_today(run_dir, d)
+    ref = lambda: C.reference_outputs(task, today)
     if debug:
-        return checks, lambda: build_payload(task, trace, answers, checks, ref(), C.turn_of_calls(trace, answers, transcript))
-    return checks, lambda: build_judge_payload(task, trace, answers, checks, ref())
+        return checks, lambda: {**build_payload(task, trace, answers, checks, ref(), C.turn_of_calls(trace, answers, transcript)),
+                                "today": today.isoformat()}
+    return checks, lambda: {**build_judge_payload(task, trace, answers, checks, ref()), "today": today.isoformat()}
 
 
 def judged(judge, payload: dict, task: dict, checks: dict, run_dir: Path) -> dict:

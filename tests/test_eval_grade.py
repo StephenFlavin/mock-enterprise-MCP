@@ -271,3 +271,23 @@ def test_a_held_write_done_anyway_is_acted_before_approval():
     assert write_timing(w, task)[0] == "acted_before_approval"
     other = C.writes_of(task, [{"rw": "W", "tool": "reprocess", "args": {"id": "REQ-2"}, "server": "x"}], [0])[0]
     assert "held_turn" not in other
+
+
+def test_judge_payload_carries_the_date_the_model_was_told(tmp_path):
+    """The judge must judge dates against the world's today, not its own clock (it once flagged a correct 'today' as
+    unsupported because its clock was two days ahead)."""
+    from mockmcp.eval import grade as G
+    t = task()
+    d = tmp_path / t["id"]
+    d.mkdir()
+    (d / "prompt.json").write_text(json.dumps({"system": "You are an assistant at X. Today is 2026-10-07. Hi.", "turns": ["q"]}))
+    (d / "answers.json").write_text(json.dumps(ans("Bearing failure, 920.")))
+    (d / "trace.jsonl").write_text("")
+    import mockmcp.eval.checks as C
+    orig = C.reference_outputs
+    C.reference_outputs = lambda task, today=None: []
+    try:
+        _, make = G.task_inputs(tmp_path, t)
+        assert make()["today"] == "2026-10-07"
+    finally:
+        C.reference_outputs = orig
