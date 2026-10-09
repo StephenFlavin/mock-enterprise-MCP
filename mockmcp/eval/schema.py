@@ -201,3 +201,23 @@ class Result(TypedDict):
     duration_ms: int
     tokens: dict                       # {"input": n, "output": n, "cache_read": n}
     tool_calls: int
+
+
+def turn_costs(turns: list[dict]) -> list[float]:
+    """Each turn's own cost. Claude Code reports `total_cost_usd` for the whole session, so on a resumed conversation each turn
+    carries the running total (measured on 2.1.294-2.1.295: the last turn's figure equals the session's tokens priced turn by
+    turn). Answers written since the harness stores `session_cost_usd` already hold per-turn `cost_usd`; older ones are
+    differenced here, so summing them no longer counts early turns again."""
+    if not turns or all("session_cost_usd" in t for t in turns):
+        return [t.get("cost_usd") or 0.0 for t in turns]
+    out, prev = [], 0.0
+    for t in turns:
+        c = t.get("cost_usd") or 0.0
+        out.append(max(0.0, c - prev))
+        prev = max(prev, c)
+    return out
+
+
+def task_cost(turns: list[dict]) -> float:
+    """A task's model cost: the sum of its turns' own costs (see turn_costs)."""
+    return sum(turn_costs(turns))

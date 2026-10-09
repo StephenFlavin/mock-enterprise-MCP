@@ -147,7 +147,7 @@ class ClaudeCode(Harness):
         if "timeout_s" in opts:
             opts["timeout"] = opts["timeout_s"]
         sid, system = _session_id(task), json.loads((task_dir / "prompt.json").read_text())
-        turns, answers, err = system["turns"], [], None
+        turns, answers, err, spent = system["turns"], [], None, 0.0
         env = {**os.environ, "ENABLE_TOOL_SEARCH": TOOL_SEARCH[opts["tool_search"]]}
         if opts.get("fake_clock"):
             fake = clock_env(_world_today(task_dir))
@@ -175,6 +175,9 @@ class ClaudeCode(Harness):
                         ev = {"raw": line}
                     tf.write(json.dumps({"turn": i, **ev}) + "\n")
                 r = parse_turn(stream)
+                session = r["cost_usd"]   # Claude Code's total_cost_usd covers the whole resumed session: keep the turn's own share
+                r.update(session_cost_usd=session, cost_usd=max(0.0, session - spent))
+                spent = max(spent, session)
                 if r["tool_search_active"] is not None and r["tool_search_active"] != (opts["tool_search"] != "off"):
                     r["error"] = (f"{SETUP_ERROR}: tool_search {opts['tool_search']} but ToolSearch was "
                                   f"{'offered' if r['tool_search_active'] else 'not offered'} (Claude Code version or flags)")

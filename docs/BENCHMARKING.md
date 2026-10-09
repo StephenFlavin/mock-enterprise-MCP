@@ -195,7 +195,7 @@ A recipe is a YAML file; `bench/recipes/example.yaml` documents every key (copy 
 
   A task's distractors at a smaller budget are a subset of its distractors at a bigger one, and loaded servers keep their relative order (a bigger budget only inserts servers). A task that passes at 25k and fails at 200k therefore failed because of what was added. The full catalogue is 96 servers, 2,031 tools, ~484k tokens.
 
-  Check that the model's context window fits the biggest budget plus the conversation, and its long-context price: a model that bills prompts above a threshold at a higher rate pays that rate on every request once the budget crosses it (Haiku 5.5 bills prompts over 100k tokens at 5×, so on 160 tasks the 100k budget cost $57.82 against $7.66 at 50k). Drop the rung from `tools.budget` (or use `--budget tokens=0,25000,50000,100000`) for smaller windows.
+  Check that the model's context window fits the biggest budget plus the conversation, and its long-context price: a model that bills prompts above a threshold at a higher rate pays that rate on every request once the budget crosses it (Haiku 5.5 bills prompts over 100k tokens at 5×, so on 160 tasks the 100k budget cost $23.90 against $3.12 at 50k). Drop the rung from `tools.budget` (or use `--budget tokens=0,25000,50000,100000`) for smaller windows.
 - **Report.** The scaling section shows pass, fabrication, unsafe and trap-handled rates per budget, and *Breaks under load*: the tasks that pass at the smallest budget and fail at a bigger one, with the first failing budget and its categories. It also shows pass rates on the ladder prefixes (first 80 / 160 / 320), so a bigger run can be compared with a smaller one on the questions they share.
 
 ```
@@ -759,7 +759,7 @@ Differences of a few tasks between models on scale-80, or on a single trap type 
 - `write_task(task_dir, task, recipe)`: write `prompt.json` (`{"turns", "system"}`), `mcp.json` in the harness's own format (URLs use the `{PORT}` placeholder; one entry per `task["servers"]["loaded"]`, in that order) and a `run.sh` that reproduces the task by hand. Called when the recipe is built.
 - `run_task(task_dir, task, port, model, opts) -> dict`: a hub is already listening on `port`. Run every turn in order in one conversation, write `transcript.jsonl` (raw output) and `answers.json`, and return `{"turns": [{"text", "usage", "cost_usd", "duration_ms", "num_turns", "error", "started_at", "finished_at"}], "error": None | str, "model": ...}`. Never raise for model or harness failures; put them in `error`. Fill `started_at`/`finished_at` (epoch seconds): grading uses them to attribute tool calls to turns, and the report's time to result is their sum. The four headline metrics depend on what the harness returns, so a new harness must fill them all:
   - pass/fail comes from grading;
-  - `cost_usd` per turn;
+  - `cost_usd` per turn: that turn's own cost, not a running total. Claude Code's `total_cost_usd` covers the whole resumed session, so the claude-code harness stores it as `session_cost_usd` and the difference as `cost_usd`; answers written before that (no `session_cost_usd`) are differenced when read (`schema.turn_costs`). Summing running totals overstated multi-turn costs about 2.5× in runs before 2026-10-09;
   - `usage` with `input`, `output`, `cache_read` and `cache_creation` tokens, so cached input is counted;
   - `started_at` / `finished_at`.
 

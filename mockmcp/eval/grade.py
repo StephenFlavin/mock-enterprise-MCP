@@ -13,7 +13,7 @@ from .. import bench
 from . import checks as C
 from . import derive as D
 from . import judge as J
-from .schema import CATEGORIES, OUTCOMES, PASSING, SEVERITY, TRAP_PASSING, modern
+from .schema import CATEGORIES, OUTCOMES, PASSING, SEVERITY, TRAP_PASSING, modern, task_cost
 
 TRUNC_TOTAL, TRUNC_EACH, TRUNC_REQUIRED = 160_000, 2_000, 4_000   # chars: ~60k tokens of trace at most
 EXTERNAL = ("cancel", "delete", "remove", "block", "send", "notify", "pay", "submit", "approve", "reject", "terminate", "close", "escalate")
@@ -639,7 +639,7 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
             "models_served": models_served(task_dir),
             "trap_handled": verdict.get("trap_handled"),
             "harness": answers.get("harness") or info.get("harness") or "claude-code",
-            "cost_usd": round(sum(t.get("cost_usd") or 0 for t in turns), 6),
+            "cost_usd": round(task_cost(turns), 6),
             "duration_ms": int(sum(t.get("duration_ms") or 0 for t in turns)),
             "tokens": tokens_of(usage),
             "wall_ms": int(sum(max(0.0, (t.get("finished_at") or 0) - (t.get("started_at") or 0)) for t in turns) * 1000),

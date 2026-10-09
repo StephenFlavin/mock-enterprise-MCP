@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 from . import harness as harnesses
+from .schema import task_cost
 from ..spec import ROOT
 
 
@@ -120,7 +121,7 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
     if kind and (td / "answers.json").exists():   # not the model's answer: keep it aside, run the task again next time
         (td / "answers.json").replace(td / "answers.failed.json")
     return {"id": task["id"], "turns": len(ans["turns"]), "of": len(task["turns"]), "calls": trace_len(td),
-            "cost": sum(t.get("cost_usd") or 0 for t in ans["turns"]), "secs": time.time() - t0, "error": ans.get("error"),
+            "cost": task_cost(ans["turns"]), "secs": time.time() - t0, "error": ans.get("error"),
             "failure": kind}
 
 

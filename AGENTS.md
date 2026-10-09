@@ -79,11 +79,14 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 
 | Run | Approximate cost |
 |---|---|
-| Haiku on 80 tasks at one budget | ~$3 |
-| Sonnet judge for those 80 tasks | ~$10 |
-| Opus on 30 hard traps | ~$70 |
-| Haiku on 160 tasks: 0 / 25k / 50k / 100k tool budget | $4.46 / $4.35 / $7.66 / $57.82 |
-| A full five-budget scale run | 5× those, more at big budgets (below) |
+| Haiku on 80 tasks at one budget (~56k) | ~$1.70 |
+| Sonnet on the same 80 tasks | ~$26 |
+| Sonnet judge for 80 tasks | ~$6–8 |
+| Opus on 30 hard traps | ~$30 |
+| Haiku on 160 tasks: 0 / 25k / 50k / 100k / 200k tool budget | $1.66 / $1.82 / $3.12 / $23.90 / $43.59 |
+| A full five-budget scale run | the sum of its budgets; Sonnet about 25× Haiku up to 50k, about 4× above 100k |
+
+Costs before 2026-10-09 were overstated about 2.5×: Claude Code reports a resumed conversation's running total on every turn, and the turns were summed. `schema.task_cost` now counts each turn once (old answers are differenced); `eval grade --no-judge` rewrites an old run's `results.jsonl` with the corrected costs without touching verdicts.
 
 Budgets of 100k tokens and up cost far more than their size suggests: some models bill prompts over a threshold at a higher rate (Haiku 5.5: 5× above 100k tokens), and at a 100k budget every request crosses it. Check the model's long-context price before a big-budget run.
 

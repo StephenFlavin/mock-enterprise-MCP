@@ -239,3 +239,30 @@ def test_run_stops_on_fatal_error_and_resumes(tmp_path, monkeypatch):
         assert json.loads((run / "t4" / "answers.json").read_text())["error"]   # a model timeout is never retried
     finally:
         _REGISTRY.pop("scripted-test")
+
+
+def test_resumed_session_costs_are_not_counted_twice():
+    from mockmcp.eval.schema import task_cost, turn_costs
+    # Claude Code reports the running session total on every resumed turn (old answers store it as cost_usd)
+    old = [{"cost_usd": 0.31}, {"cost_usd": 0.37}, {"cost_usd": 0.43}]
+    assert [round(c, 2) for c in turn_costs(old)] == [0.31, 0.06, 0.06] and round(task_cost(old), 2) == 0.43
+    new = [{"cost_usd": 0.31, "session_cost_usd": 0.31}, {"cost_usd": 0.06, "session_cost_usd": 0.37}]
+    assert round(task_cost(new), 2) == 0.37 and task_cost([{"cost_usd": 0.2}]) == 0.2 and task_cost([]) == 0
+
+
+def test_harness_stores_each_turns_own_cost(tmp_path, monkeypatch):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    # a claude whose reported cost grows like a resumed session's running total: 0.10, 0.25
+    script = ("#!/bin/sh\nn=$(cat " + str(tmp_path / "n") + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + str(tmp_path / "n")
+              + "\nc=$( [ $n = 1 ] && echo 0.10 || echo 0.25 )\n"
+              + "echo '{\"type\": \"result\", \"subtype\": \"success\", \"result\": \"ok\", \"total_cost_usd\": '$c'}'\n")
+    (bin_ / "claude").write_text(script)
+    (bin_ / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:/usr/bin:/bin")
+    h = harness.get("claude-code")
+    h.write_task(tmp_path, TASK, {})
+    ans = h.run_task(tmp_path, TASK, 1, "haiku", {})
+    assert [(t["cost_usd"], t["session_cost_usd"]) for t in ans["turns"]] == [(0.10, 0.10), (0.15, 0.25)]
+    from mockmcp.eval.schema import task_cost
+    assert round(task_cost(ans["turns"]), 2) == 0.25
