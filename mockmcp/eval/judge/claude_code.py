@@ -9,6 +9,10 @@ from pathlib import Path
 from .base import VERDICT_SCHEMA, Judge, register
 
 PROMPTS = {"judge": Path(__file__).with_name("prompt.md"), "debug": Path(__file__).with_name("prompt-debug.md")}
+DETAIL = Path(__file__).with_name("prompt-detail.md")       # step-by-step procedure + worked examples (smaller judges)
+ADJUDICATE = Path(__file__).with_name("prompt-adjudicate.md")
+FAILED = {"outcome": "judge_failed", "categories": [], "severity": "none", "per_turn": [], "unsupported_claims": [],
+          "actions": [], "confidence": 0.0}
 
 
 def prompt_path(mode: str | None) -> Path:
@@ -16,8 +20,14 @@ def prompt_path(mode: str | None) -> Path:
     return PROMPTS.get(mode or "debug", PROMPTS["debug"])
 
 
-def prompt_for(mode: str | None) -> str:
-    return prompt_path(mode).read_text()
+def prompt_for(mode: str | None, detail: bool = False) -> str:
+    """The instructions for a payload mode; `detail` appends the step-by-step procedure (lean mode only)."""
+    base = prompt_path(mode).read_text()
+    return base + "\n\n" + DETAIL.read_text() if detail and (mode or "debug") == "judge" else base
+
+
+def payload_block(payload: dict) -> str:
+    return "\n\n# PAYLOAD\n\n```json\n" + json.dumps(payload, indent=1, default=str) + "\n```\n"
 
 
 def parse_json(text: str) -> dict | None:
@@ -44,8 +54,8 @@ def parse_json(text: str) -> dict | None:
 class ClaudeCodeJudge(Judge):
     name = "claude-code"
 
-    def __init__(self, model: str = "sonnet", timeout: int = 900, **_):
-        self.model, self.timeout = model, timeout
+    def __init__(self, model: str = "sonnet", timeout: int = 900, detail: bool = False, **_):
+        self.model, self.timeout, self.detail = model, timeout, detail
 
     def _run(self, prompt: str, schema: bool) -> tuple[dict | None, dict]:
         cmd = ["claude", "-p", "--model", self.model, "--tools", "", "--strict-mcp-config", "--setting-sources", "",
@@ -66,18 +76,23 @@ class ClaudeCodeJudge(Judge):
         v = env.get("structured_output")
         return (v if isinstance(v, dict) else parse_json(env.get("result") or "")), meta
 
-    def judge(self, payload: dict) -> dict:
-        prompt = (prompt_for(payload.get("mode")) + "\n\n# PAYLOAD\n\n```json\n" + json.dumps(payload, indent=1, default=str) + "\n```\n"
-                  "\nReturn ONLY the Verdict JSON object.\n")
+    def ask(self, prompt: str) -> tuple[dict, float, int, dict]:
+        """One verdict for a full prompt (schema-forced, one retry without the schema): (verdict, cost, ms, meta)."""
         verdict, meta, cost, ms = None, {}, 0.0, 0
         for attempt in range(2):  # one retry on invalid / missing JSON
             verdict, meta = self._run(prompt, schema=attempt == 0)
             cost, ms = cost + meta.get("cost_usd", 0), ms + meta.get("duration_ms", 0)
             if verdict and verdict.get("outcome"):
                 break
-        verdict = verdict or {"outcome": "judge_failed", "categories": [], "severity": "none", "per_turn": [],
-                              "unsupported_claims": [], "actions": [], "confidence": 0.0,
-                              "rationale": f"judge failed: {meta.get('error', 'no valid verdict')}"}
+        if not (verdict and verdict.get("outcome")):   # nothing usable after the retry, including an empty outcome
+            verdict = {**FAILED, "rationale": f"judge failed: {meta.get('error', 'no valid verdict')}"}
+        return verdict, cost, ms, meta
+
+    def judge(self, payload: dict) -> dict:
+        mode = payload.get("mode")
+        prompt = prompt_for(mode, self.detail) + payload_block(payload) + "\nReturn ONLY the Verdict JSON object.\n"
+        verdict, cost, ms, meta = self.ask(prompt)
         verdict["judge"] = {"backend": self.name, "model": self.model, "models_used": meta.get("models") or [],
-                            "cost_usd": cost, "duration_ms": ms, "prompt": prompt_path(payload.get("mode")).name}
+                            "cost_usd": cost, "duration_ms": ms,
+                            "prompt": prompt_path(mode).name + (" + " + DETAIL.name if self.detail and mode == "judge" else "")}
         return verdict

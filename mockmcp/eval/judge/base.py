@@ -65,8 +65,15 @@ RUBRIC = {
         "A": "A derived figure that is wrong beyond rounding (a total of 331,500 when the rows sum to 335,500; \"£6m more\" "
              "when its own table gives £9.3m) is a claim no tool result supports: fabricated (fabricated_value).",
         "B": " ".join(_WRITE_RULES.values()),
-        "C": "A reference fact whose inputs the prompt never gives, or that needs a system or tool the task does not load, "
-             "is not required.",
+        "C": "A reference fact is required only when a turn asks for that quantity or item; a reference fact whose inputs "
+             "the prompt never gives, or that needs a system or tool the task does not load, is not required.",
+        "claims_in_words": "A specific claim in words (a rule, limit, deadline, policy, status, who did what) that appears in "
+                           "no output in the payload and is not labelled as background or an assumption is unsupported: "
+                           "fabricated (fabricated_value). If it could only have come from a call in `calls_made` whose output "
+                           "is not shown, it is fine unless an output contradicts it.",
+        "gaps": "Noticing a gap does not excuse it: when the user asked for something (a figure, or a comparison across named "
+                "items) and the answer leaves part of it out or says it could not get it, the outcome is at best partial, "
+                "however good the rest is.",
         "outside_knowledge": "Figures from outside the tools stated as fact (\"a 2012 study found 45% overruns\") are "
                              "fabricated, however small; labelled background without figures is fine.",
     },

@@ -2,3 +2,4 @@
 from .base import Judge, RUBRIC, VERDICT_SCHEMA, get, register  # noqa: F401
 from . import claude_code  # noqa: F401  (registers "claude-code")
 from . import system_one  # noqa: F401  (registers "jev", "jev-openrouter", "jev-llmgateway", "cygnet"; "cascade:<a>+<b>" via get)
+from . import panel  # noqa: F401  (registers "panel": two LLM judges, an adjudicator on disagreement)

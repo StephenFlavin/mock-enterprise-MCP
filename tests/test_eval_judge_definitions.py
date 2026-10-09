@@ -75,7 +75,7 @@ def test_lean_prompt_explains_the_new_payload_fields():
     for f in ("grounding.values", "rows", "cleared", "arithmetic_errors", "external_claims", "user_wording", "fixed_by_user",
               "had_effect", "reference_is_one_way", "conditional", "ids_available", "fact_forms", "unreachable_in_answer"):
         assert f in p, f
-    assert len(p) < 11_000
+    assert len(p) < 12_000
 
 
 def test_grounding_cases_map_to_outcomes_and_options_are_self_contained():

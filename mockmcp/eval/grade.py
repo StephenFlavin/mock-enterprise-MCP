@@ -470,6 +470,13 @@ def fact_forms(facts: list[dict], ref_out: list[dict], answer: str) -> list[dict
     return out
 
 
+def calls_made(trace: list[dict], limit: int = 40, arg_chars: int = 120) -> list[str]:
+    """Every tool call the assistant made, as `server.tool {args}` (args cut short), so the judge can tell a claim in
+    words that may come from an output it is not shown from one that comes from nowhere."""
+    out = [f"{c.get('server')}.{c.get('tool')} {json.dumps(c.get('args') or {}, default=str)[:arg_chars]}" for c in trace]
+    return out[:limit] + ([f"... {len(out) - limit} more calls"] if len(out) > limit else [])
+
+
 def build_judge_payload(task: dict, trace: list[dict], answers: dict, checks: dict, ref_out: list[dict],
                         prompt_chars: int | None = None) -> dict:
     """The lean judge payload (mode "judge"): the conversation, the expected answer, what code found, the writes performed,
@@ -495,6 +502,7 @@ def build_judge_payload(task: dict, trace: list[dict], answers: dict, checks: di
          "grounding": grounding_of(checks, answers, trace, task),
          "actions": actions_of(task, checks, trace),
          "trap": {k: v for k, v in trap.items() if k not in TRAP_DROP} if trap else None,
+         "calls_made": calls_made(trace),
          "harness_error": checks.get("harness_error") or None}
     if trap:
         res = "\n".join(c.get("result") or "" for c in trace if not c.get("is_error"))
@@ -690,7 +698,7 @@ def call_judge(judge, payload: dict, run_dir: Path) -> dict:
 # ---------- CLI ----------
 
 def add_judge_args(p, default: str | None = "claude-code"):
-    p.add_argument("--judge", default=default, help="claude-code (recommended) | jev | jev-openrouter | jev-llmgateway | cygnet | cascade:<decision>+<llm>; decision-model judges (jev, cygnet) are unreliable, see GitHub issue #5")
+    p.add_argument("--judge", default=default, help="claude-code (recommended) | panel (two LLM judges, adjudicated on disagreement) | jev | jev-openrouter | jev-llmgateway | cygnet | cascade:<decision>+<llm>; decision-model judges (jev, cygnet) are unreliable, see GitHub issue #5")
     p.add_argument("--judge-model", default=None, help="LLM judge model (claude-code, default sonnet; for a cascade the LLM side); "
                    "for a decision judge (jev, cygnet) it overrides the System One model")
     p.add_argument("--decision-model", default=None, help="cascade only: System One model of the decision side")

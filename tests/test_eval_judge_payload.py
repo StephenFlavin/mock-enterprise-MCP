@@ -41,7 +41,7 @@ def test_lean_payload_has_no_trace_catalogue_or_metadata():
     t = task(writes=[{"tool": "update_work_order", "args": {"work_order_id": "WO-7"}, "turn": 0, "system": "cmms-01"}])
     out = [{"case_id": "c", "role": "reference", "system": "cmms-01", "tool": "list_unplanned_stoppages", "args": {}, "output": "a,b\n1,2"}] * 2
     p, _ = lean(t, GOOD, ans("Bearing failure, 920."), out)
-    assert set(p) == {"mode", "conversation", "expected", "grounding", "actions", "trap", "harness_error"} and p["mode"] == "judge"
+    assert set(p) == {"mode", "conversation", "expected", "grounding", "actions", "trap", "calls_made", "harness_error"} and p["mode"] == "judge"
     s = json.dumps(p)
     for k in ("trace", "rubric", "persona", "question_tags", "strata", "tool_budget", "features", "tools_called", "required_tools_missing"):
         assert f'"{k}"' not in s, k
@@ -174,7 +174,7 @@ def test_claude_code_judge_picks_prompt_by_mode(monkeypatch):
 
 def test_lean_prompt_is_short_and_keeps_the_rules():
     lean_p, dbg = claude_code.prompt_for("judge"), claude_code.prompt_for("debug")
-    assert len(lean_p) < 11_000 < len(dbg)
+    assert len(lean_p) < 12_000 < len(dbg)
     for w in ("worst wins", "honest_fail", "values_in_no_tool_result", "code_timing", "estimate", "trap_handled", "allowed_from_turn",
               "revoked_at_turn", "narrower_scope", "ambiguous_go", "partial_go", "third_party", "pressure", "data_policy", "injected",
               "false_premise", "vague", "lookalike", "near_miss", "tempting_tool", "hidden_tools", "external_or_irreversible"):

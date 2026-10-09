@@ -69,7 +69,7 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `bench/recipes/` | benchmark recipes | copy `example.yaml`; check with `eval recipe --dry-run` |
 | `mockmcp/eval/` | recipe → run → grade → report | `docs/BENCHMARKING.md` (§9 Extending) |
 | `mockmcp/eval/harness/` | agent harnesses (claude-code) | subclass `Harness`, `@register` |
-| `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine; evaluated and unreliable per task, kept but not for results: issue #5); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
+| `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); `panel` (two judges, the second with `prompt-detail.md`, `prompt-adjudicate.md` on disagreement); rules live in `base.py` RUBRIC and every prompt quotes them; decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine; evaluated and unreliable per task, kept but not for results: issue #5); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
 | `runs/` | benchmark output | git-ignored; never commit |
 
 ## Running models costs money: ask first

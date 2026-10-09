@@ -226,7 +226,9 @@ def judge_breakdown(rs: list[dict]) -> dict:
     out = defaultdict(Counter)
     for r in rs:
         j = (r.get("verdict") or {}).get("judge") or {}
-        if j.get("cascade"):
+        if j.get("backend") == "panel":
+            out[f"panel ({j.get('model', '')})"]["adjudicated" if j.get("adjudicated") else "agreed"] += 1
+        elif j.get("cascade"):
             backend = (j.get("decision") or {}).get("backend") or j.get("backend")
             out[f"{j['cascade']} ({backend})"]["escalated" if j.get("escalated") else "decided"] += 1
         elif "decisions" in j:
@@ -235,9 +237,11 @@ def judge_breakdown(rs: list[dict]) -> dict:
 
 
 def breakdown_cell(b: dict) -> str:
-    return "; ".join(f"{k}: {v.get('decided', 0)} decided by the decision model, {v.get('escalated', 0)} escalated"
-                     + (f" ({100 * v.get('escalated', 0) / (v.get('decided', 0) + v.get('escalated', 0)):.0f}%)" if v.get("escalated") else "")
-                     for k, v in b.items())
+    panel = [f"{k}: {v.get('agreed', 0)} agreed, {v.get('adjudicated', 0)} adjudicated" for k, v in b.items() if k.startswith("panel")]
+    b = {k: v for k, v in b.items() if not k.startswith("panel")}
+    return "; ".join(panel + [f"{k}: {v.get('decided', 0)} decided by the decision model, {v.get('escalated', 0)} escalated"
+                              + (f" ({100 * v.get('escalated', 0) / (v.get('decided', 0) + v.get('escalated', 0)):.0f}%)" if v.get("escalated") else "")
+                              for k, v in b.items()])
 
 
 def offending(r: dict) -> str:
