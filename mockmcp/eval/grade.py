@@ -711,7 +711,7 @@ def call_judge(judge, payload: dict, run_dir: Path) -> dict:
 # ---------- CLI ----------
 
 def add_judge_args(p, default: str | None = "claude-code"):
-    p.add_argument("--judge", default=default, help="claude-code (recommended) | panel (two LLM judges, adjudicated on disagreement) | jev | jev-openrouter | jev-llmgateway | cygnet | cascade:<decision>+<llm>; decision-model judges (jev, cygnet) are unreliable, see GitHub issue #5")
+    p.add_argument("--judge", default=default, help="claude-code (recommended) | jev | jev-openrouter | jev-llmgateway | cygnet | cascade:<decision>+<llm>; decision-model judges (jev, cygnet) are unreliable, see GitHub issue #5")
     p.add_argument("--judge-model", default=None, help="LLM judge model (claude-code, default sonnet; for a cascade the LLM side); "
                    "for a decision judge (jev, cygnet) it overrides the System One model")
     p.add_argument("--decision-model", default=None, help="cascade only: System One model of the decision side")

@@ -9,8 +9,6 @@ from pathlib import Path
 from .base import VERDICT_SCHEMA, Judge, register
 
 PROMPTS = {"judge": Path(__file__).with_name("prompt.md"), "debug": Path(__file__).with_name("prompt-debug.md")}
-DETAIL = Path(__file__).with_name("prompt-detail.md")       # step-by-step procedure + worked examples (smaller judges)
-ADJUDICATE = Path(__file__).with_name("prompt-adjudicate.md")
 FAILED = {"outcome": "judge_failed", "categories": [], "severity": "none", "per_turn": [], "unsupported_claims": [],
           "actions": [], "confidence": 0.0}
 
@@ -20,10 +18,9 @@ def prompt_path(mode: str | None) -> Path:
     return PROMPTS.get(mode or "debug", PROMPTS["debug"])
 
 
-def prompt_for(mode: str | None, detail: bool = False) -> str:
-    """The instructions for a payload mode; `detail` appends the step-by-step procedure (lean mode only)."""
-    base = prompt_path(mode).read_text()
-    return base + "\n\n" + DETAIL.read_text() if detail and (mode or "debug") == "judge" else base
+def prompt_for(mode: str | None) -> str:
+    """The instructions for a payload mode."""
+    return prompt_path(mode).read_text()
 
 
 def payload_block(payload: dict) -> str:
@@ -54,8 +51,8 @@ def parse_json(text: str) -> dict | None:
 class ClaudeCodeJudge(Judge):
     name = "claude-code"
 
-    def __init__(self, model: str = "sonnet", timeout: int = 900, detail: bool = False, **_):
-        self.model, self.timeout, self.detail = model, timeout, detail
+    def __init__(self, model: str = "sonnet", timeout: int = 900, **_):
+        self.model, self.timeout = model, timeout
 
     def _run(self, prompt: str, schema: bool) -> tuple[dict | None, dict]:
         cmd = ["claude", "-p", "--model", self.model, "--tools", "", "--strict-mcp-config", "--setting-sources", "",
@@ -90,9 +87,9 @@ class ClaudeCodeJudge(Judge):
 
     def judge(self, payload: dict) -> dict:
         mode = payload.get("mode")
-        prompt = prompt_for(mode, self.detail) + payload_block(payload) + "\nReturn ONLY the Verdict JSON object.\n"
+        prompt = prompt_for(mode) + payload_block(payload) + "\nReturn ONLY the Verdict JSON object.\n"
         verdict, cost, ms, meta = self.ask(prompt)
         verdict["judge"] = {"backend": self.name, "model": self.model, "models_used": meta.get("models") or [],
                             "cost_usd": cost, "duration_ms": ms,
-                            "prompt": prompt_path(mode).name + (" + " + DETAIL.name if self.detail and mode == "judge" else "")}
+                            "prompt": prompt_path(mode).name}
         return verdict
