@@ -8,7 +8,11 @@ REPLACES Claude Code's built-in agent prompt, so the model gets no instructions 
 Tool search: Claude Code defers MCP tool definitions behind a search tool when many are loaded. It is controlled by the env var
 ENABLE_TOOL_SEARCH (found in the 2.1.x binary and the settings docs): `false` = every tool definition is in context,
 `true`/`auto`/`auto:N` = deferral (auto: only when definitions exceed N% of the window, default 10). Recipe option
-harness_options.tool_search: off (default, ENABLE_TOOL_SEARCH=false) | auto (ENABLE_TOOL_SEARCH=auto).
+harness_options.tool_search: off (default, ENABLE_TOOL_SEARCH=false) | on (true: always deferred) | auto (auto).
+Deferral needs Claude Code's own ToolSearch tool: `--tools ''` (no built-in tools, used so the model only has the MCP tools)
+removes it too and silently keeps every definition in context (measured on 2.1.295: "hi" with all 96 servers is 493k input
+tokens either way). So with tool search on, the harness allows exactly `--tools ToolSearch` (59.9k tokens for the same "hi"),
+and every turn records whether ToolSearch was really offered (`tool_search_active`, from the stream's init event).
 """
 import json
 import os
@@ -22,7 +26,8 @@ from pathlib import Path
 
 from .base import Harness, register, system_prompt as _system_prompt
 
-TOOL_SEARCH = {"off": "false", "auto": "auto"}
+SETUP_ERROR = "harness setup"   # an answer that measures the harness, not the model: the runner stops and keeps no answer
+TOOL_SEARCH = {"off": "false", "on": "true", "auto": "auto"}
 DEFAULTS = {"tool_search": "off", "max_turns": 25, "timeout": 900, "fake_clock": False}
 # Claude Code adds its own "Today's date is <real date>" reminder even with --system-prompt, and CLAUDE_CODE_OVERRIDE_DATE has no
 # effect in -p mode (tested on 2.1.x), so the model can see two dates when the world's today (spec.today(), a Wednesday) differs
@@ -47,11 +52,12 @@ def system_prompt(task: dict) -> str:
     return _system_prompt(task)
 
 
-def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, max_turns: int, system: str) -> list[str]:
-    servers = task["servers"]["loaded"]
+def _cmd(task: dict, mcp: Path, model: str, prompt: str, sid: str, first: bool, max_turns: int, system: str,
+         tool_search: str = "off") -> list[str]:
+    servers, search = task["servers"]["loaded"], tool_search != "off"
     return ["claude", "-p", prompt, "--session-id" if first else "--resume", sid, "--model", model,
-            "--mcp-config", str(mcp), "--strict-mcp-config", "--tools", "",
-            "--allowedTools", *[f"mcp__{s}" for s in servers], "--setting-sources", "",
+            "--mcp-config", str(mcp), "--strict-mcp-config", "--tools", "ToolSearch" if search else "",
+            "--allowedTools", *[f"mcp__{s}" for s in servers], *(["ToolSearch"] if search else []), "--setting-sources", "",
             "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
             "--system-prompt", system]  # replaces Claude Code's built-in agent prompt: no hints
 
@@ -69,7 +75,8 @@ def _session_id(task: dict) -> str:
 
 def parse_turn(stream: str) -> dict:
     """One turn's stream-json -> {"text","usage","cost_usd","duration_ms","num_turns","error","calls"}."""
-    out = {"text": "", "usage": {}, "cost_usd": 0.0, "duration_ms": 0, "num_turns": 0, "error": None, "calls": 0}
+    out = {"text": "", "usage": {}, "cost_usd": 0.0, "duration_ms": 0, "num_turns": 0, "error": None, "calls": 0,
+           "tool_search_active": None}
     seen_result = False
     for line in stream.splitlines():
         try:
@@ -77,6 +84,8 @@ def parse_turn(stream: str) -> dict:
         except ValueError:
             continue
         msg = ev.get("message")
+        if ev.get("type") == "system" and ev.get("subtype") == "init" and isinstance(ev.get("tools"), list):
+            out["tool_search_active"] = "ToolSearch" in ev["tools"]
         if ev.get("type") == "assistant" and isinstance(msg, dict) and isinstance(msg.get("content"), list):
             out["calls"] += sum(p.get("type") == "tool_use" for p in msg["content"])
         if ev.get("type") == "result":
@@ -125,7 +134,7 @@ class ClaudeCode(Harness):
                  'sed "s/{PORT}/$PORT/g" mcp.json > "$WORK/mcp.json"',
                  f"SYSTEM={shlex.quote(system)}", ""]
         for i, text in enumerate(turns):
-            c = _cmd(task, Path("$WORK/mcp.json"), "$MODEL", text, sid, i == 0, opts["max_turns"], "$SYSTEM")
+            c = _cmd(task, Path("$WORK/mcp.json"), "$MODEL", text, sid, i == 0, opts["max_turns"], "$SYSTEM", opts["tool_search"])
             q = [shlex.quote(x) if x not in ("$WORK/mcp.json", "$MODEL", "$SYSTEM") else f'"{x}"' for x in c]
             lines.append(f'(cd "$WORK" && {" ".join(q)}) | tee -a transcript.run.jsonl')
         sh = task_dir / "run.sh"
@@ -149,7 +158,7 @@ class ClaudeCode(Harness):
             mcp = Path(work) / "mcp.json"
             mcp.write_text((task_dir / "mcp.json").read_text().replace("{PORT}", str(port)))
             for i, text in enumerate(turns):
-                cmd = _cmd(task, mcp, model, text, sid, i == 0, opts["max_turns"], system["system"])
+                cmd = _cmd(task, mcp, model, text, sid, i == 0, opts["max_turns"], system["system"], opts["tool_search"])
                 t0 = time.time()
                 try:
                     p = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=opts["timeout"])
@@ -166,10 +175,13 @@ class ClaudeCode(Harness):
                         ev = {"raw": line}
                     tf.write(json.dumps({"turn": i, **ev}) + "\n")
                 r = parse_turn(stream)
+                if r["tool_search_active"] is not None and r["tool_search_active"] != (opts["tool_search"] != "off"):
+                    r["error"] = (f"{SETUP_ERROR}: tool_search {opts['tool_search']} but ToolSearch was "
+                                  f"{'offered' if r['tool_search_active'] else 'not offered'} (Claude Code version or flags)")
                 if r["error"] and stderr.strip():
                     r["error"] += f" [{stderr.strip()[-200:]}]"
                 answers.append({**r, "started_at": t0, "finished_at": t1})
-                if r["error"] and not r["text"]:
+                if r["error"] and (not r["text"] or r["error"].startswith(SETUP_ERROR)):
                     err = f"turn {i}: {r['error']}"
                     break  # a failed turn leaves nothing to resume from
         res = {"turns": answers, "error": err, "model": model, "session_id": sid}

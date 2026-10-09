@@ -70,7 +70,9 @@ What to expect for the smoke recipe (6 tasks: 3 slices, 3 scenarios with follow-
 
 Each task prints one line while running (`scn-04:32:Q6  turns 4/4  calls 28  $0.046  73s`). Everything lands in `runs/smoke/` (git-ignored): `report.md` is the thing to read, `summary.json`, `report.json` and `results.jsonl` are the machine-readable versions, and `report --html` adds charts and a page to browse (section 6). `run` and `grade` are resume-safe: finished tasks are skipped, so an interrupted run can simply be started again.
 
-Useful flags: `run --only <substring>`, `run --limit N` (0 means no limit), `run --rerun`, `grade --only`, `grade --rerun`, `grade --no-judge` (see section 5).
+**Stopping and resuming.** `eval run` and `eval grade` can be stopped at any point (Ctrl-C, out of credit, a restarted machine) and resumed by running the same command again: tasks with an answer are skipped, and a task cut off mid-way left no answer, so it runs again. An answer that says nothing about the model is never kept: when the API reports no credit, a refused key or a harness setup error, the run stops at once (every later task would fail the same way) and the task's answer is moved to `answers.failed.json`; overloads, rate limits and lost connections drop only that task's answer. So topping up credit and re-running the command finishes the run without skewing it. `run --retry-errors` also re-runs tasks whose stored answer failed for those reasons (runs written before this rule); model timeouts, empty answers and hitting the turn limit stay the model's result and are never retried. `eval grade` likewise re-judges only tasks whose verdict is still provisional (a judge call that failed).
+
+Useful flags: `run --only <substring>`, `run --limit N` (0 means no limit), `run --rerun`, `run --retry-errors`, `grade --only`, `grade --rerun`, `grade --no-judge` (see section 5).
 
 ### Worked example: Haiku and Sonnet on `scale-80` at the 50k budget
 
@@ -267,7 +269,7 @@ harness_options: {tool_search: off, max_turns: 25, timeout: 600}
 
 | option | default | meaning |
 |---|---|---|
-| `tool_search` | `off` | `off` sets `ENABLE_TOOL_SEARCH=false`: every tool definition is in context (what this benchmark is about). `auto` sets `ENABLE_TOOL_SEARCH=auto`: Claude Code defers MCP tool definitions behind its tool-search tool when they get large, which tests a different thing. |
+| `tool_search` | `off` | `off` sets `ENABLE_TOOL_SEARCH=false`: every tool definition is in context (what this benchmark is about). `on` sets `ENABLE_TOOL_SEARCH=true`: Claude Code always defers MCP tool definitions behind its ToolSearch tool and the model searches for the ones it needs, which tests a different thing. `auto` defers only once the definitions pass 10% of the context window (100k tokens on a 1M-token model, so only the biggest budgets). With `on` or `auto` the harness allows exactly Claude Code's `ToolSearch` tool (`--tools ToolSearch`): the usual `--tools ''` removes it and silently keeps every definition in context. Each turn records `tool_search_active` from Claude Code's init event, and a run whose setting and reality disagree stops at its first task. Measured with every server loaded (96 servers, 2,031 tools) and the prompt "hi" to Haiku: 493k input tokens with tool search off, 60k with it on. |
 | `max_turns` | `25` | `--max-turns` per conversation turn |
 | `timeout` | `900` | seconds per conversation turn (`timeout_s` is accepted as an alias) |
 | `fake_clock` | `false` | run `claude` under libfaketime set to the world's today. Claude Code adds its own *real* date to the model's context, even with `--system-prompt`, so without this the model can see two dates (world Wednesday and real today). Needs libfaketime (`apt install faketime`, `brew install libfaketime`). It breaks TLS where a proxy issues certificates dated today, as in some sandboxes. |
