@@ -291,3 +291,11 @@ def test_judge_payload_carries_the_date_the_model_was_told(tmp_path):
         assert make()["today"] == "2026-10-07"
     finally:
         C.reference_outputs = orig
+
+
+def test_results_record_the_model_that_actually_answered(tmp_path):
+    """`haiku` is an alias that moves to newer models; results keep the served model id from the transcript."""
+    from mockmcp.eval import grade as G
+    (tmp_path / "transcript.jsonl").write_text(json.dumps({"type": "result", "modelUsage": {"claude-haiku-5-5": {}}}) + "\n"
+                                               + json.dumps({"type": "assistant"}) + "\n")
+    assert G.models_served(tmp_path) == ["claude-haiku-5-5"] and G.models_served(tmp_path / "missing") == []

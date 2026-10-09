@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from .grade import read_json, read_jsonl, result_for, run_dirs
+from .grade import read_json, read_jsonl, result_for, run_dirs, models_served
 from .schema import CATEGORIES, OUTCOMES, modern
 
 
@@ -31,7 +31,8 @@ def load_run(rd: Path) -> list[dict]:
         v = (read_json(rd / tid / "judge.json", {}) or {}).get("verdict")
         r = results.get(tid) or (result_for(rd / tid, t, v, rd) if v else None)
         if r:
-            r = {**r, "outcome": modern(r.get("outcome")), "categories": [modern(c) for c in r.get("categories") or []]}
+            r = {**r, "outcome": modern(r.get("outcome")), "categories": [modern(c) for c in r.get("categories") or []],
+                 "models_served": r.get("models_served") or models_served(rd / tid)}   # older results.jsonl lack it
             out.append({**r, "task": t, "verdict": v or {}, "run": rd.name, "budget": budget, "system_prompt": sysp,
                         "strategy": t.get("tool_budget", {}).get("strategy") or strat, "dir": str(rd / tid)})
     if rebuilt and out:
@@ -300,7 +301,8 @@ def render(rs: list[dict], root: Path) -> tuple[str, dict]:
     tok = {k: sum(_tok(r)[k] for r in rs) for k in ("input_total", "input_uncached", "output", "cache_read", "cache_creation")}
     tok["input"] = tok["input_uncached"]  # summary.json compatibility: `input` was always the uncached part
     met = metrics(rs)
-    models = ", ".join(sorted({r["model"] for r in rs}))
+    served = sorted({m for r in rs for m in r.get("models_served") or []})
+    models = ", ".join(sorted({r["model"] for r in rs})) + (f" ({', '.join(served)})" if served else "")
     judges = ", ".join(sorted({f"{r['verdict'].get('judge', {}).get('backend', '?')} {r['verdict'].get('judge', {}).get('model', '')}".strip() for r in rs}))
     sev = Counter(r["severity"] for r in unsafe)
     L = [f"# Eval report: {root.name}", ""]

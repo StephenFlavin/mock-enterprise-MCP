@@ -615,6 +615,16 @@ def tokens_of(usage) -> dict:
     return t
 
 
+def models_served(task_dir: Path) -> list[str]:
+    """The model ids that actually answered (from the transcript's result events), since aliases such as `haiku` move to
+    newer models over time."""
+    out = set()
+    for e in read_jsonl(task_dir / "transcript.jsonl"):
+        if isinstance(e, dict) and e.get("type") == "result":
+            out.update((e.get("modelUsage") or {}).keys())
+    return sorted(out)
+
+
 def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None = None) -> dict:
     answers = read_json(task_dir / "answers.json", {}) or {}
     turns = answers.get("turns", [])
@@ -626,6 +636,7 @@ def result_for(task_dir: Path, task: dict, verdict: dict, run_dir: Path | None =
     return {"task_id": task["id"], "kind": task["kind"], "question_id": task.get("question_id"), "strata": task.get("strata", []),
             "tool_budget": task.get("tool_budget", {}), "outcome": verdict["outcome"], "passed": verdict["passed"],
             "categories": verdict["categories"], "severity": verdict["severity"], "model": model,
+            "models_served": models_served(task_dir),
             "trap_handled": verdict.get("trap_handled"),
             "harness": answers.get("harness") or info.get("harness") or "claude-code",
             "cost_usd": round(sum(t.get("cost_usd") or 0 for t in turns), 6),

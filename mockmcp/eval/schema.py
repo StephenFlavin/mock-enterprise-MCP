@@ -189,6 +189,7 @@ class Result(TypedDict):
     categories: list[str]
     severity: str
     model: str
+    models_served: list[str]           # model ids that actually answered (aliases like `haiku` move over time)
     harness: str
     cost_usd: float
     duration_ms: int
