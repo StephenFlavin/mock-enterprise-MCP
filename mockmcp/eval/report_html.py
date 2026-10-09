@@ -16,7 +16,7 @@ from .schema import EFFORT_CLASSES, OUTCOMES, SEVERITY_BANDS
 
 TEMPLATE = Path(__file__).parent / "report_template.html"
 CHART_ORDER = ("waffle", "outcomes", "effort", "waste", "breakdown", "categories", "scaling", "flow", "matrix")
-WIDE = {"waffle", "effort", "scaling", "flow", "matrix"}   # charts that get a full-width card
+WIDE = {"waffle", "effort", "scaling", "flow", "matrix"}   # charts drawn wide (every card is full width: the SVGs carry their own headings)
 VIEWS = (("binary", "Pass vs fail"), ("outcome", "Outcome"), ("severity", "Severity"))
 METRICS = (("input_tokens", "Input tokens"), ("seconds", "Seconds"), ("tool_calls", "Tool calls"), ("cost_usd", "Cost"))
 CAPTIONS = {   # chart name -> (title, the question it answers)
