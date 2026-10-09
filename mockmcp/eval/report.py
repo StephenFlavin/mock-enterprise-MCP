@@ -36,8 +36,9 @@ def verdict_file(name: str | None) -> str:
     return f"judge.{safe_name(name)}.json" if name else "judge.json"
 
 
-def load_run(rd: Path, verdicts: str | None = None, skipped: list | None = None) -> list[dict]:
-    """Results for one run, each with its task, verdict and run label attached (results.jsonl is rebuilt from judge.json if missing).
+def load_run(rd: Path, verdicts: str | None = None, skipped: list | None = None, write: bool = True) -> list[dict]:
+    """Results for one run, each with its task, verdict and run label attached (results.jsonl is rebuilt from judge.json if
+    missing, unless `write` is false: `eval compare` reads runs it must never change).
 
     With `verdicts`, each row's verdict fields come from grade.finish over judge.<verdicts>.json instead; graded tasks without
     that file are left out (their ids appended to `skipped`), never filled in from another judge, and results.jsonl is
@@ -68,7 +69,7 @@ def load_run(rd: Path, verdicts: str | None = None, skipped: list | None = None)
                  "models_served": r.get("models_served") or models_served(rd / tid)}   # older results.jsonl lack it
             out.append({**r, "task": t, "verdict": v or {}, "run": rd.name, "budget": budget, "system_prompt": sysp,
                         "strategy": t.get("tool_budget", {}).get("strategy") or strat, "dir": str(rd / tid)})
-    if rebuilt and out and not verdicts:
+    if write and rebuilt and out and not verdicts:
         (rd / "results.jsonl").write_text("".join(json.dumps({k: r[k] for k in r if k not in ("task", "verdict", "run", "budget", "strategy", "dir", "system_prompt")}) + "\n" for r in out))
     return out
 

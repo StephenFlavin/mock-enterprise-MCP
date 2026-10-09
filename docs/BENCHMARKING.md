@@ -310,6 +310,8 @@ Recipes that still set `harness_options.system_prompt` are rejected. The earlier
 <run>/report.<name>.md/.json/.html, summary.<name>.json, charts.<name>/   `eval report --verdicts <name>`
 <run>/judge_cache/<backend>/   decision-model judges: one request + response per question set (re-grades are free)
 <run>/calibration.<name>.json, .md   `eval calibrate` summary
+compare-<A>-vs-<B>/        `eval compare A B` (next to A; never inside A or B): compare.md, compare.json; with --html also
+                           charts/, charts-a/, charts-b/ (*.svg) and compare.html
 ```
 
 The contract lives in `mockmcp/eval/schema.py`; everything is plain JSON so other tools can read a run folder.
@@ -626,6 +628,50 @@ Charts (`--html`; each answers one question and is left out when it does not app
 | `matrix` | 2 or more budgets: the tasks whose outcome changes across budgets |
 
 Each `.svg` stands alone and can be reused in other documents. It carries its own styles: light by default, dark under the system's dark setting, and `data-theme="light|dark"` on the `<svg>` (or on the host page's `<html>`) forces one. `data-view="binary|outcome|severity"` on the `<svg>` picks the colouring (pass/fail, outcome or severity band; default `outcome`), and the effort chart's `data-metric` picks `input_tokens`, `seconds`, `tool_calls` or `cost_usd`. The page sets these with its theme, view and metric controls, filters per-task marks by kind and budget (aggregate charts always show every task), and links each mark to its row in the task table.
+
+### Comparing two runs
+
+`eval compare` puts two graded runs side by side, task by task: two models on the same tasks, or one model under two settings (a system prompt, a tool budget strategy, a harness option). It reads both runs and never writes into either: `results.jsonl` is not rebuilt, even when missing.
+
+```
+python -m mockmcp eval compare runs/scale-80-haiku-v3 runs/scale-80-sonnet-v3                  # compare.md, compare.json
+python -m mockmcp eval compare runs/scale-80-haiku-v3 runs/scale-80-sonnet-v3 --html           # + charts and compare.html
+python -m mockmcp eval compare runs/a runs/b --labels "before,after" --out runs/cmp-ab --no-open
+python -m mockmcp eval compare runs/a runs/b --verdicts claude-code                            # judge.claude-code.json on both sides
+```
+
+- `A` and `B`: run folders, or grid parents (budget grid sub-runs).
+- `--labels "a,b"`: the two side names. By default each side is named after the model it served (the served model ids that match the recorded alias, since a harness may also serve a helper model), else the recorded model, else the folder name; when both come out the same, the folder name is appended.
+- `--verdicts NAME`: both sides report `judge.NAME.json`, with the same rules as `eval report --verdicts` (`passed` recomputed by `grade.finish`; tasks without that file are left out and counted, never filled in from `judge.json`). Two different verdict files are never compared.
+- `--out DIR`: default `compare-<A>-vs-<B>` next to A (`compare-<A>-vs-<B>.NAME` with `--verdicts`). An output folder inside A or B is refused.
+- `--html`, `--open` / `--no-open`: as for `eval report`.
+
+Pairing:
+- Two single runs always pair, as one run named after their common folder name, or `run` when the names differ.
+- Grids pair by sub-run name (`tokens-0` with `tokens-0`, and so on). Sub-runs on one side only are listed as unpaired and left out. With two or more paired runs an `all` row pools them.
+- A single run against a grid is an error: pass one sub-run of the grid instead.
+- Within a paired run, tasks pair by task id. Tasks on one side only are counted (`only_a`, `only_b`) and never mixed into any figure.
+
+Outputs:
+- `compare.md`: a headline table per paired run (A and B pass rate, Δ in points, McNemar p, head-to-head counts, cost, input token, time and tool call ratios B / A), then the tasks that flip, grouped: B passes and A fails, A passes and B fails, both fail differently, both pass differently.
+- `compare.json` (`compare_version` 1): `labels`, `sources`, `verdict_source`, `excluded` (tasks left out per side by `--verdicts`), `unpaired`, both REPORTs unchanged (`a`, `b`, as `report.json` holds them), `runs` (per paired run: each side's pass rate, outcomes, bands, near misses, totals and medians of effort, trap handling; `delta` B − A, `ratio` B / A, `head_to_head`, `mcnemar_p`, outcome and band transitions), `all` (the same over every paired run) and `tasks` (one per common task: `change` is who passed, `shift` whether B's severity band is better, worse or the same, and each side's outcome, band, judge notes, effort, calls and file links relative to the compare folder). `passed` is copied from each side, never recomputed.
+- With `--html`: `charts/*.svg` (comparison charts), `charts-a/*.svg` and `charts-b/*.svg` (each side's single-report charts, as in the table above) and one self-contained `compare.html`.
+
+Comparison charts:
+
+| chart | question |
+|---|---|
+| `scoreboard` | who passes more, and is the difference real? (pass rate of A and B per run, Δ and p) |
+| `headtohead` | on the same tasks, who wins? (tasks only A passes against tasks only B passes, with both-pass and both-fail) |
+| `shift` | where do A's failures go under B, and the other way round? (outcome A → outcome B) |
+| `outcomes` | how do the two outcome mixes differ, run by run? |
+| `paired` | which side spends more effort on the same task, and on which tasks? (per task, A's effort against B's, log scale) |
+| `spend` | what does the better side cost? (cost, input tokens, time, tool calls and cost per pass, with B / A ratios) |
+| `diffs` | which tasks flip between the two? (none when every common task has the same outcome) |
+
+**McNemar p**, in plain words: look only at the tasks where exactly one side passed. If A and B were equally good, each of those tasks would be as likely to go A's way as B's, like a coin toss. p is the chance of a split at least as lopsided as the one seen under that coin toss (exact two-sided binomial test). Under 0.05 the difference is unlikely to be luck; a large p says the runs cannot be told apart on these tasks, however big Δ looks. Tasks both passed or both failed carry no information either way, and 80 tasks rarely give a small p unless the gap is wide.
+
+`compare.html` has two modes, switched in the toolbar. **Overview**: the comparison charts, then a task table with A's outcome → B's outcome per common task (only the tasks that differ by default), both judges' notes side by side when a row is opened. **Split screen**: two vertical panes, A's single-report charts on the left and B's on the right, each chart level with its counterpart (stacked at phone width). The view, metric and filter controls drive both panes, and clicking a task in either pane opens its comparison row.
 
 ## 7. Evaluating a model
 

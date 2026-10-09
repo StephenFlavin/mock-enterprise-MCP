@@ -58,6 +58,7 @@ python -m mockmcp eval run    runs/scale-80 --model haiku --workers 8
 python -m mockmcp eval grade  runs/scale-80 --judge claude-code --judge-model sonnet
 python -m mockmcp eval report runs/scale-80                                                          # runs/scale-80/report.md, summary.json, report.json
 python -m mockmcp eval report runs/scale-80 --html                                                   # + charts/*.svg and report.html
+python -m mockmcp eval compare runs/scale-80-haiku runs/scale-80-sonnet --html                       # two runs task by task: compare.md, compare.html
 ```
 
 **Scale recipes nest.**

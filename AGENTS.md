@@ -68,6 +68,7 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `bench/traps.yaml` | trap bank (generated + `authored: true` entries) | `mockmcp/eval/trap_seeds.py` / `traps.py`, then `eval traps` |
 | `bench/recipes/` | benchmark recipes | copy `example.yaml`; check with `eval recipe --dry-run` |
 | `mockmcp/eval/` | recipe → run → grade → report (`report.md`, `summary.json`, `report.json`; `--html` adds SVG charts and `report.html`, `--verdicts NAME` reports `judge.NAME.json`) | `docs/BENCHMARKING.md` (§9 Extending) |
+| `mockmcp/eval/compare*.py` | `eval compare A B`: two runs task by task (`compare.md`, `compare.json`; `--html` adds comparison charts, both sides' charts and `compare.html` with a split screen); never writes into A or B | `docs/BENCHMARKING.md` §6 Comparing two runs |
 | `mockmcp/eval/harness/` | agent harnesses (claude-code) | subclass `Harness`, `@register` |
 | `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); rules live in `base.py` RUBRIC and every prompt quotes them; decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine; evaluated and unreliable per task, kept but not for results: issue #5); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
 | `runs/` | benchmark output | git-ignored; never commit |
