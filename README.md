@@ -56,7 +56,8 @@ Reports lead with *why* tasks failed:
 python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80 --harness claude-code   # 80 questions x 5 tool budgets
 python -m mockmcp eval run    runs/scale-80 --model haiku --workers 8
 python -m mockmcp eval grade  runs/scale-80 --judge claude-code --judge-model sonnet
-python -m mockmcp eval report runs/scale-80                                                          # runs/scale-80/report.md
+python -m mockmcp eval report runs/scale-80                                                          # runs/scale-80/report.md, summary.json, report.json
+python -m mockmcp eval report runs/scale-80 --html                                                   # + charts/*.svg and report.html
 ```
 
 **Scale recipes nest.**

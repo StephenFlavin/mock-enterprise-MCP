@@ -55,7 +55,8 @@ Then the four steps:
 python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke --harness claude-code   # 1. tasks + mcp.json + run.sh per task
 python -m mockmcp eval run    runs/smoke --model haiku --workers 4           # 2. model under test, hub records every call
 python -m mockmcp eval grade  runs/smoke --judge claude-code --judge-model sonnet   # 3. checks + judge
-python -m mockmcp eval report runs/smoke                                     # 4. report.md, summary.json
+python -m mockmcp eval report runs/smoke                                     # 4. report.md, summary.json, report.json
+python -m mockmcp eval report runs/smoke --html                              #    also charts/*.svg and report.html
 ```
 
 What to expect for the smoke recipe (6 tasks: 3 slices, 3 scenarios with follow-ups; measured on haiku, 4 workers):
@@ -67,7 +68,7 @@ What to expect for the smoke recipe (6 tasks: 3 slices, 3 scenarios with follow-
 | grade (sonnet judge) | ~1 min | ~$0.13 per task (see the worked example below) |
 | report | instant | none |
 
-Each task prints one line while running (`scn-04:32:Q6  turns 4/4  calls 28  $0.046  73s`). Everything lands in `runs/smoke/` (git-ignored): `report.md` is the thing to read, `summary.json` and `results.jsonl` are the machine-readable versions. `run` and `grade` are resume-safe: finished tasks are skipped, so an interrupted run can simply be started again.
+Each task prints one line while running (`scn-04:32:Q6  turns 4/4  calls 28  $0.046  73s`). Everything lands in `runs/smoke/` (git-ignored): `report.md` is the thing to read, `summary.json`, `report.json` and `results.jsonl` are the machine-readable versions, and `report --html` adds charts and a page to browse (section 6). `run` and `grade` are resume-safe: finished tasks are skipped, so an interrupted run can simply be started again.
 
 Useful flags: `run --only <substring>`, `run --limit N` (0 means no limit), `run --rerun`, `grade --only`, `grade --rerun`, `grade --no-judge` (see section 5).
 
@@ -301,9 +302,12 @@ Recipes that still set `harness_options.system_prompt` are rejected. The earlier
     answers.json           {"turns": [{"text","usage","cost_usd","duration_ms",...}], "error"}
     checks.json            deterministic findings
     judge.json             {"payload": ..., "verdict": ...}
-    judge.<name>.json      another judge's verdict from `eval calibrate` (never used for results)
+    judge.<name>.json      another judge's verdict from `eval calibrate` (never written to results.jsonl; `eval report --verdicts <name>` reports it)
 <run>/results.jsonl        one Result per task
-<run>/report.md, summary.json
+<run>/report.md, summary.json   `eval report` (for a budget grid: in the parent folder)
+<run>/report.json         run metrics + per-task judge notes, effort, wasted calls (`eval report`)
+<run>/report.html, charts/*.svg   `eval report --html`
+<run>/report.<name>.md/.json/.html, summary.<name>.json, charts.<name>/   `eval report --verdicts <name>`
 <run>/judge_cache/<backend>/   decision-model judges: one request + response per question set (re-grades are free)
 <run>/calibration.<name>.json, .md   `eval calibrate` summary
 ```
@@ -581,6 +585,48 @@ Any cut is then a filter. For example, failures on complex tasks by tokens used:
 
 `summary.json`: `metrics` (per-task `cost_usd`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `seconds`, `tool_calls` as {total, median, p95}, plus `cost_per_pass_usd`, `judge_cost_usd`), `n, passed, pass_rate, unsafe, unsafe_by_severity, fabricated, honest_fail_failures, trap_pass_rate, trap_handled, trap_handled_known, categories, outcomes, cost_usd, judge_cost_usd, tokens, provisional, model, judge, judge_breakdown` ({judge: {decided, escalated}}), `traps` (`traps.by_type_tier` keyed `type/tier/difficulty`, `traps.by_type_trap_turn` keyed `type/turn/difficulty`, `traps.hard_by_variant`: n, passed, trap_handled, outcomes; `traps.lured`: {n, lured}), `system_prompt`, `scaling` (`budgets`, `breaks`).
 
+### JSON and HTML report
+
+Every `eval report` also writes `report.json`, next to `report.md` (the run folder, or the parent folder for a budget grid). It holds no timestamps, so two reports of the same run are identical.
+
+```
+python -m mockmcp eval report runs/smoke --html                  # + charts/*.svg and report.html, opened if there is a display
+python -m mockmcp eval report runs/smoke --html --no-open        # write only
+python -m mockmcp eval report runs/scale-160-haiku --verdicts claude-code --html   # another judge's verdicts
+```
+
+Flags (CLI only, not recipe options: the report runs after the fact on any run folder, old ones included):
+- `--html`: also write `charts/<name>.svg` and one self-contained `report.html` (charts inlined, no external URLs, works offline).
+- `--open` / `--no-open`: open the page in a browser or not. By default it opens only when stdout is a terminal, `CI` is not set and, on Linux, `DISPLAY` or `WAYLAND_DISPLAY` is set; otherwise the command just prints the path. That keeps headless containers and tests quiet.
+- `--verdicts NAME`: report the verdicts in `judge.NAME.json` (written by `eval calibrate --judge NAME`) instead of `judge.json`. `passed` is recomputed from each verdict by `grade.finish`, as in grading. Graded tasks without that file are left out, never filled in from another judge, and the headline says how many. `results.jsonl` is not written. Every output gets the suffix: `report.NAME.md/.json/.html`, `summary.NAME.json`, `charts.NAME/`. Use `--verdicts claude-code` to report the LLM judge on a run graded by a decision model, such as `runs/scale-160-haiku` (graded by Cygnet, re-judged by Sonnet).
+
+`report.json` (`report_version` 1):
+- `summary`: exactly what `summary.json` holds; `verdict_source` (`judge.json` or `judge.NAME.json`); `definitions` (as in `summary.json`, plus `bands`, `effort` and `near_miss`).
+- `runs`: one per (budget) run, smallest budget first: tasks, passed, `outcomes`, `bands`, `near_miss`, `metrics`, `effort_thresholds`, and `waste` (cost, input tokens, seconds and tool calls spent on failed tasks, as totals and as a share of the run; effort classes of the failures; wasted-call counts).
+- `tasks`: one per task per run, with a `key` unique across runs: identity, budget, kind, trap, outcome, passed, categories, severity, `band`, `near_miss`, the judge's notes verbatim (`rationale`, `trap_notes`, `unsupported_claims`, `per_turn`, `actions`, the offending call or claim), `effort` (class, cost, tokens, seconds, calls, turns passed of total), `calls` and relative links to the task's files.
+
+Terms used there and in the page:
+- **Severity band**, worst first: `unsafe_external`, `unsafe_reversible`, `unsafe_benign` (an unsafe task by its write severity), `fabricated`, `over_cautious`, `partial`, `honest_fail`, `pass` (`schema.SEVERITY_BANDS`). `passed` always comes from the result, never from the band: for traps `honest_fail` passes.
+- **Near miss**: a failed task that was `partial`, or a trap whose trap was handled while the scenario failed.
+- **Effort class** (`fast`, `typical`, `costly`), against the passes of the same run so budgets are never pooled (all its tasks if it has fewer than 5 passes): `costly` at or above the 90th percentile of input tokens or of tool calls, `fast` at or below the median of both, else `typical`.
+- **Wasted calls**, from `trace.jsonl`: erroring calls, exact repeats (same server, tool and arguments after the first), same-tool repeats, calls to distractor servers, calls to a trap's decoy tools, and failed writes; `by_turn` splits a task's calls by turn.
+
+Charts (`--html`; each answers one question and is left out when it does not apply):
+
+| chart | question |
+|---|---|
+| `waffle` | every task as one square, worst first: what does the run look like, and how bad are the failures? |
+| `outcomes` | pass rate and failure mix per budget |
+| `effort` | do failures fail fast, or burn tokens, time and calls? (per band, with the passes' median and the costly zone) |
+| `waste` | how much of the spend bought failures, and which calls were unproductive? |
+| `breakdown` | which kinds of task, and which trap types, fail and how? |
+| `categories` | why tasks failed (none when nothing failed) |
+| `scaling` | 2 or more budgets: does loading more tools break the model, and into what? |
+| `flow` | 2 or more budgets: where do the tasks that pass at a small budget go at a bigger one? |
+| `matrix` | 2 or more budgets: the tasks whose outcome changes across budgets |
+
+Each `.svg` stands alone and can be reused in other documents. It carries its own styles: light by default, dark under the system's dark setting, and `data-theme="light|dark"` on the `<svg>` (or on the host page's `<html>`) forces one. `data-view="binary|outcome|severity"` on the `<svg>` picks the colouring (pass/fail, outcome or severity band; default `outcome`), and the effort chart's `data-metric` picks `input_tokens`, `seconds`, `tool_calls` or `cost_usd`. The page sets these with its theme, view and metric controls, filters per-task marks by kind and budget (aggregate charts always show every task), and links each mark to its row in the task table.
+
 ## 7. Evaluating a model
 
 The pipeline produces verdicts; deciding what they say about a model is still your job. This is the procedure used for the results in this repo.
@@ -705,6 +751,7 @@ Tiers (`trap.tier`, selectable as `tier=...`): `simple` is one turn about one sy
 - **The lean judge does not see the trace.** It trusts code for what the model saw: a value counts as grounded when it appears in some tool result the model received (or code derives it), even if it was read from the wrong row; such errors are caught only when they contradict an expected fact. Use `--judge-debug` to check a disputed verdict against the trace.
 - **Provisional (`--no-judge`) verdicts are rough**: only unseen ids, or unseen numbers while expected facts are missing, count as fabrication (derived numbers can't be told apart without the judge). Use the judge for real results.
 - **Judge cost**: about $0.13 per task with the default Sonnet judge (scale-80 at 50k: $10.24 for 80 tasks, three times the cost of running Haiku), roughly double with Opus. On scale runs the judge, not the model under test, is usually the bigger bill.
-- **No cross-run or cross-model comparison command**; the report compares budget sub-runs only. Run each model into its own folder and compare `summary.json`.
+- **No cross-run or cross-model comparison command**; the report compares budget sub-runs only. Run each model into its own folder and compare `summary.json` or `report.json`.
+- **The HTML report's filters dim per-task marks only**; aggregate charts (stacked bars, flow) always count every task.
 - The scenario's write-to-turn attribution (which follow-up asked for which write, and whether any turn asks for it at all) is heuristic text matching; ambiguous cases are noted in the task's reference notes.
 - Which turn asks for a fact (`tasks.fact_turns`) is lexical too. On the trap bank of 2026-10-08 it took 261 of 1,993 answerable facts out of the 54 scenario-based traps that kept their id (72 kept as `later_facts`, the rest on slices no kept turn asks for); 22 traps were replaced and 12 moved to another base, since a base's first turn must ask something and a missing_server trap's first turn must need the missing system. A hand check of 24 trimmed slices found about two in three right and the rest over-trimmed (a fact a broad first question arguably asks for, such as the causes behind "Why is the count off?", now pinned with `turn_facts`). Over-trimming only makes a trap less strict; a fact wrongly kept is still required, so reviewed `turn_facts` take precedence.

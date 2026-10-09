@@ -7,7 +7,7 @@ STEPS = {
     "run": ("mockmcp.eval.runner", "run every task of a run folder through a harness (default claude-code), recording tool calls"),
     "grade": ("mockmcp.eval.grade", "deterministic checks + judge for every task in a run folder"),
     "calibrate": ("mockmcp.eval.calibrate", "re-judge a graded run with another judge (decision model / cascade) and measure agreement"),
-    "report": ("mockmcp.eval.report", "write report.md (failure categories first) and results.jsonl"),
+    "report": ("mockmcp.eval.report", "write report.md (failure categories first), summary.json, report.json and results.jsonl; --html adds charts and report.html"),
     "export": ("mockmcp.eval.export", "one flat CSV/JSONL of every graded task (verdict, metrics, task features) for plotting"),
     "traps": ("mockmcp.eval.traps", "regenerate the trap bank (bench/traps.yaml)"),
     "arithmetic": ("mockmcp.eval.arithmetic", "regenerate bench/arithmetic.yaml: case facts an answer gets by arithmetic (feature `arithmetic`)"),
