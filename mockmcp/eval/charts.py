@@ -8,11 +8,12 @@ import math
 import statistics
 from collections import Counter, defaultdict
 
-from . import svg
+from . import svg, tags
 from .schema import OUTCOMES, SEVERITY_BANDS, modern
 from .svg import METRICS, VIEWS, bar, el, esc, fmt, text, title, tw
 
-CHARTS: tuple[str, ...] = ("waffle", "outcomes", "effort", "waste", "breakdown", "categories", "scaling", "flow", "matrix")
+CHARTS: tuple[str, ...] = ("waffle", "outcomes", "effort", "waste", "breakdown", "categories", "scaling", "flow", "matrix",
+                           "tags")
 __all__ = ["CHARTS", "VIEWS", "METRICS", "theme_css", "render_all"] + [f"chart_{c}" for c in CHARTS]
 
 W, PAD = 760, 24
@@ -756,6 +757,79 @@ def chart_matrix(r: dict) -> str | None:
     return svg.doc("matrix", W, y + 12, "Tasks that change with the budget",
                    f"Which tasks change outcome as tools are added? " + ", ".join(
                        f"{lab.lower()}: {len(groups.get(p, []))}" for p, lab, _ in PATTERNS), body)
+
+
+# ---- 10 tags -------------------------------------------------------------------------------------------------------
+
+def tag_counts(row: dict, view: str) -> Counter:
+    """A tags.by_tag row's counts as the colour classes of a view (so the bars and the table come from one source)."""
+    if view == "binary":
+        return Counter({"pass": row["passed"], "fail": row["n"] - row["passed"]})
+    if view == "outcome":
+        return Counter({f"o-{o}": k for o, k in row["outcomes"].items()})
+    return Counter({f"b-{b}": k for b, k in row["bands"].items()})
+
+
+def tag_blocks(rows: list[dict], key) -> list[tuple[bool, dict]]:
+    """Rows sorted by `key`, tags with enough tasks first, the small ones after them: [(small, row)]."""
+    return [(x["small"], x) for x in sorted(rows, key=lambda x: (x["small"], key(x)))]
+
+
+def chart_tags(r: dict) -> str | None:
+    """One row per task tag (tags.by_tag, all runs pooled), best pass rate first: a 100% stacked outcome bar in the three
+    views, the pass rate and n at the right, a dashed rule at the overall pass rate. Tags with fewer than tags.MIN_N
+    tasks follow in their own faded block."""
+    ts = r.get("tasks") or []
+    rows = tags.by_tag(ts)
+    if not rows:
+        return None
+    blocks = tag_blocks(rows, lambda x: (-x["pass_rate"], -x["n"]))
+    overall = sum(bool(t.get("passed")) for t in ts) / len(ts)
+    body, y = head("Which kinds of task does it get right?", "Pass rate and outcome mix per task tag, best first; a task "
+                   "carries several tags" + (", all runs pooled" if grow(r) > 1 else "") + ". Dashed line: the pass rate "
+                   f"over all tasks. Tags with fewer than {tags.MIN_N} tasks come last, faded: one task moves them a lot.")
+    leg, lh = view_legends(ts, PAD, y + 4, W - 2 * PAD)
+    body += leg
+    y += lh + 26
+    lw = min(220, max(tw(x["display"], 12) for x in rows) + 16)
+    rw = 92
+    x0, w, h, step = PAD + lw, W - 2 * PAD - lw - rw, 18, 28
+    sx = svg.linear(0, 1, x0, x0 + w)
+    fixed = [text(sx(v), y - 8, pct(v, 1), class_="mm-tick", text_anchor="middle") for v in (0, .25, .5, .75, 1)]
+    groups = {v: [] for v in VIEWS}
+    few = {v: [] for v in VIEWS}
+    top, yy, gap, main_end = y, y, False, None
+    for small, row in blocks:
+        if small and not gap:
+            gap, main_end = True, yy - step + h + 4
+            if yy > top:
+                yy += 14
+                fixed += [el("line", x1=PAD, x2=W - PAD, y1=yy - 2, y2=yy - 2, class_="mm-grid")]
+            fixed.append(text(PAD, yy + 14, f"Fewer than {tags.MIN_N} tasks: hints, not findings", class_="mm-small"))
+            yy += 24
+        tip = f"{row['display']} · " + "{name}: {n} of " + f"{row['n']} tasks" + " ({share})"
+        for v in VIEWS:
+            (few if small else groups)[v] += hbar(tag_counts(row, v), ORDER[v], x0, yy, w, h, tip)
+        cls = " mm-few" if small else ""
+        lab = row["display"] if tw(row["display"], 12) <= lw - 12 else row["label"]
+        fixed += [text(PAD, yy + h / 2 + 4, lab, class_="mm-lbl" + cls),
+                  el("text", [el("tspan", esc(pct(row["passed"], row["n"])), class_="mm-num"),
+                              el("tspan", esc(f"  n {row['n']}"), class_="mm-small")], x=W - PAD, y=yy + h / 2 + 4,
+                     text_anchor="end", class_=cls.strip() or None)]
+        yy += step
+    bottom = yy - step + h + 6
+    # under the bars, so it shows in the gaps between rows and never crosses a segment label; over the main block only
+    # (the faded rows would let it through)
+    end = main_end if main_end and main_end > top else bottom
+    rule = [el("line", title(f"all tasks: {pct(overall, 1)} passed"), x1=sx(overall), x2=sx(overall), y1=top - 2, y2=end,
+               class_="mm-rule"),
+            text(sx(overall), end + 13, f"all tasks {pct(overall, 1)}", class_="mm-small mm-halo", text_anchor="middle")]
+    body += fixed + rule + [el("g", groups[v] + ([el("g", few[v], class_="mm-few")] if few[v] else []), class_=f"mm-v mm-v-{v}")
+                            for v in VIEWS]
+    best = ", ".join(f"{x['display']} {pct(x['passed'], x['n'])} of {x['n']}" for small, x in blocks if not small)
+    return svg.doc("tags", W, bottom + 24, "Pass rate by task tag",
+                   f"Which kinds of task does the model get right? Over all tasks {pct(overall, 1)} passed; by tag, best "
+                   f"first: {best or 'every tag has fewer than ' + str(tags.MIN_N) + ' tasks'}.", body)
 
 
 def render_all(report: dict) -> dict[str, str]:

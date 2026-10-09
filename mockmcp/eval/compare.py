@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .grade import run_dirs
 from .report import load_run, render, should_open, verdict_file
+from .tags import by_tag_compare, md_compare
 
 
 def add_args(p):
@@ -104,7 +105,7 @@ def _ratio(x) -> str:
 
 
 def render_md(cmp: dict) -> str:
-    """compare.md: a headline table per paired run, then the tasks that flip between the sides, grouped."""
+    """compare.md: a headline table per paired run, pass rates by tag, then the tasks that flip between the sides, grouped."""
     la, lb = cmp["labels"]
     src = cmp.get("verdict_source") or "judge.json"
     L = [f"# Eval comparison: {la} vs {lb}", "", f"- A: **{la}** ({cmp.get('sources', ['?', '?'])[0]})",
@@ -132,6 +133,8 @@ def render_md(cmp: dict) -> str:
     if odd:
         L += ["", "Tasks on one side only are counted, never compared: "
               + "; ".join(f"{r['run']}: {r.get('only_a', 0)} only in {la}, {r.get('only_b', 0)} only in {lb}" for r in odd) + "."]
+    if bt := md_compare(by_tag_compare(cmp), la, lb):
+        L += [""] + bt[:-1]
     tasks = cmp.get("tasks", [])
     groups = ((f"{lb} passes, {la} fails", lambda t: t["change"] == "b_only"),
               (f"{la} passes, {lb} fails", lambda t: t["change"] == "a_only"),

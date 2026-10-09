@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from .grade import finish, read_json, read_jsonl, result_for, run_dirs, models_served
+from . import tags
 from .schema import CATEGORIES, OUTCOMES, modern
 
 
@@ -390,6 +391,7 @@ def render(rs: list[dict], root: Path, source: str | None = None, excluded: int 
             for k in keyf(r):
                 g[k][r["outcome"]] += 1
         L += [f"## Outcomes by {title}", ""] + table([title] + OUTCOMES + ["total"], [[k] + [g[k][o] or "" for o in OUTCOMES] + [sum(g[k].values())] for k in sorted(g)])
+    L += tags.md_report(tags.by_tag(rs))
     trap_data = {}
     if traps:
         tl, trap_data = trap_tables(traps)

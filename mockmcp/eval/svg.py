@@ -117,6 +117,7 @@ STYLE = theme_css() + """.mm-chart{font-family:var(--mm-font);font-size:12px;fil
 .mm-chart .mm-hole{fill:var(--mm-bg);pointer-events:none}
 .mm-chart .mm-v,.mm-chart .mm-m{display:none}
 .mm-chart .mm-dim{opacity:.12}
+.mm-chart .mm-few{opacity:.42}
 """ + _rules() + "\n"
 
 

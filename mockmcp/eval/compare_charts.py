@@ -12,11 +12,11 @@ import math
 import statistics
 from collections import Counter
 
-from . import svg
+from . import svg, tags
 from .charts import LABEL, METRIC, ORDER, PAD, W, counts, head, hbar, key_of, legend, name_of, pct, view_legends
 from .svg import METRICS, VIEWS, el, esc, fmt, text, title, tw
 
-CHARTS: tuple[str, ...] = ("scoreboard", "headtohead", "shift", "outcomes", "paired", "spend", "diffs")
+CHARTS: tuple[str, ...] = ("scoreboard", "headtohead", "bytag", "shift", "outcomes", "paired", "spend", "diffs")
 __all__ = ["CHARTS", "render_all", "mcnemar"] + [f"chart_{c}" for c in CHARTS]
 
 CHANGES = ("both_pass", "a_only", "b_only", "both_fail")
@@ -33,6 +33,7 @@ CSS = """.mm-chart{--mm-tint:.3}
 .mm-chart .mm-link{stroke-width:4px;stroke-linecap:round;stroke-opacity:.5;fill:none}
 .mm-chart .mm-diag{stroke:var(--mm-muted);stroke-width:1.25;stroke-dasharray:4 4;fill:none}
 .mm-chart .mm-sig{font-weight:600}
+.mm-chart .mm-link.mm-strong{stroke-width:6px;stroke-opacity:.85}
 """
 
 
@@ -256,7 +257,72 @@ def chart_headtohead(cmp: dict) -> str | None:
                f"only {lb} {tot['b_only']}, both fail {tot['both_fail']}.", body + out)
 
 
-# ---- 3 shift ------------------------------------------------------------------------------------------------------
+# ---- 3 by tag -----------------------------------------------------------------------------------------------------
+
+def chart_bytag(cmp: dict) -> str | None:
+    """Per task tag (tags.by_tag_compare, all runs pooled) a dumbbell of A's and B's pass rate on the common tasks, sorted
+    by B − A (B's biggest lead on top), the bar in the winner's colour; the gap, the exact McNemar p and n at the right.
+    Significant gaps (p < 0.05) are drawn bold; tags with fewer than tags.MIN_N tasks follow in their own faded block."""
+    rows = tags.by_tag_compare(cmp)
+    if not rows:
+        return None
+    blocks = [(x["small"], x) for x in sorted(rows, key=lambda x: (x["small"], -x["delta_pts"], -x["n"]))]
+    la, lb = labels(cmp)
+    body, y = head("Who is better at what?", "Pass rate on the shared tasks of each task tag, all runs pooled; a task carries "
+                   "several tags. Rows run from B's biggest lead to A's; the bar joins the two dots in the winner's colour, "
+                   f"thick and bold when p < 0.05 (exact McNemar within the tag). Tags with fewer than {tags.MIN_N} tasks "
+                   "come last, faded.")
+    key, _ = side_key(cmp, PAD, y + 6)
+    body += key
+    y += 40
+    lw = min(220, max(tw(x["display"], 12) for x in rows) + 16)
+    rw = 170
+    x0, x1 = PAD + lw, W - PAD - rw
+    sx = svg.linear(0, 1, x0, x1)
+    step = 28
+    out, notes, cy, gap = [], [], y + 12, False
+    for small, r in blocks:
+        if small and not gap:
+            gap = True
+            if cy > y + 12:
+                cy += 8
+                out.append(el("line", x1=PAD, x2=W - PAD, y1=cy - 18, y2=cy - 18, class_="mm-grid"))
+            out.append(text(PAD, cy - 2, f"Fewer than {tags.MIN_N} tasks: hints, not findings", class_="mm-small"))
+            cy += 20
+        ra, rb = r["a_rate"], r["b_rate"]
+        win = "b" if rb > ra else "a" if ra > rb else None
+        lab = r["display"] if tw(r["display"], 12) <= lw - 12 else short(r["label"], lw - 12)
+        p, h = r["mcnemar_p"], r["head_to_head"]
+        g = [title(f"{r['display']}: {r['n']} shared tasks; wins {la} {h['a_only']}, {lb} {h['b_only']}; both pass "
+                   f"{h['both_pass']}, both fail {h['both_fail']}"),
+             text(PAD, cy + 4, lab, class_="mm-lbl"), el("line", x1=x0, x2=x1, y1=cy, y2=cy, class_="mm-grid")]
+        if win:
+            lo, hi = sorted((ra, rb))
+            g.append(el("line", title(f"{pts(rb - ra)} for {lb if win == 'b' else la}"), x1=sx(lo), x2=sx(hi), y1=cy, y2=cy,
+                        class_=f"mm-link s-side-{win}" + (" mm-strong" if r["significant"] else "")))
+        for s_, rate, name, k in (("a", ra, la, r["a_passed"]), ("b", rb, lb, r["b_passed"])):   # a tie: B's dot inside A's
+            g.append(el("circle", title(f"{name}: {pct(rate, 1)} ({k} of {r['n']}) · {r['display']}"), cx=sx(rate), cy=cy,
+                        r=7.5 if s_ == "a" and not win else 5.5, class_=f"mm-dot f-side-{s_}"))
+        g.append(el("text", [el("tspan", esc(pts(r["delta_pts"] / 100)), class_="mm-num"),
+                             el("tspan", esc(f"  {pval(p)} · n {r['n']}"), class_="mm-small" + (" mm-sig" if r["significant"] else ""))],
+                    x=W - PAD, y=cy + 4, text_anchor="end"))
+        out.append(el("g", g, class_="mm-few" if small else None))
+        if not small:
+            notes.append(f"{r['display']} {pts(r['delta_pts'] / 100)} ({pval(p)}, n {r['n']})")
+        cy += step
+    bottom = cy - step + 12
+    axis = [text(sx(v), y - 10, pct(v, 1), class_="mm-tick", text_anchor="middle") for v in (0, .25, .5, .75, 1)]
+    axis += [el("line", x1=sx(v), x2=sx(v), y1=y - 4, y2=bottom, class_="mm-grid") for v in (0, .5, 1)]
+    axis.append(text(W - PAD, y - 10, "B − A", class_="mm-tick", text_anchor="end"))
+    sig = [r for small, r in blocks if r["significant"] and not small]
+    return doc("bytag", bottom + 10, "Pass rate by task tag, A vs B",
+               "Who is better at what kind of task? B − A by tag: " + ("; ".join(notes) or "every tag has fewer than "
+                                                                      f"{tags.MIN_N} tasks") + "."
+               + (f" Significant: {', '.join(r['display'] for r in sig)}." if sig else " No tag's gap is significant."),
+               body + axis + out)
+
+
+# ---- 4 shift ------------------------------------------------------------------------------------------------------
 
 def _alluvial(ts: list[dict], view: str, y: float, ph: float, xa: float, xb: float, nw: float, run: str,
               la: str, lb: str) -> list[str]:
@@ -349,7 +415,7 @@ def chart_shift(cmp: dict) -> str | None:
                f"{sum(not t['b'].get('passed') for t in ts if t['a'].get('passed'))}.", body)
 
 
-# ---- 4 outcomes ---------------------------------------------------------------------------------------------------
+# ---- 5 outcomes ---------------------------------------------------------------------------------------------------
 
 def chart_outcomes(cmp: dict) -> str | None:
     """Per run, A's outcome mix above B's as aligned 100% bars over the common tasks, in all three views."""
@@ -391,7 +457,7 @@ def chart_outcomes(cmp: dict) -> str | None:
                body)
 
 
-# ---- 5 paired -----------------------------------------------------------------------------------------------------
+# ---- 6 paired -----------------------------------------------------------------------------------------------------
 
 def _pscale(vals: list[float], m: str, r0: float, r1: float):
     """One scale for both axes of a metric: log (zeros clamp to the low edge) for tokens, time and cost; linear for calls."""
@@ -475,7 +541,7 @@ def chart_paired(cmp: dict) -> str | None:
                f"{sum(eff(t['b'], 'input_tokens') > eff(t['a'], 'input_tokens') for t in ts)}.", body, data_metric="input_tokens")
 
 
-# ---- 6 spend ------------------------------------------------------------------------------------------------------
+# ---- 7 spend ------------------------------------------------------------------------------------------------------
 
 SPEND = (("cost_usd", "cost", "usd"), ("input_tokens", "input tokens", "tokens"), ("seconds", "time", "s"),
          ("tool_calls", "tool calls", "n"), ("cost_per_pass", "cost per pass", "usd"))
@@ -539,7 +605,7 @@ def chart_spend(cmp: dict) -> str | None:
                body + out)
 
 
-# ---- 7 diffs ------------------------------------------------------------------------------------------------------
+# ---- 8 diffs ------------------------------------------------------------------------------------------------------
 
 DIFF_GROUPS = (("b_fix", "Only {b} passes", "{a} fails these"), ("a_fix", "Only {a} passes", "{b} fails these"),
                ("fail_diff", "Both fail, differently", "less severe under {b} first"),

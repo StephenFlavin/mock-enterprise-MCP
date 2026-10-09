@@ -3,11 +3,12 @@ deterministic, readable contrast in both themes, and marks that match the data (
 beeswarm without overlaps)."""
 import random
 import re
+import statistics
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from mockmcp.eval import charts, svg
+from mockmcp.eval import charts, svg, tags
 from mockmcp.eval.schema import OUTCOMES, SEVERITY_BANDS
 
 NS = "{http://www.w3.org/2000/svg}"
@@ -177,7 +178,7 @@ def test_per_task_marks():
 
 def test_view_groups_stack_to_full_width():
     r = grid()
-    for name in ("outcomes", "breakdown", "waste"):
+    for name in ("outcomes", "breakdown", "waste", "tags"):
         root = ET.fromstring(getattr(charts, f"chart_{name}")(r))
         groups = [g for g in root.iter(NS + "g") if "mm-v" in (g.get("class") or "").split()]
         assert {g.get("class").split()[1] for g in groups} == {f"mm-v-{v}" for v in charts.VIEWS}
@@ -269,3 +270,79 @@ def test_task_ids_are_escaped():
     titles = [e.text for e in ET.fromstring(out["waffle"]).iter(NS + "title")]
     assert any(t and t.startswith('scn-01:4:Q1 <b>&"x"') for t in titles)
     assert {e.get("data-run") for e in marks(out["waffle"])} == {"r<0>", "r&1"}
+
+
+STRATA = (("simple", "short"), ("long", "complex", "followups", "multi_turn"), ("multi_system", "write", "followups", "multi_turn"))
+
+
+def tagged(n=60, runs=("r0", "r1"), seed=5):
+    """A REPORT whose tasks carry strata and features like a real run's (followups and multi_turn always together)."""
+    rng = random.Random(seed)
+    ts, k = [], 0
+    for i in range(n):
+        kind = ("scenario", "slice", "trap")[i % 3]
+        st = list(STRATA[i % 3]) + (["trap"] if kind == "trap" else [])
+        f = {"kind": kind, "complexity": ("simple", "moderate", "complex")[i % 3 if i % 5 else 2], "type": ("DIAGNOSE", "DECIDE")[i % 2],
+             "trap_type": ("missing_tool" if i % 2 else "vague") if kind == "trap" else "", "arithmetic": int(i % 7 == 0)}
+        for run in runs:
+            o = rng.choice(["pass", "pass", "partial", "fabricated"] if i % 3 != 1 else ["partial", "unsafe", "pass"])
+            t = task(f"t{k}", f"scn-{i:02d}:1:Q1", run, o, kind=kind, severity="reversible" if o == "unsafe" else "none",
+                     rng=random.Random(k), trap_type=f["trap_type"] or None, handled=o == "pass")
+            ts.append(t | {"strata": st, "features": f})
+            k += 1
+    return report(ts, list(runs))
+
+
+def test_tags_vocabulary():
+    t = {"kind": "trap", "strata": ["multi_turn", "trap", "short", "custom_x"], "trap": {"type": "missing_tool"},
+         "features": {"complexity": "complex", "type": "DIAGNOSE", "arithmetic": 2}}
+    assert tags.tags_of(t) == ["short", "multi_turn", "arithmetic", "custom_x", "kind:trap", "complexity:complex",
+                               "type:DIAGNOSE", "trap:missing_tool"]   # the trap stratum folds into kind:trap
+    assert tags.tags_of({"kind": "slice", "features": {"arithmetic": 0, "complexity": ""}}) == ["kind:slice"]
+    assert tags.tags_of({"tags": ["kind:x", "long"]}) == ["long", "kind:x"] and tags.tags_of({}) == []
+    assert [tags.label(x) for x in ("multi_system", "type:DIAGNOSE", "trap:missing_tool", "kind:trap", "custom_x")] == [
+        "multi-system", "question: diagnose", "trap: missing tool", "traps", "custom x"]
+    assert [tags.family(x) for x in ("long", "kind:trap", "type:DECIDE", "trap:vague")] == ["stratum", "kind", "type", "trap"]
+
+
+def test_by_tag_counts_aliases_and_runs():
+    r = tagged()
+    rows = tags.by_tag(r["tasks"])
+    assert rows == tags.by_tag(r["tasks"])   # deterministic
+    by = {x["tag"]: x for x in rows}
+    assert "multi_turn" not in by and by["followups"]["aliases"] == ["multi_turn"]
+    assert by["followups"]["display"] == "follow-ups (= multi-turn)" and "trap" not in by
+    for x in rows:
+        ts = [t for t in r["tasks"] if x["tag"] in tags.tags_of(t)]
+        assert x["n"] == len(ts) == sum(x["outcomes"].values()) == sum(x["bands"].values())
+        assert x["passed"] == sum(t["passed"] for t in ts) and x["pass_rate"] == round(x["passed"] / x["n"], 4)
+        assert x["small"] == (x["n"] < tags.MIN_N) and x["near_miss"] == sum(t["near_miss"] for t in ts)
+        assert [y["run"] for y in x["runs"]] == ["r0", "r1"] and sum(y["n"] for y in x["runs"]) == x["n"]
+        assert x["median"]["input_tokens"] == statistics.median(t["effort"]["input_tokens"] for t in ts)
+    assert by["arithmetic"]["n"] == 2 * len(range(0, 60, 7)) and by["arithmetic"]["small"] is False
+    assert [x["tag"] for x in rows] == sorted(by, key=tags._order)
+    md = "\n".join(tags.md_report(rows))
+    assert md.startswith("## By tag") and "| follow-ups (= multi-turn) |" in md and tags.md_report([]) == []
+
+
+def test_tags_chart_sorting_small_block_and_none():
+    r = tagged(n=24, runs=("r0",))
+    rows = tags.by_tag(r["tasks"])
+    s = charts.chart_tags(r)
+    root = ET.fromstring(s)
+    assert root.get("data-chart") == "tags" and s == charts.chart_tags(r)
+    labels = [e.text for e in root.iter(NS + "text") if (e.get("class") or "").startswith("mm-lbl")]
+    shown = {x["label"]: x for x in rows} | {x["display"]: x for x in rows}   # a long display falls back to the label
+    order = [shown[lab] for lab in labels if lab in shown]
+    assert len(order) == len(rows)
+    big, small = [x for x in order if not x["small"]], [x for x in order if x["small"]]
+    assert order == big + small and small and big
+    for block in (big, small):
+        assert [x["pass_rate"] for x in block] == sorted((x["pass_rate"] for x in block), reverse=True)
+    faded = [e.text for e in root.iter(NS + "text") if "mm-few" in (e.get("class") or "").split() and e.text in shown]
+    assert sorted(shown[f]["tag"] for f in faded) == sorted(x["tag"] for x in small)
+    for g in root.iter(NS + "g"):   # every view stacks each small row inside its faded group
+        if (g.get("class") or "").startswith("mm-v ") and any("mm-seg" in (e.get("class") or "") for e in g.iter(NS + "rect")):
+            assert any((h.get("class") or "") == "mm-few" for h in g.iter(NS + "g"))
+    assert charts.chart_tags({"tasks": [{"run": "r", "outcome": "pass", "passed": True}], "runs": []}) is None
+    assert charts.chart_tags({"tasks": [], "runs": []}) is None

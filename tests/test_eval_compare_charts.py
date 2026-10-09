@@ -9,9 +9,9 @@ from collections import Counter
 
 import pytest
 
-from mockmcp.eval import compare_charts as cc, svg
+from mockmcp.eval import compare_charts as cc, svg, tags
 from mockmcp.eval.schema import OUTCOMES
-from test_eval_charts import grid, report, task
+from test_eval_charts import grid, report, tagged, task
 
 NS = "{http://www.w3.org/2000/svg}"
 SIDE_KEYS = ("key", "outcome", "band", "band_rank", "passed", "near_miss", "severity", "categories", "effort", "calls", "notes")
@@ -279,3 +279,66 @@ def test_long_labels_stay_inside_the_chart():
             assert -1 <= x0 and x0 + w <= width + 1, (name, label)
     head = [e.text for e in ET.fromstring(cc.chart_scoreboard(c)).iter(NS + "text") if e.text == "B − A"]
     assert head   # the gap column names the sides by letter; the key carries the long names
+
+
+def tagged_pair(n=60):
+    """A pair whose REPORT tasks carry strata and features (the compare tasks do not, as compare_data builds them): B
+    passes every follow-up task and fails a few short ones A passed."""
+    a = tagged(n=n)
+    b = report([t | ({"outcome": "pass", "passed": True, "band": "pass", "band_rank": 7} if "followups" in t["strata"] else
+                     {"outcome": "partial", "passed": False, "band": "partial", "band_rank": 5}
+                     if "short" in t["strata"] and int(t["key"][1:]) % 4 == 0 else {}) for t in a["tasks"]],
+               [x["run"] for x in a["runs"]])
+    return compare_of(a, b)
+
+
+def test_by_tag_compare_figures():
+    c = tagged_pair()
+    assert all("strata" not in t for t in c["tasks"])   # tags come through the embedded REPORTs
+    rows = tags.by_tag_compare(c)
+    assert rows == tags.by_tag_compare(c) and rows == tags.by_tag_compare(tags.compare_tasks(c))
+    src = {t["key"]: t for t in c["a"]["tasks"]}
+    for r in rows:
+        ts = [t for t in c["tasks"] if r["tag"] in tags.tags_of(src[t["a"]["key"]])]
+        h = Counter(t["change"] for t in ts)
+        assert r["n"] == len(ts) and r["head_to_head"] == {k: h[k] for k in cc.CHANGES}
+        assert r["a_passed"] == sum(t["a"]["passed"] for t in ts) and r["b_passed"] == sum(t["b"]["passed"] for t in ts)
+        assert r["delta_pts"] == round(100 * (r["b_passed"] - r["a_passed"]) / r["n"], 1)
+        assert r["mcnemar_p"] == round(cc.mcnemar(h["a_only"], h["b_only"]), 6) and r["significant"] == (r["mcnemar_p"] < .05)
+        assert r["small"] == (r["n"] < tags.MIN_N) and sum(x["n"] for x in r["runs"]) == r["n"]
+    by = {r["tag"]: r for r in rows}
+    assert by["followups"]["aliases"] == ["multi_turn"] and by["followups"]["significant"]
+    assert by["followups"]["head_to_head"]["a_only"] == 0 and by["simple"]["aliases"][0] == "short" and by["simple"]["delta_pts"] < 0
+    md = "\n".join(tags.md_compare(rows, "haiku", "sonnet"))
+    assert "| tag | tasks | haiku pass | sonnet pass | Δ pts | p | wins haiku | wins sonnet |" in md and "**" in md
+    assert tags.by_tag_compare({"tasks": []}) == [] and tags.md_compare([], "a", "b") == []
+
+
+def test_bytag_chart_sorting_significance_small_and_none():
+    c = tagged_pair(n=24)
+    rows = tags.by_tag_compare(c)
+    s = cc.chart_bytag(c)
+    assert s == cc.chart_bytag(c) and list(cc.CHARTS).index("bytag") == list(cc.CHARTS).index("headtohead") + 1
+    root = ET.fromstring(s)
+    shown = {x["label"]: x for x in rows} | {x["display"]: x for x in rows}
+    order = [shown[e.text] for e in root.iter(NS + "text") if (e.get("class") or "") == "mm-lbl" and e.text in shown]
+    assert len(order) == len(rows)
+    big, small = [x for x in order if not x["small"]], [x for x in order if x["small"]]
+    assert big and small and order == big + small
+    for block in (big, small):
+        assert [x["delta_pts"] for x in block] == sorted((x["delta_pts"] for x in block), reverse=True)
+    rowg = [g for g in root.iter(NS + "g") if any((e.get("class") or "") == "mm-lbl" for e in g.iter(NS + "text"))
+            and g.get("class") != "mm-head"]
+    assert len(rowg) == len(rows)
+    for g, x in zip(rowg, order):
+        assert (g.get("class") == "mm-few") == x["small"]
+        strong = [e for e in g.iter(NS + "line") if "mm-strong" in (e.get("class") or "")]
+        assert bool(strong) == (x["significant"] and x["a_rate"] != x["b_rate"])
+        if x["significant"]:
+            assert any("mm-sig" in (e.get("class") or "") for e in g.iter(NS + "tspan"))
+        assert len([e for e in g.iter(NS + "circle")]) == 2
+    assert any(x["significant"] for x in order)
+    assert cc.chart_bytag({"labels": ["a", "b"], "runs": [], "tasks": []}) is None
+    bare = {"runs": [], "tasks": [{"key": "c0", "task_id": "x", "run": "r", "change": "both_pass", "a": {"passed": True},
+                                   "b": {"passed": True}}]}
+    assert cc.chart_bytag(bare) is None   # no kind, no strata, no REPORT: nothing to slice by
