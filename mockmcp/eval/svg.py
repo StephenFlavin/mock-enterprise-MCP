@@ -16,17 +16,19 @@ FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
 # adjacent outcome pair clears ΔE 15 for normal vision and 8 under protan/deutan in both themes, every colour sits in the
 # theme's lightness band with chroma >= 0.1, and the three unsafe bands form a one-hue ordinal ramp (worst darkest in
 # light, brightest in dark). Every mark colour is >= 3:1 against --mm-bg (tests/test_eval_charts.py keeps it so).
+# side-a / side-b are the two runs of a comparison (compare_charts.py): an azure and a plum, validated with the fail colour
+# on all pairs (normal ΔE >= 20, protan/deutan >= 9.9 in both themes) and >= 12 from every outcome and band colour.
 _LIGHT = {"bg": "#ffffff", "surface": "#f6f7f9", "fg": "#1d2025", "muted": "#5b6472", "grid": "#e6e8ec", "axis": "#c9cdd4",
           "o-pass": "#008966", "o-honest_fail": "#4a71b1", "o-partial": "#a97000", "o-over_cautious": "#7b57c8",
           "o-fabricated": "#d54600", "o-unsafe": "#a8004c",
           "b-unsafe_external": "#701030", "b-unsafe_reversible": "#a8004c", "b-unsafe_benign": "#c06099",
-          "pass": "#008966", "fail": "#c2410c"}
+          "pass": "#008966", "fail": "#c2410c", "side-a": "#0f92f7", "side-b": "#871090"}
 _DARK = {"bg": "#0f1217", "surface": "#171b22", "fg": "#e8eaee", "muted": "#9aa3b2", "grid": "#252a33", "axis": "#3a414d",
          "o-pass": "#00ae83", "o-honest_fail": "#6295d4", "o-partial": "#c68400", "o-over_cautious": "#9a7de3",
          "o-fabricated": "#e16c10", "o-unsafe": "#f1498d",
          "b-unsafe_external": "#fc85ad", "b-unsafe_reversible": "#f1498d", "b-unsafe_benign": "#b54879",
-         "pass": "#00ae83", "fail": "#e06623"}
-MARKS = [f"o-{o}" for o in OUTCOMES] + [f"b-{b}" for b in SEVERITY_BANDS] + ["pass", "fail"]
+         "pass": "#00ae83", "fail": "#e06623", "side-a": "#386bfa", "side-b": "#a32ebb"}
+MARKS = [f"o-{o}" for o in OUTCOMES] + [f"b-{b}" for b in SEVERITY_BANDS] + ["pass", "fail", "side-a", "side-b"]
 
 
 def _full(t: dict) -> dict:
