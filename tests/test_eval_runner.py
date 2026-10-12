@@ -183,6 +183,8 @@ def test_parse_turn_records_whether_tool_search_was_offered(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("error,kind", [
     ("error_during_execution: Credit balance is too low", "fatal"), ("API Error: 401 authentication_error", "fatal"),
+    ("success: You've hit your session limit \u00b7 resets 8:30pm (UTC)", "fatal"),
+    ("API Error: 429 usage_limit_reached", "fatal"),
     ("turn 0: harness setup: tool_search on but ToolSearch was not offered", "fatal"),
     ("API Error: 529 overloaded_error", "transient"), ("API Error: 429 rate_limit_error", "transient"),
     ("harness crash: OSError: boom", "transient"),
@@ -266,3 +268,13 @@ def test_harness_stores_each_turns_own_cost(tmp_path, monkeypatch):
     assert [(t["cost_usd"], t["session_cost_usd"]) for t in ans["turns"]] == [(0.10, 0.10), (0.15, 0.25)]
     from mockmcp.eval.schema import task_cost
     assert round(task_cost(ans["turns"]), 2) == 0.25
+
+
+def test_usage_limit_in_a_turn_is_not_kept_as_an_answer(tmp_path):
+    # Claude Code returns a usage-limit message as the turn's text with no top-level error: it must still count as fatal
+    limit = "success: You've hit your session limit · resets 8:30pm (UTC)"
+    ans = {"error": None, "turns": [{"text": "real answer", "error": None}, {"text": limit[9:], "error": limit}]}
+    assert runner.answer_failure(ans) == "fatal"
+    (tmp_path / "answers.json").write_text(json.dumps(ans))
+    assert runner.stored_failure(tmp_path) == "fatal"
+    assert runner.answer_failure({"error": None, "turns": [{"text": "x", "error": "error_max_turns: "}]}) is None

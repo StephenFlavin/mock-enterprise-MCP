@@ -39,7 +39,7 @@ def add_args(p):
 
 
 # Errors that say nothing about the model. FATAL stops the run (nothing after it can succeed); TRANSIENT only drops that answer.
-FATAL = re.compile(r"credit balance|billing|insufficient.{0,20}(credit|fund|quota)|quota exceeded|usage limit|invalid.{0,10}api.?key|"
+FATAL = re.compile(r"credit balance|billing|insufficient.{0,20}(credit|fund|quota)|quota exceeded|usage.?limit|session limit|hit your .{0,30}limit|invalid.{0,10}api.?key|"
                    r"authentication|unauthori[sz]ed|permission_error|/login|harness setup", re.I)
 TRANSIENT = re.compile(r"overloaded|rate.?limit|\b(429|500|502|503|504|529)\b|connection (error|reset|refused)|ECONNRESET|"
                        r"socket hang up|api_error|internal server error|harness crash", re.I)
@@ -50,6 +50,12 @@ def failure_kind(error: str | None) -> str | None:
     if not error:
         return None
     return "fatal" if FATAL.search(error) else "transient" if TRANSIENT.search(error) else None
+
+
+def answer_failure(ans: dict) -> str | None:
+    """failure_kind of an answer: its own error, else the first turn error that is not the model's doing (a usage-limit
+    message comes back as a turn's text, so the turn looks answered and the harness carries on)."""
+    return failure_kind(ans.get("error")) or next(filter(None, (failure_kind(t.get("error")) for t in ans.get("turns") or [])), None)
 
 
 def free_port() -> int:
@@ -117,7 +123,7 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
     finally:
         if hub and not keep_hub:
             stop_hub(hub)
-    kind = failure_kind(ans.get("error"))
+    kind = answer_failure(ans)
     if kind and (td / "answers.json").exists():   # not the model's answer: keep it aside, run the task again next time
         (td / "answers.json").replace(td / "answers.failed.json")
     return {"id": task["id"], "turns": len(ans["turns"]), "of": len(task["turns"]), "calls": trace_len(td),
@@ -128,7 +134,7 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
 def stored_failure(task_dir: Path) -> str | None:
     """failure_kind of a stored answers.json (None when it is a real answer or missing)."""
     try:
-        return failure_kind(json.loads((task_dir / "answers.json").read_text()).get("error"))
+        return answer_failure(json.loads((task_dir / "answers.json").read_text()))
     except (OSError, ValueError):
         return None
 
