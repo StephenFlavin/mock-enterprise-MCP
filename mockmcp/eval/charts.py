@@ -725,8 +725,12 @@ def chart_matrix(r: dict) -> str | None:
         first_fail = next((j for j, t in enumerate(seq) if not t.get("passed")), len(seq))
         groups[pattern(seq)].append((first_fail, i))
     info = run_info(r)
-    lw = min(250, max(tw(i, 11) for i in ch) + 16)
     cw = max(62, max(tw(run, 12, True) for run in runs) + 14)
+    # Columns first: the task-id column gives way (ids are shortened below), then the columns if there are many budgets,
+    # so the grid always fits W; the SVG scales to its container, so anything past W is cut off, not scrollable.
+    lw = min(250, max(tw(i, 11) for i in ch) + 16, W - 2 * PAD - len(runs) * cw)
+    if lw < 120:
+        lw, cw = 120, (W - 2 * PAD - 120) / len(runs)
     x0 = PAD + lw
     body, y = head("Tasks that change with the budget", f"{len(ch)} of {len(by[runs[0]])} shared tasks change outcome "
                    "across budgets. Rows: tasks, grouped by pattern; columns: budgets, smallest first.")
