@@ -7,6 +7,7 @@ the field in examples.json's `computed` list. Output is deterministic: running i
 import gzip
 import json
 import math
+import os
 import shutil
 import sys
 import tarfile
@@ -33,6 +34,11 @@ PAIRS = {
 # Comparison rows by task family, as `eval compare`'s "By tag" table (mockmcp/eval/tags.py) labels them.
 KIND_LABEL = {"scenario": "scenarios", "slice": "slices", "trap": "traps"}
 MIN_N = 10   # tags.MIN_N: fewer tasks than this is a small sample
+# The reports link task folders such as `scn-01:4:Q1` as `scn-01%3A4%3AQ1`. A server that decodes the whole path (most
+# do) looks for the `:` name; one that decodes with decodeURI, which leaves `%3A` alone (Vite's, so `npm run preview`),
+# looks for the literal `%3A` name. So each such folder also gets a `%3A`-named twin (hard links in public/; about
+# 113 MB more in dist/). Set False once the host is known to decode `%3A`.
+ENCODED_ALIASES = True
 COMPUTED = [
     "budgets[].label: the report's budget label without the trailing ' tokens'",
     "runs.*.pass_rate.by_budget: runs[].passed / runs[].tasks (the report has no per-budget rate), rounded to 4 places",
@@ -93,6 +99,15 @@ def copy_public():
             shutil.copytree(src, PUBLIC / src.name)
     for archive in sorted(PUBLIC.glob("*/*.tar.gz")):
         safe_extract(archive, archive.parent)
+    if ENCODED_ALIASES:
+        for d in sorted(PUBLIC.glob("*/tokens-*/*:*")):
+            alias = d.with_name(d.name.replace(":", "%3A"))
+            alias.mkdir()
+            for f in sorted(d.iterdir()):
+                try:
+                    os.link(f, alias / f.name)
+                except OSError:
+                    shutil.copy2(f, alias / f.name)
     if bad := sorted(PUBLIC.rglob("index.html")):
         die(f"public copy holds {bad[0]}, which would clash with the docs page")
 
@@ -133,7 +148,7 @@ def single(name: str, meta: dict) -> tuple[dict, list[dict]]:
         "title": meta["title"], "source": meta["source"], "tool_search": meta["tool_search"],
         "model": need(s, "model"), "judge": need(s, "judge"), "tasks": tasks, "passed": need(s, "passed"),
         "pass_rate": {"all": need(s, "pass_rate"), "by_budget": by(lambda r: round(r["passed"] / r["tasks"], 4))},
-        "passed_by_budget": by(lambda r: r["passed"]),
+        "passed_by_budget": by(lambda r: r["passed"]), "tasks_by_budget": by(lambda r: r["tasks"]),
         "cost_usd": {"all": need(s, "cost_usd"), "by_budget": by(lambda r: need(r, "metrics", "cost_usd", "total"))},
         "cost_per_pass_usd": {"all": need(s, "metrics", "cost_per_pass_usd"),
                               "by_budget": by(lambda r: need(r, "metrics", "cost_per_pass_usd"))},
