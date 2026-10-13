@@ -18,6 +18,8 @@ Each folder holds:
 - `report.json.gz` / `compare.json.gz`: the machine-readable report (`gunzip` it).
 - `answers.tar.gz` (single runs): every task's `answers.json` and `trace.jsonl` (the tool calls). Extract it in the run's folder (`tar xzf answers.tar.gz`) and the per-task links in the page open the raw files; comparison pages link into the two run folders next to them.
 
+`screenshots/` shows the comparison pages: the overview, pass rate by budget, the split screen and the task drawer.
+
 The pages link to `checks.json` and `judge.json` too; those stay in the git-ignored `runs/` folders, and their content is already in `report.json`.
 
 Costs and findings are in the pull request that added these files (#7).
