@@ -6,6 +6,8 @@ Together the servers expose about 2,000 tools: WMS, TMS, ERP/GL, PO, procurement
 
 On top of the servers sits a benchmark: **how well does a model find its way through MCP tools as more and more of them fill its context**, and does it stay honest and safe while doing it?
 
+Site, with a getting-started guide and example reports: https://stephenflavin.github.io/mock-enterprise-MCP/
+
 ## Quick start
 
 Requires Python ≥ 3.11.
@@ -30,6 +32,7 @@ Point any MCP client at a server URL, or paste the `profile` output into its con
 | `docs/assets/personas/` | The personas and their questions (with follow-ups), the source of every tool and benchmark task |
 | `bench/` | Benchmark ground truth (`cases/`), trap bank (`traps.yaml`), recipes (`recipes/`) |
 | `mockmcp/` | Engine (YAML + CSV → DuckDB → MCP), hub, CLI, and the `eval` pipeline |
+| `site/` | The docs site (Astro + Starlight), deployed to GitHub Pages from `main` |
 
 **Data is reproducible.**
 - `data/` is exactly what `gen.py` + `seed/` produce, which `python -m mockmcp check` verifies.
@@ -90,3 +93,8 @@ Guides:
 - [docs/BUILDING_A_SYSTEM.md](docs/BUILDING_A_SYSTEM.md): the contract for building one system.
 - [bench/AUTHORING.md](bench/AUTHORING.md): writing benchmark cases.
 - [docs/PLAN.md](docs/PLAN.md): the original design.
+- [docs/examples/](docs/examples/): real reports and comparisons, also browsable on the site.
+
+## Licence
+
+MIT; see [LICENSE](LICENSE).

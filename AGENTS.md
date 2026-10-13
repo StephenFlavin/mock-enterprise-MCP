@@ -19,6 +19,7 @@ The servers exist to make the benchmark realistic and *fair*.
 | `bench/cases/` or system data | `python -m mockmcp eval arithmetic` then `python -m mockmcp eval traps` (both store results the features read) | `eval arithmetic --check` and `eval traps --check` exit 0 |
 | the trap bank or `trap_seeds.py` | `python -m mockmcp eval traps` then `python -m mockmcp eval traps --check` | exit 0, no problems |
 | `mockmcp/eval/` | `python -m pytest -q tests/test_eval_*.py` | pass |
+| `site/`, or docs the site pulls in (`docs/*.md`, `bench/AUTHORING.md`, `docs/examples/`) | `cd site && npm ci && npm run build` | build passes |
 | anything, before you finish | `python -m pytest -q` (~8 min) | pass |
 
 Known flaky test: `tests/test_systems.py::test_system[itsm]` (scenario 01:10:Q5 expects `45.7`). It is date-dependent and fails without any local changes too. Don't "fix" it by loosening the check; fix the data or the scenario if you touch it.
@@ -71,6 +72,7 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `mockmcp/eval/compare*.py` | `eval compare A B`: two runs task by task (`compare.md`, `compare.json`; `--html` adds comparison charts, both sides' charts and `compare.html` with a split screen); never writes into A or B | `docs/BENCHMARKING.md` §6 Comparing two runs |
 | `mockmcp/eval/harness/` | agent harnesses (claude-code) | subclass `Harness`, `@register` |
 | `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); rules live in `base.py` RUBRIC and every prompt quotes them; decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine; evaluated and unreliable per task, kept but not for results: issue #5); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
+| `site/` | docs site (Astro + Starlight): landing page, Get started, Examples; Reference pages are generated from `docs/BENCHMARKING.md`, `docs/BUILDING_A_SYSTEM.md`, `bench/AUTHORING.md`, and the examples from `docs/examples/`, at build time | edit the sources, not the generated copies; `.github/workflows/pages.yml` deploys `main` |
 | `runs/` | benchmark output | git-ignored; never commit |
 
 ## Running models costs money: ask first

@@ -29,23 +29,22 @@ Prerequisites (run everything from the repo root):
 - Python >= 3.11 with the project dependencies (`mcp`, `duckdb`, `pyyaml`, `jinja2`, `uvicorn`; `pip install -e .`).
 - The `claude` CLI on `PATH`, logged in (tested with 2.1.293). The model under test and the judge are both headless `claude -p` calls.
 
-Check the plan first. This writes nothing and calls no model (about 10 s: it measures the real tool lists):
+Check the plan first. This writes nothing and calls no model (about 15 s: it measures the real tool lists):
 
 ```
 $ python -m mockmcp eval recipe bench/recipes/smoke.yaml --dry-run
 recipe smoke: seed 7, 6 tasks, kind any, followups all, harness claude-code, tools {'budget': {'tokens': 20000}, ...}
 
 strata (requested / drawn / available in pool):
-  trap                           1 /   0 /    0
+  trap                           1 /   1 /  287
   multi_system&followups&kind=scenario   2 /   2 /  290
-  write                          1 /   1 /  568
+  write                          1 /   1 /  538
   simple&kind=slice              2 /   2 /  838
-  natural                        1 /   1 / 2093
-  WARNING stratum 'trap': wanted 1, only 0 available (topped up from the natural distribution)
+  natural                        0 /   0 / 2093
 
-budget tokens-20000: tools {'min': 108, 'median': 150.0, 'max': 185} tokens {'min': 20017, 'median': 22346.0, 'max': 29780} servers {'min': 3, 'median': 4.5, 'max': 5}
-  scn-04:32:Q6                      scenario req=qms,spend,srm,supplier_risk + 1 dist   179 tools  25094 tok  [long,multi_system,complex,write,followups]
-  slc-cmms-01:10:Q1-e               slice    req=cmms                        + 4 dist   123 tools  20085 tok  [simple]
+budget tokens-20000: tools {'min': 79, 'median': 111.0, 'max': 144} tokens {'min': 21210, 'median': 26119.5, 'max': 29655} servers {'min': 2, 'median': 4.0, 'max': 4}
+  scn-04:32:Q6                      scenario req=qms,spend,srm,supplier_risk + 0 dist   121 tools  26227 tok  [long,multi_system,complex,write,followups,multi_turn]
+  slc-cmms-01:10:Q1-e               slice    req=cmms                        + 3 dist   110 tools  26647 tok  [simple]
   ...
 ```
 
@@ -59,11 +58,11 @@ python -m mockmcp eval report runs/smoke                                     # 4
 python -m mockmcp eval report runs/smoke --html                              #    also charts/*.svg and report.html
 ```
 
-What to expect for the smoke recipe (6 tasks: 3 slices, 3 scenarios with follow-ups; measured on haiku, 4 workers):
+What to expect for the smoke recipe (6 tasks: 3 slices, 2 scenarios with follow-ups, 1 trap; measured on haiku, 4 workers, before the 2026-10-09 cost fix, so the costs are upper bounds):
 
 | step | wall time | cost |
 |---|---|---|
-| recipe | ~10 s | none |
+| recipe | ~15 s | none |
 | run | ~100 s | ~$0.20 (61 tool calls) |
 | grade (sonnet judge) | ~1 min | ~$0.13 per task (see the worked example below) |
 | report | instant | none |
