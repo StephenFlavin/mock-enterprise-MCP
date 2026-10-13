@@ -1,0 +1,62 @@
+---
+title: Add a harness
+description: Benchmark another agent, SDK or a model's API directly by adding a harness, and open a pull request for it.
+sidebar:
+  order: 6
+---
+
+import { Aside, Steps, LinkCard } from '@astrojs/starlight/components';
+
+The guides use the `claude-code` harness because it is the only one built so far. The pipeline itself doesn't depend on it: recipes, the recording servers, grading, reports and comparisons work the same for any harness. A harness is just the agent loop that sits between the model and the MCP servers. You can add one for:
+
+- **another agent or CLI**, so it is measured on the same tasks as Claude Code;
+- **an agent SDK**, running its own loop in-process;
+- **a model's API directly**, as a plain tool-use loop with no agent framework, so the model is measured with nothing but the system prompt and the tools.
+
+<Aside type="tip" title="Contributions welcome">
+If you build a harness, or a judge, please [open a pull request](https://github.com/StephenFlavin/mock-enterprise-MCP/pulls). New harnesses make the comparisons in the [examples](../../examples/) possible across agents and providers, not just across models.
+</Aside>
+
+## What a harness does
+
+A harness lives in `mockmcp/eval/harness/`. It subclasses `Harness` (`harness/base.py`), sets a `name`, is decorated with `@register` and is imported in `harness/__init__.py`. It then shows up in `eval recipe --harness` and in a recipe's `harness:` field. It implements two methods:
+
+<Steps>
+
+1. **`write_task(task_dir, task, recipe)`**, called when the recipe is built. It writes `prompt.json` (the turns and the system prompt), an `mcp.json` in the harness's own format listing the task's servers with `{PORT}` as a placeholder in their URLs, and a `run.sh` that reproduces the task by hand.
+
+2. **`run_task(task_dir, task, port, model, opts)`**, called by `eval run`. A hub is already serving the task's servers on `port`, at `http://127.0.0.1:<port>/<system>/mcp`. The harness runs every turn in order in one conversation, writes `transcript.jsonl` (its raw output) and `answers.json`, and returns the answers. It never raises for a model or harness failure; it records it under `error`.
+
+</Steps>
+
+Each turn in the answers carries the text of the reply plus what the report needs for its headline numbers: `cost_usd` (that turn's own cost, not a running total), `usage` (input, output, cache read and cache creation tokens), `started_at` and `finished_at` (grading uses them to tie tool calls to turns).
+
+The hub records every tool call, so a new harness gets `trace.jsonl`, the deterministic checks and the judge for free. You don't write any grading code.
+
+## Rules a harness must keep
+
+These keep results comparable between harnesses:
+
+- **Use the fixed system prompt.** `harness/base.py` builds it: the company, today's date in the world, and who the user is. A harness replaces its own agent prompt with it rather than adding to it, and adds no guidance about tools, honesty or missing data.
+- **Expose only the task's tools.** Load exactly the servers in `task["servers"]["loaded"]`, in that order, and nothing else the model could use to find answers.
+- **One conversation per task.** Follow-up turns go into the same conversation, as a user would ask them.
+- **Report real costs.** Per-turn cost and token usage as the provider bills them. If a harness only reports a running total, store the difference, as `claude-code` does.
+
+## Try it
+
+Build a run folder for your harness and run one task before anything bigger. Running models costs money, so start with `--limit`:
+
+```sh
+python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke-mine --harness <name>
+python -m mockmcp eval run runs/smoke-mine --model <model> --limit 1
+python -m mockmcp eval grade runs/smoke-mine --no-judge
+python -m mockmcp eval report runs/smoke-mine --html
+```
+
+To compare it with Claude Code on the same tasks, build a second folder from the same recipe and seed with `--harness claude-code`, run and grade both with the same judge, then run `eval compare`.
+
+<LinkCard
+  title="Full contract: Extending the benchmark"
+  description="Every field a harness returns, how costs are counted, and how to add judges, traps and recipes."
+  href="../../reference/benchmarking/#9-extending"
+/>
