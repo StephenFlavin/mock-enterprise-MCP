@@ -346,3 +346,18 @@ def test_tags_chart_sorting_small_block_and_none():
             assert any((h.get("class") or "") == "mm-few" for h in g.iter(NS + "g"))
     assert charts.chart_tags({"tasks": [{"run": "r", "outcome": "pass", "passed": True}], "runs": []}) is None
     assert charts.chart_tags({"tasks": [], "runs": []}) is None
+
+
+def test_marks_stay_inside_the_chart():
+    """Five budgets and long task ids (as real scale runs have) must not push the matrix's last column past the
+    chart's width: the SVG scales to its container, so anything beyond the viewBox is cut off, not scrollable."""
+    budgets = ("tokens-0", "tokens-25000", "tokens-50000", "tokens-100000", "tokens-200000")
+    r = grid(n=60, budgets=budgets)
+    for t in r["tasks"]:
+        t["task_id"] = "trap-approval_flow-narrower_scope-supplier_risk-" + t["task_id"] + "-write-mt"
+    for name, s in charts.render_all(r).items():
+        root = ET.fromstring(s)
+        w = float(root.get("viewBox").split()[2])
+        for e in root.iter():
+            if e.tag.endswith("rect") and e.get("width") and e.get("x"):
+                assert float(e.get("x")) + float(e.get("width")) <= w + 0.5, (name, e.get("x"), e.get("width"), w)
