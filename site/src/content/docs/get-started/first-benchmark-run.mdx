@@ -1,0 +1,160 @@
+---
+title: Your first benchmark run
+description: Run the 6-task smoke recipe end to end, from plan to HTML report and a comparison of two runs.
+sidebar:
+  order: 4
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Running models costs money">
+`eval run` calls the model under test, and `eval grade` with a judge calls a second model to grade every answer. Both are billed to your account. Typical costs from the repo's own runs:
+
+| Run | Approximate cost |
+|---|---|
+| Haiku on 80 tasks at one tool budget (~56k tokens) | ~$1.70 |
+| Sonnet on the same 80 tasks | ~$26 |
+| Sonnet judge for 80 tasks | ~$6–8 |
+| Opus on 30 hard traps | ~$30 |
+| Haiku on 160 tasks at 0 / 25k / 50k / 100k / 200k tool budgets | $1.66 / $1.82 / $3.12 / $23.90 / $43.59 |
+
+Budgets of 100k tokens and more cost far more than their size suggests, because some models bill long prompts at a higher rate. Check the model's long-context price first.
+
+The smoke recipe below is small: the reference guide measured at most about $0.20 for the model (Haiku, 6 tasks) and $0.13 per task for the Sonnet judge (upper bounds: measured before a fix to cost counting). While you are learning the pipeline, use `--limit` and `--only` to run fewer tasks, and `grade --no-judge` to grade without a model.
+</Aside>
+
+## What you need
+
+- The repo installed and checked ([Install](../install/)).
+- **Claude Code** (the `claude` command) on your `PATH` and logged in. The only harness built so far, `claude-code`, runs the model under test and the judge as headless `claude -p` calls, so they use your Claude Code login and are billed to it. The reference guide was tested with Claude Code 2.1.293.
+
+Run every command from the repo root. Everything is written under `runs/`, which git ignores.
+
+## The pipeline
+
+```txt
+recipe  ->  run  ->  grade  ->  report
+tasks       model     checks     report.md
+mcp.json    + hub     + judge    summary.json
+run.sh      trace     verdict    results.jsonl
+```
+
+A **recipe** (a YAML file in `bench/recipes/`) says which questions to ask and how many tools to load. `bench/recipes/smoke.yaml` is 6 tasks: 2 simple single-system lookups, 2 multi-system scenarios with follow-up turns, 1 task that needs a write and 1 trap, each loaded with about 20,000 tokens of tool definitions.
+
+<Steps>
+
+1. **Check the plan.** `--dry-run` writes nothing and calls no model. It measures the real tool lists, so it takes about 15 seconds.
+
+   ```sh
+   python -m mockmcp eval recipe bench/recipes/smoke.yaml --dry-run
+   ```
+
+   ```txt title="Output"
+   recipe smoke: seed 7, 6 tasks, kind any, followups all, harness claude-code, tools {'budget': {'tokens': 20000}, 'distractors': 'adjacent', 'position': 'random', 'toolset': 'per_task'}
+
+   strata (requested / drawn / available in pool):
+     trap                           1 /   1 /  287
+     multi_system&followups&kind=scenario   2 /   2 /  290
+     write                          1 /   1 /  538
+     simple&kind=slice              2 /   2 /  838
+     natural                        0 /   0 / 2093
+
+   budget tokens-20000: tools {'min': 79, 'median': 111.0, 'max': 144} tokens {'min': 21210, 'median': 26119.5, 'max': 29655} servers {'min': 2, 'median': 4.0, 'max': 4}
+     scn-04:32:Q6                      scenario req=qms,spend,srm,supplier_risk + 0 dist   121 tools  26227 tok  [long,multi_system,complex,write,followups,multi_turn]
+     scn-06:53:Q1                      scenario req=data_warehouse,plm,qms,returns+ 0 dist   112 tools  26012 tok  [long,multi_system,complex,followups,multi_turn]
+     slc-cmms-01:10:Q1-e               slice    req=cmms                        + 3 dist   110 tools  26647 tok  [simple]
+     slc-ppm-03:31:Q4-a                slice    req=ppm                         + 1 dist    79 tools  21210 tok  [long,write]
+     slc-spend-04:32:Q8                slice    req=spend                       + 3 dist   144 tools  29655 tok  [simple,arithmetic]
+     trap-approval_flow-revoked-ats-09:89:Q4-mttrap     req=contracts,ppm,ats           + 0 dist    93 tools  21528 tok  [short,long,multi_system,followups,trap,multi_turn]
+   ```
+
+   Each task line shows its kind, the servers it needs (`req=`), how many distractor servers were added (`dist`), and the tools and tokens loaded. The exact lines can change as the question bank grows.
+
+2. **Build the run folder.** Still free: this writes the tasks, one `mcp.json` and one `run.sh` per task, and the prompt each model will see.
+
+   ```sh
+   python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke --harness claude-code
+   ```
+
+   It prints the same plan, then:
+
+   ```txt title="Output (end)"
+   wrote runs/smoke (1 run); next: python -m mockmcp eval run runs/smoke
+   ```
+
+   The model is told today's date when the folder is built, and the servers use the same date. Build and run within the same Wednesday-to-Tuesday week.
+
+3. **Run the model.** This is the first step that costs money. Try one task first:
+
+   ```sh
+   python -m mockmcp eval run runs/smoke --model haiku --limit 1
+   ```
+
+   Then run the rest. Finished tasks are skipped, so this only runs the other 5:
+
+   ```sh
+   python -m mockmcp eval run runs/smoke --model haiku --workers 4
+   ```
+
+   Each task prints one line as it finishes, in this shape:
+
+   ```txt
+   scn-04:32:Q6  turns 4/4  calls 28  $0.046  73s
+   ```
+
+   `--model` takes a Claude Code alias (`haiku`, `sonnet`, `opus`) or a full model id. Every task gets its own copy of the servers, which records every tool call to the task's `trace.jsonl`. You can stop a run at any point and start the same command again to resume. `--limit 0` means no limit, not zero tasks.
+
+4. **Grade without a judge.** Free: deterministic checks only, then provisional verdicts from rules.
+
+   ```sh
+   python -m mockmcp eval grade runs/smoke --no-judge
+   ```
+
+   It prints `runs/smoke: graded 6 tasks, N passed (provisional, no judge)` and one `FAIL` line per failed task with its outcome and failure categories. Provisional verdicts are quick triage, not results: the rules cannot tell a correctly worked-out figure from a made-up one, so they over-count `fabricated`.
+
+5. **Grade with the judge.** This costs money again (one judge call per task).
+
+   ```sh
+   python -m mockmcp eval grade runs/smoke --judge claude-code --judge-model sonnet
+   ```
+
+   `claude-code` with `sonnet` is the default judge. A judged verdict replaces a provisional one; `--no-judge` never overwrites a judged verdict.
+
+6. **Write the report.** Free.
+
+   ```sh
+   python -m mockmcp eval report runs/smoke --html --no-open
+   ```
+
+   ```txt title="Output (end)"
+   report: runs/smoke/report.md
+   summary: runs/smoke/summary.json
+   json: runs/smoke/report.json
+   charts: runs/smoke/charts
+   html: runs/smoke/report.html
+   ```
+
+   Open `runs/smoke/report.html` in a browser. Without `--no-open` the page opens by itself when you run the command in a terminal with a display.
+
+</Steps>
+
+## Compare two runs
+
+To compare two models (or one model under two settings), build a second folder from the same recipe, run it with the other model, and grade it with the **same judge**: verdicts from different judges are not comparable.
+
+```sh
+python -m mockmcp eval recipe bench/recipes/smoke.yaml --out runs/smoke-sonnet --harness claude-code
+python -m mockmcp eval run    runs/smoke-sonnet --model sonnet --workers 4
+python -m mockmcp eval grade  runs/smoke-sonnet --judge claude-code --judge-model sonnet
+python -m mockmcp eval compare runs/smoke runs/smoke-sonnet --html --no-open
+```
+
+`compare` pairs the tasks by id and writes `compare.md`, `compare.json`, the charts and `compare.html` into `runs/compare-smoke-vs-smoke-sonnet/`. It never writes into either run. Name the two sides with `--labels "haiku,sonnet"` and pick the folder with `--out`.
+
+With 6 tasks the comparison only shows the pipeline working; a handful of tasks cannot tell two models apart. [Reading a report](../reading-a-report/) explains what the pages show.
+
+## Next steps
+
+- **The real benchmark** is the scale recipes: `bench/recipes/scale-80.yaml` up to `scale-all.yaml`, every question at five tool budgets from only the servers it needs to about 200k tokens of tool definitions. Check the cost table above before you start one.
+- **Every option and output** is in the [benchmark guide](../../reference/benchmarking/), starting with its [quick start](../../reference/benchmarking/#2-quick-start-with-claude-code).
+- **Finished reports** from full runs are in the [Examples](../../examples/).
