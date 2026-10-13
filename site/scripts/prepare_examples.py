@@ -34,11 +34,11 @@ PAIRS = {
 # Comparison rows by task family, as `eval compare`'s "By tag" table (mockmcp/eval/tags.py) labels them.
 KIND_LABEL = {"scenario": "scenarios", "slice": "slices", "trap": "traps"}
 MIN_N = 10   # tags.MIN_N: fewer tasks than this is a small sample
-# The reports link task folders such as `scn-01:4:Q1` as `scn-01%3A4%3AQ1`. A server that decodes the whole path (most
-# do) looks for the `:` name; one that decodes with decodeURI, which leaves `%3A` alone (Vite's, so `npm run preview`),
-# looks for the literal `%3A` name. So each such folder also gets a `%3A`-named twin (hard links in public/; about
-# 113 MB more in dist/). Set False once the host is known to decode `%3A`.
-ENCODED_ALIASES = True
+# The reports link task folders such as `scn-01:4:Q1` as `scn-01%3A4%3AQ1`. GitHub Pages decodes the whole path and
+# finds the `:` name; Vite's server (`npm run preview`) decodes with decodeURI, which leaves `%3A` alone, and looks for
+# the literal name. SITE_ENCODED_ALIASES=1 gives each such folder a `%3A`-named twin (hard links in public/, about
+# 113 MB more in dist/) so those links work in a local preview; the deployed site doesn't need it.
+ENCODED_ALIASES = os.environ.get("SITE_ENCODED_ALIASES") == "1"
 COMPUTED = [
     "budgets[].label: the report's budget label without the trailing ' tokens'",
     "runs.*.pass_rate.by_budget: runs[].passed / runs[].tasks (the report has no per-budget rate), rounded to 4 places",
