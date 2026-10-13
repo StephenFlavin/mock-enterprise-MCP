@@ -126,9 +126,9 @@ def run_one(run: Path, task: dict, h, model: str, opts: dict, keep_hub: bool) ->
     kind = answer_failure(ans)
     if kind and (td / "answers.json").exists():   # not the model's answer: keep it aside, run the task again next time
         (td / "answers.json").replace(td / "answers.failed.json")
+    err = ans.get("error") or next((f"turn {i}: {t['error']}" for i, t in enumerate(ans["turns"]) if failure_kind(t.get("error"))), None)
     return {"id": task["id"], "turns": len(ans["turns"]), "of": len(task["turns"]), "calls": trace_len(td),
-            "cost": task_cost(ans["turns"]), "secs": time.time() - t0, "error": ans.get("error"),
-            "failure": kind}
+            "cost": task_cost(ans["turns"]), "secs": time.time() - t0, "error": err, "failure": kind}
 
 
 def stored_failure(task_dir: Path) -> str | None:
