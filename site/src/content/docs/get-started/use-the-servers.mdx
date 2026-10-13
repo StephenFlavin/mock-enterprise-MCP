@@ -1,0 +1,139 @@
+---
+title: Use the servers
+description: Serve the mock systems over HTTP, call one tool from the command line, and connect an MCP client.
+sidebar:
+  order: 3
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+Each system has an id, the name of its folder under `systems/` (for example `wms`, `tms`, `yms`). The folder `systems/_master/` holds shared master data and is not a server.
+
+## Serve every system
+
+```sh
+python -m mockmcp serve
+```
+
+```txt title="Output"
+96 systems on http://127.0.0.1:8800/<id>/mcp
+```
+
+Each system is its own MCP server over streamable HTTP at `http://127.0.0.1:8800/<id>/mcp`, for example `http://127.0.0.1:8800/wms/mcp`. The command keeps running until you stop it with Ctrl-C.
+
+Useful options:
+
+| Option | What it does |
+|---|---|
+| `--only wms yms` | host only these systems |
+| `--port 8811` | listen on another port (default 8800) |
+| `--host 0.0.0.0` | listen on another address (default 127.0.0.1) |
+| `--record calls.jsonl` | append every tool call served to a JSON Lines file |
+
+```sh
+python -m mockmcp serve --only wms yms
+```
+
+```txt title="Output"
+2 systems on http://127.0.0.1:8800/<id>/mcp
+```
+
+A system that is not hosted answers 404.
+
+<Aside type="note" title="Writes are thrown away">
+Tools that change data (cancel an appointment, block a bin location, create a stock transfer) write to a temporary overlay that is deleted when the process stops. Every start sees exactly the committed data. To keep writes across restarts, set `MOCKMCP_STATE` to a folder; `python -m mockmcp reset` clears it.
+</Aside>
+
+## Call one tool without a client
+
+`run` calls one tool of one system and prints exactly what a model would see. No server is needed, and writes are discarded.
+
+```sh
+python -m mockmcp run wms get_location_inventory_balance '{"location_id": "DC1-C-14"}'
+```
+
+```txt title="Output"
+5 rows.
+location_id,zone,sku,product_name,category,lot_number,status,system_qty,value_gbp,last_movement
+DC1-C-14-01,pick,SKU-100028,Grey Marl Scarve,Scarves,,on-hand,60,1521,2026-09-02 11:19
+DC1-C-14-01,pick,SKU-100007,Blush Blouse 10,Blouses,,on-hand,40,1158,2026-09-25 15:28
+DC1-C-14-02,pick,SKU-100084,Sage Top 14,Tops,,on-hand,124,2922.68,2026-09-25 16:19
+DC1-C-14-03,pick,SKU-101113,Rust Storage,Storage,,on-hand,180,2698.2,2026-09-04 14:09
+DC1-C-14-04,pick,SKU-100007,Blush Blouse 10,Blouses,,on-hand,95,2750.25,2026-09-13 08:30
+```
+
+Dates in the output move with the world's "today", so yours may differ from these.
+
+To see what a system offers, `brief` lists its tools (with read or write) and every persona question that uses them:
+
+```sh
+python -m mockmcp brief yms
+```
+
+```txt title="Output (start)"
+# Brief: yms — Yard Management System (YMS)
+
+## Tools to implement (2)
+
+| tool | R/W | catalogue description |
+|---|---|---|
+| `cancel_inbound_appointment` | W | Cancel a booked inbound dock appointment. |
+| `list_late_inbound_trailers` | R | Trailer arrivals versus appointment, with dwell time. |
+```
+
+## Connect an MCP client
+
+The personas in `docs/assets/personas/` are the people whose questions the tools were built for. `profile` writes an MCP client config with the systems one persona's questions use. It takes the persona file number and the persona's number in that file: `01 4` is file 01 (Warehouse and Distribution Centre), persona 4 (Inventory control/cycle counter).
+
+```sh
+python -m mockmcp profile 01 4 > persona.json
+```
+
+```json title="persona.json (start)"
+{
+  "mcpServers": {
+    "contracts": {
+      "type": "http",
+      "url": "http://127.0.0.1:8800/contracts/mcp"
+    },
+    "demand": {
+      "type": "http",
+      "url": "http://127.0.0.1:8800/demand/mcp"
+    },
+```
+
+That persona's config lists 10 systems, from `contracts` to `wms`. Use `--url` if your server runs elsewhere, for example `--url http://localhost:9000`.
+
+<Tabs>
+  <TabItem label="Claude Code">
+    Start the server in one terminal, then pass the config to Claude Code in another:
+
+    ```sh
+    python -m mockmcp serve
+    ```
+
+    ```sh
+    claude --mcp-config persona.json
+    ```
+
+    Add `--strict-mcp-config` to use only these servers and ignore any others you have configured.
+  </TabItem>
+  <TabItem label="Other HTTP clients">
+    Paste the `mcpServers` entries from `profile` into your client's MCP config, or add one server by its URL, for example `http://127.0.0.1:8800/wms/mcp`. Keep `python -m mockmcp serve` running while you use it.
+  </TabItem>
+  <TabItem label="stdio">
+    Clients that start servers themselves can run one system over stdio instead of HTTP:
+
+    ```json
+    {
+      "mcpServers": {
+        "yms": { "command": "python", "args": ["-m", "mockmcp", "stdio", "yms"] }
+      }
+    }
+    ```
+
+    Use the Python from the environment you installed into (for example the full path to `.venv/bin/python`).
+  </TabItem>
+</Tabs>
+
+Next: [your first benchmark run](../first-benchmark-run/).
