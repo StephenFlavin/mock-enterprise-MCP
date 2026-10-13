@@ -107,7 +107,8 @@ def generate(g):
     for i in range(12):                                     # partner-side: three suppliers whose endpoint returns HTTP 500
         jobs.append((story_eps[[3, 14, 29][i % 3]], "PARTNER_ERROR", "partner_side", "Partner endpoint returned HTTP 500"))
     r.shuffle(jobs)
-    start = datetime.combine(today, time(1, 20))
+    # overnight = the early hours of the world's today (data date + today_offset_days), the night after the evening go-live
+    start = datetime.combine(today + timedelta(days=int(g.world.get("today_offset_days", 0))), time(1, 20))
     for i, (ep, code, cat, reason) in enumerate(jobs):
         sent = start + timedelta(seconds=int(i * (3.5 * 3600) / 200) + r.randint(0, 40))
         messages.append({

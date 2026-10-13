@@ -42,7 +42,9 @@ def _q(p: Path) -> str:
 
 class DB:
     def __init__(self):
-        self.con = duckdb.connect(":memory:", config={"memory_limit": "256MB", "threads": 2})
+        # one thread: parallel aggregation adds floats in a different order each run (230.1 vs 230), and every tool
+        # output must be the same on every run
+        self.con = duckdb.connect(":memory:", config={"memory_limit": "256MB", "threads": 1})
         self.systems: dict[str, System] = {}
         self._lock = threading.Lock()
 

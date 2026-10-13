@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import random
+import sys
 import threading
 import time
 import urllib.error
@@ -26,6 +27,8 @@ RETRYABLE = {408, 429, 529}
 # is a separate pass, so only this applies). state_tokens: per-question state budget after question text and margin.
 # confidence: how the backend's own `confidence` is defined (Jev: top-prob / distance-aware; Cygnet: (K*p_max-1)/(K-1)).
 # concurrency: requests in flight per process. thresholds: (reject_at_or_below, accept_at_or_above), until calibrated.
+# benefit_of_doubt: families whose uncertain answers resolve in the model's favour when judging alone (still undecided,
+# so a cascade escalates them).
 PROFILES = {
     "jev": {"base_url": "https://api.typesafe.ai", "model": "jev-1.13.0", "key_env": "TYPESAFE_API_KEY",
             "context_tokens": 64000, "pass_tokens": 32000, "state_tokens": 28000, "per_pass": False, "confidence": "jev",
@@ -40,7 +43,14 @@ PROFILES = {
                        "thresholds": {"default": [0.25, 0.75]}},
     "cygnet": {"base_url": "http://127.0.0.1:8010", "model": "cygnet", "key_env": "CYGNET_API_KEY",
                "context_tokens": 16384, "pass_tokens": 16384, "state_tokens": 12000, "per_pass": True, "confidence": "cygnet",
-               "concurrency": 2, "precision": "bf16", "usd_per_m_input": 0.0, "thresholds": {"default": [0.25, 0.75]}},
+               "concurrency": 2, "precision": "bf16", "usd_per_m_input": 0.0,
+               # grounding: whether an unmatched figure is derived needs arithmetic the model is not asked to do; on 80 gold
+               # labels its rejections were 10 of 13 wrong (code catches provable errors), so it never rejects there and an
+               # uncertain answer is resolved in the model's favour alone but escalated in a cascade
+               "thresholds": {"default": [0.25, 0.75], "grounding": [0.0, 0.5]}, "benefit_of_doubt": ["grounding"],
+               # measured on 240 answers (decompose.VARIANTS): showing the rows that hold a fact cut the facts Brier from
+               # 0.38 to 0.29 (gold) and 0.51 to 0.18 (Sonnet verdicts); snippets saved ~5% tokens with no verdict change
+               "variants": ["facts_evidence", "snip_first"]},
 }
 
 
@@ -187,6 +197,24 @@ def resolve_profile(name: str, base_url: str | None = None) -> tuple[str, dict]:
     return name, dict(PROFILES[name])
 
 
+UNRELIABLE = (
+    "Decision-model judges are UNRELIABLE and not recommended for grading. Evaluated in 2026-10 (GitHub issue #5): Cygnet "
+    "(bf16) matched Sonnet's pass rate per budget within a few points but agreed per task only 82-86% of the time, and where "
+    "the two disagreed a review found Sonnet right 43 times out of 52. Typical misses: complete writes read as incomplete, "
+    "facts given in other words, figures from the tools taken as outside ones. Use the claude-code judge for results; treat "
+    "these verdicts as a rough screen only.")
+_WARNED = set()
+
+
+def warn_unreliable(name: str) -> None:
+    """Print the reliability warning to stderr, loudly, once per judge name per process."""
+    if name in _WARNED:
+        return
+    _WARNED.add(name)
+    bar = "!" * 100
+    print(f"\n{bar}\nWARNING ({name}): {UNRELIABLE}\n{bar}\n", file=sys.stderr, flush=True)
+
+
 class SystemOneJudge(Judge):
     """One class, four registered names (the backend profiles). Options: model, base_url, api_key, precision, thresholds
     ({component: [lo, hi]} or [lo, hi]; env SYSTEMONE_THRESHOLDS as JSON), timeout, retries, max_parallel, backoff."""
@@ -198,6 +226,7 @@ class SystemOneJudge(Judge):
                  max_parallel: int | None = None, backoff: float = 1.0, **_):
         url = base_url or os.environ.get("SYSTEMONE_BASE_URL")
         self.backend, p = resolve_profile(self.profile_name, url)
+        warn_unreliable(self.backend)
         p["base_url"] = url or p["base_url"]
         p["model"] = model or os.environ.get("SYSTEMONE_MODEL") or p["model"]
         if self.backend == "cygnet":
@@ -212,8 +241,11 @@ class SystemOneJudge(Judge):
         elif isinstance(thresholds, dict):
             th.update(thresholds)
         p["thresholds"] = th
+        if os.environ.get("SYSTEMONE_VARIANTS") is not None:  # experiments: decompose.VARIANTS, comma-separated ("" = none)
+            p["variants"] = [v.strip() for v in os.environ["SYSTEMONE_VARIANTS"].split(",") if v.strip()]
         self.profile, self.model = p, p["model"]
-        self.max_workers = max_parallel or p["concurrency"]
+        # requests in flight per process: the server batches what is in flight, so a GPU server wants more than its default
+        self.max_workers = max_parallel or int(os.environ.get("SYSTEMONE_CONCURRENCY") or 0) or p["concurrency"]
         self.client = SystemOneClient(p["base_url"], p["model"], api_key or os.environ.get(p["key_env"]) or None,
                                       timeout, retries, self.max_workers, backoff, p.get("usd_per_m_input"))
 
@@ -226,16 +258,22 @@ class SystemOneJudge(Judge):
 
         def one(c):
             return c, self.client.decide(c["state"], c["questions"], cdir)
-        try:
-            with ThreadPoolExecutor(max(1, min(len(plan["calls"]), self.max_workers))) as ex:
-                for c, r in ex.map(one, plan["calls"]):
+
+        def run(batch):
+            with ThreadPoolExecutor(max(1, min(len(batch), self.max_workers))) as ex:
+                for c, r in ex.map(one, batch):
                     answers.update(r["answers"])
                     calls.append({"qids": list(c["questions"]), "cache_key": r["cache_key"], "cached": r["cached"],
                                   "request_id": r.get("request_id"), "latency_ms": r.get("latency_ms", 0),
                                   "model": r.get("model"), "provider": r.get("provider"), "usage": r["usage"]})
+        try:
+            run(plan["calls"])
+            extra = D.followups(plan, answers, self.profile)   # close choice answers, asked again with the options reversed
+            if extra:
+                run(extra)
         except SystemOneError as e:
             err = e
-        meta = {"backend": self.backend, "model": self.model, "base_url": self.profile["base_url"],
+        meta = {"warning": UNRELIABLE, "backend": self.backend, "model": self.model, "base_url": self.profile["base_url"],
                 "model_reported": sorted({c["model"] for c in calls if c.get("model")}),
                 "precision": self.profile.get("precision"),
                 "cost_usd": round(sum(c["usage"]["cost"] for c in calls if not c["cached"]), 6),

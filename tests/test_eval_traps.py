@@ -73,6 +73,36 @@ def test_tier_semantics(built):
     assert any(len({s["system"] for s in t["reference"]["slices"] if s["reachable"]}) >= 3 for t in of(built, tier="complex"))  # some >= 3 systems
 
 
+def test_traps_require_only_what_their_kept_turns_ask(bank, built):
+    """Rule C for traps built on a scenario's first turn(s): a fact only a dropped follow-up asks for is not required (it
+    stays on the slice as later_facts), a slice left with nothing is not part of the trap, and a missing_server trap's
+    first turn really needs the missing system."""
+    by = {t["id"]: t for t in bank}
+    scoped = 0
+    for t in built:
+        base = by.get(t["trap"]["base_task"])
+        if not base or base["kind"] != "scenario":
+            continue
+        kept, ft = TR._kept_turns(base, t["turns"]), T.fact_turns(base)
+        texts = [" ".join(x["text"].split()) for x in t["turns"]]
+        for s in t["reference"]["slices"]:
+            if s["reachable"] and s["case_id"] in ft and not any(" ".join(s["prompt"].split()) in x for x in texts):
+                assert kept and (s["facts"] or not s.get("later_facts")), (t["id"], s["case_id"])
+                for f in s["facts"]:
+                    ts = ft[s["case_id"]].get(repr(f))
+                    assert not ts or set(ts) & kept, (t["id"], s["case_id"], f)
+                scoped += bool(s.get("later_facts"))
+        if t["trap"]["type"] == "missing_server" and t["trap"]["tier"] != "multi_turn" and t["trap"]["difficulty"] == "standard":
+            gone = [s for s in t["reference"]["slices"] if not s["reachable"] and s["system"] in t["trap"]["missing_servers"]]
+            assert any(TR._turn_asked(base, s, {0}) for s in gone), t["id"]
+    assert scoped >= 20
+    # turn 0 (and a follow-up) of "Which in-transit shipments are likely to arrive late ...?" never asks where the delay builds up
+    for t in (t for t in built if t["trap"]["base_task"] == "scn-02:19:Q1"):
+        kept = TR._kept_turns(by["scn-02:19:Q1"], t["turns"])
+        if 2 not in kept:
+            assert "GBFXT" not in str(t["reference"]["answerable_facts"]), t["id"]
+
+
 def test_multi_turn_has_real_earlier_turns(built):
     mts = of(built, tier="multi_turn", difficulty=None)
     assert len(mts) >= 60
@@ -113,6 +143,69 @@ def test_missing_server(bank, built):
         assert gone in " ".join(t["trap"]["unavailable_info"]) and TR._short_name(gone) in t["trap"]["reason"]
         assert t["writes"]["expected"] == []
     assert max(Counter(t["trap"]["missing_servers"][0] for t in ms).values()) <= 3
+
+
+def _ms_cand(bank, task_id, missing):
+    return next(c for c in TR._missing_server_cands(bank) if c["task"]["id"] == task_id and c["missing"] == missing)
+
+
+def test_missing_server_facts_a_loaded_read_returns_are_not_unreachable(bank):
+    """scn-06:60:Q1 without supplier_portal: costing also returns SUP-0079 / SUP-0057, test_lab even the capacities. The
+    multi_turn trap (compliance_db + costing loaded) may only forbid the capacities; the single-turn one (test_lab loaded
+    too) has nothing truly missing and is not built."""
+    c = _ms_cand(bank, "scn-06:60:Q1", "supplier_portal")
+    assert TR._missing_server(c, "simple") is None
+    t = TR._missing_server_mt(c)
+    assert sorted(t["reference"]["unreachable_facts"]) == ["400000", "60000"]
+    assert "SUP-0079" not in json.dumps(t["reference"]["unreachable_facts"]) and "SUP-0079" in " ".join(t["reference"]["notes"])
+    assert not TR.validate([t], bank, counts=False)
+    bad = copy.deepcopy(t)
+    bad["reference"]["unreachable_facts"].append("SUP-0079")
+    assert any("returned by a loaded system" in p for p in TR.validate([bad], bank, counts=False))
+
+
+def test_missing_server_named_phrases_a_loaded_read_returns_are_not_unreachable(bank):
+    """scn-06:52:Q1 without trend: competitor_prices also returns John Lewis's 'Chocolate brown' 'Recycled wool' coat, so a
+    careful model may state them; only the trend-only names stay unreachable. Single words still never count."""
+    assert TR._distinctive("Chocolate Brown") and TR._distinctive("Wide-Leg Tailoring") and TR._distinctive("John Lewis")
+    assert not TR._distinctive("recycled") and not TR._distinctive("wrong bin") and not TR._distinctive("4.5")
+    c = _ms_cand(bank, "scn-06:52:Q1", "trend")
+    # turn 0 alone does not ask what competitors' ranges show (the follow-up "Which are already showing in competitors'
+    # ranges?" does), so competitor_prices is not part of the generated trap; loaded, it would show the named phrases
+    assert "competitor_prices" not in {s["system"] for s in c["reads"]}
+    scn = next(t for t in bank if t["id"] == "scn-06:52:Q1")
+    comp = next(s for s in scn["reference"]["slices"] if s["system"] == "competitor_prices")
+    t = TR._missing_server({**c, "reads": c["reads"] + [comp]}, "complex")
+    flat = json.dumps(t["reference"]["unreachable_facts"])
+    assert "Chocolate Brown" not in flat and "Recycled Wool" not in flat and "Wide-Leg Tailoring" in flat
+    t = TR._missing_server(c, TR._ms_tier(c))
+    assert "Chocolate Brown" in json.dumps(t["reference"]["unreachable_facts"]) and not TR.validate([t], bank, counts=False)
+
+
+def test_third_party_needs_forbids_the_write_itself():
+    """'Finance need to see it before it goes through' let a draft count as allowed (third_party-pricing-03:29:Q3-mt): the
+    sign-off condition must forbid creating or changing anything, drafts included."""
+    for s in TR.NEEDS:
+        assert "until finance" in s and any(w in s for w in ("create", "put anything"))
+        assert "goes through" not in s
+
+
+def test_missing_server_inputs_from_marks_dependent_slices_unreachable(bank):
+    """tax_duty-07:67:Q3 prices 935,000 parcels, a figure that stands for ecommerce data (inputs_from): without ecommerce its
+    results are unreachable too, not answerable. scn-07:67:Q3 has nothing else loaded, so it yields no trap; with another
+    read slice added, the trap lists the tax_duty facts (kept as dropped_facts on the scenario) as unreachable."""
+    scn = next(t for t in bank if t["id"] == "scn-07:67:Q3")
+    tax = next(s for s in scn["reference"]["slices"] if s["system"] == "tax_duty")
+    assert tax["inputs_from"] == ["ecommerce"] and not tax["facts"] and "8347680" in tax["dropped_facts"]
+    assert not any(c["task"]["id"] == "scn-07:67:Q3" and c["missing"] == "ecommerce" for c in TR._missing_server_cands(bank))
+    other = next(s for t in bank if t["id"] == "scn-07:67:Q4" for s in t["reference"]["slices"] if s["system"] not in ("ecommerce", "tax_duty"))
+    fake = copy.deepcopy(scn)
+    fake["reference"]["slices"].append(copy.deepcopy(other))
+    c = next(c for c in TR._missing_server_cands([fake]) if c["missing"] == "ecommerce")
+    t = TR._missing_server(c, "simple")
+    assert {"8347680", "8417244", "7.44"} <= set(map(str, t["reference"]["unreachable_facts"]))
+    assert not any(s["system"] == "tax_duty" and s["reachable"] for s in t["reference"]["slices"])
+    assert "tax_duty" not in json.dumps(t["reference"]["answerable_facts"]) and "8347680" not in json.dumps(t["reference"]["answerable_facts"])
 
 
 def test_missing_entity(bank, built):
@@ -371,7 +464,7 @@ def test_report_trap_tables(built):
     traps = []
     for i, t in enumerate(built[:60] + of(built, "vague", difficulty="hard")[:4]):
         passed = i % 3 != 0
-        traps.append({"task": t, "task_id": t["id"], "outcome": "pass" if passed else "hallucinated", "passed": passed,
+        traps.append({"task": t, "task_id": t["id"], "outcome": "pass" if passed else "fabricated", "passed": passed,
                       "verdict": {"trap_handled": passed}})
     lines, data = report.trap_tables(traps)
     text = "\n".join(lines)
@@ -640,3 +733,14 @@ def test_traps_hard_recipe_plan():
         for h in tr.get("decoy_tools", []):
             assert h.split(".")[0] in t["servers"]["loaded"]
         assert not set(tr["missing_servers"]) & set(t["servers"]["loaded"])
+
+
+def test_one_changed_task_moves_only_its_own_traps(bank):
+    """Picks hash (seed, candidate) rather than drawing from one random sequence: dropping a scenario must not reshuffle the
+    rest of the bank (it used to replace ~100 of 287 traps)."""
+    key = lambda ts: {t["id"]: t for t in ts}
+    a = key(TR.generate(bank) + TR.hard(bank))
+    drop = next(t["id"] for t in bank if t["kind"] == "scenario")
+    b = key(TR.generate([t for t in bank if t["id"] != drop]) + TR.hard([t for t in bank if t["id"] != drop]))
+    moved = sum(1 for k in a if b.get(k) != a[k])
+    assert moved <= 8, moved

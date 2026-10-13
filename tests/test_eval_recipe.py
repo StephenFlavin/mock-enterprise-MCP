@@ -47,8 +47,137 @@ def test_scenarios_are_complete(bank):
         assert all(w["turn"] < len(t["turns"]) for w in t["writes"]["expected"])
         assert t["servers"]["required"] == sorted({s["system"] for s in t["reference"]["slices"]})
     s = next(t for t in bank if t["id"] == "scn-02:11:Q3")
-    assert [w["turn"] for w in s["writes"]["expected"]] == [3, 3, 3]  # the hold-and-reroute follow-up
+    # "Hold the three most exposed loads and reroute them, but check with me first." and no later go-ahead: held, not expected
+    assert not s["writes"]["expected"] and [w["turn"] for w in s["writes"]["held"]] == [3, 3, 3]
     assert s["turns"][3]["approval_needed"] and s["turns"][3]["writes_requested"]
+
+
+def _writes(t):
+    return sorted((w["system"] + "." + w["tool"], w["turn"]) for w in t["writes"]["expected"])
+
+
+def test_write_turns_follow_the_asking_turn(bank):
+    """Expected writes sit on the turn that asks for them (or approves them), never on a turn that asks for nothing, and a
+    write asked for "once I confirm" / "but ask me first" with no later go-ahead is held, not expected."""
+    b = {t["id"]: t for t in bank}
+    # the main turn only asks why the count is off; the recount is asked for with the hold in turn 3 (only the correction waits)
+    assert _writes(b["scn-01:4:Q1"]) == [("ims.create_cycle_count_task", 3), ("wms.block_location", 3),
+                                         ("wms.create_cycle_count_task", 3)]
+    assert not b["scn-01:4:Q1"]["turns"][0]["writes_requested"] and b["scn-01:4:Q1"]["turns"][3]["approval_needed"]
+    # "delay the non-critical payment run, but ask me first" is never approved; turn 3 asks to cancel instead
+    t = b["scn-07:66:Q5"]
+    assert _writes(t) == [("ap.cancel_payment_run", 3)] and t["turns"][0]["approval_needed"]
+    assert [(w["tool"], w["turn"]) for w in t["writes"]["held"]] == [("update_payment_run_date", 0)]
+    # "Flag where I'm short" reports; the rota approval is asked in turn 3, the task changes in turn 4
+    t = b["scn-08:71:Q3"]
+    assert not t["turns"][0]["writes_requested"] and t["turns"][3]["approval_needed"]
+    assert _writes(t) == [("store_ops.delete_task_from_store_week", 4), ("store_ops.reassign_task_to_employee", 4),
+                          ("store_wfm.approve_rota_for_store", 3), ("store_wfm.update_shift_for_employee", 3)]
+    # "Once I confirm, reprocess them." and the confirmation never comes: nothing expected, its write facts dropped
+    t = b["scn-09:83:Q1"]
+    assert t["turns"][0]["approval_needed"] and not t["writes"]["expected"]
+    assert [w["tool"] for w in t["writes"]["held"]] == ["submit_edi_message_reprocess"]
+    assert "Mapping corrected" not in str(t["reference"]["facts"])
+    # turns whose verb is not a write verb but which name the action as an instruction ("make the test request", "outline it
+    # as a board paper for the board agenda") are the only expected-write turns that do not read as asking for an action
+    named = {"scn-06:56:Q4", "scn-07:70:Q1"}
+    for t in (t for t in bank if t["kind"] == "scenario" and t["id"] not in named):
+        asks = {i for i, x in enumerate(t["turns"]) if x["writes_requested"]}
+        assert all(w["turn"] in asks for w in t["writes"]["expected"]) or not asks, t["id"]
+
+
+def test_a_write_no_turn_asks_for_is_not_expected(bank):
+    """scn-07:69:Q5 only asks why the WMS stock value differs from the ledger: the journal and the reversal its slice prompts
+    ask for are asked for by no turn, so they are not expected (doing them is unrequested) and their facts are not required.
+    A weak but real ask still counts, on the turn that first asks; a later turn naming the action gets its own writes."""
+    b = {t["id"]: t for t in bank}
+    t = b["scn-07:69:Q5"]
+    assert not t["writes"]["expected"] and not t["writes"]["held"]
+    assert sorted(w["tool"] for w in t["writes"]["unasked"]) == ["create_journal_entry", "reverse_inventory_adjustment"]
+    assert not {"INV-ADJ-900061", "reversed", "Duplicate posting"} & {str(f) for f in t["reference"]["facts"]}
+    assert all(s["unasked"] and not s["facts"] for s in t["reference"]["slices"] if s["case_id"] in ("gl-07:69:Q5-b", "ims-07:69:Q5"))
+    # "Hold 20% for click-and-collect" (turn 3) asks for the reservation; turn 4 only comes back to the hold
+    assert ("ims.create_stock_reservation_for_channel", 3) in _writes(b["scn-08:74:Q6"])
+    assert ("srm.send_supplier_engagement_invitation", 3) in _writes(b["scn-05:45:Q7"])  # "Send those ten an invitation"
+    assert ("budgeting.delete_forecast_scenario", 4) in _writes(b["scn-07:62:Q2"])  # "Actually, drop the upside scenario"
+    assert ("kb.archive_knowledge_base_article", 4) in _writes(b["scn-01:8:Q4"])  # "Archive the old reconciliation note"
+    # "put the allocation on the orders once I agree it", never agreed: held, not expected
+    assert [w["tool"] for w in b["scn-08:75:Q2"]["writes"]["held"]] == ["update_wholesale_order_allocation"]
+    for t in (t for t in bank if t["kind"] == "scenario"):
+        asked = {(w["system"], w["tool"], json.dumps(w["args"], sort_keys=True, default=str)) for w in t["writes"]["expected"] + t["writes"]["held"]}
+        assert not any((w["system"], w["tool"], json.dumps(w["args"], sort_keys=True, default=str)) in asked for w in t["writes"]["unasked"]), t["id"]
+
+
+def test_fact_turns_ties_facts_to_the_turns_that_ask_them(bank):
+    """Which turn of a scenario asks for each fact (a trap that keeps only the first turns requires only theirs)."""
+    b = {t["id"]: t for t in bank}
+    ft = T.fact_turns(b["scn-08:79:Q6"])
+    lp, ims = ft["loss_prevention-08:79:Q6-a"], ft["ims-08:79:Q6"]
+    assert 0 not in lp["'0.72'"] and 3 in lp["'0.72'"]  # "What would protect them at least cost?"
+    assert 0 not in lp["'theft'"] and 2 in lp["'theft'"]  # "Which are driven by theft versus damage or error?"
+    assert all(ts and 0 in ts for ts in ims.values())  # "What are our highest-loss products?"
+    ft = T.fact_turns(b["scn-02:19:Q1"])
+    assert ft["tms-02:19:Q1-a"] == {"'GBFXT'": [2], "'28.8'": [2]}  # "Where in the chain is the delay building up?"
+    assert all(0 in ts for ts in ft["ims-02:19:Q1"].values())
+    ft = T.fact_turns(b["scn-09:81:Q3"])["data_warehouse-09:81:Q3"]
+    assert ft["88.2"] == ft["2.63"] == [1] and 0 in ft["23.4"]  # turn_facts: last December's peak is the follow-up's
+    sl = T._slices()["09:81:Q3"]
+    assert next(s for s in sl if s["case_id"] == "data_warehouse-09:81:Q3")["turn_facts"] == {1: [88.2, 2.63]}
+
+
+def test_scenario_gives_the_inputs_its_reference_needs(bank):
+    """Rule C: a scenario's reference must not need inputs the user never gives. Cases either say them in the scenario's
+    Context (scenario_context) or narrow the facts the scenario requires (scenario_facts); slice tasks keep the case as is."""
+    b = {t["id"]: t for t in bank}
+    main = lambda tid: b[tid]["turns"][0]["text"]
+    assert "40,000 units at £18.50" in main("scn-04:38:Q1") and "SKU-100959" in main("scn-03:29:Q3")
+    assert "500,000 metal zips" in main("scn-03:24:Q3") and "20,000 bedding units" in main("scn-08:75:Q3")
+    assert "RUN-900002" in main("scn-07:66:Q5") and "EMP-00136" in main("scn-01:4:Q3")  # ids the writes need, now named
+    assert "EMP-00014" in main("scn-08:71:Q3") and "EMP-00536" in main("scn-08:71:Q3")
+    doc = next(s for s in b["scn-07:62:Q8"]["reference"]["slices"] if s["system"] == "documents")
+    assert doc["facts"] == [] and "OFF PLAN" in doc["dropped_facts"] and "scenario_facts" not in doc
+    assert "OFF PLAN" not in b["scn-07:62:Q8"]["reference"]["facts"] and "OFF PLAN" in b["slc-documents-07:62:Q8"]["reference"]["facts"]
+    lms = next(s for s in b["scn-02:21:Q3"]["reference"]["slices"] if s["system"] == "lms")
+    assert lms["facts"] == ["45"]
+    slc = b["slc-pricing-03:29:Q3"]
+    assert not any(k in slc["reference"]["slices"][0] for k in ("scenario_context", "scenario_facts", "inputs_from"))
+
+
+def test_scenarios_have_no_unasked_facts(bank):
+    """Rule C: a scenario takes the union of its slices' facts, so a fact only a slice prompt asks for ("which till?", "the
+    single highest write-off") must not become required. Every slice the lexical review flags carries an explicit
+    scenario_facts (a reviewed decision), so the flag list stays empty; a new case that trips it needs one too."""
+    assert T.unasked_facts() == []
+    b = {t["id"]: t for t in bank}
+    facts = lambda tid: {repr(f) for f in b[tid]["reference"]["facts"]}
+    assert "'24.2'" not in facts("scn-05:50:Q5") and "'24.2'" in facts("slc-supplier_risk-05:50:Q5")
+    assert "'Ochre Shirt S'" not in facts("scn-01:6:Q1") and "'rework'" in facts("scn-01:6:Q1")
+    assert {"'T03'", "'SKU-104746'"}.isdisjoint(facts("scn-07:68:Q5")) and "'EMP-00472'" in facts("scn-07:68:Q5")
+    assert "'GBFXT'" in facts("scn-02:19:Q1")  # "Where in the chain is the delay building up?" asks for the port
+    assert "'0.72'" in facts("scn-08:79:Q6")  # "What would protect them at least cost?"
+
+
+def test_unasked_facts_flags_slice_only_asks(monkeypatch):
+    """Without its reviewed scenario_facts, the supplier-spend slice of "What risks matter most?" is flagged for its share of
+    spend (a column the turns never mention), while the trend slice the turns ask about is not."""
+    qs, sl = T.questions(), T._slices()
+    raw = [{k: v for k, v in s.items() if k != "scenario_facts"} for s in sl["05:50:Q5"]]
+    monkeypatch.setattr(T, "_bank", lambda: (T._scenario("05:50:Q5", qs["05:50:Q5"], raw),))
+    got = {(x["case_id"], repr(x["fact"])) for x in T.unasked_facts()}
+    assert ("supplier_risk-05:50:Q5", "'24.2'") in got
+    assert not any(c.startswith(("trend-", "risk-")) for c, _ in got)
+
+
+def test_held_and_conditional_turn_flags():
+    held = ["Once I confirm, reprocess them.", "Delay the run, but ask me first.", "Pull them forward once I've okayed the list.",
+            "Submit it once I sign off.", "Send the note once I've approved it."]
+    assert all(T.turn(x, "followup")["approval_needed"] for x in held)
+    assert all(T.HOLD.search(x) for x in held)
+    assert T.turn("Once it looks right, approve the rota.", "followup")["approval_needed"]
+    assert not T.HOLD.search("Once it looks right, approve the rota.")  # the assistant checks; the same turn asks
+    assert not T.HOLD.search("Prepare the journal for my approval.") and not T.HOLD.search("Hold the bay until it's recounted.")
+    assert not T.turn("Flag where I'm short or over by hour.", "followup")["writes_requested"]
+    assert T.turn("Only send the UK one for now.", "followup")["writes_requested"]
 
 
 def test_slice_writes_turn_zero(bank):

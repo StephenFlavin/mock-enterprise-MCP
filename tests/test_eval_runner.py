@@ -132,3 +132,149 @@ def test_custom_harness_registers_and_is_selectable():
         assert "dummy-test" in harness.available() and isinstance(harness.get("dummy-test"), Dummy)
     finally:
         _REGISTRY.pop("dummy-test")
+
+
+def test_fake_clock_env(tmp_path, monkeypatch):
+    from mockmcp.eval.harness import claude_code as cc
+    lib = tmp_path / "libfaketime.so.1"
+    lib.write_text("")
+    monkeypatch.setattr(cc, "FAKETIME_LIBS", (str(lib),))
+    env = cc.clock_env("2026-10-07")
+    assert env["LD_PRELOAD"] == str(lib) and env["FAKETIME"].startswith("@2026-10-07 ") and env["FAKETIME_DISABLE_SHM"] == "1"
+    monkeypatch.setattr(cc, "FAKETIME_LIBS", (str(tmp_path / "missing.so"),))
+    assert cc.clock_env("2026-10-07") == {}
+
+
+def test_tool_search_needs_the_toolsearch_tool(tmp_path):
+    # `--tools ''` also removes ToolSearch, which silently keeps every definition in context (493k tokens on 96 servers)
+    off = claude_code._cmd(TASK, tmp_path / "m.json", "haiku", "hi", "s", True, 25, "sys", "off")
+    on = claude_code._cmd(TASK, tmp_path / "m.json", "haiku", "hi", "s", True, 25, "sys", "on")
+    assert off[off.index("--tools") + 1] == "" and "ToolSearch" not in off
+    assert on[on.index("--tools") + 1] == "ToolSearch" and "ToolSearch" in on[on.index("--allowedTools"):]
+    harness.get("claude-code").write_task(tmp_path, TASK, {"harness_options": {"tool_search": "on"}})
+    sh = (tmp_path / "run.sh").read_text()
+    assert "ENABLE_TOOL_SEARCH=true" in sh and "--tools ToolSearch" in sh
+
+
+def _fake_claude(tmp_path, monkeypatch, tools):
+    """A `claude` on PATH that answers every turn, announcing `tools` in its init event."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    events = [{"type": "system", "subtype": "init", "tools": tools},
+              {"type": "result", "subtype": "success", "is_error": False, "result": "ok", "total_cost_usd": 0.01, "num_turns": 1}]
+    (bin_ / "claude").write_text("#!/bin/sh\ncat <<'X'\n" + "\n".join(json.dumps(e) for e in events) + "\nX\n")
+    (bin_ / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:/usr/bin:/bin")
+
+
+def test_parse_turn_records_whether_tool_search_was_offered(tmp_path, monkeypatch):
+    stream = "\n".join(json.dumps(x) for x in [{"type": "system", "subtype": "init", "tools": ["ToolSearch", "mcp__ap__x"]},
+                                               {"type": "result", "subtype": "success", "result": "ok"}])
+    assert claude_code.parse_turn(stream)["tool_search_active"] is True
+    _fake_claude(tmp_path, monkeypatch, ["mcp__cmms__x"])          # asked for tool search, but it was not offered
+    h = harness.get("claude-code")
+    h.write_task(tmp_path, TASK, {"harness_options": {"tool_search": "on"}})
+    ans = h.run_task(tmp_path, TASK, 1, "haiku", {"tool_search": "on"})
+    assert ans["error"].startswith("turn 0: harness setup") and len(ans["turns"]) == 1
+    assert runner.failure_kind(ans["error"]) == "fatal"
+    ok = h.run_task(tmp_path, TASK, 1, "haiku", {"tool_search": "off"})
+    assert ok["error"] is None and [t["tool_search_active"] for t in ok["turns"]] == [False, False]
+
+
+@pytest.mark.parametrize("error,kind", [
+    ("error_during_execution: Credit balance is too low", "fatal"), ("API Error: 401 authentication_error", "fatal"),
+    ("success: You've hit your session limit \u00b7 resets 8:30pm (UTC)", "fatal"),
+    ("API Error: 429 usage_limit_reached", "fatal"),
+    ("turn 0: harness setup: tool_search on but ToolSearch was not offered", "fatal"),
+    ("API Error: 529 overloaded_error", "transient"), ("API Error: 429 rate_limit_error", "transient"),
+    ("harness crash: OSError: boom", "transient"),
+    ("no result event (timeout or crash)", None), ("empty answer", None), ("error_max_turns: ", None), (None, None)])
+def test_failure_kind(error, kind):
+    # only errors that say nothing about the model are re-run; timeouts, empty answers and max turns stay the model's result
+    assert runner.failure_kind(error) == kind
+
+
+def _grid_run(tmp_path, n):
+    run = tmp_path / "run"
+    run.mkdir()
+    tasks = [{**TASK, "id": f"t{i}"} for i in range(n)]
+    (run / "tasks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in tasks))
+    (run / "recipe.yaml").write_text("harness: scripted-test\n")
+    for t in tasks:
+        (run / t["id"]).mkdir()
+    return run
+
+
+def test_run_stops_on_fatal_error_and_resumes(tmp_path, monkeypatch):
+    from mockmcp.eval.harness.base import _REGISTRY
+    script = {"t1": "API Error: 529 overloaded_error", "t2": "Credit balance is too low"}
+
+    @harness.register
+    class Scripted(harness.Harness):
+        name = "scripted-test"
+        def run_task(self, task_dir, task, port, model, opts):
+            err = script.get(task["id"])
+            ans = {"turns": [] if err else [{"text": "ok", "cost_usd": 0.01}], "error": err, "model": model}
+            (task_dir / "answers.json").write_text(json.dumps(ans))
+            return ans
+    monkeypatch.setattr(runner, "start_hub", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "stop_hub", lambda *a, **k: None)
+    args = lambda **k: type("A", (), {"run_dir": str(run), "model": "haiku", "workers": 1, "only": None, "limit": None,
+                                       "rerun": False, "keep_hub": False, "retry_errors": False, **k})()
+    run = _grid_run(tmp_path, 5)
+    try:
+        with pytest.raises(SystemExit, match="Credit balance"):
+            runner.main(args())
+        done = sorted(p.parent.name for p in run.glob("*/answers.json"))
+        assert done == ["t0"]                                        # t1 transient and t2 fatal kept aside, t3+ never started
+        assert (run / "t1" / "answers.failed.json").exists() and (run / "t2" / "answers.failed.json").exists()
+        script.clear()                                               # credit topped up: the same command resumes
+        runner.main(args())
+        assert sorted(p.parent.name for p in run.glob("*/answers.json")) == ["t0", "t1", "t2", "t3", "t4"]
+        # a run written before this rule: a stored credit failure is re-run only with --retry-errors
+        (run / "t3" / "answers.json").write_text(json.dumps({"turns": [], "error": "Credit balance is too low"}))
+        (run / "t4" / "answers.json").write_text(json.dumps({"turns": [], "error": "no result event (timeout or crash)"}))
+        runner.main(args())
+        assert json.loads((run / "t3" / "answers.json").read_text())["error"]
+        runner.main(args(retry_errors=True))
+        assert json.loads((run / "t3" / "answers.json").read_text())["error"] is None
+        assert json.loads((run / "t4" / "answers.json").read_text())["error"]   # a model timeout is never retried
+    finally:
+        _REGISTRY.pop("scripted-test")
+
+
+def test_resumed_session_costs_are_not_counted_twice():
+    from mockmcp.eval.schema import task_cost, turn_costs
+    # Claude Code reports the running session total on every resumed turn (old answers store it as cost_usd)
+    old = [{"cost_usd": 0.31}, {"cost_usd": 0.37}, {"cost_usd": 0.43}]
+    assert [round(c, 2) for c in turn_costs(old)] == [0.31, 0.06, 0.06] and round(task_cost(old), 2) == 0.43
+    new = [{"cost_usd": 0.31, "session_cost_usd": 0.31}, {"cost_usd": 0.06, "session_cost_usd": 0.37}]
+    assert round(task_cost(new), 2) == 0.37 and task_cost([{"cost_usd": 0.2}]) == 0.2 and task_cost([]) == 0
+
+
+def test_harness_stores_each_turns_own_cost(tmp_path, monkeypatch):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    # a claude whose reported cost grows like a resumed session's running total: 0.10, 0.25
+    script = ("#!/bin/sh\nn=$(cat " + str(tmp_path / "n") + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + str(tmp_path / "n")
+              + "\nc=$( [ $n = 1 ] && echo 0.10 || echo 0.25 )\n"
+              + "echo '{\"type\": \"result\", \"subtype\": \"success\", \"result\": \"ok\", \"total_cost_usd\": '$c'}'\n")
+    (bin_ / "claude").write_text(script)
+    (bin_ / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:/usr/bin:/bin")
+    h = harness.get("claude-code")
+    h.write_task(tmp_path, TASK, {})
+    ans = h.run_task(tmp_path, TASK, 1, "haiku", {})
+    assert [(t["cost_usd"], t["session_cost_usd"]) for t in ans["turns"]] == [(0.10, 0.10), (0.15, 0.25)]
+    from mockmcp.eval.schema import task_cost
+    assert round(task_cost(ans["turns"]), 2) == 0.25
+
+
+def test_usage_limit_in_a_turn_is_not_kept_as_an_answer(tmp_path):
+    # Claude Code returns a usage-limit message as the turn's text with no top-level error: it must still count as fatal
+    limit = "success: You've hit your session limit · resets 8:30pm (UTC)"
+    ans = {"error": None, "turns": [{"text": "real answer", "error": None}, {"text": limit[9:], "error": limit}]}
+    assert runner.answer_failure(ans) == "fatal"
+    (tmp_path / "answers.json").write_text(json.dumps(ans))
+    assert runner.stored_failure(tmp_path) == "fatal"
+    assert runner.answer_failure({"error": None, "turns": [{"text": "x", "error": "error_max_turns: "}]}) is None

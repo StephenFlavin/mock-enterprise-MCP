@@ -16,6 +16,7 @@ The servers exist to make the benchmark realistic and *fair*.
 | a system (`systems/<id>/`) | `python -m mockmcp gen <id>` then `python -m mockmcp check <id>` | `ok   <id>` |
 | master data, `world.yaml`, the engine | `python -m mockmcp check` (all systems) | no failures |
 | `bench/cases/` | `python -m mockmcp check` + `python -m pytest -q tests/test_eval_recipe.py` | pass |
+| `bench/cases/` or system data | `python -m mockmcp eval arithmetic` then `python -m mockmcp eval traps` (both store results the features read) | `eval arithmetic --check` and `eval traps --check` exit 0 |
 | the trap bank or `trap_seeds.py` | `python -m mockmcp eval traps` then `python -m mockmcp eval traps --check` | exit 0, no problems |
 | `mockmcp/eval/` | `python -m pytest -q tests/test_eval_*.py` | pass |
 | anything, before you finish | `python -m pytest -q` (~8 min) | pass |
@@ -63,11 +64,13 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 | `systems/_master/` | shared master data + its generator | edit `gen.py` / `seed/`, regenerate, full `check` |
 | `catalog/` | tool catalogue from the persona docs | `python -m mockmcp catalog` |
 | `bench/cases/` | ground truth per system | `bench/AUTHORING.md` |
+| `bench/arithmetic.yaml` | case facts an answer gets by arithmetic (feature `arithmetic`) | `python -m mockmcp eval arithmetic` (generated) |
 | `bench/traps.yaml` | trap bank (generated + `authored: true` entries) | `mockmcp/eval/trap_seeds.py` / `traps.py`, then `eval traps` |
 | `bench/recipes/` | benchmark recipes | copy `example.yaml`; check with `eval recipe --dry-run` |
-| `mockmcp/eval/` | recipe → run → grade → report | `docs/BENCHMARKING.md` (§9 Extending) |
+| `mockmcp/eval/` | recipe → run → grade → report (`report.md`, `summary.json`, `report.json`; `--html` adds SVG charts and `report.html`, `--verdicts NAME` reports `judge.NAME.json`) | `docs/BENCHMARKING.md` (§9 Extending) |
+| `mockmcp/eval/compare*.py` | `eval compare A B`: two runs task by task (`compare.md`, `compare.json`; `--html` adds comparison charts, both sides' charts and `compare.html` with a split screen); never writes into A or B | `docs/BENCHMARKING.md` §6 Comparing two runs |
 | `mockmcp/eval/harness/` | agent harnesses (claude-code) | subclass `Harness`, `@register` |
-| `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
+| `mockmcp/eval/judge/` | judges: claude-code + `prompt.md` (lean judge payload, the default: judge, don't diagnose) / `prompt-debug.md` (full payload, `--judge-debug`; keep the two in step); rules live in `base.py` RUBRIC and every prompt quotes them; decision models over System One (`system_one.py` backends jev / jev-openrouter / jev-llmgateway / cygnet, `decompose.py` questions + combine; evaluated and unreliable per task, kept but not for results: issue #5); `cascade:<a>+<b>` | subclass `Judge`, `@register`; add a backend as a profile in `system_one.PROFILES`; check with `eval calibrate` |
 | `runs/` | benchmark output | git-ignored; never commit |
 
 ## Running models costs money: ask first
@@ -76,10 +79,16 @@ Treat these as hard rules; the benchmark's credibility depends on them.
 
 | Run | Approximate cost |
 |---|---|
-| Haiku on 80 tasks at one budget | ~$3 |
-| Sonnet judge for those 80 tasks | ~$10 |
-| Opus on 30 hard traps | ~$70 |
-| A full five-budget scale run | 5× those |
+| Haiku on 80 tasks at one budget (~56k) | ~$1.70 |
+| Sonnet on the same 80 tasks | ~$26 |
+| Sonnet judge for 80 tasks | ~$6–8 |
+| Opus on 30 hard traps | ~$30 |
+| Haiku on 160 tasks: 0 / 25k / 50k / 100k / 200k tool budget | $1.66 / $1.82 / $3.12 / $23.90 / $43.59 |
+| A full five-budget scale run | the sum of its budgets; Sonnet about 25× Haiku up to 50k, about 4× above 100k |
+
+Costs before 2026-10-09 were overstated about 2.5×: Claude Code reports a resumed conversation's running total on every turn, and the turns were summed. `schema.task_cost` now counts each turn once (old answers are differenced); `eval grade --no-judge` rewrites an old run's `results.jsonl` with the corrected costs without touching verdicts.
+
+Budgets of 100k tokens and up cost far more than their size suggests: some models bill prompts over a threshold at a higher rate (Haiku 5.5: 5× above 100k tokens), and at a 100k budget every request crosses it. Check the model's long-context price before a big-budget run.
 
 Don't start model runs beyond a single-task smoke check unless the person asked for them. Prefer `--dry-run`, `--only`, `--limit` and `grade --no-judge` while developing. Report cost alongside results.
 

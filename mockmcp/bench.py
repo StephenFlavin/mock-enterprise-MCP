@@ -40,10 +40,13 @@ SYSTEM = ("You are an assistant at {company}. Today is {today}. You can only use
           "Answer from tool results only; if the tools cannot answer part of the request, say so plainly.")
 
 
+DASHES = str.maketrans({"\u2013": "-", "\u2014": "-", "\u2212": "-", "\u2011": "-"})  # en/em dash, minus, nb hyphen
+
+
 def _norm(s: str, table: bool = False) -> str:
     """table=True for tool output (CSV: every comma separates fields); prose drops thousands separators."""
     s = str(s).replace(",", " ") if table else re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", str(s))
-    s = s.replace("£", "").lower()
+    s = s.replace("£", "").translate(DASHES).lower()
     return re.sub(r"[_*]+", " ", s)
 
 

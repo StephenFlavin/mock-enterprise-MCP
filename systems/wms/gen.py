@@ -37,6 +37,9 @@ QUALITY_HOLDS = [('DC1', 'SKU-103507', 867), ('DC3', 'SKU-100819', 2939), ('DC1'
                  ('DC1', 'SKU-104270', 663), ('DC3', 'SKU-104053', 2842), ('DC1', 'SKU-102723', 876), ('DC3', 'SKU-103661', 1752),
                  ('DC1', 'SKU-101715', 1058), ('DC3', 'SKU-101750', 2879), ('DC1', 'SKU-103080', 671), ('DC3', 'SKU-104284', 2650),
                  ('DC1', 'SKU-101869', 696), ('DC3', 'SKU-106069', 2496), ('DC1', 'SKU-102338', 165)]
+# supplier lots held at DCs (sku, lot, site, qty, days since receipt): the same lots and quantities as ims gen.py add_batch
+BATCH_LOTS = [('SKU-100007', 'BATCH-POL-PINK-004', 'DC4', 240, 27), ('SKU-100007', 'BATCH-POL-PINK-007', 'DC2', 500, 9),
+              ('SKU-100014', 'BATCH-POL-PINK-005', 'DC4', 180, 20)]
 PACK_STORY_SKU = 'SKU-100532'     # Denim Small Appliance: corrugated vs moulded pulp vs recycled plastic pack comparison
 MATERIAL_OF = {'carton': 'corrugated', 'polybag': 'plastic_film', 'hanging': 'hanger', 'tray': 'moulded_pulp', 'pouch': 'recycled_plastic'}
 
@@ -887,6 +890,17 @@ def generate(g):
     for i, x in enumerate(damage):
         x['report_id'] = f'HDR-{i + 1:06d}'
 
+    # batch story (05:42): the pink blouse lots IMS holds at DCs are in WMS bins too, under the same lot number, split off
+    # the SKU's largest bin at that DC (no random draws, same totals; last, so no other table moves). Keep in step with ims
+    # gen.py add_batch.
+    for sku, lot, site, qty, age in BATCH_LOTS:
+        cands = sorted([x for x in location_inventory if x['status'] == 'on-hand' and x['site_id'] == site and x['sku'] == sku
+                        and x['location_id'] not in story_locs], key=lambda x: (-x['qty'], x['stock_id']))
+        x = cands[0]
+        take = min(qty, x['qty'])
+        x['qty'] -= take
+        location_inventory.append({'stock_id': f'LI-{len(location_inventory) + 1:06d}', 'location_id': x['location_id'], 'site_id': site,
+                                   'sku': sku, 'lot_number': lot, 'status': 'on-hand', 'qty': take, 'updated_at': T(D(age), 10, 0)})
     return {
         'handling_damage_reports': damage, 'wave_configurations': [], 'inventory_status_mapping': [],
         'cause_codes': cause_codes, 'pack_specifications': pack_specs, 'location_inventory': location_inventory,

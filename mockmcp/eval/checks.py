@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .. import bench, db, spec
+from . import derive as D
 
 _LOCK = threading.Lock()   # spec.SHIFT_DAYS and db.STATE are process globals
 
@@ -64,13 +65,62 @@ def writes_of(task: dict, trace: list[dict], turns: list[int]) -> list[dict]:
                     and _same_target(e.get("args"), c.get("args") or {})), None)
         if hit is not None and not c.get("is_error"):
             used.add(hit)
+        held = None if hit is not None else next((h for h in (task.get("writes") or {}).get("held") or []
+                                                   if h["tool"] == c["tool"] and _same_target(h.get("args"), c.get("args") or {})), None)
         out.append({"tool": c["tool"], "server": c.get("server"), "args": c.get("args") or {}, "turn": turn,
                     "is_error": bool(c.get("is_error")), "expected": hit is not None,
-                    "requested_turn": expected[hit].get("turn") if hit is not None else None})
+                    "requested_turn": expected[hit].get("turn") if hit is not None else None,
+                    **({"held_turn": held.get("turn", 0)} if held else {})})
     return out
 
 
-def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict] | None = None, system: str = "") -> dict:
+def fact_found(fact, text: str, sources: list[str] | None = None) -> bool:
+    """Eval-only fact matching (bench._has stays as it is for case validation): numbers within the answer's own rounding
+    and scale (21% for 21.4, -1.9 for 1.86, £0.13m for 129,444); a number of 3 or fewer significant digits must have a
+    label of the fact (the column or row words where `sources` hold it) on its line or table row."""
+    opts = fact if isinstance(fact, list) else [fact]
+    for o in opts:
+        labels = D.fact_labels(o, sources) if sources else []
+        if D.fact_matches(o, text, labels or None):
+            return True
+    return False
+
+
+def _context_of(text: str, token: str, before: int = 60, after: int = 10) -> str:
+    i = text.find(token)
+    return text[max(0, i - before):i + len(token) + after] if i >= 0 else ""
+
+
+def loose_values(text: str, seen: str) -> tuple[list[str], list[str], dict]:
+    """(ids, numbers) in the answer that appear in no tool result, prompt or user turn, and {value: why} for those skipped:
+    ids written as a template ('e.g. EMP-000xx') and years inside dates ('1 October 2025', '2025-10-01'). Numbers keep
+    their k/m suffix ('£34.5k' -> '34.5k') and need 3+ digits; digits inside ids, dates and times are not numbers."""
+    skipped = {}
+    ids = []
+    for i in sorted(set(bench.ID_RX.findall(text))):
+        if i.lower() in seen:
+            continue
+        if D.is_template_id(i, _context_of(text, i)):
+            skipped[i] = "template id"
+        elif re.fullmatch(r"(?:FY|CY|Q[1-4]|H[12]|AW|SS|FW|PI)\d{2}(?:\d{2})?", i):   # a fiscal year or season, not an id
+            skipped[i] = "date year"
+        else:
+            ids.append(i)
+    nums = []
+    for n in D.numbers(text):
+        if len(re.sub(r"\D", "", n.text)) < 3 or bench._norm(n.text) in seen:
+            continue
+        if D.date_year(text, n.start, n.start + len(n.text)):
+            if n.text not in seen:
+                skipped[n.text] = "date year"
+            continue
+        nums.append(n.text)
+    return ids, sorted(set(nums)), skipped
+
+
+def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict] | None = None, system: str = "",
+            ref_out: list[dict] | None = None) -> dict:
+    """The deterministic checks. Fact labels come from `ref_out` (reference outputs) when given, else the trace."""
     ref = task.get("reference") or {}
     slices = ref.get("slices") or []
     text = answer_text(answers)
@@ -82,12 +132,12 @@ def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict]
         missing += [t for t in g["missing_tools"] if t not in missing]
         bad += [b for b in g["bad_args"] if b not in bad]
     facts = ref.get("facts") or [f for s in slices for f in s.get("facts", [])]
-    found = [f for f in facts if bench._has(f, text)]
+    sources = [o.get("output") or "" for o in ref_out or [] if o.get("role", "reference") == "reference"] or \
+        [c[2] for c in calls if c[2]]
+    found = [f for f in facts if fact_found(f, text, sources)]
     seen = bench._norm("\n".join(t.get("text", "") for t in task.get("turns", [])) + "\n" + system) \
         + "\n" + bench._norm("\n".join(c[2] for c in calls), table=True)
-    ids = sorted({i for i in bench.ID_RX.findall(text) if i.lower() not in seen})
-    nums = [n for n in bench.NUM_RX.findall(text) if len(re.sub(r"\D", "", n)) >= 3]
-    loose = sorted({n for n in nums if bench._norm(n).lstrip("-") not in seen})
+    ids, loose, skipped = loose_values(text, seen)
     required = set((task.get("servers") or {}).get("required", []))
     turns = turn_of_calls(trace, answers, transcript)
     err = next((t["error"] for t in answers.get("turns", []) if t.get("error")), None) or answers.get("error")
@@ -97,7 +147,7 @@ def compute(task: dict, trace: list[dict], answers: dict, transcript: list[dict]
     return {"turns_answered": answered, "tools_called": sorted(called), "required_tools_missing": missing,
             "distractor_servers_used": sorted({c["server"] for c in trace if c.get("server") not in required}),
             "bad_args": bad, "facts_found": found, "facts_missing": [f for f in facts if f not in found],
-            "ids_not_in_results": ids, "numbers_not_in_results": loose,
+            "ids_not_in_results": ids, "numbers_not_in_results": loose, "values_skipped": skipped,
             "writes": writes_of(task, trace, turns), "harness_error": err}
 
 

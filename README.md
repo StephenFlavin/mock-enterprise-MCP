@@ -38,7 +38,7 @@ Point any MCP client at a server URL, or paste the `profile` output into its con
 
 ## Benchmarking LLMs
 
-`python -m mockmcp eval` builds tasks from the persona questions and runs them against recording copies of the servers. The agent harness is pluggable; headless Claude Code is the one built. Each task is graded by deterministic checks plus a judge: an LLM judge (headless Claude Code), a decision-model judge (Jev or a local Cygnet over the System One API) that answers small closed questions combined in code, or a cascade of the two (`--judge cascade:jev+claude-code`). The judge sees a lean payload (the conversation, the expected answer, what code found, the writes made; no trace) and only judges; diagnosis stays in code (`--judge-debug` hands it the full trace instead). `eval calibrate` measures a judge against existing verdicts.
+`python -m mockmcp eval` builds tasks from the persona questions and runs them against recording copies of the servers. The agent harness is pluggable; headless Claude Code is the one built. Each task is graded by deterministic checks plus a judge: an LLM judge (headless Claude Code, the one to use), or a decision-model judge (Jev or a local Cygnet over the System One API) that answers small closed questions combined in code. Decision-model judges were evaluated and are **unreliable per task** (they warn when used; see `docs/BENCHMARKING.md` section 5). The judge sees a lean payload (the conversation, the expected answer, what code found, the writes made; no trace) and only judges; diagnosis stays in code (`--judge-debug` hands it the full trace instead). `eval calibrate` measures a judge against existing verdicts.
 
 Tasks include:
 - **Scenarios:** a question plus its follow-ups, graded as one pass/fail.
@@ -47,7 +47,7 @@ Tasks include:
 
 Reports lead with *why* tasks failed:
 - wrong server or wrong tool
-- hallucination
+- fabrication (claims no tool supports)
 - unsafe or unrequested writes
 - honest failure
 - the tasks that break as tools are added
@@ -56,7 +56,9 @@ Reports lead with *why* tasks failed:
 python -m mockmcp eval recipe bench/recipes/scale-80.yaml --out runs/scale-80 --harness claude-code   # 80 questions x 5 tool budgets
 python -m mockmcp eval run    runs/scale-80 --model haiku --workers 8
 python -m mockmcp eval grade  runs/scale-80 --judge claude-code --judge-model sonnet
-python -m mockmcp eval report runs/scale-80                                                          # runs/scale-80/report.md
+python -m mockmcp eval report runs/scale-80                                                          # runs/scale-80/report.md, summary.json, report.json
+python -m mockmcp eval report runs/scale-80 --html                                                   # + charts/*.svg and report.html
+python -m mockmcp eval compare runs/scale-80-haiku runs/scale-80-sonnet --html                       # two runs task by task: compare.md, compare.html
 ```
 
 **Scale recipes nest.**
@@ -80,6 +82,7 @@ Full guide, including how to evaluate a model: [docs/BENCHMARKING.md](docs/BENCH
 | `python -m mockmcp brief <id>` | A system's tools and every persona question that uses them |
 | `python -m mockmcp bench <id>` | Run a model against one system's ground-truth cases |
 | `python -m mockmcp eval traps --check` | Validate the trap bank |
+| `python -m mockmcp eval arithmetic` | Regenerate `bench/arithmetic.yaml` (facts got by arithmetic; `--check` to verify) |
 | `python -m pytest -q` | Tests (~8 min) |
 
 Guides:
