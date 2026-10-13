@@ -20,4 +20,4 @@ Each folder holds:
 
 The pages link to `checks.json` and `judge.json` too; those stay in the git-ignored `runs/` folders, and their content is already in `report.json`.
 
-Costs and the findings are summarised in the pull request that added these files and in `docs/BENCHMARKING.md`.
+Costs and findings are in the pull request that added these files (#7).
